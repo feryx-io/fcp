@@ -80,12 +80,44 @@ cargo run -p siphond -- --help
 
 For detailed siphond documentation, see `crates/siphon-rs/bins/siphond/README.md`.
 
+### Running fcp-server (FCP Platform)
+
+```bash
+# Build fcp-server
+cargo build --release -p fcp-server
+
+# Run with default configuration
+./target/release/fcp-server
+
+# Run with custom config file
+./target/release/fcp-server --config /path/to/fcp.toml
+
+# Run with CLI overrides
+./target/release/fcp-server --log-level debug --log-format pretty
+
+# Run with environment variables
+FCP_LOG_LEVEL=debug FCP_LOG_FORMAT=json ./target/release/fcp-server
+
+# See all options
+./target/release/fcp-server --help
+
+# Check version
+./target/release/fcp-server --version
+```
+
+For detailed fcp-server documentation, see `crates/fcp-server/README.md`.
+
+**Note**: fcp-server currently uses a DummyDispatcher placeholder for transport. Full transport integration (UDP/TCP/TLS) will be implemented in the next phase.
+
 ## High-Level Architecture
 
 ### Phase 1: Current State (MVP Foundation)
 
 The project is currently in Phase 1 (MVP) with:
-- ✅ **fcp-core**: Core types, identifiers, error handling
+- ✅ **fcp-core**: Core types, identifiers, error handling, configuration, services, codecs, transport abstractions
+- ✅ **fcp-sip**: Integration layer bridging fcp-core and siphon-rs with type adapters and service wrappers
+- ✅ **fcp-runtime**: Service coordination, lifecycle management, and runtime builder
+- ✅ **fcp-server**: Main binary with CLI, configuration loading, and graceful shutdown
 - ✅ **siphon-rs**: Complete SIP stack with transaction layer, dialog management, authentication, registrar, UAC/UAS helpers, and multi-transport support
 - ✅ **siphond**: Multi-mode SIP testing daemon (minimal, full-uas, registrar, proxy, b2bua)
 
@@ -118,11 +150,36 @@ fcp/
 │   │   │   ├── lib.rs            # Module exports
 │   │   │   ├── error.rs          # Error types (ParseError, TransactionError, etc.)
 │   │   │   ├── identifiers.rs    # Strongly-typed IDs (CallId, SessionId, DialogId, etc.)
-│   │   │   ├── config.rs         # Configuration structures
-│   │   │   ├── service.rs        # Service traits
-│   │   │   ├── codec.rs          # Media codec definitions
-│   │   │   ├── transport.rs      # Transport abstractions
+│   │   │   ├── config.rs         # Configuration structures (FcpConfig, NodeConfig, etc.)
+│   │   │   ├── service.rs        # Service trait and ServiceManager
+│   │   │   ├── codec.rs          # Media codec definitions (AudioCodec, VideoCodec)
+│   │   │   ├── transport.rs      # Transport trait and abstractions
 │   │   │   └── time.rs           # Time utilities
+│   │   └── Cargo.toml
+│   │
+│   ├── fcp-sip/                  # SIP integration layer
+│   │   ├── src/
+│   │   │   ├── lib.rs            # Module exports
+│   │   │   ├── exports.rs        # Re-exports of siphon-rs types
+│   │   │   ├── adapters.rs       # Type conversion functions
+│   │   │   ├── transport.rs      # TransportManager
+│   │   │   └── service.rs        # Service wrappers (TransactionService, DialogService, etc.)
+│   │   └── Cargo.toml
+│   │
+│   ├── fcp-runtime/              # Runtime coordination
+│   │   ├── src/
+│   │   │   ├── lib.rs            # Runtime struct and lifecycle management
+│   │   │   ├── builder.rs        # RuntimeBuilder for construction
+│   │   │   └── handlers.rs       # Message handlers (placeholder)
+│   │   └── Cargo.toml
+│   │
+│   ├── fcp-server/               # Main binary
+│   │   ├── src/
+│   │   │   ├── main.rs           # Entry point with async main
+│   │   │   ├── cli.rs            # CLI argument parsing (clap)
+│   │   │   └── config.rs         # Configuration loading
+│   │   ├── fcp.toml.example      # Example configuration file
+│   │   ├── README.md             # Server documentation
 │   │   └── Cargo.toml
 │   │
 │   └── siphon-rs/                # SIP stack (git submodule)

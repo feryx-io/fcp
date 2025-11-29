@@ -1,0 +1,66 @@
+# FCP Server Configuration Example
+# Copy this file to fcp.toml and customize as needed
+
+[node]
+name = "fcp-node-1"
+# domain = "example.com"
+
+[transport]
+# UDP configuration
+[transport.udp]
+enabled = true
+bind_addr = "0.0.0.0:5060"
+
+# TCP configuration
+[transport.tcp]
+enabled = true
+bind_addr = "0.0.0.0:5060"
+
+# TLS configuration (SIPS)
+[transport.tls]
+enabled = false
+bind_addr = "0.0.0.0:5061"
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+
+# Note: TLS support is enabled by default in fcp-server.
+# For outbound SIPS connections, the server will automatically use
+# system root certificates. No additional configuration is needed
+# for client-side TLS connections.
+
+# WebSocket configuration
+[transport.ws]
+enabled = false
+bind_addr = "0.0.0.0:5062"
+
+# WebSocket Secure configuration
+[transport.wss]
+enabled = false
+bind_addr = "0.0.0.0:5063"
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+
+[storage]
+backend = "sqlite"
+
+[storage.sqlite]
+path = "./fcp.db"
+
+# [storage.postgres]
+# connection_string = "postgresql://user:password@localhost/fcp"
+
+[api]
+enabled = true
+bind_addr = "127.0.0.1:8080"
+
+[observability]
+log_level = "info"
+log_format = "compact"  # Options: json, pretty, compact
+
+# [observability.metrics]
+# enabled = true
+# bind_addr = "127.0.0.1:9090"
+
+# [observability.tracing]
+# enabled = false
+# endpoint = "http://localhost:4317"

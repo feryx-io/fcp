@@ -1,0 +1,37 @@
+[package]
+name = "fcp-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "FCP server binary - main entry point for the FCP platform"
+
+[features]
+default = ["tls"]
+tls = ["fcp-runtime/tls"]
+
+[[bin]]
+name = "fcp-server"
+path = "src/main.rs"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-runtime = { path = "../fcp-runtime" }
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+serde = { workspace = true }
+
+# Async runtime
+tokio = { version = "1", features = ["full", "signal"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }

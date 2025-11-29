@@ -1,7 +1,9 @@
-warns = [
-    "clippy::pedantic",
-    "clippy::nursery",
-]
+# Note: clippy warnings are managed in rust-toolchain.toml or CI configuration
+# The 'warns' field is not supported in clippy.toml
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+allow-panic-in-tests = true
+cognitive-complexity-threshold = 30
+max-fn-params-bools = 3
+too-many-arguments-threshold = 8

@@ -1,0 +1,34 @@
+[package]
+name = "fcp-runtime"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Runtime server for the FCP platform"
+
+[features]
+default = []
+tls = ["fcp-sip/tls"]
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-sip = { path = "../fcp-sip" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+async-trait = "0.1"
+bytes = { workspace = true }
+dashmap = "5"

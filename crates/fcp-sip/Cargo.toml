@@ -1,0 +1,43 @@
+[package]
+name = "fcp-sip"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Integration layer between fcp-core and siphon-rs SIP stack"
+
+[features]
+default = []
+tls = ["sip-transport/tls", "tokio-rustls", "rustls-native-certs"]
+
+[dependencies]
+# FCP core types
+fcp-core = { path = "../fcp-core" }
+
+# SIP stack from siphon-rs (as path dependencies from submodule)
+sip-core = { path = "../siphon-rs/crates/sip-core" }
+sip-parse = { path = "../siphon-rs/crates/sip-parse" }
+sip-transport = { path = "../siphon-rs/crates/sip-transport" }
+sip-transaction = { path = "../siphon-rs/crates/sip-transaction" }
+sip-dialog = { path = "../siphon-rs/crates/sip-dialog" }
+sip-dns = { path = "../siphon-rs/crates/sip-dns" }
+sip-auth = { path = "../siphon-rs/crates/sip-auth" }
+sip-registrar = { path = "../siphon-rs/crates/sip-registrar" }
+sip-sdp = { path = "../siphon-rs/crates/sip-sdp" }
+sip-uac = { path = "../siphon-rs/crates/sip-uac" }
+sip-uas = { path = "../siphon-rs/crates/sip-uas" }
+
+# Common dependencies
+anyhow = { workspace = true }
+async-trait = "0.1"
+bytes = { workspace = true }
+smol_str = "0.3"
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { workspace = true }
+
+# TLS support (optional) - must match sip-transport's rustls version (0.22)
+tokio-rustls = { version = "0.25", optional = true }
+rustls-native-certs = { version = "0.7", optional = true }
