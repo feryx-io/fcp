@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/fcp-core",
+]
+exclude = [
+    "crates/siphon-rs",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+authors = ["FCP Team"]
+repository = "https://github.com/thevoiceguy/fcp.git"
+
+[workspace.dependencies]
+anyhow = "1"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }

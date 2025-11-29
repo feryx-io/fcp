@@ -1,0 +1,7 @@
+warns = [
+    "clippy::pedantic",
+    "clippy::nursery",
+]
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

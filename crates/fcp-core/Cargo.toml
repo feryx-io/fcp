@@ -1,0 +1,13 @@
+[package]
+name = "fcp-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core types and traits for the FCP PBX."
+license = "MIT OR Apache-2.0"
+repository = "https://example.com/fcp"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
