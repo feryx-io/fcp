@@ -9,6 +9,7 @@ use fcp_runtime::Runtime;
 use tokio::signal;
 use tracing::info;
 
+mod api;
 mod cli;
 mod config;
 
@@ -40,28 +41,47 @@ async fn main() -> Result<()> {
 
     info!(node_id = %runtime.node_id(), "Runtime built successfully");
 
-    // Set up signal handler for graceful shutdown
-    let runtime_handle = tokio::spawn(async move {
-        runtime.start().await?;
+    // Get configuration reference
+    let api_config = runtime.config().api.clone();
+    let storage = runtime.storage().cloned();
 
-        // Wait for shutdown signal
-        match signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Received shutdown signal (Ctrl+C)");
-            }
-            Err(err) => {
-                tracing::error!("Failed to listen for shutdown signal: {}", err);
-            }
+    // Start the runtime
+    runtime.start().await?;
+
+    // Start API server if enabled and storage is available
+    let api_handle = if api_config.enabled {
+        if let Some(storage) = storage {
+            info!(
+                bind = %api_config.bind,
+                "Starting API server"
+            );
+
+            let api_state = api::state::ApiState::new(storage);
+            let bind_addr = api_config.bind;
+
+            Some(tokio::spawn(async move {
+                api::serve(bind_addr, api_state).await
+            }))
+        } else {
+            tracing::warn!("API enabled but registrar/storage not available, skipping API server");
+            None
         }
+    } else {
+        None
+    };
 
-        // Shutdown gracefully
-        runtime.shutdown().await
-    });
+    // Wait for shutdown signal
+    info!("FCP server running. Press Ctrl+C to shutdown.");
+    signal::ctrl_c().await.context("Failed to listen for shutdown signal")?;
+    info!("Received shutdown signal (Ctrl+C)");
 
-    // Wait for runtime to complete
-    runtime_handle
-        .await
-        .context("Runtime task failed")??;
+    // Shutdown runtime
+    runtime.shutdown().await?;
+
+    // Abort API server if running
+    if let Some(handle) = api_handle {
+        handle.abort();
+    }
 
     info!("FCP server shutdown complete");
     Ok(())

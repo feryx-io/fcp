@@ -16,18 +16,42 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
 
+/// Password hashing utilities using bcrypt.
+pub mod password {
+    use anyhow::Result;
+
+    const BCRYPT_COST: u32 = 12; // Higher = more secure but slower
+
+    /// Hash a plaintext password using bcrypt.
+    pub fn hash_password(password: &str) -> Result<String> {
+        bcrypt::hash(password, BCRYPT_COST)
+            .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))
+    }
+
+    /// Verify a plaintext password against a bcrypt hash.
+    pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
+        bcrypt::verify(password, hash)
+            .map_err(|e| anyhow::anyhow!("Failed to verify password: {}", e))
+    }
+}
+
 /// A user account with SIP credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     /// Username (SIP user part)
     pub username: String,
 
-    /// Hashed password (for Digest authentication)
-    /// Store as plain text for now, real deployments should use hashed
+    /// Password hash (bcrypt)
+    /// This should contain a bcrypt hash, not plaintext.
+    /// Use `storage::password::hash_password()` to hash passwords before storing.
     pub password: String,
 
     /// Display name (optional)
     pub display_name: Option<String>,
+
+    /// Tenant ID for multi-tenant isolation
+    #[serde(default = "default_tenant_id")]
+    pub tenant_id: crate::TenantId,
 
     /// Enabled flag
     pub enabled: bool,
@@ -39,6 +63,35 @@ pub struct User {
     /// Last modified timestamp
     #[serde(with = "system_time_serde")]
     pub updated_at: SystemTime,
+}
+
+fn default_tenant_id() -> crate::TenantId {
+    crate::TenantId::nil()
+}
+
+/// User definition for config files (passwords are plaintext and will be hashed on load).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserFileEntry {
+    /// Username
+    pub username: String,
+
+    /// Password (plaintext, will be hashed on load)
+    pub password: String,
+
+    /// Display name (optional)
+    pub display_name: Option<String>,
+
+    /// Tenant ID (optional, defaults to nil tenant)
+    #[serde(default = "default_tenant_id")]
+    pub tenant_id: crate::TenantId,
+
+    /// Enabled flag (default: true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A SIP registration binding.
@@ -87,9 +140,14 @@ pub trait CredentialStore: Send + Sync {
     async fn list_users(&self) -> Result<Vec<User>>;
 
     /// Check if a username/password combination is valid.
+    /// Uses bcrypt to verify the password against the stored hash.
     async fn verify_credentials(&self, username: &str, password: &str) -> Result<bool> {
         if let Some(user) = self.get_user(username).await? {
-            Ok(user.enabled && user.password == password)
+            if !user.enabled {
+                return Ok(false);
+            }
+            // Use bcrypt to verify password against hash
+            password::verify_password(password, &user.password)
         } else {
             Ok(false)
         }
@@ -350,11 +408,13 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("fcp-test-storage");
         let storage = FileBackedStorage::new(temp_dir.clone()).await.unwrap();
 
-        // Create user
+        // Create user with hashed password
+        let password_hash = password::hash_password("secret123").unwrap();
         let user = User {
             username: "alice".to_string(),
-            password: "secret123".to_string(),
+            password: password_hash,
             display_name: Some("Alice".to_string()),
+            tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),

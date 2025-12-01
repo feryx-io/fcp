@@ -16,11 +16,17 @@ pub struct FcpConfig {
     /// Storage configuration
     pub storage: StorageConfig,
 
+    /// Registrar configuration
+    pub registrar: RegistrarConfig,
+
     /// API configuration
     pub api: ApiConfig,
 
     /// Observability configuration
     pub observability: ObservabilityConfig,
+
+    /// Routing configuration
+    pub routing: RoutingConfig,
 }
 
 
@@ -98,6 +104,51 @@ impl Default for TransportConfig {
             local_ip: None,
             rtp_port: 10000,
             enable_sdp: true,
+        }
+    }
+}
+
+/// Registrar configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrarConfig {
+    /// Enable REGISTER request handling
+    pub enabled: bool,
+
+    /// Enable authentication for REGISTER requests
+    pub auth_enabled: bool,
+
+    /// Authentication realm
+    pub realm: String,
+
+    /// Data directory for file-based storage
+    pub data_dir: PathBuf,
+
+    /// Path to users file (JSON format, optional)
+    /// If specified, users will be loaded from this file on startup.
+    /// Example format: [{"username": "alice", "password": "secret123", "display_name": "Alice", "enabled": true}]
+    pub users_file: Option<PathBuf>,
+
+    /// Default registration expiry (seconds)
+    pub default_expires: u32,
+
+    /// Minimum registration expiry (seconds)
+    pub min_expires: u32,
+
+    /// Maximum registration expiry (seconds)
+    pub max_expires: u32,
+}
+
+impl Default for RegistrarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auth_enabled: false,
+            realm: "fcp.local".to_string(),
+            data_dir: PathBuf::from("./data"),
+            users_file: None,
+            default_expires: 3600,
+            min_expires: 60,
+            max_expires: 86400,
         }
     }
 }
@@ -221,4 +272,48 @@ pub enum LogFormat {
 
     /// Compact format
     Compact,
+}
+
+/// Routing configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingConfig {
+    /// Enable routing policy enforcement
+    pub enabled: bool,
+
+    /// Routing backend (YAML file or database)
+    pub backend: RoutingBackend,
+
+    /// Default tenant ID for single-tenant deployments
+    pub default_tenant_id: String,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: RoutingBackend::Yaml {
+                path: PathBuf::from("routing.yaml"),
+                watch: true,
+            },
+            default_tenant_id: "default".to_string(),
+        }
+    }
+}
+
+/// Routing backend types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum RoutingBackend {
+    /// YAML file-based storage (for small deployments)
+    Yaml {
+        /// Path to routing.yaml file
+        path: PathBuf,
+        /// Watch for file changes and hot-reload
+        watch: bool,
+    },
+    /// Database-backed storage (for large deployments) - FUTURE
+    Database {
+        /// Database connection string
+        connection_string: String,
+    },
 }

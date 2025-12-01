@@ -4,7 +4,7 @@
 //! manages their lifecycle, and handles incoming SIP messages.
 
 use anyhow::{Context, Result};
-use fcp_core::{FcpConfig, NodeId, ServiceManager};
+use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
 use fcp_sip::prelude::*;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -43,6 +43,12 @@ pub struct Runtime {
 
     /// Shutdown signal sender
     shutdown_tx: Option<mpsc::Sender<()>>,
+
+    /// Storage for registrations and users (if registrar enabled)
+    storage: Option<Arc<fcp_core::FileBackedStorage>>,
+
+    /// Background cleanup task handle
+    cleanup_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Runtime {
@@ -81,6 +87,11 @@ impl Runtime {
         &self.uac
     }
 
+    /// Get the storage (if registrar is enabled).
+    pub fn storage(&self) -> Option<&Arc<fcp_core::FileBackedStorage>> {
+        self.storage.as_ref()
+    }
+
     /// Start the runtime and all services.
     pub async fn start(&mut self) -> Result<()> {
         info!(node_id = %self.node_id, "Starting FCP runtime");
@@ -98,6 +109,32 @@ impl Runtime {
             .start_all()
             .await
             .context("Failed to start services")?;
+
+        // Start registration cleanup task if storage is available
+        if let Some(storage) = self.storage.clone() {
+            let cleanup_interval = std::time::Duration::from_secs(60); // Run every 60 seconds
+            info!("Starting registration cleanup task (interval: {:?})", cleanup_interval);
+
+            let task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(cleanup_interval);
+                loop {
+                    interval.tick().await;
+
+                    match storage.cleanup_expired().await {
+                        Ok(count) => {
+                            if count > 0 {
+                                info!("Cleaned up {} expired registrations", count);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to cleanup expired registrations: {}", e);
+                        }
+                    }
+                }
+            });
+
+            self.cleanup_task = Some(task);
+        }
 
         info!("FCP runtime started successfully");
         Ok(())
@@ -125,6 +162,12 @@ impl Runtime {
     /// Shutdown the runtime gracefully.
     pub async fn shutdown(mut self) -> Result<()> {
         info!(node_id = %self.node_id, "Shutting down FCP runtime");
+
+        // Stop cleanup task if running
+        if let Some(task) = self.cleanup_task.take() {
+            info!("Stopping registration cleanup task");
+            task.abort();
+        }
 
         // Stop transport listeners first
         if let Some(mut listener) = self.listener.take() {

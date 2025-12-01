@@ -1,0 +1,146 @@
+# Example routing configuration for FCP
+#
+# This file demonstrates the declarative policy-based routing system.
+# It defines users with roles/groups and policy rules for call authorization.
+
+users:
+  - id: "alice@company.com"
+    tenant_id: "00000000-0000-0000-0000-000000000000"  # Default tenant (nil UUID)
+    display_name: "Alice Smith"
+    roles:
+      - employee
+      - sales-team
+    groups:
+      - us-west
+    endpoints:
+      - uri: "sip:alice@10.0.1.100:5060"
+        device_type: DeskPhone
+        location: "Building A, Floor 2"
+      - uri: "sip:alice@mobile.company.com"
+        device_type: Softphone
+    enabled: true
+
+  - id: "bob@company.com"
+    tenant_id: "00000000-0000-0000-0000-000000000000"  # Default tenant (nil UUID)
+    display_name: "Bob Johnson"
+    roles:
+      - employee
+      - engineering
+    groups:
+      - us-east
+    endpoints:
+      - uri: "sip:bob@10.0.1.101:5060"
+        device_type: DeskPhone
+        location: "Building B, Floor 3"
+    enabled: true
+
+  - id: "charlie@company.com"
+    tenant_id: "00000000-0000-0000-0000-000000000000"  # Default tenant (nil UUID)
+    display_name: "Charlie Davis"
+    roles:
+      - employee
+      - management
+    groups:
+      - us-west
+      - executives
+    endpoints:
+      - uri: "sip:charlie@10.0.1.102:5060"
+        device_type: DeskPhone
+      - uri: "sip:charlie@mobile.company.com"
+        device_type: Mobile
+    enabled: true
+
+policies:
+  # Rule 1: Employees can call internal extensions (priority 100)
+  - name: "employees-internal-only"
+    tenant_id: "default"
+    priority: 100
+    enabled: true
+    applies_to:
+      roles:
+        - employee
+    destination_match:
+      pattern: "^[2-5]\\d{3}$"  # Internal extensions 2000-5999
+    time_windows: []
+    source_ip_ranges: []
+    action: Allow
+    reason: "Employees can call internal extensions"
+
+  # Rule 2: Sales team can call US/Canada numbers during business hours (priority 200)
+  - name: "sales-external-domestic"
+    tenant_id: "default"
+    priority: 200
+    enabled: true
+    applies_to:
+      roles:
+        - sales-team
+    destination_match:
+      pattern: "^\\+1[2-9]\\d{9}$"  # US/Canada numbers (E.164 format)
+    time_windows:
+      - days: [Monday, Tuesday, Wednesday, Thursday, Friday]
+        start_time: "08:00:00"
+        end_time: "18:00:00"
+        timezone: "America/New_York"
+    source_ip_ranges: []
+    action: Allow
+    reason: "Sales can call US/Canada during business hours"
+
+  # Rule 3: Management can call US/Canada anytime (priority 150)
+  - name: "management-domestic-anytime"
+    tenant_id: "default"
+    priority: 150
+    enabled: true
+    applies_to:
+      roles:
+        - management
+    destination_match:
+      pattern: "^\\+1[2-9]\\d{9}$"
+    time_windows: []
+    source_ip_ranges: []
+    action: Allow
+    reason: "Management can call US/Canada anytime"
+
+  # Rule 4: Executives can call international (priority 50)
+  - name: "executives-international"
+    tenant_id: "default"
+    priority: 50
+    enabled: true
+    applies_to:
+      groups:
+        - executives
+    destination_match:
+      pattern: "^\\+(?!1)\\d{7,15}$"  # International (non-US/Canada)
+    time_windows: []
+    source_ip_ranges: []
+    action: Allow
+    reason: "Executives can call international numbers"
+
+  # Rule 5: Deny international calls by default (priority 1000)
+  - name: "deny-international-by-default"
+    tenant_id: "default"
+    priority: 1000
+    enabled: true
+    applies_to:
+      roles:
+        - employee
+    destination_match:
+      pattern: "^\\+(?!1)\\d{7,15}$"  # International (non-US/Canada)
+    time_windows: []
+    source_ip_ranges: []
+    action: Deny
+    reason: "International calls require authorization"
+
+  # Rule 6: Emergency services always allowed (priority 1)
+  - name: "emergency-services"
+    tenant_id: "default"
+    priority: 1
+    enabled: true
+    applies_to:
+      roles:
+        - employee
+    destination_match:
+      pattern: "^(911|112|999)$"  # Emergency numbers
+    time_windows: []
+    source_ip_ranges: []
+    action: Allow
+    reason: "Emergency services always allowed"

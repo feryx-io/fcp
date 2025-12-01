@@ -15,8 +15,8 @@ pub mod transport;
 // Re-export commonly used types
 pub use crate::codec::{AudioCodec, Codec, CodecPreferences, VideoCodec};
 pub use crate::config::{
-    ApiConfig, FcpConfig, LogFormat, NodeConfig, ObservabilityConfig, StorageBackend,
-    StorageConfig, TransportConfig,
+    ApiConfig, FcpConfig, LogFormat, NodeConfig, ObservabilityConfig, RegistrarConfig,
+    StorageBackend, StorageConfig, TransportConfig,
 };
 pub use crate::error::{
     DialogError, Error, MediaError, ParseError, Result, StorageError, TransactionError,
@@ -25,7 +25,7 @@ pub use crate::error::{
 pub use crate::identifiers::*;
 pub use crate::service::{Service, ServiceManager};
 pub use crate::storage::{
-    CredentialStore, FileBackedStorage, Registration, RegistrationStore, User,
+    CredentialStore, FileBackedStorage, Registration, RegistrationStore, User, UserFileEntry,
 };
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,

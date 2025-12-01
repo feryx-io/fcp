@@ -4,10 +4,10 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use fcp_core::{CredentialStore, Registration, RegistrationStore, User};
-use sip_auth::{CredentialStore as SipCredentialStore, DigestAuthenticator};
+use fcp_core::{CredentialStore, Registration, RegistrationStore};
+use sip_auth::DigestAuthenticator;
 use sip_core::{Request, Response};
-use sip_registrar::{BasicRegistrar, Binding, LocationStore};
+use sip_registrar::{AsyncLocationStore, BasicRegistrar, Binding};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
@@ -24,19 +24,18 @@ impl LocationStoreAdapter {
 
     /// Convert FCP Registration to siphon-rs Binding.
     fn to_binding(reg: &Registration) -> Binding {
-        let expires_in = reg
+        let expires_duration = reg
             .expires_at
             .duration_since(SystemTime::now())
-            .unwrap_or_default()
-            .as_secs() as u32;
+            .unwrap_or_default();
 
         Binding {
             aor: reg.aor.clone().into(),
             contact: reg.contact.clone().into(),
-            expires: expires_in,
+            expires: expires_duration,
             call_id: reg.call_id.clone().into(),
             cseq: reg.cseq,
-            q: reg.q,
+            q_value: reg.q.unwrap_or(1.0),
         }
     }
 
@@ -45,40 +44,29 @@ impl LocationStoreAdapter {
         Registration {
             aor: binding.aor.to_string(),
             contact: binding.contact.to_string(),
-            expires_at: SystemTime::now() + std::time::Duration::from_secs(binding.expires as u64),
+            expires_at: SystemTime::now() + binding.expires,
             call_id: binding.call_id.to_string(),
             cseq: binding.cseq,
             user_agent: None,
-            q: binding.q,
+            q: Some(binding.q_value),
             registered_at: SystemTime::now(),
         }
     }
 }
 
 #[async_trait]
-impl LocationStore for LocationStoreAdapter {
+impl AsyncLocationStore for LocationStoreAdapter {
     async fn upsert(&self, binding: Binding) -> Result<()> {
         let registration = Self::from_binding(&binding);
         self.store.put_registration(registration).await
     }
 
-    async fn remove(&self, aor: &str, contact: Option<&str>) -> Result<Vec<Binding>> {
-        // Get existing registrations before removal
-        let existing = self.store.get_registrations(aor).await?;
+    async fn remove(&self, aor: &str, contact: &str) -> Result<()> {
+        self.store.delete_registration(aor, contact).await
+    }
 
-        if let Some(contact_uri) = contact {
-            // Remove specific contact
-            self.store.delete_registration(aor, contact_uri).await?;
-            Ok(existing
-                .iter()
-                .filter(|r| r.contact == contact_uri)
-                .map(Self::to_binding)
-                .collect())
-        } else {
-            // Remove all (wildcard)
-            self.store.delete_all_registrations(aor).await?;
-            Ok(existing.iter().map(Self::to_binding).collect())
-        }
+    async fn remove_all(&self, aor: &str) -> Result<()> {
+        self.store.delete_all_registrations(aor).await
     }
 
     async fn lookup(&self, aor: &str) -> Result<Vec<Binding>> {
@@ -92,25 +80,34 @@ impl LocationStore for LocationStoreAdapter {
             .map(Self::to_binding)
             .collect())
     }
+
+    async fn cleanup_expired(&self) -> Result<usize> {
+        self.store.cleanup_expired().await
+    }
 }
 
 /// Adapter that implements siphon-rs CredentialStore using FCP CredentialStore.
 pub struct CredentialStoreAdapter {
     store: Arc<dyn CredentialStore>,
+    realm: String,
 }
 
 impl CredentialStoreAdapter {
-    pub fn new(store: Arc<dyn CredentialStore>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<dyn CredentialStore>, realm: String) -> Self {
+        Self { store, realm }
     }
 }
 
 #[async_trait]
-impl SipCredentialStore for CredentialStoreAdapter {
-    async fn get_password(&self, username: &str) -> Option<String> {
+impl sip_auth::AsyncCredentialStore for CredentialStoreAdapter {
+    async fn fetch(&self, username: &str, _realm: &str) -> Option<sip_auth::Credentials> {
         if let Ok(Some(user)) = self.store.get_user(username).await {
             if user.enabled {
-                return Some(user.password);
+                return Some(sip_auth::Credentials {
+                    username: username.into(),
+                    password: user.password.into(),
+                    realm: self.realm.clone().into(),
+                });
             }
         }
         None
@@ -121,8 +118,11 @@ impl SipCredentialStore for CredentialStoreAdapter {
 ///
 /// This wraps siphon-rs BasicRegistrar with FCP storage adapters.
 pub struct FcpRegistrar {
-    /// Siphon-rs registrar
-    registrar: BasicRegistrar<LocationStoreAdapter, DigestAuthenticator<CredentialStoreAdapter>>,
+    /// Siphon-rs registrar with async location store
+    registrar: BasicRegistrar<
+        LocationStoreAdapter,
+        DigestAuthenticator<sip_auth::AsyncToSyncCredentialAdapter<CredentialStoreAdapter>>,
+    >,
 
     /// Enable authentication
     auth_enabled: bool,
@@ -141,26 +141,20 @@ impl FcpRegistrar {
         realm: Option<String>,
     ) -> Self {
         let location_store = LocationStoreAdapter::new(registration_store);
+        let realm_str = realm.unwrap_or_else(|| "fcp.local".to_string());
 
         let (registrar, auth_enabled) = if let Some(cred_store) = credential_store {
-            // Create authenticator
-            let cred_adapter = CredentialStoreAdapter::new(cred_store);
-            let authenticator = DigestAuthenticator::new(
-                realm.unwrap_or_else(|| "fcp.local".to_string()),
-                cred_adapter,
-            );
+            // Create authenticator with async credential store adapter
+            let cred_adapter = CredentialStoreAdapter::new(cred_store, realm_str.clone());
+            let sync_adapter = sip_auth::AsyncToSyncCredentialAdapter::new(cred_adapter);
+            let authenticator = DigestAuthenticator::new(&realm_str, sync_adapter);
 
-            let registrar = BasicRegistrar::builder()
-                .location_store(location_store)
-                .authenticator(Some(authenticator))
-                .build();
+            let registrar = BasicRegistrar::new(location_store, Some(authenticator));
 
             (registrar, true)
         } else {
             // No authentication
-            let registrar = BasicRegistrar::builder()
-                .location_store(location_store)
-                .build();
+            let registrar = BasicRegistrar::new(location_store, None);
 
             (registrar, false)
         };
@@ -186,11 +180,11 @@ impl FcpRegistrar {
         }
 
         // Use siphon-rs registrar to handle the request
-        match self.registrar.handle(request).await {
+        match self.registrar.handle_register_async(request).await {
             Ok(response) => {
                 if response.start.code == 200 {
                     info!(
-                        aor = %sip_parse::header(&request.headers, "To").unwrap_or_default(),
+                        aor = %sip_parse::header(&request.headers, "To").map(|s| s.as_str()).unwrap_or(""),
                         "Registration successful"
                     );
                 } else if response.start.code == 401 {
@@ -238,7 +232,6 @@ impl FcpRegistrar {
 mod tests {
     use super::*;
     use fcp_core::FileBackedStorage;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_registrar_without_auth() {
@@ -276,6 +269,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(regs.len(), 1);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_registrar_with_auth() {
+        let temp_dir = std::env::temp_dir().join("fcp-test-registrar-auth");
+        let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
+
+        // Create a test user
+        let user = fcp_core::User {
+            username: "alice".to_string(),
+            password: "secret123".to_string(),
+            display_name: Some("Alice".to_string()),
+            tenant_id: fcp_core::TenantId::nil(), // Default tenant for test
+            enabled: true,
+            created_at: std::time::SystemTime::now(),
+            updated_at: std::time::SystemTime::now(),
+        };
+        storage.put_user(user).await.unwrap();
+
+        // Create registrar WITH authentication
+        let registrar = FcpRegistrar::new(
+            storage.clone(),
+            Some(storage.clone()), // Use storage as credential store
+            Some("test.local".to_string()),
+        );
+
+        // First request without auth - should get 401
+        let mut headers = sip_core::Headers::new();
+        headers.push("Via".into(), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
+        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push("To".into(), "<sip:alice@example.com>".into());
+        headers.push("Call-ID".into(), "test-call-auth@example.com".into());
+        headers.push("CSeq".into(), "1 REGISTER".into());
+        headers.push("Contact".into(), "<sip:alice@192.168.1.1:5060>;expires=3600".into());
+        headers.push("Expires".into(), "3600".into());
+        headers.push("Content-Length".into(), "0".into());
+
+        let request = Request::new(
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
+            headers,
+            bytes::Bytes::new(),
+        );
+
+        let response = registrar.handle_register(&request).await;
+
+        // Should get 401 Unauthorized
+        assert_eq!(response.start.code, 401);
+        assert!(response.headers.get("WWW-Authenticate").is_some());
+
+        // Verify no registration was stored (auth required)
+        let regs = storage
+            .get_registrations("sip:alice@example.com")
+            .await
+            .unwrap();
+        assert_eq!(regs.len(), 0);
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();

@@ -6,9 +6,10 @@ use smol_str::SmolStr;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::prelude::*;
+use crate::registrar::FcpRegistrar;
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -30,6 +31,12 @@ pub struct SipMessageHandler {
 
     /// RTP port for audio
     rtp_port: u16,
+
+    /// Optional registrar for handling REGISTER requests
+    registrar: Option<Arc<FcpRegistrar>>,
+
+    /// Optional routing service for call authorization
+    routing_service: Option<Arc<fcp_routing::RoutingService>>,
 }
 
 impl SipMessageHandler {
@@ -42,6 +49,8 @@ impl SipMessageHandler {
     /// * `media_profile` - Optional SDP media profile for call setup
     /// * `local_addr` - Local IP address for SDP
     /// * `rtp_port` - RTP port for audio (default: 10000)
+    /// * `registrar` - Optional registrar for REGISTER request handling
+    /// * `routing_service` - Optional routing service for call authorization
     pub fn new(
         transaction_manager: Arc<TransactionManager>,
         dialog_manager: Arc<DialogManager>,
@@ -49,6 +58,8 @@ impl SipMessageHandler {
         media_profile: Option<sip_sdp::profiles::MediaProfileBuilder>,
         local_addr: String,
         rtp_port: u16,
+        registrar: Option<Arc<FcpRegistrar>>,
+        routing_service: Option<Arc<fcp_routing::RoutingService>>,
     ) -> Self {
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
@@ -61,6 +72,8 @@ impl SipMessageHandler {
             media_profile,
             local_addr,
             rtp_port,
+            registrar,
+            routing_service,
         }
     }
 
@@ -71,17 +84,19 @@ impl SipMessageHandler {
     /// - ACK: Confirms dialog establishment (no response needed)
     /// - BYE: Terminates dialog and sends 200 OK
     /// - OPTIONS: Sends 200 OK (keepalive/ping)
+    /// - REGISTER: Handles endpoint registration (if registrar configured)
     /// - Other methods: Sends 501 Not Implemented
     async fn handle_request(
         &self,
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
+        peer: SocketAddr,
     ) -> Result<()> {
         use sip_core::Method;
 
         match request.start.method {
             Method::Invite => {
-                self.handle_invite(request, handle).await?;
+                self.handle_invite(request, handle, peer).await?;
             }
             Method::Ack => {
                 // ACK for 2xx responses is outside transaction layer (RFC 3261 §17.1.1.3)
@@ -95,6 +110,10 @@ impl SipMessageHandler {
             Method::Options => {
                 debug!("Responding to OPTIONS with 200 OK");
                 let response = self.create_simple_response(request, 200, "OK");
+                handle.send_final(response).await;
+            }
+            Method::Register => {
+                let response = self.handle_register(request).await;
                 handle.send_final(response).await;
             }
             _ => {
@@ -115,12 +134,48 @@ impl SipMessageHandler {
         &self,
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
+        peer: SocketAddr,
     ) -> Result<()> {
         debug!("Handling INVITE request");
 
         // Send 100 Trying immediately
         let trying = sip_uas::UserAgentServer::create_trying(request);
         handle.send_provisional(trying).await;
+
+        // Check routing policy if routing service is configured
+        if let Some(routing_service) = &self.routing_service {
+            match self.evaluate_routing_policy(request, routing_service, peer).await {
+                Ok(decision) => {
+                    if !decision.action.is_allow() {
+                        info!(
+                            reason = %decision.reason,
+                            matched_rule = ?decision.matched_rule,
+                            "Call denied by routing policy"
+                        );
+                        let response = self.create_simple_response(request, 403, &decision.reason);
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                    debug!(
+                        reason = %decision.reason,
+                        matched_rule = ?decision.matched_rule,
+                        eval_time_us = decision.evaluation_time_us,
+                        "Call allowed by routing policy"
+                    );
+                }
+                Err(e) => {
+                    error!("Routing policy evaluation failed: {}", e);
+                    // Fail closed: deny the call on evaluation errors
+                    let response = self.create_simple_response(
+                        request,
+                        500,
+                        "Routing policy evaluation error",
+                    );
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+            }
+        }
 
         // Send 180 Ringing
         let ringing = self.uas.create_ringing(request);
@@ -130,7 +185,6 @@ impl SipMessageHandler {
         let sdp_answer = self.generate_sdp_answer(request)?;
 
         // Accept the INVITE and create dialog
-        // TODO: For now, auto-accept. Later, make this configurable.
         match self.uas.accept_invite(request, sdp_answer.as_deref()) {
             Ok((response, dialog)) => {
                 debug!(
@@ -150,6 +204,68 @@ impl SipMessageHandler {
         }
 
         Ok(())
+    }
+
+    /// Evaluate routing policy for an INVITE request.
+    ///
+    /// Extracts caller, destination, tenant ID, and source IP from the SIP request
+    /// and evaluates the routing policy.
+    async fn evaluate_routing_policy(
+        &self,
+        request: &sip_core::Request,
+        routing_service: &Arc<fcp_routing::RoutingService>,
+        peer: SocketAddr,
+    ) -> Result<fcp_routing::PolicyDecision> {
+        use anyhow::Context as _;
+
+        // Extract From header (caller)
+        let from = sip_parse::header(&request.headers, "From")
+            .ok_or_else(|| anyhow::anyhow!("Missing From header"))?;
+
+        // Extract caller URI from From header (strip display name and parameters)
+        let caller = from
+            .split('<')
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .unwrap_or(&from)
+            .trim()
+            .to_string();
+
+        // Extract To header (destination)
+        let to = sip_parse::header(&request.headers, "To")
+            .ok_or_else(|| anyhow::anyhow!("Missing To header"))?;
+
+        // Extract destination URI from To header
+        let destination = to
+            .split('<')
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .unwrap_or(&to)
+            .trim()
+            .to_string();
+
+        // Get source IP from peer address
+        let source_ip = peer.ip();
+
+        // Look up the caller to get their tenant ID
+        // This ensures we use the correct tenant's policies
+        let tenant_id = routing_service
+            .get_user_tenant(&caller)
+            .await
+            .with_context(|| format!("Failed to determine tenant for caller: {}", caller))?;
+
+        debug!(
+            caller = %caller,
+            destination = %destination,
+            tenant_id = %tenant_id,
+            source_ip = %source_ip,
+            "Evaluating routing policy"
+        );
+
+        // Evaluate the call using routing service
+        routing_service
+            .evaluate_call(&caller, &destination, &tenant_id, source_ip)
+            .await
     }
 
     /// Generate an SDP answer for an INVITE request.
@@ -223,6 +339,39 @@ impl SipMessageHandler {
 
         // Handle BYE using UAS helper
         self.uas.handle_bye(request, &dialog)
+    }
+
+    /// Handle a REGISTER request for endpoint registration.
+    ///
+    /// If a registrar is configured, delegates to the registrar for processing.
+    /// Otherwise, returns 501 Not Implemented.
+    async fn handle_register(&self, request: &sip_core::Request) -> sip_core::Response {
+        debug!("Handling REGISTER request");
+
+        match &self.registrar {
+            Some(registrar) => {
+                // Use registrar to handle the request
+                let response = registrar.handle_register(request).await;
+
+                // Log success/failure
+                if response.start.code == 200 {
+                    info!(
+                        aor = %sip_parse::header(&request.headers, "To")
+                            .map(|s| s.as_str())
+                            .unwrap_or(""),
+                        "REGISTER handled successfully"
+                    );
+                } else if response.start.code == 401 {
+                    debug!("REGISTER requires authentication");
+                }
+
+                response
+            }
+            None => {
+                debug!("No registrar configured, responding with 501 Not Implemented");
+                self.create_simple_response(request, 501, "Not Implemented")
+            }
+        }
     }
 
     /// Create a simple SIP response with standard headers.
@@ -313,7 +462,7 @@ impl InboundMessageHandler for SipMessageHandler {
                 .await;
 
             // Handle request and send response(s)
-            if let Err(e) = self.handle_request(&req, &handle).await {
+            if let Err(e) = self.handle_request(&req, &handle, peer).await {
                 error!("Failed to handle request: {}", e);
                 // Send error response
                 let response = self.create_simple_response(&req, 500, "Internal Server Error");
@@ -334,5 +483,129 @@ impl InboundMessageHandler for SipMessageHandler {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registrar::FcpRegistrar;
+    use fcp_core::{FileBackedStorage, RegistrationStore};
+    use sip_core::{Headers, Method, RequestLine, SipUri};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_register_without_registrar() {
+        // Create dependencies
+        let dispatcher = Arc::new(
+            crate::transport::RealTransportDispatcher::with_udp("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap(),
+        );
+        let transaction_manager = Arc::new(TransactionManager::new(dispatcher));
+        let dialog_manager = Arc::new(DialogManager::new());
+        let local_uri = SipUri::parse("sip:test@localhost").unwrap();
+
+        // Create handler WITHOUT registrar
+        let handler = SipMessageHandler::new(
+            transaction_manager,
+            dialog_manager,
+            local_uri,
+            None,
+            "127.0.0.1".to_string(),
+            10000,
+            None, // No registrar
+            None, // No routing service
+        );
+
+        // Create a REGISTER request
+        let mut headers = Headers::new();
+        headers.push("Via".into(), "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123".into());
+        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push("To".into(), "<sip:alice@example.com>".into());
+        headers.push("Call-ID".into(), "test-call-id".into());
+        headers.push("CSeq".into(), "1 REGISTER".into());
+        headers.push("Contact".into(), "<sip:alice@127.0.0.1:5060>".into());
+        headers.push("Content-Length".into(), "0".into());
+
+        let request = sip_core::Request::new(
+            RequestLine::new(Method::Register, SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        );
+
+        // Handle the REGISTER request
+        let response = handler.handle_register(&request).await;
+
+        // Should return 501 Not Implemented (no registrar configured)
+        assert_eq!(response.start.code, 501);
+        assert_eq!(response.start.reason.as_str(), "Not Implemented");
+    }
+
+    #[tokio::test]
+    async fn test_register_with_registrar() {
+        // Create storage
+        let temp_dir = std::env::temp_dir().join("fcp-test-handler-register");
+        let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
+
+        // Create registrar (without authentication)
+        let registrar = Arc::new(FcpRegistrar::new(storage.clone(), None, None));
+
+        // Create dependencies
+        let dispatcher = Arc::new(
+            crate::transport::RealTransportDispatcher::with_udp("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap(),
+        );
+        let transaction_manager = Arc::new(TransactionManager::new(dispatcher));
+        let dialog_manager = Arc::new(DialogManager::new());
+        let local_uri = SipUri::parse("sip:test@localhost").unwrap();
+
+        // Create handler WITH registrar
+        let handler = SipMessageHandler::new(
+            transaction_manager,
+            dialog_manager,
+            local_uri,
+            None,
+            "127.0.0.1".to_string(),
+            10000,
+            Some(registrar.clone()),
+            None, // No routing service
+        );
+
+        // Create a REGISTER request
+        let mut headers = Headers::new();
+        headers.push("Via".into(), "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123".into());
+        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push("To".into(), "<sip:alice@example.com>".into());
+        headers.push("Call-ID".into(), "test-call-id".into());
+        headers.push("CSeq".into(), "1 REGISTER".into());
+        headers.push("Contact".into(), "<sip:alice@127.0.0.1:5060>;expires=3600".into());
+        headers.push("Expires".into(), "3600".into());
+        headers.push("Content-Length".into(), "0".into());
+
+        let request = sip_core::Request::new(
+            RequestLine::new(Method::Register, SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        );
+
+        // Handle the REGISTER request
+        let response = handler.handle_register(&request).await;
+
+        // Should return 200 OK (registration successful)
+        assert_eq!(response.start.code, 200);
+        assert_eq!(response.start.reason.as_str(), "OK");
+
+        // Verify the registration was stored
+        let regs = storage
+            .get_registrations("sip:alice@example.com")
+            .await
+            .unwrap();
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0].contact, "sip:alice@127.0.0.1:5060");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 }
