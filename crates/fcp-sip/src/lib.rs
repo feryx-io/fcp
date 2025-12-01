@@ -9,6 +9,8 @@
 //! - Service implementations using fcp-core::Service trait
 
 pub mod adapters;
+pub mod call;
+pub mod call_manager;
 pub mod exports;
 pub mod handler;
 pub mod listener;
@@ -23,6 +25,8 @@ pub use exports::*;
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::adapters::*;
+    pub use crate::call::{Call, CallId, CallLeg, CallState};
+    pub use crate::call_manager::CallManager;
     pub use crate::exports::*;
     pub use crate::handler::SipMessageHandler;
     pub use crate::listener::{InboundMessageHandler, ListenerConfig, TransportListener};

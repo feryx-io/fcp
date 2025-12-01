@@ -97,9 +97,24 @@ impl TransportListener {
         // Start UDP listener
         if let Some(udp_bind) = self.config.udp_bind {
             info!(%udp_bind, "Starting UDP listener");
-            let socket = UdpSocket::bind(udp_bind)
-                .await
-                .context("Failed to bind UDP socket")?;
+
+            // Create socket with SO_REUSEADDR to allow port reuse
+            let socket = {
+                use socket2::{Socket, Domain, Type, Protocol};
+
+                let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+                    .context("Failed to create socket")?;
+                socket.set_reuse_address(true)
+                    .context("Failed to set SO_REUSEADDR")?;
+                socket.set_nonblocking(true)
+                    .context("Failed to set non-blocking")?;
+                socket.bind(&udp_bind.into())
+                    .context("Failed to bind UDP socket")?;
+
+                let std_socket: std::net::UdpSocket = socket.into();
+                UdpSocket::from_std(std_socket)
+                    .context("Failed to convert to tokio UdpSocket")?
+            };
             let socket = Arc::new(socket);
 
             let handler = Arc::clone(&self.handler);

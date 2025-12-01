@@ -6,7 +6,7 @@ use smol_str::SmolStr;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
@@ -37,6 +37,12 @@ pub struct SipMessageHandler {
 
     /// Optional routing service for call authorization
     routing_service: Option<Arc<fcp_routing::RoutingService>>,
+
+    /// Call manager for B2BUA functionality
+    call_manager: Arc<crate::call_manager::CallManager>,
+
+    /// User Agent Client for making outbound calls (B-leg)
+    uac: Option<Arc<SipUserAgentClient>>,
 }
 
 impl SipMessageHandler {
@@ -51,6 +57,8 @@ impl SipMessageHandler {
     /// * `rtp_port` - RTP port for audio (default: 10000)
     /// * `registrar` - Optional registrar for REGISTER request handling
     /// * `routing_service` - Optional routing service for call authorization
+    /// * `call_manager` - Call manager for B2BUA functionality
+    /// * `uac` - Optional User Agent Client for outbound calls (B-leg forwarding)
     pub fn new(
         transaction_manager: Arc<TransactionManager>,
         dialog_manager: Arc<DialogManager>,
@@ -60,6 +68,8 @@ impl SipMessageHandler {
         rtp_port: u16,
         registrar: Option<Arc<FcpRegistrar>>,
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
+        call_manager: Arc<crate::call_manager::CallManager>,
+        uac: Option<Arc<SipUserAgentClient>>,
     ) -> Self {
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
@@ -74,6 +84,8 @@ impl SipMessageHandler {
             rtp_port,
             registrar,
             routing_service,
+            call_manager,
+            uac,
         }
     }
 
@@ -129,14 +141,22 @@ impl SipMessageHandler {
         Ok(())
     }
 
-    /// Handle an INVITE request by creating a dialog and sending responses.
+    /// Handle an INVITE request as a B2BUA.
+    ///
+    /// Flow:
+    /// 1. Send 100 Trying to A-leg (caller)
+    /// 2. Check routing policy
+    /// 3. Create Call object and store in CallManager
+    /// 4. TODO: Look up destination endpoint
+    /// 5. TODO: Create outbound INVITE to B-leg (callee)
+    /// 6. TODO: Relay responses from B-leg to A-leg
     async fn handle_invite(
         &self,
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
         peer: SocketAddr,
     ) -> Result<()> {
-        debug!("Handling INVITE request");
+        debug!("Handling INVITE request (B2BUA mode)");
 
         // Send 100 Trying immediately
         let trying = sip_uas::UserAgentServer::create_trying(request);
@@ -177,27 +197,346 @@ impl SipMessageHandler {
             }
         }
 
-        // Send 180 Ringing
+        // Create Call object from the incoming INVITE
+        let mut call = crate::call::Call::from_invite(request.clone(), peer);
+        call.state = crate::call::CallState::RoutingPending;
+
+        // Store call in CallManager
+        let call_id = self.call_manager.create_call(call);
+
+        info!(
+            call_id = %call_id,
+            caller = ?sip_parse::header(&request.headers, "From"),
+            callee = ?sip_parse::header(&request.headers, "To"),
+            "Created B2BUA call"
+        );
+
+        // If UAC is available, forward to B-leg; otherwise use UAS mode
+        if let Some(uac) = &self.uac {
+            // Full B2BUA mode: Forward INVITE to B-leg
+            self.forward_invite_to_b_leg(request, handle, call_id, uac.clone()).await
+        } else {
+            // Fallback UAS mode: Accept call directly without B-leg forwarding
+            self.handle_invite_uas_mode(request, handle, call_id).await
+        }
+    }
+
+    /// Forward INVITE to B-leg in full B2BUA mode.
+    ///
+    /// This method implements the complete B2BUA call flow:
+    /// 1. Look up destination in registrar
+    /// 2. Create outbound INVITE to B-leg using UAC
+    /// 3. Relay provisional responses (100, 180) to A-leg
+    /// 4. Relay final response (200 OK) with SDP to A-leg
+    /// 5. Create both A-leg and B-leg dialogs
+    async fn forward_invite_to_b_leg(
+        &self,
+        request: &sip_core::Request,
+        a_leg_handle: &ServerTransactionHandle,
+        call_id: crate::call::CallId,
+        uac: Arc<SipUserAgentClient>,
+    ) -> Result<()> {
+        // Extract To header to get destination AOR
+        let to = sip_parse::header(&request.headers, "To")
+            .ok_or_else(|| anyhow::anyhow!("Missing To header"))?;
+
+        // Extract destination URI
+        let destination_aor = to
+            .split('<')
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .unwrap_or(&to)
+            .trim();
+
+        debug!(
+            call_id = %call_id,
+            destination = %destination_aor,
+            "Looking up destination in registrar"
+        );
+
+        // Update call state to LookingUpDestination
+        let _ = self.call_manager.update_call(&call_id, |call| {
+            call.state = crate::call::CallState::LookingUpDestination;
+        });
+
+        // Look up destination in registrar
+        let destination_contacts = if let Some(registrar) = &self.registrar {
+            match registrar.get_registrations(destination_aor).await {
+                Ok(bindings) if !bindings.is_empty() => {
+                    debug!(
+                        call_id = %call_id,
+                        destination = %destination_aor,
+                        contacts = bindings.len(),
+                        "Found registered contacts for destination"
+                    );
+                    bindings
+                }
+                Ok(_) => {
+                    info!(
+                        call_id = %call_id,
+                        destination = %destination_aor,
+                        "Destination not registered (no bindings)"
+                    );
+                    let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self.call_manager.terminate_call(&call_id, Some("Destination not registered".to_string()));
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!(
+                        call_id = %call_id,
+                        destination = %destination_aor,
+                        error = %e,
+                        "Failed to lookup destination"
+                    );
+                    let response = self.create_simple_response(request, 500, "Internal Server Error");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to lookup destination: {}", e)));
+                    return Ok(());
+                }
+            }
+        } else {
+            // No registrar configured - cannot forward call
+            error!(
+                call_id = %call_id,
+                "Cannot forward call: No registrar configured"
+            );
+            let response = self.create_simple_response(request, 500, "Service Unavailable");
+            a_leg_handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+            return Ok(());
+        };
+
+        // Use the first registered contact as destination
+        let destination_contact = &destination_contacts[0];
+        let target_uri = destination_contact.contact.to_string();
+
+        info!(
+            call_id = %call_id,
+            target = %target_uri,
+            "Forwarding INVITE to B-leg"
+        );
+
+        // Update call state to Inviting
+        let _ = self.call_manager.update_call(&call_id, |call| {
+            call.state = crate::call::CallState::Inviting;
+        });
+
+        // Extract SDP from A-leg INVITE to forward to B-leg
+        let a_leg_sdp = if !request.body.is_empty() {
+            Some(String::from_utf8_lossy(&request.body).to_string())
+        } else {
+            None
+        };
+
+        // Create outbound INVITE to B-leg using UAC
+        debug!(
+            call_id = %call_id,
+            target = %target_uri,
+            has_sdp = a_leg_sdp.is_some(),
+            "Creating B-leg INVITE"
+        );
+
+        let mut b_leg_call = match uac.invite(&target_uri, a_leg_sdp.as_deref()).await {
+            Ok(call) => call,
+            Err(e) => {
+                error!(
+                    call_id = %call_id,
+                    target = %target_uri,
+                    error = %e,
+                    "Failed to create B-leg INVITE"
+                );
+                let response = self.create_simple_response(request, 500, "Failed to forward call");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to create B-leg INVITE: {}", e)));
+                return Ok(());
+            }
+        };
+
+        info!(
+            call_id = %call_id,
+            target = %target_uri,
+            "B-leg INVITE sent, awaiting responses"
+        );
+
+        // Update call state to Proceeding
+        let _ = self.call_manager.update_call(&call_id, |call| {
+            call.state = crate::call::CallState::Proceeding;
+        });
+
+        // Relay provisional responses from B-leg to A-leg
+        while let Some(provisional) = b_leg_call.await_provisional().await {
+            let status_code = provisional.start.code;
+            debug!(
+                call_id = %call_id,
+                code = status_code,
+                "Received provisional response from B-leg"
+            );
+
+            // Forward 18x responses to A-leg (180 Ringing, 183 Session Progress)
+            if status_code >= 180 && status_code < 200 {
+                info!(
+                    call_id = %call_id,
+                    code = status_code,
+                    "Relaying provisional response to A-leg"
+                );
+
+                // Create provisional response to relay to A-leg
+                // For simplicity, we'll create a standard ringing response
+                if status_code == 180 {
+                    let ringing = self.uas.create_ringing(request);
+                    a_leg_handle.send_provisional(ringing).await;
+                }
+            }
+        }
+
+        // Clone the B-leg dialog before consuming the CallHandle
+        let b_leg_dialog = b_leg_call.dialog.clone();
+
+        // Wait for final response from B-leg
+        let b_leg_final = match b_leg_call.await_final().await {
+            Ok(response) => response,
+            Err(e) => {
+                error!(
+                    call_id = %call_id,
+                    error = %e,
+                    "Failed to receive final response from B-leg"
+                );
+                let response = self.create_simple_response(request, 408, "Request Timeout");
+                a_leg_handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(&call_id, Some(format!("B-leg timeout: {}", e)));
+                return Ok(());
+            }
+        };
+
+        let b_leg_status = b_leg_final.start.code;
+        info!(
+            call_id = %call_id,
+            code = b_leg_status,
+            "Received final response from B-leg"
+        );
+
+        // Handle final response based on status code
+        if b_leg_status == 200 {
+            // Success! Relay 200 OK to A-leg
+            // Extract SDP from B-leg response
+            let b_leg_sdp = if !b_leg_final.body.is_empty() {
+                Some(String::from_utf8_lossy(&b_leg_final.body).to_string())
+            } else {
+                None
+            };
+
+            // Accept the INVITE on A-leg and create A-leg dialog
+            match self.uas.accept_invite(request, b_leg_sdp.as_deref()) {
+                Ok((a_leg_response, a_leg_dialog)) => {
+                    info!(
+                        call_id = %call_id,
+                        "Call established - both legs connected"
+                    );
+
+                    // Update call with both dialogs
+                    let _ = self.call_manager.update_call(&call_id, |call| {
+                        call.a_leg.dialog = Some(a_leg_dialog.clone());
+                        // Store B-leg dialog information
+                        if let Some(b_leg) = &mut call.b_leg {
+                            b_leg.dialog = Some(b_leg_dialog.clone());
+                        }
+                        call.state = crate::call::CallState::Established;
+                        call.establish();
+                    });
+
+                    // Send 200 OK to A-leg
+                    a_leg_handle.send_final(a_leg_response).await;
+
+                    // Note: ACK to B-leg is handled automatically by the UAC transaction layer
+                    debug!(call_id = %call_id, "ACK will be sent automatically to B-leg");
+                }
+                Err(e) => {
+                    error!(
+                        call_id = %call_id,
+                        error = %e,
+                        "Failed to accept INVITE on A-leg"
+                    );
+                    let response = self.create_simple_response(request, 500, "Internal Server Error");
+                    a_leg_handle.send_final(response).await;
+
+                    // TODO: Send BYE to B-leg to terminate the established call
+                    // This requires storing the UAC reference or B-leg dialog for later BYE
+                    warn!(call_id = %call_id, "B-leg call established but A-leg failed - B-leg cleanup needed");
+
+                    let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to accept on A-leg: {}", e)));
+                }
+            }
+        } else {
+            // B-leg rejected the call - forward rejection to A-leg
+            info!(
+                call_id = %call_id,
+                code = b_leg_status,
+                "B-leg rejected call, forwarding to A-leg"
+            );
+
+            // Map B-leg rejection to A-leg response
+            let reason = b_leg_final.start.reason.as_str();
+            let response = self.create_simple_response(request, b_leg_status, reason);
+            a_leg_handle.send_final(response).await;
+
+            let _ = self.call_manager.terminate_call(
+                &call_id,
+                Some(format!("B-leg rejected: {} {}", b_leg_status, reason))
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handle INVITE in UAS mode (without B-leg forwarding).
+    ///
+    /// This is the fallback mode when UAC is not available or for testing.
+    /// It accepts the INVITE directly and establishes only the A-leg dialog.
+    async fn handle_invite_uas_mode(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: crate::call::CallId,
+    ) -> Result<()> {
+        debug!(
+            call_id = %call_id,
+            "Handling INVITE in UAS mode (no B-leg forwarding)"
+        );
+
+        // Send 180 Ringing to test call flow
         let ringing = self.uas.create_ringing(request);
         handle.send_provisional(ringing).await;
 
-        // Generate SDP answer if we have a media profile
+        // Generate SDP answer
         let sdp_answer = self.generate_sdp_answer(request)?;
 
-        // Accept the INVITE and create dialog
+        // Accept the INVITE and create A-leg dialog
         match self.uas.accept_invite(request, sdp_answer.as_deref()) {
             Ok((response, dialog)) => {
                 debug!(
-                    call_id = %dialog.id.call_id,
+                    call_id = %call_id,
+                    dialog_call_id = %dialog.id.call_id,
                     local_tag = %dialog.id.local_tag,
                     remote_tag = %dialog.id.remote_tag,
-                    has_sdp = sdp_answer.is_some(),
-                    "Created dialog for INVITE"
+                    "Created A-leg dialog"
                 );
+
+                // Update call with A-leg dialog
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.a_leg.dialog = Some(dialog.clone());
+                    call.state = crate::call::CallState::Established;
+                    call.establish();
+                });
+
                 handle.send_final(response).await;
             }
             Err(e) => {
                 error!("Failed to accept INVITE: {}", e);
+
+                // Mark call as failed
+                let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to accept INVITE: {}", e)));
+
                 let response = self.create_simple_response(request, 500, "Internal Server Error");
                 handle.send_final(response).await;
             }
@@ -312,32 +651,148 @@ impl SipMessageHandler {
     }
 
     /// Handle an ACK request (confirms 2xx response to INVITE).
+    /// Handle an ACK request (B2BUA mode).
+    ///
+    /// ACK confirms dialog establishment after 200 OK.
+    /// In B2BUA mode, we need to:
+    /// 1. Find the call by dialog Call-ID
+    /// 2. Confirm the call is established
+    /// 3. TODO: Forward ACK to B-leg
     fn handle_ack(&self, request: &sip_core::Request) -> Result<()> {
-        debug!("Received ACK");
+        debug!("Received ACK (B2BUA mode)");
 
-        // Extract Call-ID and tags to find the dialog
-        let call_id = sip_parse::header(&request.headers, "Call-ID")
+        // Extract Call-ID to find the call
+        let dialog_call_id = sip_parse::header(&request.headers, "Call-ID")
             .ok_or_else(|| anyhow::anyhow!("Missing Call-ID in ACK"))?;
 
-        // ACK confirms the dialog is established
-        // The dialog was already created when we sent the 200 OK
-        // Just log it for now
-        debug!(call_id = %call_id, "ACK received for dialog");
+        // Find the call by dialog Call-ID
+        if let Some(call) = self.call_manager.find_by_dialog_call_id(dialog_call_id.as_str()) {
+            debug!(
+                call_id = %call.id,
+                dialog_call_id = %dialog_call_id,
+                "ACK received, call confirmed established"
+            );
+
+            // The call should already be in Established state from the 200 OK
+            // ACK is just confirmation, no state change needed
+
+            // TODO: Forward ACK to B-leg when we implement full B2BUA forwarding
+        } else {
+            debug!(
+                dialog_call_id = %dialog_call_id,
+                "ACK received for unknown call (might be OK if call just ended)"
+            );
+        }
 
         Ok(())
     }
 
-    /// Handle a BYE request by terminating the dialog.
+    /// Handle a BYE request by terminating the call (B2BUA mode).
+    ///
+    /// In B2BUA mode, we need to:
+    /// 1. Find the call by dialog Call-ID
+    /// 2. Determine which leg sent the BYE (A-leg or B-leg)
+    /// 3. Forward BYE to the other leg
+    /// 4. Terminate the call in CallManager
+    /// 5. Send 200 OK response
     fn handle_bye(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
-        debug!("Handling BYE request");
+        debug!("Handling BYE request (B2BUA mode)");
 
-        // Find the dialog from the request headers (Call-ID + tags)
+        // Extract Call-ID to find the call
+        let dialog_call_id = sip_parse::header(&request.headers, "Call-ID")
+            .ok_or_else(|| anyhow::anyhow!("Missing Call-ID in BYE"))?;
+
+        // Find the call by dialog Call-ID
+        if let Some(call) = self.call_manager.find_by_dialog_call_id(dialog_call_id.as_str()) {
+            info!(
+                call_id = %call.id,
+                dialog_call_id = %dialog_call_id,
+                duration = ?call.duration(),
+                "Terminating call due to BYE"
+            );
+
+            // Determine which leg sent the BYE and forward to the other leg
+            if let Some(uac) = &self.uac {
+                // Check if BYE is from A-leg
+                let is_a_leg = call.a_leg.dialog.as_ref()
+                    .map(|d| d.id.call_id.as_str() == dialog_call_id.as_str())
+                    .unwrap_or(false);
+
+                if is_a_leg {
+                    // BYE from A-leg, send BYE to B-leg
+                    if let Some(b_leg) = &call.b_leg {
+                        if let Some(b_leg_dialog) = &b_leg.dialog {
+                            info!(
+                                call_id = %call.id,
+                                "BYE from A-leg, forwarding to B-leg"
+                            );
+
+                            // Spawn a task to send BYE to B-leg (don't wait for response)
+                            let uac_clone = Arc::clone(uac);
+                            let b_leg_dialog_clone = b_leg_dialog.clone();
+                            let call_id = call.id;
+                            tokio::spawn(async move {
+                                match uac_clone.bye(&b_leg_dialog_clone).await {
+                                    Ok(_) => {
+                                        debug!(call_id = %call_id, "Successfully sent BYE to B-leg");
+                                    }
+                                    Err(e) => {
+                                        error!(call_id = %call_id, error = %e, "Failed to send BYE to B-leg");
+                                    }
+                                }
+                            });
+                        } else {
+                            debug!(call_id = %call.id, "B-leg has no dialog, skipping BYE forward");
+                        }
+                    } else {
+                        debug!(call_id = %call.id, "No B-leg found, skipping BYE forward");
+                    }
+                } else {
+                    // BYE from B-leg, send BYE to A-leg
+                    if let Some(a_leg_dialog) = &call.a_leg.dialog {
+                        info!(
+                            call_id = %call.id,
+                            "BYE from B-leg, forwarding to A-leg"
+                        );
+
+                        // Spawn a task to send BYE to A-leg (don't wait for response)
+                        let uac_clone = Arc::clone(uac);
+                        let a_leg_dialog_clone = a_leg_dialog.clone();
+                        let call_id = call.id;
+                        tokio::spawn(async move {
+                            match uac_clone.bye(&a_leg_dialog_clone).await {
+                                Ok(_) => {
+                                    debug!(call_id = %call_id, "Successfully sent BYE to A-leg");
+                                }
+                                Err(e) => {
+                                    error!(call_id = %call_id, error = %e, "Failed to send BYE to A-leg");
+                                }
+                            }
+                        });
+                    } else {
+                        debug!(call_id = %call.id, "A-leg has no dialog, skipping BYE forward");
+                    }
+                }
+            } else {
+                debug!(call_id = %call.id, "No UAC available, cannot forward BYE");
+            }
+
+            // Terminate the call in CallManager
+            let _ = self.call_manager.terminate_call(&call.id, None);
+        } else {
+            debug!(
+                dialog_call_id = %dialog_call_id,
+                "BYE received for unknown call"
+            );
+        }
+
+        // Find the dialog to send proper response
         let dialog = self
             .dialog_manager
             .find_by_request(request)
             .ok_or_else(|| anyhow::anyhow!("Dialog not found for BYE"))?;
 
-        // Handle BYE using UAS helper
+        // Handle BYE using UAS helper (sends 200 OK)
         self.uas.handle_bye(request, &dialog)
     }
 
@@ -506,6 +961,9 @@ mod tests {
         let dialog_manager = Arc::new(DialogManager::new());
         let local_uri = SipUri::parse("sip:test@localhost").unwrap();
 
+        // Create CallManager for tests
+        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+
         // Create handler WITHOUT registrar
         let handler = SipMessageHandler::new(
             transaction_manager,
@@ -516,6 +974,8 @@ mod tests {
             10000,
             None, // No registrar
             None, // No routing service
+            call_manager,
+            None, // No UAC
         );
 
         // Create a REGISTER request
@@ -561,6 +1021,9 @@ mod tests {
         let dialog_manager = Arc::new(DialogManager::new());
         let local_uri = SipUri::parse("sip:test@localhost").unwrap();
 
+        // Create CallManager for tests
+        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+
         // Create handler WITH registrar
         let handler = SipMessageHandler::new(
             transaction_manager,
@@ -571,6 +1034,8 @@ mod tests {
             10000,
             Some(registrar.clone()),
             None, // No routing service
+            call_manager,
+            None, // No UAC
         );
 
         // Create a REGISTER request

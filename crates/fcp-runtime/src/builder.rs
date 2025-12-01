@@ -106,6 +106,7 @@ impl RuntimeBuilder {
             Arc::clone(&dialog_manager_ref),
             registrar,
             routing_service,
+            Arc::clone(&uac),
         )?;
 
         Ok(Runtime {
@@ -272,6 +273,7 @@ fn create_transport_listener(
     dialog_manager: Arc<DialogManager>,
     registrar: Option<Arc<fcp_sip::registrar::FcpRegistrar>>,
     routing_service: Option<Arc<fcp_routing::RoutingService>>,
+    uac: Arc<SipUserAgentClient>,
 ) -> Result<TransportListener> {
     use fcp_sip::prelude::{ListenerConfig, SipMessageHandler};
 
@@ -319,6 +321,9 @@ fn create_transport_listener(
                 .unwrap_or_else(|| "127.0.0.1".to_string())
         });
 
+    // Create CallManager for B2BUA functionality
+    let call_manager = Arc::new(fcp_sip::call_manager::CallManager::new());
+
     // Create message handler that routes to transaction and dialog managers
     let handler = Arc::new(SipMessageHandler::new(
         transaction_manager,
@@ -329,6 +334,8 @@ fn create_transport_listener(
         config.transport.rtp_port,
         registrar,
         routing_service,
+        call_manager,
+        Some(uac),
     ));
 
     // Create and return the listener

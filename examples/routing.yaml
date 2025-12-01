@@ -53,7 +53,7 @@ users:
 policies:
   # Rule 1: Employees can call internal extensions (priority 100)
   - name: "employees-internal-only"
-    tenant_id: "default"
+    tenant_id: "00000000-0000-0000-0000-000000000000"  # Default tenant (nil UUID)
     priority: 100
     enabled: true
     applies_to:
@@ -68,7 +68,7 @@ policies:
 
   # Rule 2: Sales team can call US/Canada numbers during business hours (priority 200)
   - name: "sales-external-domestic"
-    tenant_id: "default"
+    tenant_id: "00000000-0000-0000-0000-000000000000"
     priority: 200
     enabled: true
     applies_to:
@@ -87,7 +87,7 @@ policies:
 
   # Rule 3: Management can call US/Canada anytime (priority 150)
   - name: "management-domestic-anytime"
-    tenant_id: "default"
+    tenant_id: "00000000-0000-0000-0000-000000000000"
     priority: 150
     enabled: true
     applies_to:
@@ -102,7 +102,7 @@ policies:
 
   # Rule 4: Executives can call international (priority 50)
   - name: "executives-international"
-    tenant_id: "default"
+    tenant_id: "00000000-0000-0000-0000-000000000000"
     priority: 50
     enabled: true
     applies_to:
@@ -117,7 +117,7 @@ policies:
 
   # Rule 5: Deny international calls by default (priority 1000)
   - name: "deny-international-by-default"
-    tenant_id: "default"
+    tenant_id: "00000000-0000-0000-0000-000000000000"
     priority: 1000
     enabled: true
     applies_to:
@@ -132,7 +132,7 @@ policies:
 
   # Rule 6: Emergency services always allowed (priority 1)
   - name: "emergency-services"
-    tenant_id: "default"
+    tenant_id: "00000000-0000-0000-0000-000000000000"
     priority: 1
     enabled: true
     applies_to:

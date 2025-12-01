@@ -33,7 +33,9 @@ sip-uas = { path = "../siphon-rs/crates/sip-uas" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 bytes = { workspace = true }
+dashmap = "6.0"
 smol_str = "0.3"
+socket2 = "0.5"
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

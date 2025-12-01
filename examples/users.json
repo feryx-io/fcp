@@ -1,0 +1,20 @@
+[
+  {
+    "username": "alice",
+    "password": "secret123",
+    "display_name": "Alice Test User",
+    "enabled": true
+  },
+  {
+    "username": "bob",
+    "password": "secret123",
+    "display_name": "Bob Test User",
+    "enabled": true
+  },
+  {
+    "username": "charlie",
+    "password": "secret123",
+    "display_name": "Charlie Test User",
+    "enabled": true
+  }
+]
