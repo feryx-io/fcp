@@ -1,28 +1,18 @@
-# FCP Configuration
-# This is an example configuration for testing the FCP server
+# FCP Server Configuration
 
 [node]
-name = "fcp-test-node"
+name = "fcp-node"
 local_domain = "fcp.local"
 
 [transport]
-# Temporarily disable transport to test API-only mode
-# udp_bind = "0.0.0.0:15060"
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
 max_message_size = 65535
 connection_pool_size = 1000
 connection_timeout = { secs = 300, nanos = 0 }
-rtp_port = 10000
 enable_sdp = true
-
-[registrar]
-enabled = true
-auth_enabled = false  # Disabled for easier testing
-realm = "fcp.local"
-data_dir = "./data"
-users_file = "examples/users.json"  # Optional: pre-load users
-default_expires = 3600
-min_expires = 60
-max_expires = 86400
+local_ip = "192.168.1.81"
+rtp_port = 10000
 
 [storage]
 backend = "sqlite"
@@ -30,24 +20,34 @@ connection_string = "sqlite://fcp.db"
 max_connections = 10
 connection_timeout = { secs = 30, nanos = 0 }
 
+[registrar]
+enabled = true
+auth_enabled = false
+realm = "fcp.local"
+data_dir = "/tmp/fcp-data"
+users_file = "examples/users.json"
+default_expires = 3600
+min_expires = 60
+max_expires = 86400
+
+[routing]
+enabled = false
+default_tenant_id = "default"
+
+[routing.backend]
+type = "yaml"
+path = "examples/routing.yaml"
+watch = true
+
 [api]
 enabled = true
 bind = "127.0.0.1:8080"
 metrics_enabled = true
 metrics_path = "/metrics"
-auth_enabled = false  # Disabled for easier testing
+auth_enabled = false
 
 [observability]
-log_level = "debug"  # Verbose logging for testing
+log_level = "info"
 log_format = "pretty"
 tracing_enabled = false
 service_name = "fcp"
-
-[routing]
-enabled = true
-default_tenant_id = "00000000-0000-0000-0000-000000000000"
-
-[routing.backend]
-type = "yaml"
-path = "examples/routing.yaml"
-watch = true  # Hot-reload on file changes

@@ -136,12 +136,13 @@ async fn create_transport_dispatcher(config: &FcpConfig) -> Result<Arc<RealTrans
     use anyhow::Context;
     use fcp_sip::prelude::RealTransportDispatcher;
 
-    // Get bind address from config, or use port 0 (OS assigns random port)
-    // This is especially useful for tests where multiple instances may run simultaneously
+    // Use the same UDP port as the listener for the dispatcher
+    // This ensures that SIP responses come back to the correct port via rport mechanism
+    // The listener uses SO_REUSEADDR, so both sockets can bind to the same port
     let bind_addr = config
         .transport
         .udp_bind
-        .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
+        .unwrap_or_else(|| "0.0.0.0:5060".parse().unwrap());
 
     // Create dispatcher with UDP socket
     #[allow(unused_mut)]
@@ -355,11 +356,24 @@ async fn create_uac(
     // Create local URI from config
     let local_uri = create_local_uri(config)?;
 
-    // Determine local address from config or use UDP bind address
-    let local_addr = config
-        .transport
-        .udp_bind
-        .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
+    // Determine local address from config
+    // Use local_ip if configured, otherwise derive from UDP bind address
+    let local_addr = if let Some(ref local_ip) = config.transport.local_ip {
+        // If local_ip is configured, use it with the UDP port
+        let port = config
+            .transport
+            .udp_bind
+            .map(|addr| addr.port())
+            .unwrap_or(5060);
+        format!("{}:{}", local_ip, port)
+    } else {
+        // Fallback to UDP bind address
+        config
+            .transport
+            .udp_bind
+            .map(|addr| addr.to_string())
+            .unwrap_or_else(|| "0.0.0.0:5060".to_string())
+    };
 
     // Create DNS resolver (system resolver)
     let resolver = Arc::new(
@@ -370,7 +384,7 @@ async fn create_uac(
     // Build IntegratedUAC (reuses shared dispatcher)
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
-        .local_addr(local_addr.to_string())?
+        .local_addr(&local_addr)?
         .transaction_manager(transaction_manager)
         .resolver(resolver)
         .dispatcher(dispatcher)

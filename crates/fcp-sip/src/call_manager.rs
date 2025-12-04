@@ -127,6 +127,22 @@ impl CallManager {
             .collect()
     }
 
+    /// Find a call by the SIP Call-ID of the original INVITE.
+    pub fn find_by_invite_call_id(&self, sip_call_id: &str) -> Option<Call> {
+        self.calls
+            .iter()
+            .find(|entry| {
+                entry
+                    .value()
+                    .original_invite
+                    .as_ref()
+                    .and_then(|inv| sip_parse::header(&inv.headers, "Call-ID"))
+                    .map(|cid| cid.as_str() == sip_call_id)
+                    .unwrap_or(false)
+            })
+            .map(|entry| entry.value().clone())
+    }
+
     /// Get the total count of calls (including terminated).
     pub fn total_call_count(&self) -> usize {
         self.calls.len()

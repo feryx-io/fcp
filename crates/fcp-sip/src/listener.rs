@@ -69,8 +69,8 @@ pub struct TransportListener {
     #[cfg(feature = "tls")]
     tls_task: Option<JoinHandle<()>>,
 
-    /// Shutdown signal sender
-    shutdown_tx: Option<mpsc::Sender<()>>,
+    /// Shutdown signal sender (broadcast to all listeners)
+    shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
 
 impl TransportListener {
@@ -92,7 +92,8 @@ impl TransportListener {
         use tokio::sync::broadcast;
         let (shutdown_tx, _) = broadcast::channel::<()>(1);
         let shutdown_rx = shutdown_tx.subscribe();
-        self.shutdown_tx = Some(mpsc::channel(1).0); // Placeholder for API compatibility
+        // Store the broadcast sender to keep it alive - this prevents premature shutdown
+        self.shutdown_tx = Some(shutdown_tx);
 
         // Start UDP listener
         if let Some(udp_bind) = self.config.udp_bind {
@@ -331,7 +332,7 @@ impl TransportListener {
     pub async fn stop(&mut self) -> Result<()> {
         // Send shutdown signal
         if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(()).await;
+            let _ = tx.send(());
         }
 
         // Wait for tasks to complete

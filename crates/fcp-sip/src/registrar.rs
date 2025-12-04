@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use fcp_core::{CredentialStore, Registration, RegistrationStore};
 use sip_auth::DigestAuthenticator;
-use sip_core::{Request, Response};
+use sip_core::{Request, Response, SipUri};
 use sip_registrar::{AsyncLocationStore, BasicRegistrar, Binding};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -224,7 +224,13 @@ impl FcpRegistrar {
 
     /// Get all registrations for an Address-of-Record.
     pub async fn get_registrations(&self, aor: &str) -> Result<Vec<Binding>> {
-        self.registrar.location_store().lookup(aor).await
+        // Normalize AOR so lookups match stored keys even if clients send
+        // params or percent-encoded users.
+        let normalized = SipUri::parse(aor)
+            .map(|uri| sip_registrar::normalize_aor(&uri))
+            .unwrap_or_else(|| aor.split(';').next().unwrap_or(aor).to_string());
+
+        self.registrar.location_store().lookup(&normalized).await
     }
 }
 

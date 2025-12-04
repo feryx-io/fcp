@@ -110,6 +110,9 @@ impl SipMessageHandler {
             Method::Invite => {
                 self.handle_invite(request, handle, peer).await?;
             }
+            Method::Cancel => {
+                self.handle_cancel(request, handle).await?;
+            }
             Method::Ack => {
                 // ACK for 2xx responses is outside transaction layer (RFC 3261 §17.1.1.3)
                 self.handle_ack(request)?;
@@ -136,6 +139,35 @@ impl SipMessageHandler {
                 let response = self.create_simple_response(request, 501, "Not Implemented");
                 handle.send_final(response).await;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Handle CANCEL: acknowledge and mark call terminated.
+    async fn handle_cancel(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+    ) -> Result<()> {
+        debug!("Handling CANCEL request");
+
+        // Per RFC 3261, respond 200 OK to CANCEL itself
+        let ok = self.create_simple_response(request, 200, "OK");
+        handle.send_final(ok).await;
+
+        // Try to locate the related call via INVITE Call-ID and terminate it
+        if let Some(call_id_hdr) = sip_parse::header(&request.headers, "Call-ID") {
+            if let Some(call) = self.call_manager.find_by_invite_call_id(call_id_hdr.as_str()) {
+                info!(call_id = %call.id, "CANCEL matched call; marking as failed");
+                let _ = self
+                    .call_manager
+                    .terminate_call(&call.id, Some("Cancelled by caller".to_string()));
+            } else {
+                debug!("CANCEL received but no matching call found");
+            }
+        } else {
+            debug!("CANCEL missing Call-ID header; cannot match call");
         }
 
         Ok(())
@@ -241,16 +273,25 @@ impl SipMessageHandler {
             .ok_or_else(|| anyhow::anyhow!("Missing To header"))?;
 
         // Extract destination URI
-        let destination_aor = to
+        let destination_uri = to
             .split('<')
             .nth(1)
             .and_then(|s| s.split('>').next())
             .unwrap_or(&to)
             .trim();
 
+        // Normalize AOR by stripping URI parameters (e.g., ;transport=UDP)
+        // The AOR for registrar lookup should be just user@host
+        let destination_aor = destination_uri
+            .split(';')
+            .next()
+            .unwrap_or(destination_uri)
+            .trim();
+
         debug!(
             call_id = %call_id,
-            destination = %destination_aor,
+            destination_uri = %destination_uri,
+            destination_aor = %destination_aor,
             "Looking up destination in registrar"
         );
 
@@ -364,7 +405,8 @@ impl SipMessageHandler {
             call.state = crate::call::CallState::Proceeding;
         });
 
-        // Relay provisional responses from B-leg to A-leg
+        // Relay provisional responses from B-leg to A-leg until we get a 180 Ringing
+        info!(call_id = %call_id, "Waiting for provisional responses from B-leg");
         while let Some(provisional) = b_leg_call.await_provisional().await {
             let status_code = provisional.start.code;
             debug!(
@@ -382,29 +424,51 @@ impl SipMessageHandler {
                 );
 
                 // Create provisional response to relay to A-leg
-                // For simplicity, we'll create a standard ringing response
+                let response = if status_code == 180 {
+                    self.uas.create_ringing(request)
+                } else {
+                    // For other 18x responses, create appropriate response
+                    self.create_simple_response(request, status_code, provisional.start.reason.as_str())
+                };
+
+                info!(call_id = %call_id, code = status_code, "Sending provisional to A-leg");
+                a_leg_handle.send_provisional(response).await;
+
+                // After forwarding 180 Ringing, move on to wait for final response
                 if status_code == 180 {
-                    let ringing = self.uas.create_ringing(request);
-                    a_leg_handle.send_provisional(ringing).await;
+                    info!(call_id = %call_id, "Sent 180 Ringing, now waiting for final response");
+                    break;
                 }
             }
         }
 
-        // Clone the B-leg dialog before consuming the CallHandle
+        // Clone the B-leg dialog before consuming CallHandle
         let b_leg_dialog = b_leg_call.dialog.clone();
 
         // Wait for final response from B-leg
+        info!(call_id = %call_id, "Waiting for final response from B-leg");
         let b_leg_final = match b_leg_call.await_final().await {
             Ok(response) => response,
             Err(e) => {
-                error!(
-                    call_id = %call_id,
-                    error = %e,
-                    "Failed to receive final response from B-leg"
-                );
-                let response = self.create_simple_response(request, 408, "Request Timeout");
-                a_leg_handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(&call_id, Some(format!("B-leg timeout: {}", e)));
+                // If call was cancelled, avoid sending 408 and just terminate.
+                let cancelled = self
+                    .call_manager
+                    .get_call(&call_id)
+                    .map(|c| c.state.is_terminal())
+                    .unwrap_or(false);
+                if cancelled {
+                    info!(call_id = %call_id, "B-leg await_final aborted due to cancellation");
+                    let _ = self.call_manager.terminate_call(&call_id, Some("Cancelled".to_string()));
+                } else {
+                    error!(
+                        call_id = %call_id,
+                        error = %e,
+                        "Failed to receive final response from B-leg"
+                    );
+                    let response = self.create_simple_response(request, 408, "Request Timeout");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self.call_manager.terminate_call(&call_id, Some(format!("B-leg timeout: {}", e)));
+                }
                 return Ok(());
             }
         };
@@ -415,6 +479,20 @@ impl SipMessageHandler {
             code = b_leg_status,
             "Received final response from B-leg"
         );
+
+        // If call was already terminated (e.g., CANCEL), stop here
+        let is_cancelled = self
+            .call_manager
+            .get_call(&call_id)
+            .map(|c| c.state.is_terminal())
+            .unwrap_or(false);
+        if is_cancelled {
+            info!(call_id = %call_id, "Call already terminated, skipping final relay");
+            let _ = self
+                .call_manager
+                .terminate_call(&call_id, Some("Cancelled".to_string()));
+            return Ok(());
+        }
 
         // Handle final response based on status code
         if b_leg_status == 200 {

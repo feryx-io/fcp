@@ -53,7 +53,17 @@ impl RealTransportDispatcher {
 
     /// Create a dispatcher with a UDP socket bound to the given address.
     pub async fn with_udp(bind_addr: SocketAddr) -> Result<Self> {
-        let socket = UdpSocket::bind(bind_addr).await?;
+        // Create socket with SO_REUSEADDR to allow port sharing with listener
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&bind_addr.into())?;
+
+        let std_socket: std::net::UdpSocket = socket.into();
+        let socket = UdpSocket::from_std(std_socket)?;
+
         Ok(Self::new(Some(Arc::new(socket))))
     }
 
