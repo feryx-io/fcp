@@ -3,7 +3,7 @@
 //! This module provides a thin wrapper around siphon-rs IntegratedUAC.
 
 use anyhow::Result;
-use sip_dialog::Dialog;
+use sip_dialog::{Dialog, Subscription};
 use sip_uac::integrated::{CallHandle, IntegratedUAC};
 use std::sync::Arc;
 
@@ -111,6 +111,53 @@ impl SipUserAgentClient {
         expires: u32,
     ) -> Result<sip_core::Response> {
         self.inner.register(registrar_uri, Some(expires)).await
+    }
+
+    /// Send an in-dialog UPDATE.
+    pub async fn send_update(
+        &self,
+        dialog: &mut Dialog,
+        sdp_body: Option<&str>,
+    ) -> Result<sip_core::Response> {
+        self.inner.send_update(dialog, sdp_body).await
+    }
+
+    /// Send an in-dialog re-INVITE.
+    pub async fn send_reinvite(
+        &self,
+        dialog: &mut Dialog,
+        sdp_body: Option<&str>,
+    ) -> Result<sip_core::Response> {
+        self.inner.send_reinvite(dialog, sdp_body).await
+    }
+
+    /// Send an in-dialog INFO.
+    pub async fn send_info(
+        &self,
+        dialog: &mut Dialog,
+        content_type: &str,
+        body: &str,
+    ) -> Result<sip_core::Response> {
+        self.inner.send_info(dialog, content_type, body).await
+    }
+
+    /// Send an in-dialog REFER.
+    pub async fn send_refer(
+        &self,
+        dialog: &mut Dialog,
+        refer_to: &sip_core::SipUri,
+        target_dialog: Option<&Dialog>,
+    ) -> Result<(sip_core::Response, Option<Subscription>)> {
+        self.inner.send_refer(dialog, refer_to, target_dialog).await
+    }
+
+    /// Send PRACK for a reliable provisional.
+    pub async fn send_prack(
+        &self,
+        dialog: &mut Dialog,
+        provisional: &sip_core::Response,
+    ) -> Result<sip_core::Response> {
+        self.inner.send_prack(dialog, provisional).await
     }
 }
 

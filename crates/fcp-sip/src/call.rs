@@ -5,9 +5,15 @@
 //! as separate SIP dialogs but logically connected.
 
 use sip_core::Request;
+use sip_core::Response;
 use sip_dialog::Dialog;
+use sip_transaction::TransactionKey;
+use sip_uac::integrated::CallHandle;
 use std::net::SocketAddr;
+use std::fmt;
+use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// Unique identifier for a call.
@@ -92,13 +98,19 @@ pub enum CallDirection {
 }
 
 /// A call leg represents one side of a B2BUA call.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CallLeg {
     /// Direction of this leg
     pub direction: CallDirection,
 
     /// SIP dialog for this leg
     pub dialog: Option<Dialog>,
+
+    /// Outbound call handle (B-leg) for transaction control (CANCEL, etc.)
+    pub outbound_handle: Option<Arc<Mutex<Option<CallHandle>>>>,
+
+    /// Last reliable provisional response (for PRACK forwarding)
+    pub last_reliable_provisional: Option<Response>,
 
     /// Remote party URI (From/To)
     pub remote_uri: String,
@@ -135,6 +147,8 @@ impl CallLeg {
         Self {
             direction: CallDirection::Inbound,
             dialog: None,
+            outbound_handle: None,
+            last_reliable_provisional: None,
             remote_uri,
             remote_display_name,
             contact: Some(peer),
@@ -148,6 +162,8 @@ impl CallLeg {
         Self {
             direction: CallDirection::Outbound,
             dialog: None,
+            outbound_handle: None,
+            last_reliable_provisional: None,
             remote_uri,
             remote_display_name,
             contact: None,
@@ -158,7 +174,7 @@ impl CallLeg {
 }
 
 /// A B2BUA call with two legs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Call {
     /// Unique call identifier
     pub id: CallId,
@@ -168,6 +184,9 @@ pub struct Call {
 
     /// A-leg (caller side)
     pub a_leg: CallLeg,
+
+    /// Server transaction key for the inbound INVITE (used to send final responses)
+    pub a_leg_invite_tx: Option<TransactionKey>,
 
     /// B-leg (callee side), may not exist yet
     pub b_leg: Option<CallLeg>,
@@ -188,6 +207,45 @@ pub struct Call {
     pub failure_reason: Option<String>,
 }
 
+impl fmt::Debug for CallLeg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CallLeg")
+            .field("direction", &self.direction)
+            .field("dialog", &self.dialog)
+            .field(
+                "has_outbound_handle",
+                &self.outbound_handle.is_some(),
+            )
+            .field(
+                "has_reliable_prov",
+                &self.last_reliable_provisional.is_some(),
+            )
+            .field("remote_uri", &self.remote_uri)
+            .field("remote_display_name", &self.remote_display_name)
+            .field("contact", &self.contact)
+            .field("sdp", &self.sdp)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+impl fmt::Debug for Call {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Call")
+            .field("id", &self.id)
+            .field("state", &self.state)
+            .field("a_leg", &self.a_leg)
+            .field("a_leg_invite_tx", &self.a_leg_invite_tx)
+            .field("b_leg", &self.b_leg)
+            .field("original_invite", &self.original_invite.is_some())
+            .field("created_at", &self.created_at)
+            .field("established_at", &self.established_at)
+            .field("ended_at", &self.ended_at)
+            .field("failure_reason", &self.failure_reason)
+            .finish()
+    }
+}
+
 impl Call {
     /// Create a new call from an inbound INVITE.
     pub fn from_invite(request: Request, peer: SocketAddr) -> Self {
@@ -197,6 +255,7 @@ impl Call {
             id: CallId::new(),
             state: CallState::Initiated,
             a_leg,
+            a_leg_invite_tx: None,
             b_leg: None,
             original_invite: Some(request),
             created_at: SystemTime::now(),
