@@ -401,15 +401,27 @@ async fn create_uac(
 fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
     use anyhow::Context;
 
-    // Try to use configured domain, or fallback to node name
-    let domain = if !config.node.local_domain.is_empty() {
-        config.node.local_domain.clone()
+    // Always use the bind address IP for Contact URI (not .local domain)
+    // This ensures the Contact header is routable
+    let bind_addr = config.transport.udp_bind
+        .ok_or_else(|| anyhow::anyhow!("UDP bind address not configured"))?;
+
+    // If bind is 0.0.0.0, use hardcoded IP for now
+    let domain = if bind_addr.ip().is_unspecified() {
+        // For now, use a placeholder - in production we'd detect the actual IP
+        // TODO: Auto-detect actual IP address
+        "192.168.1.81".to_string()
     } else {
-        format!("{}.local", config.node.name)
+        bind_addr.ip().to_string()
     };
 
-    // Create SIP URI: sip:node@domain
-    let uri_str = format!("sip:{}@{}", config.node.name, domain);
+    let bind_port = bind_addr.port();
+
+    let uri_str = if bind_port != 5060 {
+        format!("sip:{}@{}:{}", config.node.name, domain, bind_port)
+    } else {
+        format!("sip:{}@{}", config.node.name, domain)
+    };
 
     let uri = Uri::parse(&uri_str).context("Failed to parse URI")?;
 

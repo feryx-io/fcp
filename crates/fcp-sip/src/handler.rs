@@ -358,9 +358,51 @@ impl SipMessageHandler {
             "Forwarding INVITE to B-leg"
         );
 
-        // Update call state to Inviting
+        // Update call state to Inviting and create B-leg
         let _ = self.call_manager.update_call(&call_id, |call| {
             call.state = crate::call::CallState::Inviting;
+
+            // Create B-leg CallLeg if it doesn't exist
+            if call.b_leg.is_none() {
+                // Extract To header for callee info
+                let to_header = request.headers.get("To")
+                    .map(|h| h.as_str())
+                    .unwrap_or("");
+                let (callee_uri, callee_display_name) = {
+                    let parts: Vec<&str> = to_header.split(';').collect();
+                    let name_addr = parts[0].trim();
+                    if let Some(start) = name_addr.find('<') {
+                        if let Some(end) = name_addr.find('>') {
+                            let uri = name_addr[start+1..end].to_string();
+                            let display_name = name_addr[..start].trim()
+                                .trim_matches('"')
+                                .to_string();
+                            let display = if display_name.is_empty() {
+                                None
+                            } else {
+                                Some(display_name)
+                            };
+                            (uri, display)
+                        } else {
+                            (name_addr.to_string(), None)
+                        }
+                    } else {
+                        (name_addr.to_string(), None)
+                    }
+                };
+
+                call.b_leg = Some(crate::call::CallLeg::new_outbound(
+                    callee_uri.clone(),
+                    callee_display_name.clone()
+                ));
+
+                debug!(
+                    call_id = %call_id,
+                    callee_uri = %callee_uri,
+                    callee_display_name = ?callee_display_name,
+                    "Created B-leg CallLeg"
+                );
+            }
         });
 
         // Extract SDP from A-leg INVITE to forward to B-leg
@@ -442,8 +484,14 @@ impl SipMessageHandler {
             }
         }
 
-        // Clone the B-leg dialog before consuming CallHandle
-        let b_leg_dialog = b_leg_call.dialog.clone();
+        // Clone the early B-leg dialog before consuming CallHandle
+        // This will be updated with the confirmed tag from the 200 OK
+        let mut b_leg_dialog = b_leg_call.dialog.clone();
+        debug!(
+            call_id = %call_id,
+            early_dialog_id = ?b_leg_dialog.id,
+            "Cloned early B-leg dialog before await_final"
+        );
 
         // Wait for final response from B-leg
         info!(call_id = %call_id, "Waiting for final response from B-leg");
@@ -504,6 +552,50 @@ impl SipMessageHandler {
                 None
             };
 
+            // Update B-leg dialog with confirmed To-tag from 200 OK
+            if let Some(to_header) = sip_parse::header(&b_leg_final.headers, "To") {
+                // Extract tag parameter from To header
+                // To header format: "Display Name" <sip:user@host>;tag=xyz123;other=params
+                if let Some(tag_start) = to_header.find("tag=") {
+                    // Find the tag value (everything after "tag=" until semicolon or end)
+                    let tag_value_start = tag_start + 4; // length of "tag="
+                    let remaining = &to_header[tag_value_start..];
+
+                    // Extract tag until semicolon or end of string
+                    let confirmed_tag = if let Some(semicolon_pos) = remaining.find(';') {
+                        &remaining[..semicolon_pos]
+                    } else {
+                        remaining
+                    }.trim();
+
+                    if !confirmed_tag.is_empty() {
+                        // Update dialog with confirmed tag
+                        b_leg_dialog.id.remote_tag = confirmed_tag.into();
+                        b_leg_dialog.state = sip_dialog::DialogStateType::Confirmed;
+
+                        debug!(
+                            call_id = %call_id,
+                            confirmed_tag = confirmed_tag,
+                            confirmed_dialog_id = ?b_leg_dialog.id,
+                            "Updated B-leg dialog with confirmed tag from 200 OK"
+                        );
+
+                        // Register confirmed B-leg dialog in dialog_manager for in-dialog request routing
+                        self.dialog_manager.insert(b_leg_dialog.clone());
+                        debug!(
+                            call_id = %call_id,
+                            "Registered confirmed B-leg dialog in dialog_manager"
+                        );
+                    } else {
+                        warn!(call_id = %call_id, "Empty tag value in To header of B-leg 200 OK");
+                    }
+                } else {
+                    warn!(call_id = %call_id, "No tag parameter in To header of B-leg 200 OK");
+                }
+            } else {
+                warn!(call_id = %call_id, "No To header in B-leg 200 OK");
+            }
+
             // Accept the INVITE on A-leg and create A-leg dialog
             match self.uas.accept_invite(request, b_leg_sdp.as_deref()) {
                 Ok((a_leg_response, a_leg_dialog)) => {
@@ -512,16 +604,32 @@ impl SipMessageHandler {
                         "Call established - both legs connected"
                     );
 
+                    // Register A-leg dialog in dialog_manager for in-dialog request routing
+                    self.dialog_manager.insert(a_leg_dialog.clone());
+                    debug!(
+                        call_id = %call_id,
+                        a_leg_dialog_id = ?a_leg_dialog.id,
+                        "Registered A-leg dialog in dialog_manager"
+                    );
+
                     // Update call with both dialogs
-                    let _ = self.call_manager.update_call(&call_id, |call| {
+                    match self.call_manager.update_call(&call_id, |call| {
                         call.a_leg.dialog = Some(a_leg_dialog.clone());
                         // Store B-leg dialog information
                         if let Some(b_leg) = &mut call.b_leg {
                             b_leg.dialog = Some(b_leg_dialog.clone());
+                            debug!(
+                                call_id = %call_id,
+                                b_leg_dialog_call_id = ?b_leg_dialog.id.call_id,
+                                "Stored confirmed B-leg dialog in CallManager"
+                            );
                         }
                         call.state = crate::call::CallState::Established;
                         call.establish();
-                    });
+                    }) {
+                        Ok(_) => debug!(call_id = %call_id, "Successfully updated call in CallManager"),
+                        Err(e) => error!(call_id = %call_id, error = %e, "Failed to update call in CallManager"),
+                    }
 
                     // Send 200 OK to A-leg
                     a_leg_handle.send_final(a_leg_response).await;

@@ -153,14 +153,35 @@ impl CallManager {
     /// This is useful when receiving an in-dialog request (ACK, BYE) where
     /// we need to find the corresponding call from the SIP Call-ID header.
     pub fn find_by_dialog_call_id(&self, dialog_call_id: &str) -> Option<Call> {
-        self.calls
+        debug!(
+            dialog_call_id = dialog_call_id,
+            total_calls = self.calls.len(),
+            "Looking up call by dialog Call-ID"
+        );
+
+        let result = self.calls
             .iter()
             .find(|entry| {
                 let call = entry.value();
 
+                debug!(
+                    call_id = %call.id,
+                    has_a_leg_dialog = call.a_leg.dialog.is_some(),
+                    has_b_leg = call.b_leg.is_some(),
+                    has_b_leg_dialog = call.b_leg.as_ref().and_then(|b| b.dialog.as_ref()).is_some(),
+                    "Checking call"
+                );
+
                 // Check A-leg dialog
                 if let Some(dialog) = &call.a_leg.dialog {
+                    debug!(
+                        call_id = %call.id,
+                        a_leg_call_id = %dialog.id.call_id,
+                        searching_for = dialog_call_id,
+                        "Checking A-leg dialog"
+                    );
                     if dialog.id.call_id.as_str() == dialog_call_id {
+                        debug!(call_id = %call.id, "Found call via A-leg dialog");
                         return true;
                     }
                 }
@@ -168,15 +189,32 @@ impl CallManager {
                 // Check B-leg dialog
                 if let Some(b_leg) = &call.b_leg {
                     if let Some(dialog) = &b_leg.dialog {
+                        debug!(
+                            call_id = %call.id,
+                            b_leg_call_id = %dialog.id.call_id,
+                            searching_for = dialog_call_id,
+                            "Checking B-leg dialog"
+                        );
                         if dialog.id.call_id.as_str() == dialog_call_id {
+                            debug!(call_id = %call.id, "Found call via B-leg dialog");
                             return true;
                         }
+                    } else {
+                        debug!(call_id = %call.id, "B-leg exists but has no dialog");
                     }
+                } else {
+                    debug!(call_id = %call.id, "Call has no B-leg");
                 }
 
                 false
             })
-            .map(|entry| entry.value().clone())
+            .map(|entry| entry.value().clone());
+
+        if result.is_none() {
+            debug!(dialog_call_id = dialog_call_id, "No call found for dialog Call-ID");
+        }
+
+        result
     }
 
     /// Clean up terminated calls older than the specified duration.
