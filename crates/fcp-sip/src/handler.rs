@@ -499,13 +499,13 @@ impl SipMessageHandler {
 
         // Extract caller's identity from A-leg for B2BUA caller ID preservation
         let caller_display_name = extract_from_display_name(request);
-        let caller_from_uri = extract_from_uri(request).ok();
+        let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);
 
         if let Some(ref name) = caller_display_name {
             debug!(call_id = %call_id, caller_name = %name, "Preserving caller display name for B-leg");
         }
         if let Some(ref uri) = caller_from_uri {
-            debug!(call_id = %call_id, caller_uri = ?uri, "Preserving caller From URI for B-leg");
+            debug!(call_id = %call_id, normalized_caller_uri = ?uri, "Preserving normalized caller From URI for B-leg");
         }
 
         // Set caller identity on UAC for this call (B2BUA caller ID preservation)
@@ -1795,6 +1795,39 @@ fn extract_from_uri(request: &sip_core::Request) -> anyhow::Result<sip_core::Sip
         Some(sip_core::Uri::Tel(_)) => Err(anyhow::anyhow!("Tel URI in From header not supported for dialog creation")),
         None => Err(anyhow::anyhow!("Failed to parse From URI")),
     }
+}
+
+/// Helper to normalize a From URI that may have a complex username.
+///
+/// Some SIP phones put the full AOR in the username part, like:
+///   sip:bob%40192.168.1.81@192.168.1.81 (username is bob@192.168.1.81)
+///
+/// This creates routing problems. We normalize to: sip:bob@192.168.1.81
+fn normalize_from_uri(uri: sip_core::SipUri) -> sip_core::SipUri {
+    if let Some(ref user) = uri.user {
+        // URL decode the username
+        if let Ok(decoded) = urlencoding::decode(user) {
+            let decoded_str = decoded.into_owned();
+
+            // If username contains @, take only the part before @ (the actual username)
+            let simple_user = if let Some(at_pos) = decoded_str.find('@') {
+                &decoded_str[..at_pos]
+            } else {
+                &decoded_str
+            };
+
+            // Construct normalized URI: sip:username@host
+            let normalized_str = format!("sip:{}@{}", simple_user, uri.host);
+
+            // Parse and return normalized URI, or return original if parsing fails
+            if let Some(sip_core::Uri::Sip(normalized)) = sip_core::Uri::parse(&normalized_str) {
+                return normalized;
+            }
+        }
+    }
+
+    // Return original if normalization failed
+    uri
 }
 
 /// Helper to extract display name from From header.
