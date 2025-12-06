@@ -1339,12 +1339,30 @@ impl SipMessageHandler {
             if let Some(a_dialog) = &call.a_leg.dialog {
                 self.rate_limits.remove(&a_dialog.id);
                 self.mid_dialog_lock.remove(&a_dialog.id);
+                // Clean subscription_index entries for A-leg dialog
+                let keys: Vec<_> = self.subscription_index
+                    .iter()
+                    .filter(|entry| entry.key().0 == a_dialog.id)
+                    .map(|entry| entry.key().clone())
+                    .collect();
+                for key in keys {
+                    self.subscription_index.remove(&key);
+                }
                 debug!(dialog_id = ?a_dialog.id, "Cleaned up A-leg dialog state");
             }
             if let Some(b_leg) = &call.b_leg {
                 if let Some(b_dialog) = &b_leg.dialog {
                     self.rate_limits.remove(&b_dialog.id);
                     self.mid_dialog_lock.remove(&b_dialog.id);
+                    // Clean subscription_index entries for B-leg dialog
+                    let keys: Vec<_> = self.subscription_index
+                        .iter()
+                        .filter(|entry| entry.key().0 == b_dialog.id)
+                        .map(|entry| entry.key().clone())
+                        .collect();
+                    for key in keys {
+                        self.subscription_index.remove(&key);
+                    }
                     debug!(dialog_id = ?b_dialog.id, "Cleaned up B-leg dialog state");
                 }
             }
@@ -1439,6 +1457,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "re-INVITE forward failed",
@@ -1458,6 +1477,7 @@ impl SipMessageHandler {
                 &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                 &call.id,
                 &target_dialog.id,
                 "Peer returned 481 to re-INVITE",
@@ -1561,6 +1581,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "SUBSCRIBE forward failed",
@@ -1580,6 +1601,7 @@ impl SipMessageHandler {
                 &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                 &call.id,
                 &target_dialog.id,
                 "Peer returned 481 to SUBSCRIBE",
@@ -1672,6 +1694,7 @@ impl SipMessageHandler {
                         &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                         &call.id,
                         &target_dialog.id,
                         "NOTIFY forward failed",
@@ -1691,6 +1714,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "Peer returned 481 to NOTIFY",
@@ -1735,6 +1759,7 @@ impl SipMessageHandler {
                         &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                         &call.id,
                         &target_dialog.id,
                         "NOTIFY forward failed",
@@ -1754,6 +1779,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "Peer returned 481 to NOTIFY",
@@ -1840,6 +1866,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "UPDATE forward failed",
@@ -1859,6 +1886,7 @@ impl SipMessageHandler {
                 &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                 &call.id,
                 &target_dialog.id,
                 "Peer returned 481 to UPDATE",
@@ -1959,6 +1987,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "PRACK forward failed",
@@ -1978,6 +2007,7 @@ impl SipMessageHandler {
                 &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                 &call.id,
                 &target_dialog.id,
                 "Peer returned 481 to PRACK",
@@ -2060,6 +2090,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "INFO forward failed",
@@ -2079,6 +2110,7 @@ impl SipMessageHandler {
                 &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                 &call.id,
                 &target_dialog.id,
                 "Peer returned 481 to INFO",
@@ -2164,6 +2196,7 @@ impl SipMessageHandler {
                     &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                     &call.id,
                     &target_dialog.id,
                     "REFER forward failed",
@@ -2183,6 +2216,7 @@ impl SipMessageHandler {
                 &self.session_timer_manager,
                     &self.rate_limits,
                     &self.mid_dialog_lock,
+                    &self.subscription_index,
                 &call.id,
                 &target_dialog.id,
                 "Peer returned 481 to REFER",
@@ -2342,6 +2376,16 @@ impl SipMessageHandler {
                                     b.dialog = None;
                                 }
                             });
+                            // Clean subscription_index entries for this dialog (error path)
+                            let dialog_id = dialog.id.clone();
+                            let keys: Vec<_> = subscription_index
+                                .iter()
+                                .filter(|entry| entry.key().0 == dialog_id)
+                                .map(|entry| entry.key().clone())
+                                .collect();
+                            for key in keys {
+                                subscription_index.remove(&key);
+                            }
                             break;
                         } else {
                             warn!(call_id = %call_id, error = %e, "BYE send failed, retrying once");
@@ -3191,6 +3235,7 @@ fn terminate_dialog_with_cleanup(
     session_timer_manager: &SessionTimerManager,
     rate_limits: &dashmap::DashMap<sip_dialog::DialogId, RateWindow>,
     mid_dialog_lock: &dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>,
+    subscription_index: &dashmap::DashMap<(sip_dialog::DialogId, smol_str::SmolStr), sip_dialog::SubscriptionId>,
     call_id: &crate::call::CallId,
     dialog_id: &sip_dialog::DialogId,
 ) {
@@ -3200,7 +3245,18 @@ fn terminate_dialog_with_cleanup(
     // Cleanup per-dialog state to prevent memory leaks
     rate_limits.remove(dialog_id);
     mid_dialog_lock.remove(dialog_id);
-    debug!(dialog_id = ?dialog_id, "Cleaned up dialog state (rate limits, locks)");
+
+    // Clean subscription_index entries for this dialog
+    let keys: Vec<_> = subscription_index
+        .iter()
+        .filter(|entry| entry.key().0 == *dialog_id)
+        .map(|entry| entry.key().clone())
+        .collect();
+    for key in keys {
+        subscription_index.remove(&key);
+    }
+
+    debug!(dialog_id = ?dialog_id, "Cleaned up dialog state (rate limits, locks, subscriptions)");
 }
 
 fn cleanup_after_forward_failure(
@@ -3209,6 +3265,7 @@ fn cleanup_after_forward_failure(
     session_timer_manager: &SessionTimerManager,
     rate_limits: &dashmap::DashMap<sip_dialog::DialogId, RateWindow>,
     mid_dialog_lock: &dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>,
+    subscription_index: &dashmap::DashMap<(sip_dialog::DialogId, smol_str::SmolStr), sip_dialog::SubscriptionId>,
     call_id: &crate::call::CallId,
     dialog_id: &sip_dialog::DialogId,
     reason: &str,
@@ -3220,6 +3277,7 @@ fn cleanup_after_forward_failure(
         session_timer_manager,
         rate_limits,
         mid_dialog_lock,
+        subscription_index,
         call_id,
         dialog_id,
     );
