@@ -5,12 +5,21 @@ use bytes::Bytes;
 use smol_str::SmolStr;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
+use sip_sdp::parse::parse_sdp;
+use sip_dialog::session_timer_manager::{SessionTimerEvent, SessionTimerManager};
 use tracing::{debug, error, info, warn};
 
 use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
+use crate::metrics::MetricsHandle;
+use crate::settings::ServerSettings;
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -44,6 +53,37 @@ pub struct SipMessageHandler {
 
     /// User Agent Client for making outbound calls (B-leg)
     uac: Option<Arc<SipUserAgentClient>>,
+
+    /// Per-dialog lock to serialize mid-dialog requests (re-INVITE/UPDATE) to avoid glare
+    mid_dialog_lock: Arc<dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>>,
+
+    /// Subscription manager for REFER/NOTIFY tracking
+    subscription_manager: Arc<sip_dialog::SubscriptionManager>,
+    /// Index of subscriptions by dialog/event for quick lookup
+    subscription_index: Arc<
+        dashmap::DashMap<(sip_dialog::DialogId, smol_str::SmolStr), sip_dialog::SubscriptionId>,
+    >,
+
+    /// Session timer manager for RFC 4028 enforcement
+    session_timer_manager: Arc<SessionTimerManager>,
+
+    /// Metrics sink
+    metrics: MetricsHandle,
+
+    /// Optional transcript directory for SIP message capture
+    transcript_dir: Option<PathBuf>,
+
+    /// Settings
+    settings: ServerSettings,
+
+    /// Per-dialog rate limits
+    rate_limits: Arc<dashmap::DashMap<sip_dialog::DialogId, RateWindow>>,
+}
+
+#[derive(Clone)]
+struct RateWindow {
+    window_start: Instant,
+    counts: HashMap<&'static str, u32>,
 }
 
 impl SipMessageHandler {
@@ -72,11 +112,43 @@ impl SipMessageHandler {
         call_manager: Arc<crate::call_manager::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
     ) -> Self {
+        let settings = ServerSettings::from_env();
+        Self::new_with_settings(
+            transaction_manager,
+            dialog_manager,
+            local_uri,
+            media_profile,
+            local_addr,
+            rtp_port,
+            registrar,
+            routing_service,
+            call_manager,
+            uac,
+            settings,
+        )
+    }
+
+    pub fn new_with_settings(
+        transaction_manager: Arc<TransactionManager>,
+        dialog_manager: Arc<DialogManager>,
+        local_uri: sip_core::SipUri,
+        media_profile: Option<sip_sdp::profiles::MediaProfileBuilder>,
+        local_addr: String,
+        rtp_port: u16,
+        registrar: Option<Arc<FcpRegistrar>>,
+        routing_service: Option<Arc<fcp_routing::RoutingService>>,
+        call_manager: Arc<crate::call_manager::CallManager>,
+        uac: Option<Arc<SipUserAgentClient>>,
+        settings: ServerSettings,
+    ) -> Self {
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
         uas.dialog_manager = Arc::clone(&dialog_manager);
 
-        Self {
+        let subscription_manager = Arc::new(sip_dialog::SubscriptionManager::new());
+        let session_timer_manager = Arc::new(SessionTimerManager::new());
+
+        let this = Self {
             transaction_manager,
             dialog_manager,
             uas: Arc::new(uas),
@@ -87,7 +159,20 @@ impl SipMessageHandler {
             routing_service,
             call_manager,
             uac,
-        }
+            mid_dialog_lock: Arc::new(dashmap::DashMap::new()),
+            subscription_manager,
+            subscription_index: Arc::new(dashmap::DashMap::new()),
+            session_timer_manager,
+            metrics: settings.metrics.clone(),
+            transcript_dir: settings.transcript_dir.clone(),
+            settings,
+            rate_limits: Arc::new(dashmap::DashMap::new()),
+        };
+
+        // Start session timer event loop
+        this.spawn_session_timer_listener();
+
+        this
     }
 
     /// Handle an incoming SIP request and generate a response.
@@ -145,6 +230,14 @@ impl SipMessageHandler {
                 let response = self.handle_refer(request).await?;
                 handle.send_final(response).await;
             }
+            Method::Subscribe => {
+                let response = self.handle_subscribe(request).await?;
+                handle.send_final(response).await;
+            }
+            Method::Notify => {
+                let response = self.handle_notify(request).await?;
+                handle.send_final(response).await;
+            }
             Method::Options => {
                 debug!("Responding to OPTIONS with 200 OK");
                 let response = self.create_simple_response(request, 200, "OK");
@@ -200,6 +293,7 @@ impl SipMessageHandler {
                                     "Removing stored B-leg dialog due to CANCEL"
                                 );
                                 dialog_manager.remove(&dialog.id);
+                                self.session_timer_manager.stop_timer(&dialog.id);
                             }
                             if b.outbound_handle.is_some() {
                                 info!(call_id = %c.id, "Clearing B-leg outbound handle due to CANCEL");
@@ -238,6 +332,7 @@ impl SipMessageHandler {
                     self.transaction_manager.send_final(tx_key, response).await;
                 }
 
+                stop_timers_for_call(&self.session_timer_manager, &call);
                 let _ = self
                     .call_manager
                     .terminate_call(&call.id, Some("Cancelled by caller".to_string()));
@@ -269,7 +364,8 @@ impl SipMessageHandler {
         debug!("Handling INVITE request (B2BUA mode)");
 
         // Send 100 Trying immediately
-        let trying = sip_uas::UserAgentServer::create_trying(request);
+        let mut trying = sip_uas::UserAgentServer::create_trying(request);
+        self.ensure_response_hygiene(request, &mut trying);
         handle.send_provisional(trying).await;
 
         // Check routing policy if routing service is configured
@@ -330,6 +426,61 @@ impl SipMessageHandler {
             // Fallback UAS mode: Accept call directly without B-leg forwarding
             self.handle_invite_uas_mode(request, handle, call_id).await
         }
+    }
+
+    fn ensure_response_hygiene(
+        &self,
+        request: &sip_core::Request,
+        response: &mut sip_core::Response,
+    ) {
+        const ALLOW: &str =
+            "INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS";
+        const SUPPORTED: &str = "100rel, timer";
+
+        // Ensure To-tag present
+        if let Some(to) = response.headers.get("To") {
+            if !to.contains(";tag=") {
+                let tag = Uuid::new_v4().simple().to_string();
+                let new_to = SmolStr::new(format!("{};tag={}", to.as_str(), tag));
+                response.headers.remove("To");
+                response.headers.push(SmolStr::new("To"), new_to);
+            }
+        }
+
+        // INVITE-related responses should carry Contact/Record-Route
+        if request.start.method == sip_core::Method::Invite {
+            if response.headers.get("Contact").is_none() {
+                response.headers.push(
+                    SmolStr::new("Contact"),
+                    SmolStr::new(format!("<{}>", self.uas.contact_uri.as_str())),
+                );
+            }
+            if response.headers.get("Record-Route").is_none() {
+                response.headers.push(
+                    SmolStr::new("Record-Route"),
+                    SmolStr::new(format!("<{};lr>", self.uas.contact_uri.as_str())),
+                );
+            }
+        }
+
+        // Capability headers
+        if response.headers.get("Allow").is_none() {
+            response
+                .headers
+                .push(SmolStr::new("Allow"), SmolStr::new(ALLOW));
+        }
+        if response.headers.get("Supported").is_none() {
+            response
+                .headers
+                .push(SmolStr::new("Supported"), SmolStr::new(SUPPORTED));
+        }
+
+        // Ensure Content-Length matches body
+        response.headers.remove("Content-Length");
+        response.headers.push(
+            SmolStr::new("Content-Length"),
+            SmolStr::new(response.body.len().to_string()),
+        );
     }
 
     /// Forward INVITE to B-leg in full B2BUA mode.
@@ -619,10 +770,9 @@ impl SipMessageHandler {
                 if provisional.headers.get("RSeq").is_some() {
                     let _ = self.call_manager.update_call(&call_id, |call| {
                         if let Some(b) = &mut call.b_leg {
-                            b.last_reliable_provisional = Some(provisional.clone());
+                            b.reliable_provisionals.push(provisional.clone());
                         }
-                        // Also store on A-leg so reverse PRACK forwarding has the body
-                        call.a_leg.last_reliable_provisional = Some(provisional.clone());
+                        call.a_leg.reliable_provisionals.push(provisional.clone());
                     });
                 }
 
@@ -789,6 +939,7 @@ impl SipMessageHandler {
 
                         // Register confirmed B-leg dialog in dialog_manager for in-dialog request routing
                         self.dialog_manager.insert(b_leg_dialog.clone());
+                        self.start_session_timer(&b_leg_dialog);
                         debug!(
                             call_id = %call_id,
                             "Registered confirmed B-leg dialog in dialog_manager"
@@ -848,7 +999,8 @@ impl SipMessageHandler {
             );
 
             // Register A-leg dialog in dialog_manager for in-dialog request routing
-            self.dialog_manager.insert(a_leg_dialog.clone());
+                    self.dialog_manager.insert(a_leg_dialog.clone());
+                    self.start_session_timer(&a_leg_dialog);
             debug!(
                 call_id = %call_id,
                 a_leg_dialog_id = ?a_leg_dialog.id,
@@ -917,31 +1069,36 @@ impl SipMessageHandler {
         );
 
         // Send 180 Ringing to test call flow
-        let ringing = self.uas.create_ringing(request);
+        let mut ringing = self.uas.create_ringing(request);
+        self.ensure_response_hygiene(request, &mut ringing);
         handle.send_provisional(ringing).await;
 
         // Generate SDP answer
         let sdp_answer = self.generate_sdp_answer(request)?;
 
         // Accept the INVITE and create A-leg dialog
-        match self.uas.accept_invite(request, sdp_answer.as_deref()) {
-            Ok((response, dialog)) => {
-                debug!(
-                    call_id = %call_id,
-                    dialog_call_id = %dialog.id.call_id,
+                match self.uas.accept_invite(request, sdp_answer.as_deref()) {
+                    Ok((response, dialog)) => {
+                        debug!(
+                            call_id = %call_id,
+                            dialog_call_id = %dialog.id.call_id,
                     local_tag = %dialog.id.local_tag,
                     remote_tag = %dialog.id.remote_tag,
-                    "Created A-leg dialog"
-                );
+                            "Created A-leg dialog"
+                        );
 
-                // Update call with A-leg dialog
-                let _ = self.call_manager.update_call(&call_id, |call| {
-                    call.a_leg.dialog = Some(dialog.clone());
-                    call.state = crate::call::CallState::Established;
-                    call.establish();
-                });
+                        let mut response = response;
+                        self.ensure_response_hygiene(request, &mut response);
 
-                handle.send_final(response).await;
+                        // Update call with A-leg dialog
+                        let _ = self.call_manager.update_call(&call_id, |call| {
+                            call.a_leg.dialog = Some(dialog.clone());
+                            call.state = crate::call::CallState::Established;
+                            call.establish();
+                        });
+                        self.start_session_timer(&dialog);
+
+                        handle.send_final(response).await;
             }
             Err(e) => {
                 error!("Failed to accept INVITE: {}", e);
@@ -1123,6 +1280,8 @@ impl SipMessageHandler {
                 "Terminating call due to BYE"
             );
 
+            stop_timers_for_call(&self.session_timer_manager, &call);
+
             // Determine which leg sent the BYE and forward to the other leg
             if let Some(uac) = &self.uac {
                 // Check if BYE is from A-leg
@@ -1175,6 +1334,20 @@ impl SipMessageHandler {
 
             // Terminate the call in CallManager
             let _ = self.call_manager.terminate_call(&call.id, None);
+
+            // Cleanup per-dialog state to prevent memory leaks
+            if let Some(a_dialog) = &call.a_leg.dialog {
+                self.rate_limits.remove(&a_dialog.id);
+                self.mid_dialog_lock.remove(&a_dialog.id);
+                debug!(dialog_id = ?a_dialog.id, "Cleaned up A-leg dialog state");
+            }
+            if let Some(b_leg) = &call.b_leg {
+                if let Some(b_dialog) = &b_leg.dialog {
+                    self.rate_limits.remove(&b_dialog.id);
+                    self.mid_dialog_lock.remove(&b_dialog.id);
+                    debug!(dialog_id = ?b_dialog.id, "Cleaned up B-leg dialog state");
+                }
+            }
         } else {
             debug!(
                 dialog_call_id = %dialog_call_id,
@@ -1198,22 +1371,399 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
+        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id).await;
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "REINVITE",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
 
         let uac = self
             .uac
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No UAC configured for re-INVITE forwarding"))?;
 
-        let body = if !request.body.is_empty() {
-            Some(String::from_utf8_lossy(&request.body).to_string())
+        let prior_sdp = if is_a_leg {
+            call.a_leg.sdp.as_deref()
         } else {
-            None
+            call.b_leg.as_ref().and_then(|b| b.sdp.as_deref())
         };
 
-        let peer_resp = uac.send_reinvite(&mut target_dialog, body.as_deref()).await?;
+        if self.check_rate_limit(
+            "REINVITE",
+            src_dialog_id
+                .as_ref()
+                .unwrap_or(&target_dialog.id),
+            self.settings.reinvite_rate_limit,
+        ) {
+            warn!(call_id = %call.id, "re-INVITE rate limited");
+            return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+        }
+        let body = validate_sdp_body_static(request, prior_sdp)?;
+
+        self.log_sip_message(
+            "outbound",
+            "INVITE",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+        let peer_resp = match uac.send_reinvite(&mut target_dialog, body.as_deref()).await {
+            Ok(r) => {
+                info!(status = r.start.code, "Forwarded re-INVITE to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "REINVITE"), ("result", "ok")]);
+                self.metrics.observe_ms(
+                    "fcp_sip_mid_dialog_forward_ms",
+                    start.elapsed().as_millis(),
+                    &[("method", "REINVITE"), ("result", "ok")],
+                );
+                r
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to forward re-INVITE to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "REINVITE"), ("result", "error")]);
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "re-INVITE forward failed",
+                );
+                return Ok(self.create_simple_response(
+                    request,
+                    481,
+                    "Call/Transaction Does Not Exist",
+                ));
+            }
+        };
+
+        if peer_resp.start.code == 481 {
+            cleanup_after_forward_failure(
+                &self.call_manager,
+                &self.dialog_manager,
+                &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                &call.id,
+                &target_dialog.id,
+                "Peer returned 481 to re-INVITE",
+            );
+            self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "REINVITE"), ("result", "481")]);
+        }
+        // Update stored SDP for originating leg if present
+        if let Some(body) = body {
+            store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
+        }
+        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
+        self.start_session_timer(&target_dialog);
+
+        // Also refresh timers on the originating leg based on the response we will relay
+        if let Some((mut src_dialog, is_a_leg_src)) = if is_a_leg {
+            call.a_leg.dialog.clone().map(|d| (d, true))
+        } else {
+            call.b_leg
+                .as_ref()
+                .and_then(|b| b.dialog.clone())
+                .map(|d| (d, false))
+        } {
+            if let Some((se, refresher)) = extract_session_timer(&peer_resp) {
+                src_dialog.session_expires = Some(se);
+                src_dialog.refresher = refresher;
+                self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
+                self.start_session_timer(&src_dialog);
+            } else if peer_resp.start.code == 422 {
+                if let Some(min_se) = extract_min_se(&peer_resp) {
+                    src_dialog.session_expires = Some(min_se);
+                    debug!(call_id = %call.id, dialog_id = ?src_dialog.id, min_se = ?min_se, "Applied Min-SE from 422 to originating leg dialog");
+                    self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog);
+                }
+            }
+        }
+
+        Ok(self.build_in_dialog_response(request, &peer_resp))
+    }
+
+    /// Handle in-dialog SUBSCRIBE (e.g., REFER implicit subscription) by forwarding.
+    async fn handle_subscribe(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        debug!("Handling SUBSCRIBE");
+        let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
+        let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
+        let mut target_dialog = target_dialog.clone();
+        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id).await;
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "SUBSCRIBE",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
+
+        let uac = self
+            .uac
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No UAC configured for SUBSCRIBE forwarding"))?;
+
+        let event = sip_parse::header(&request.headers, "Event")
+            .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
+        let expires = sip_parse::header(&request.headers, "Expires")
+            .and_then(|v| v.parse::<u32>().ok());
+
+        self.log_sip_message(
+            "outbound",
+            "SUBSCRIBE",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+        let (peer_resp, subscription) = match uac
+            .send_subscribe(&mut target_dialog, event.as_str(), expires)
+            .await
+        {
+            Ok(r) => {
+                info!(status = r.0.start.code, "Forwarded SUBSCRIBE to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "SUBSCRIBE"), ("result", "ok")]);
+                self.metrics.observe_ms(
+                    "fcp_sip_mid_dialog_forward_ms",
+                    start.elapsed().as_millis(),
+                    &[("method", "SUBSCRIBE"), ("result", "ok")],
+                );
+                r
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to forward SUBSCRIBE to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "SUBSCRIBE"), ("result", "error")]);
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "SUBSCRIBE forward failed",
+                );
+                return Ok(self.create_simple_response(
+                    request,
+                    481,
+                    "Call/Transaction Does Not Exist",
+                ));
+            }
+        };
+
+        if peer_resp.start.code == 481 {
+            cleanup_after_forward_failure(
+                &self.call_manager,
+                &self.dialog_manager,
+                &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                &call.id,
+                &target_dialog.id,
+                "Peer returned 481 to SUBSCRIBE",
+            );
+            self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "SUBSCRIBE"), ("result", "481")]);
+        }
+
+        if let Some(sub) = subscription {
+            let sub_clone = sub.clone();
+            self.subscription_manager.insert(sub);
+            self.index_subscription(sub_clone);
+        }
+
         self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
 
         Ok(self.build_in_dialog_response(request, &peer_resp))
+    }
+
+    /// Handle in-dialog NOTIFY by forwarding.
+    async fn handle_notify(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        debug!("Handling NOTIFY");
+        let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
+        let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
+        let target_dialog = target_dialog.clone();
+        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id).await;
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "NOTIFY",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
+
+        let uac = self
+            .uac
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No UAC configured for NOTIFY forwarding"))?;
+
+        // Build a subscription placeholder from dialog + event to forward notify
+        let event = sip_parse::header(&request.headers, "Event")
+            .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
+        let body = if request.body.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&request.body).to_string())
+        };
+
+        self.check_body_size(request, self.settings.notify_max_body_bytes)?;
+
+        // Create a synthetic subscription to use contact/route info from dialog target
+        // (we don't track full subscription state yet beyond storage)
+        if let Some(sub) = self.find_subscription(&target_dialog.id, event.as_str()) {
+            let state = sip_dialog::SubscriptionState::Active;
+        self.log_sip_message(
+            "outbound",
+            "NOTIFY",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+            let peer_resp = match uac
+                .send_notify(&sub, state, body.as_deref())
+                .await
+            {
+                Ok(r) => {
+                    info!(status = r.start.code, "Forwarded NOTIFY to peer");
+                    self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "NOTIFY"), ("result", "ok")]);
+                    self.metrics.observe_ms(
+                        "fcp_sip_mid_dialog_forward_ms",
+                        start.elapsed().as_millis(),
+                        &[("method", "NOTIFY"), ("result", "ok")],
+                    );
+                    r
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to forward NOTIFY to peer");
+                    self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "NOTIFY"), ("result", "error")]);
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                        &call.id,
+                        &target_dialog.id,
+                        "NOTIFY forward failed",
+                    );
+                    return Ok(self.create_simple_response(
+                        request,
+                        481,
+                        "Subscription Does Not Exist",
+                    ));
+                }
+            };
+
+            if peer_resp.start.code == 481 {
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "Peer returned 481 to NOTIFY",
+                );
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "NOTIFY"), ("result", "481")]);
+            }
+            self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+            return Ok(self.build_in_dialog_response(request, &peer_resp));
+        }
+
+        // Fallback: if subscription not found, try to create a transient one from dialog/event
+        let transient_sub = self.create_transient_subscription(&target_dialog, event.as_str());
+        if let Some(sub) = transient_sub {
+            let state = sip_dialog::SubscriptionState::Active;
+            self.log_sip_message(
+                "outbound",
+                "NOTIFY",
+                Some(call.id.to_string().as_str()),
+                Some(&target_dialog.id),
+                cseq.as_ref().map(|v| v.as_str()),
+            );
+            let peer_resp = match uac
+                .send_notify(&sub, state, body.as_deref())
+                .await
+            {
+                Ok(r) => {
+                    info!(status = r.start.code, "Forwarded NOTIFY (transient sub) to peer");
+                    self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "NOTIFY"), ("result", "ok")]);
+                    self.metrics.observe_ms(
+                        "fcp_sip_mid_dialog_forward_ms",
+                        start.elapsed().as_millis(),
+                        &[("method", "NOTIFY"), ("result", "ok")],
+                    );
+                    r
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to forward NOTIFY (transient) to peer");
+                    self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "NOTIFY"), ("result", "error")]);
+                    cleanup_after_forward_failure(
+                        &self.call_manager,
+                        &self.dialog_manager,
+                        &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                        &call.id,
+                        &target_dialog.id,
+                        "NOTIFY forward failed",
+                    );
+                    return Ok(self.create_simple_response(
+                        request,
+                        481,
+                        "Subscription Does Not Exist",
+                    ));
+                }
+            };
+
+            if peer_resp.start.code == 481 {
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "Peer returned 481 to NOTIFY",
+                );
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "NOTIFY"), ("result", "481")]);
+            }
+            return Ok(self.build_in_dialog_response(request, &peer_resp));
+        }
+
+        Ok(self.create_simple_response(request, 481, "Subscription Does Not Exist"))
     }
 
     /// Handle in-dialog UPDATE by forwarding to the opposite leg.
@@ -1222,20 +1772,128 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
+        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id).await;
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "UPDATE",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
 
         let uac = self
             .uac
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No UAC configured for UPDATE forwarding"))?;
 
-        let body = if !request.body.is_empty() {
-            Some(String::from_utf8_lossy(&request.body).to_string())
+        let prior_sdp = if is_a_leg {
+            call.a_leg.sdp.as_deref()
         } else {
-            None
+            call.b_leg.as_ref().and_then(|b| b.sdp.as_deref())
         };
 
-        let peer_resp = uac.send_update(&mut target_dialog, body.as_deref()).await?;
-        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
+        if self.check_rate_limit(
+            "UPDATE",
+            src_dialog_id
+                .as_ref()
+                .unwrap_or(&target_dialog.id),
+            self.settings.update_rate_limit,
+        ) {
+            warn!(call_id = %call.id, "UPDATE rate limited");
+            return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+        }
+        let body = validate_sdp_body_static(request, prior_sdp)?;
+
+        self.log_sip_message(
+            "outbound",
+            "UPDATE",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+        let peer_resp = match uac.send_update(&mut target_dialog, body.as_deref()).await {
+            Ok(r) => {
+                info!(status = r.start.code, "Forwarded UPDATE to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "UPDATE"), ("result", "ok")]);
+                self.metrics.observe_ms(
+                    "fcp_sip_mid_dialog_forward_ms",
+                    start.elapsed().as_millis(),
+                    &[("method", "UPDATE"), ("result", "ok")],
+                );
+                r
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to forward UPDATE to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "UPDATE"), ("result", "error")]);
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "UPDATE forward failed",
+                );
+                return Ok(self.create_simple_response(
+                    request,
+                    481,
+                    "Call/Transaction Does Not Exist",
+                ));
+            }
+        };
+
+        if peer_resp.start.code == 481 {
+            cleanup_after_forward_failure(
+                &self.call_manager,
+                &self.dialog_manager,
+                &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                &call.id,
+                &target_dialog.id,
+                "Peer returned 481 to UPDATE",
+            );
+            self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "UPDATE"), ("result", "481")]);
+        }
+        // Update stored SDP for originating leg if present
+        if let Some(body) = body {
+            store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
+        }
+        self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog.clone());
+        self.start_session_timer(&target_dialog);
+
+        // Refresh timers on the originating leg based on the response we will relay
+        if let Some((mut src_dialog, is_a_leg_src)) = if is_a_leg {
+            call.a_leg.dialog.clone().map(|d| (d, true))
+        } else {
+            call.b_leg
+                .as_ref()
+                .and_then(|b| b.dialog.clone())
+                .map(|d| (d, false))
+        } {
+            if let Some((se, refresher)) = extract_session_timer(&peer_resp) {
+                src_dialog.session_expires = Some(se);
+                src_dialog.refresher = refresher;
+                self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
+                self.start_session_timer(&src_dialog);
+            } else if peer_resp.start.code == 422 {
+                if let Some(min_se) = extract_min_se(&peer_resp) {
+                    src_dialog.session_expires = Some(min_se);
+                    debug!(call_id = %call.id, dialog_id = ?src_dialog.id, min_se = ?min_se, "Applied Min-SE from 422 to originating leg dialog");
+                    self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog);
+                }
+            }
+        }
 
         Ok(self.build_in_dialog_response(request, &peer_resp))
     }
@@ -1246,6 +1904,23 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
+        let _guard = self.acquire_mid_dialog_lock(&target_dialog.id).await;
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "PRACK",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
 
         let uac = self
             .uac
@@ -1257,7 +1932,58 @@ impl SipMessageHandler {
             .get_opposite_reliable_provisional(&call, is_a_leg)
             .ok_or_else(|| anyhow::anyhow!("No reliable provisional to PRACK"))?;
 
-        let peer_resp = uac.send_prack(&mut target_dialog, &reliable).await?;
+        self.log_sip_message(
+            "outbound",
+            "PRACK",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+        let peer_resp = match uac.send_prack(&mut target_dialog, &reliable).await {
+            Ok(r) => {
+                info!(status = r.start.code, "Forwarded PRACK to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "PRACK"), ("result", "ok")]);
+                self.metrics.observe_ms(
+                    "fcp_sip_mid_dialog_forward_ms",
+                    start.elapsed().as_millis(),
+                    &[("method", "PRACK"), ("result", "ok")],
+                );
+                r
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to forward PRACK to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "PRACK"), ("result", "error")]);
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "PRACK forward failed",
+                );
+                return Ok(self.create_simple_response(
+                    request,
+                    481,
+                    "Call/Transaction Does Not Exist",
+                ));
+            }
+        };
+
+        if peer_resp.start.code == 481 {
+            cleanup_after_forward_failure(
+                &self.call_manager,
+                &self.dialog_manager,
+                &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                &call.id,
+                &target_dialog.id,
+                "Peer returned 481 to PRACK",
+            );
+            self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "PRACK"), ("result", "481")]);
+        }
         self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
 
         Ok(self.build_in_dialog_response(request, &peer_resp))
@@ -1269,6 +1995,22 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "INFO",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
 
         let uac = self
             .uac
@@ -1279,7 +2021,70 @@ impl SipMessageHandler {
             .ok_or_else(|| anyhow::anyhow!("Missing Content-Type for INFO"))?;
         let body = String::from_utf8_lossy(&request.body).to_string();
 
-        let peer_resp = uac.send_info(&mut target_dialog, content_type.as_str(), &body).await?;
+        self.check_body_size(request, self.settings.info_max_body_bytes)?;
+        self.check_info_content_type(content_type.as_str())?;
+        if self.check_rate_limit(
+            "INFO",
+            src_dialog_id
+                .as_ref()
+                .unwrap_or(&target_dialog.id),
+            self.settings.info_rate_limit,
+        ) {
+            warn!(call_id = %call.id, "INFO rate limited");
+            return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+        }
+        self.log_sip_message(
+            "outbound",
+            "INFO",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+        let peer_resp = match uac.send_info(&mut target_dialog, content_type.as_str(), &body).await {
+            Ok(r) => {
+                info!(status = r.start.code, "Forwarded INFO to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "INFO"), ("result", "ok")]);
+                self.metrics.observe_ms(
+                    "fcp_sip_mid_dialog_forward_ms",
+                    start.elapsed().as_millis(),
+                    &[("method", "INFO"), ("result", "ok")],
+                );
+                r
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to forward INFO to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "INFO"), ("result", "error")]);
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "INFO forward failed",
+                );
+                return Ok(self.create_simple_response(
+                    request,
+                    481,
+                    "Call/Transaction Does Not Exist",
+                ));
+            }
+        };
+
+        if peer_resp.start.code == 481 {
+            cleanup_after_forward_failure(
+                &self.call_manager,
+                &self.dialog_manager,
+                &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                &call.id,
+                &target_dialog.id,
+                "Peer returned 481 to INFO",
+            );
+            self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "INFO"), ("result", "481")]);
+        }
         self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
 
         Ok(self.build_in_dialog_response(request, &peer_resp))
@@ -1291,6 +2096,22 @@ impl SipMessageHandler {
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
+        let cseq = sip_parse::header(&request.headers, "CSeq");
+        let src_dialog_id = if is_a_leg {
+            call.a_leg.dialog.as_ref().map(|d| d.id.clone())
+        } else {
+            call.b_leg.as_ref().and_then(|b| b.dialog.as_ref().map(|d| d.id.clone()))
+        };
+        let span = tracing::info_span!(
+            "mid_dialog_forward",
+            method = "REFER",
+            call_id = %call.id,
+            src_dialog = ?src_dialog_id,
+            dst_dialog = ?target_dialog.id,
+            cseq = ?cseq
+        );
+        let _guard_span = span.enter();
+        let start = std::time::Instant::now();
 
         let uac = self
             .uac
@@ -1309,9 +2130,65 @@ impl SipMessageHandler {
         let refer_uri =
             sip_core::SipUri::parse(refer_uri_str).ok_or_else(|| anyhow::anyhow!("Invalid Refer-To URI"))?;
 
-        let (peer_resp, _) = uac
+        if !self.settings.allow_refer {
+            warn!(call_id = %call.id, "REFER not allowed by policy");
+            return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
+        }
+        self.log_sip_message(
+            "outbound",
+            "REFER",
+            Some(call.id.to_string().as_str()),
+            Some(&target_dialog.id),
+            cseq.as_ref().map(|v| v.as_str()),
+        );
+        let (peer_resp, _) = match uac
             .send_refer(&mut target_dialog, &refer_uri, None)
-            .await?;
+            .await
+        {
+            Ok(r) => {
+                info!(status = r.0.start.code, "Forwarded REFER to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "REFER"), ("result", "ok")]);
+                self.metrics.observe_ms(
+                    "fcp_sip_mid_dialog_forward_ms",
+                    start.elapsed().as_millis(),
+                    &[("method", "REFER"), ("result", "ok")],
+                );
+                r
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to forward REFER to peer");
+                self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "REFER"), ("result", "error")]);
+                cleanup_after_forward_failure(
+                    &self.call_manager,
+                    &self.dialog_manager,
+                    &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                    &call.id,
+                    &target_dialog.id,
+                    "REFER forward failed",
+                );
+                return Ok(self.create_simple_response(
+                    request,
+                    481,
+                    "Call/Transaction Does Not Exist",
+                ));
+            }
+        };
+
+        if peer_resp.start.code == 481 {
+            cleanup_after_forward_failure(
+                &self.call_manager,
+                &self.dialog_manager,
+                &self.session_timer_manager,
+                    &self.rate_limits,
+                    &self.mid_dialog_lock,
+                &call.id,
+                &target_dialog.id,
+                "Peer returned 481 to REFER",
+            );
+            self.metrics.inc_counter("fcp_sip_mid_dialog_forward_total", &[("method", "REFER"), ("result", "481")]);
+        }
         self.persist_updated_dialog(&call.id, !is_a_leg, target_dialog);
 
         Ok(self.build_in_dialog_response(request, &peer_resp))
@@ -1394,11 +2271,20 @@ impl SipMessageHandler {
         // Content-Length: 0 (no body)
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
-        sip_core::Response::new(
+        let mut resp = sip_core::Response::new(
             StatusLine::new(code, SmolStr::new(reason)),
             headers,
             Bytes::new(),
-        )
+        );
+        self.ensure_response_hygiene(request, &mut resp);
+        self.log_sip_message(
+            "outbound",
+            &code.to_string(),
+            sip_parse::header(&request.headers, "Call-ID").map(|s| s.as_str()),
+            None,
+            sip_parse::header(&request.headers, "CSeq").map(|s| s.as_str()),
+        );
+        resp
     }
 
     /// Send BYE with a single retry/backoff and clean up dialog state on success.
@@ -1411,6 +2297,8 @@ impl SipMessageHandler {
     ) {
         let dialog_manager = Arc::clone(&self.dialog_manager);
         let call_manager = self.call_manager.clone();
+        let stm = Arc::clone(&self.session_timer_manager);
+        let subscription_index = Arc::clone(&self.subscription_index);
         tokio::spawn(async move {
             let mut attempts = 0;
             loop {
@@ -1418,15 +2306,28 @@ impl SipMessageHandler {
                 match uac.bye(&dialog).await {
                     Ok(_) => {
                         debug!(call_id = %call_id, attempt = attempts, "Successfully sent BYE to peer leg");
+                        stm.stop_timer(&dialog.id);
                         dialog_manager.remove(&dialog.id);
-                        // Remove dialog from CallManager leg
+                        // Remove dialog from CallManager leg and clean subscriptions
                         let _ = call_manager.update_call(&call_id, |call| {
                             if is_a_leg {
                                 call.a_leg.dialog = None;
                             } else if let Some(b) = &mut call.b_leg {
                                 b.dialog = None;
+                                // Clean subscriptions for B-leg dialog
+                                b.reliable_provisionals.clear();
                             }
                         });
+                        // Clean subscriptions tied to this dialog id in index
+                        let dialog_id = dialog.id.clone();
+                        let keys: Vec<_> = subscription_index
+                            .iter()
+                            .filter(|entry| entry.key().0 == dialog_id)
+                            .map(|entry| entry.key().clone())
+                            .collect();
+                        for key in keys {
+                            subscription_index.remove(&key);
+                        }
                         break;
                     }
                     Err(e) => {
@@ -1593,6 +2494,19 @@ impl SipMessageHandler {
                     .push(SmolStr::new(name), val.clone());
             }
         }
+        // Propagate Record-Route/Contact from peer if present
+        for val in peer_response.headers.get_all("Record-Route") {
+            response
+                .headers
+                .push(SmolStr::new("Record-Route"), val.clone());
+        }
+        if response.headers.get("Contact").is_none() {
+            if let Some(ct) = peer_response.headers.get("Contact") {
+                response
+                    .headers
+                    .push(SmolStr::new("Contact"), ct.clone());
+            }
+        }
 
         // Ensure Content-Length matches body
         response.headers.push(
@@ -1600,7 +2514,59 @@ impl SipMessageHandler {
             SmolStr::new(response.body.len().to_string()),
         );
 
+        self.ensure_response_hygiene(request, &mut response);
+        self.log_sip_message(
+            "outbound",
+            &response.start.code.to_string(),
+            sip_parse::header(&request.headers, "Call-ID").map(|s| s.as_str()),
+            None,
+            sip_parse::header(&request.headers, "CSeq").map(|s| s.as_str()),
+        );
+
         response
+    }
+
+    /// Validate SDP content for offer/answer forwarding.
+    fn validate_sdp_body(
+        &self,
+        request: &sip_core::Request,
+        prior_sdp: Option<&str>,
+    ) -> Result<Option<String>> {
+        if request.body.is_empty() {
+            // Allow empty body only if we have prior SDP (late-offer/answerless re-INVITE)
+            if prior_sdp.is_some() {
+                return Ok(None);
+            } else {
+                return Err(anyhow::anyhow!("No SDP present and no prior offer/answer"));
+            }
+        }
+
+        // Require application/sdp when body present
+        let ctype = sip_parse::header(&request.headers, "Content-Type")
+            .ok_or_else(|| anyhow::anyhow!("Missing Content-Type"))?;
+        if ctype.to_lowercase() != "application/sdp" {
+            return Err(anyhow::anyhow!("Unsupported Content-Type"));
+        }
+
+        let body_str = String::from_utf8_lossy(&request.body).to_string();
+        let sdp = parse_sdp(&body_str).map_err(|e| anyhow::anyhow!("Invalid SDP: {}", e))?;
+
+        // Basic checks: at least one media line (audio or video)
+        if sdp.media.is_empty() {
+            return Err(anyhow::anyhow!("SDP missing media descriptions"));
+        }
+
+        // Optional: ensure audio present
+        let has_audio = sdp
+            .media
+            .iter()
+            .any(|m| matches!(m.media_type, sip_sdp::MediaType::Audio));
+        if !has_audio {
+            return Err(anyhow::anyhow!("SDP missing audio media"));
+        }
+
+        // Accept hold/resume attributes (sendonly/inactive) without rejecting
+        Ok(Some(body_str))
     }
 
     /// Find call and which leg the request belongs to.
@@ -1651,13 +2617,22 @@ impl SipMessageHandler {
         call: &crate::call::Call,
         is_a_leg: bool,
     ) -> Option<sip_core::Response> {
-        if is_a_leg {
+        let list = if is_a_leg {
             call.b_leg
                 .as_ref()
-                .and_then(|b| b.last_reliable_provisional.clone())
+                .map(|b| &b.reliable_provisionals)
         } else {
-            Some(call.a_leg.last_reliable_provisional.clone()?)
-        }
+            Some(&call.a_leg.reliable_provisionals)
+        }?;
+
+        // Use the latest reliable provisional (highest RSeq)
+        list.iter()
+            .max_by_key(|resp| {
+                sip_parse::header(&resp.headers, "RSeq")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0)
+            })
+            .cloned()
     }
 
     /// Persist updated dialog to CallManager and dialog_manager.
@@ -1680,6 +2655,226 @@ impl SipMessageHandler {
 
         self.dialog_manager.insert(dialog_clone);
     }
+
+    fn log_sip_message(
+        &self,
+        direction: &str,
+        method_or_status: &str,
+        call_id: Option<&str>,
+        dialog_id: Option<&sip_dialog::DialogId>,
+        cseq: Option<&str>,
+    ) {
+        debug!(
+            direction = direction,
+            method_or_status = method_or_status,
+            call_id = call_id.unwrap_or("unknown"),
+            dialog_id = ?dialog_id,
+            cseq = cseq.unwrap_or(""),
+            "SIP message trace"
+        );
+        let mut labels = vec![
+            ("direction", direction),
+            ("method", method_or_status),
+        ];
+        if let Some(id) = dialog_id {
+            labels.push(("dialog_id", id.call_id.as_str()));
+        }
+        self.metrics.inc_counter("fcp_sip_message_total", &labels);
+
+        if let (Some(dir), Some(cid)) = (&self.transcript_dir, call_id) {
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join(format!("{}.log", cid.replace(':', "_"))))
+            {
+                let _ = writeln!(
+                    file,
+                    "{} {} call_id={} dialog={:?} cseq={}",
+                    format!("{:?}", std::time::SystemTime::now()),
+                    direction,
+                    cid,
+                    dialog_id,
+                    cseq.unwrap_or("")
+                );
+            }
+        }
+    }
+
+    fn check_body_size(
+        &self,
+        request: &sip_core::Request,
+        max_bytes: usize,
+    ) -> Result<()> {
+        if request.body.len() > max_bytes {
+            return Err(anyhow::anyhow!("Body too large"));
+        }
+        Ok(())
+    }
+
+    fn check_info_content_type(&self, content_type: &str) -> Result<()> {
+        let ct = content_type.to_lowercase();
+        if self
+            .settings
+            .allow_info_content_types
+            .iter()
+            .any(|v| v.to_lowercase() == ct)
+        {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Unsupported INFO content-type"))
+        }
+    }
+
+    fn check_rate_limit(
+        &self,
+        method: &'static str,
+        dialog_id: &sip_dialog::DialogId,
+        limit: u32,
+    ) -> bool {
+        if limit == 0 {
+            return false;
+        }
+
+        let mut entry = self
+            .rate_limits
+            .entry(dialog_id.clone())
+            .or_insert_with(|| RateWindow {
+                window_start: Instant::now(),
+                counts: HashMap::new(),
+            });
+
+        let now = Instant::now();
+        if now.duration_since(entry.window_start) > self.settings.rate_window {
+            entry.window_start = now;
+            entry.counts.clear();
+        }
+
+        let count = entry.counts.entry(method).or_insert(0);
+        if *count >= limit {
+            return true;
+        }
+        *count += 1;
+        false
+    }
+
+    /// Acquire per-dialog lock to serialize mid-dialog requests.
+    async fn acquire_mid_dialog_lock(
+        &self,
+        dialog_id: &sip_dialog::DialogId,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        use dashmap::mapref::entry::Entry;
+        let entry = self.mid_dialog_lock.entry(dialog_id.clone());
+        let arc_mutex: Arc<tokio::sync::Mutex<()>> = match entry {
+            Entry::Occupied(o) => Arc::clone(o.get()),
+            Entry::Vacant(v) => v.insert(Arc::new(tokio::sync::Mutex::new(()))).clone(),
+        };
+        arc_mutex.clone().lock_owned().await
+    }
+
+    fn spawn_session_timer_listener(&self) {
+        let stm = Arc::clone(&self.session_timer_manager);
+        let cm = self.call_manager.clone();
+        let dm = self.dialog_manager.clone();
+        let uac = self.uac.clone();
+        tokio::spawn(async move {
+            let mut rx = stm.subscribe().await;
+            while let Some(evt) = rx.recv().await {
+                match evt {
+                    SessionTimerEvent::RefreshNeeded(dialog_id) => {
+                        if let Err(e) =
+                            handle_refresh_needed(&cm, &dm, &stm, uac.clone(), dialog_id.clone())
+                                .await
+                        {
+                            warn!(error = %e, dialog_id = ?dialog_id, "Session refresh failed");
+                        }
+                    }
+                    SessionTimerEvent::SessionExpired(dialog_id) => {
+                        if let Err(e) =
+                            handle_session_expired(&cm, &dm, &stm, uac.clone(), dialog_id.clone())
+                                .await
+                        {
+                            warn!(error = %e, dialog_id = ?dialog_id, "Session expired handling failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn find_subscription(
+        &self,
+        dialog_id: &sip_dialog::DialogId,
+        event: &str,
+    ) -> Option<sip_dialog::Subscription> {
+        let key = (dialog_id.clone(), smol_str::SmolStr::new(event.to_string()));
+        if let Some(id) = self.subscription_index.get(&key) {
+            return self.subscription_manager.get(&id);
+        }
+        // Fallback linear scan if index missed
+        self.subscription_manager.all().into_iter().find(|s| {
+            s.id.call_id == dialog_id.call_id
+                && s.id.from_tag == dialog_id.local_tag
+                && s.id.to_tag == dialog_id.remote_tag
+                && s.id.event.as_str() == event
+        })
+    }
+
+    fn index_subscription(&self, sub: sip_dialog::Subscription) {
+        let key = (
+            sip_dialog::DialogId::new(
+                sub.id.call_id.clone(),
+                sub.id.from_tag.clone(),
+                sub.id.to_tag.clone(),
+            ),
+            sub.id.event.clone(),
+        );
+        self.subscription_manager.insert(sub.clone());
+        self.subscription_index.insert(key, sub.id.clone());
+    }
+
+    fn dialog_is_refresher(dialog: &sip_dialog::Dialog) -> bool {
+        dialog
+            .refresher
+            .map(|r| {
+                (r == sip_core::RefresherRole::Uac && dialog.is_uac)
+                    || (r == sip_core::RefresherRole::Uas && !dialog.is_uac)
+            })
+            .unwrap_or(false)
+    }
+
+    fn start_session_timer(&self, dialog: &sip_dialog::Dialog) {
+        if let Some(expires) = dialog.session_expires {
+            let is_refresher = Self::dialog_is_refresher(dialog);
+            self.session_timer_manager
+                .start_timer(dialog.id.clone(), expires, is_refresher);
+        }
+    }
+
+    fn create_transient_subscription(
+        &self,
+        dialog: &sip_dialog::Dialog,
+        event: &str,
+    ) -> Option<sip_dialog::Subscription> {
+        let local_uri = dialog.local_uri.clone();
+        let remote_uri = dialog.remote_uri.clone();
+        let contact = dialog.remote_target.clone();
+        let expires = std::time::Duration::from_secs(60);
+        Some(sip_dialog::Subscription {
+            id: sip_dialog::SubscriptionId::new(
+                dialog.id.call_id.clone(),
+                dialog.id.local_tag.clone(),
+                dialog.id.remote_tag.clone(),
+                smol_str::SmolStr::new(event.to_string()),
+            ),
+            state: sip_dialog::SubscriptionState::Active,
+            local_uri,
+            remote_uri,
+            contact,
+            expires,
+            local_cseq: 1,
+            remote_cseq: 0,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -1700,6 +2895,13 @@ impl InboundMessageHandler for SipMessageHandler {
 
         // Try parsing as request first, then response
         if let Some(req) = sip_parse::parse_request(&payload) {
+            self.log_sip_message(
+                "inbound",
+                req.start.method.as_str(),
+                sip_parse::header(&req.headers, "Call-ID").map(|s| s.as_str()),
+                self.dialog_manager.find_by_request(&req).map(|d| d.id.clone()).as_ref(),
+                sip_parse::header(&req.headers, "CSeq").map(|s| s.as_str()),
+            );
             debug!(
                 method = ?req.start.method,
                 uri = %req.start.uri,
@@ -1738,6 +2940,13 @@ impl InboundMessageHandler for SipMessageHandler {
                 handle.send_final(response).await;
             }
         } else if let Some(resp) = sip_parse::parse_response(&payload) {
+            self.log_sip_message(
+                "inbound",
+                &resp.start.code.to_string(),
+                sip_parse::header(&resp.headers, "Call-ID").map(|s| s.as_str()),
+                None,
+                sip_parse::header(&resp.headers, "CSeq").map(|s| s.as_str()),
+            );
             debug!(
                 status = resp.start.code,
                 reason = %resp.start.reason,
@@ -1768,6 +2977,289 @@ fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
         })
     })
 }
+
+/// SDP validation helper (exposed for tests).
+fn validate_sdp_body_static(
+    request: &sip_core::Request,
+    prior_sdp: Option<&str>,
+) -> Result<Option<String>> {
+    if request.body.is_empty() {
+        if prior_sdp.is_some() {
+            return Ok(None);
+        } else {
+            return Err(anyhow::anyhow!("No SDP present and no prior offer/answer"));
+        }
+    }
+
+    let ctype = sip_parse::header(&request.headers, "Content-Type")
+        .ok_or_else(|| anyhow::anyhow!("Missing Content-Type"))?;
+    if ctype.to_lowercase() != "application/sdp" {
+        return Err(anyhow::anyhow!("Unsupported Content-Type"));
+    }
+
+    let body_str = String::from_utf8_lossy(&request.body).to_string();
+    let sdp = parse_sdp(&body_str).map_err(|e| anyhow::anyhow!("Invalid SDP: {}", e))?;
+
+    if sdp.media.is_empty() {
+        return Err(anyhow::anyhow!("SDP missing media descriptions"));
+    }
+
+    let has_audio = sdp
+        .media
+        .iter()
+        .any(|m| matches!(m.media_type, sip_sdp::MediaType::Audio));
+    if !has_audio {
+        return Err(anyhow::anyhow!("SDP missing audio media"));
+    }
+
+    Ok(Some(body_str))
+}
+
+/// Store SDP on the appropriate leg.
+fn store_leg_sdp(
+    call_manager: &crate::call_manager::CallManager,
+    call_id: &crate::call::CallId,
+    is_a_leg: bool,
+    sdp: String,
+) {
+    let _ = call_manager.update_call(call_id, |c| {
+        if is_a_leg {
+            c.a_leg.sdp = Some(sdp.clone());
+        } else if let Some(b) = &mut c.b_leg {
+            b.sdp = Some(sdp.clone());
+        }
+    });
+}
+
+fn extract_session_timer(
+    resp: &sip_core::Response,
+) -> Option<(Duration, Option<sip_core::RefresherRole>)> {
+    let se_header = sip_parse::header(&resp.headers, "Session-Expires")?;
+    sip_parse::parse_session_expires(se_header).map(|se| {
+        (
+            Duration::from_secs(se.delta_seconds as u64),
+            se.refresher,
+        )
+    })
+}
+
+fn extract_min_se(resp: &sip_core::Response) -> Option<Duration> {
+    sip_parse::header(&resp.headers, "Min-SE")
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|secs| Duration::from_secs(secs as u64))
+}
+
+async fn handle_refresh_needed(
+    call_manager: &crate::call_manager::CallManager,
+    dialog_manager: &sip_dialog::DialogManager,
+    session_timer_manager: &SessionTimerManager,
+    uac: Option<Arc<SipUserAgentClient>>,
+    dialog_id: sip_dialog::DialogId,
+) -> Result<()> {
+    let (mut dialog, call_id, is_a_leg) =
+        find_call_and_dialog(call_manager, &dialog_id).ok_or_else(|| anyhow::anyhow!("Dialog not found"))?;
+
+    // Only refresh if we are the refresher
+    let is_refresher = SipMessageHandler::dialog_is_refresher(&dialog);
+    if !is_refresher {
+        return Ok(());
+    }
+
+    let se_secs = dialog
+        .session_expires
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(1800);
+
+    let refresher_str = if dialog.refresher == Some(sip_core::RefresherRole::Uac) {
+        "uac"
+    } else {
+        "uas"
+    };
+    let uac = uac.ok_or_else(|| anyhow::anyhow!("No UAC available for refresh"))?;
+    // Attempt refresh with bounded retries to avoid tight retry loops
+    let mut attempts = 0;
+    let max_attempts = 3;
+    let mut use_update = true;
+    let mut current_se = se_secs;
+    let resp = loop {
+        attempts += 1;
+        let result = uac
+            .refresh_session(&mut dialog, current_se, refresher_str, use_update, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("Session refresh failed: {}", e))?;
+
+        if result.start.code == 200 {
+            break result;
+        }
+
+        if result.start.code == 422 {
+            if attempts >= max_attempts {
+                break result;
+            }
+            if let Some(min_se) = sip_parse::header(&result.headers, "Min-SE")
+                .and_then(|v| v.parse::<u32>().ok())
+            {
+                current_se = current_se.max(min_se);
+                dialog.session_expires = Some(Duration::from_secs(current_se as u64));
+                continue;
+            }
+        }
+
+        // On non-200, fall back from UPDATE to re-INVITE once
+        if use_update && attempts < max_attempts {
+            use_update = false;
+            continue;
+        }
+
+        break result;
+    };
+
+    if resp.start.code != 200 {
+        // Best effort BYE then terminate dialog on failed refresh
+        let _ = uac.bye(&dialog).await;
+        terminate_dialog(call_manager, dialog_manager, session_timer_manager, &call_id, &dialog_id);
+        return Err(anyhow::anyhow!("Session refresh rejected: {}", resp.start.code));
+    }
+
+    dialog.update_from_response(&resp);
+    // Restart timer with updated info
+    if let Some(se) = dialog.session_expires {
+        let is_refresher = dialog
+            .refresher
+            .map(|r| (r == sip_core::RefresherRole::Uac && dialog.is_uac) || (r == sip_core::RefresherRole::Uas && !dialog.is_uac))
+            .unwrap_or(false);
+        session_timer_manager.start_timer(dialog.id.clone(), se, is_refresher);
+    }
+    // Persist updated dialog
+    let _ = call_manager.update_call(&call_id, |c| {
+        if is_a_leg {
+            c.a_leg.dialog = Some(dialog.clone());
+        } else if let Some(b) = &mut c.b_leg {
+            b.dialog = Some(dialog.clone());
+        }
+    });
+    dialog_manager.insert(dialog);
+    Ok(())
+}
+
+async fn handle_session_expired(
+    call_manager: &crate::call_manager::CallManager,
+    dialog_manager: &sip_dialog::DialogManager,
+    session_timer_manager: &SessionTimerManager,
+    uac: Option<Arc<SipUserAgentClient>>,
+    dialog_id: sip_dialog::DialogId,
+) -> Result<()> {
+    let (dialog, call_id, _is_a_leg) =
+        find_call_and_dialog(call_manager, &dialog_id).ok_or_else(|| anyhow::anyhow!("Dialog not found"))?;
+    // Attempt BYE to remote
+    if let Some(uac) = uac {
+        let _ = uac.bye(&dialog).await;
+    }
+    terminate_dialog(call_manager, dialog_manager, session_timer_manager, &call_id, &dialog_id);
+    Ok(())
+}
+
+fn terminate_dialog(
+    call_manager: &crate::call_manager::CallManager,
+    dialog_manager: &sip_dialog::DialogManager,
+    session_timer_manager: &SessionTimerManager,
+    call_id: &crate::call::CallId,
+    dialog_id: &sip_dialog::DialogId,
+) {
+    session_timer_manager.stop_timer(dialog_id);
+    dialog_manager.remove(dialog_id);
+    let _ = call_manager.update_call(call_id, |call| {
+        if let Some(a) = call.a_leg.dialog.as_ref() {
+            if &a.id == dialog_id {
+                call.a_leg.dialog = None;
+            }
+        }
+        if let Some(b) = &mut call.b_leg {
+            if let Some(d) = b.dialog.as_ref() {
+                if &d.id == dialog_id {
+                    b.dialog = None;
+                }
+            }
+        }
+    });
+    let _ = call_manager.terminate_call(call_id, Some("Session expired".to_string()));
+}
+
+fn terminate_dialog_with_cleanup(
+    call_manager: &crate::call_manager::CallManager,
+    dialog_manager: &sip_dialog::DialogManager,
+    session_timer_manager: &SessionTimerManager,
+    rate_limits: &dashmap::DashMap<sip_dialog::DialogId, RateWindow>,
+    mid_dialog_lock: &dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>,
+    call_id: &crate::call::CallId,
+    dialog_id: &sip_dialog::DialogId,
+) {
+    // Perform standard dialog termination
+    terminate_dialog(call_manager, dialog_manager, session_timer_manager, call_id, dialog_id);
+
+    // Cleanup per-dialog state to prevent memory leaks
+    rate_limits.remove(dialog_id);
+    mid_dialog_lock.remove(dialog_id);
+    debug!(dialog_id = ?dialog_id, "Cleaned up dialog state (rate limits, locks)");
+}
+
+fn cleanup_after_forward_failure(
+    call_manager: &crate::call_manager::CallManager,
+    dialog_manager: &sip_dialog::DialogManager,
+    session_timer_manager: &SessionTimerManager,
+    rate_limits: &dashmap::DashMap<sip_dialog::DialogId, RateWindow>,
+    mid_dialog_lock: &dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>,
+    call_id: &crate::call::CallId,
+    dialog_id: &sip_dialog::DialogId,
+    reason: &str,
+) {
+    warn!(call_id = %call_id, dialog_id = ?dialog_id, reason = %reason, "Cleaning up after mid-dialog forward failure");
+    terminate_dialog_with_cleanup(
+        call_manager,
+        dialog_manager,
+        session_timer_manager,
+        rate_limits,
+        mid_dialog_lock,
+        call_id,
+        dialog_id,
+    );
+}
+
+fn find_call_and_dialog(
+    call_manager: &crate::call_manager::CallManager,
+    dialog_id: &sip_dialog::DialogId,
+) -> Option<(sip_dialog::Dialog, crate::call::CallId, bool)> {
+    for call in call_manager.all_calls() {
+        if let Some(a) = &call.a_leg.dialog {
+            if a.id == *dialog_id {
+                return Some((a.clone(), call.id, true));
+            }
+        }
+        if let Some(b_leg) = &call.b_leg {
+            if let Some(d) = &b_leg.dialog {
+                if d.id == *dialog_id {
+                    return Some((d.clone(), call.id, false));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn stop_timers_for_call(
+    session_timer_manager: &SessionTimerManager,
+    call: &crate::call::Call,
+) {
+    if let Some(a) = &call.a_leg.dialog {
+        session_timer_manager.stop_timer(&a.id);
+    }
+    if let Some(b_leg) = &call.b_leg {
+        if let Some(d) = &b_leg.dialog {
+            session_timer_manager.stop_timer(&d.id);
+        }
+    }
+}
+
 
 /// Helper to extract SIP URI from From header.
 fn extract_from_uri(request: &sip_core::Request) -> anyhow::Result<sip_core::SipUri> {
@@ -1887,6 +3379,9 @@ mod tests {
     use fcp_core::{FileBackedStorage, RegistrationStore};
     use sip_core::{Headers, Method, RequestLine, SipUri};
     use std::sync::Arc;
+    use sip_core::SipVersion;
+    use bytes::Bytes as StdBytes;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_register_without_registrar() {
@@ -1939,6 +3434,186 @@ mod tests {
         // Should return 501 Not Implemented (no registrar configured)
         assert_eq!(response.start.code, 501);
         assert_eq!(response.start.reason.as_str(), "Not Implemented");
+    }
+
+    #[tokio::test]
+    async fn invite_error_response_has_core_headers() {
+        let dispatcher = Arc::new(
+            crate::transport::RealTransportDispatcher::with_udp("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap(),
+        );
+        let transaction_manager = Arc::new(TransactionManager::new(dispatcher));
+        let dialog_manager = Arc::new(DialogManager::new());
+        let local_uri = SipUri::parse("sip:test@localhost").unwrap();
+        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+
+        let handler = SipMessageHandler::new(
+            transaction_manager,
+            dialog_manager,
+            local_uri,
+            None,
+            "127.0.0.1".to_string(),
+            10000,
+            None,
+            None,
+            call_manager,
+            None,
+        );
+
+        let mut headers = Headers::new();
+        headers.push("Via".into(), "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123".into());
+        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push("To".into(), "<sip:bob@example.com>".into());
+        headers.push("Call-ID".into(), "test-call-id".into());
+        headers.push("CSeq".into(), "1 INVITE".into());
+        headers.push("Content-Length".into(), "0".into());
+
+        let request = sip_core::Request::new(
+            RequestLine::new(Method::Invite, SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        );
+
+        let response = handler.create_simple_response(&request, 488, "Not Acceptable Here");
+        assert_eq!(response.start.code, 488);
+        let to = response.headers.get("To").unwrap();
+        assert!(to.contains("tag="));
+        assert!(response.headers.get("Contact").is_some());
+        assert!(response.headers.get("Allow").is_some());
+        assert!(response.headers.get("Supported").is_some());
+        assert_eq!(
+            response.headers.get("Content-Length").unwrap().as_str(),
+            response.body.len().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn in_dialog_error_response_hygiene() {
+        let dispatcher = Arc::new(
+            crate::transport::RealTransportDispatcher::with_udp("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap(),
+        );
+        let transaction_manager = Arc::new(TransactionManager::new(dispatcher));
+        let dialog_manager = Arc::new(DialogManager::new());
+        let local_uri = SipUri::parse("sip:test@localhost").unwrap();
+        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+
+        let handler = SipMessageHandler::new(
+            transaction_manager,
+            dialog_manager,
+            local_uri,
+            None,
+            "127.0.0.1".to_string(),
+            10000,
+            None,
+            None,
+            call_manager,
+            None,
+        );
+
+        let mut headers = Headers::new();
+        headers.push("Via".into(), "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKxyz".into());
+        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push("To".into(), "<sip:bob@example.com>;tag=bbb".into());
+        headers.push("Call-ID".into(), "test-call-id-2".into());
+        headers.push("CSeq".into(), "2 INVITE".into());
+        headers.push("Content-Length".into(), "0".into());
+
+        let request = sip_core::Request::new(
+            RequestLine::new(Method::Invite, SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        );
+
+        let mut peer_response = handler.create_simple_response(&request, 481, "Call/Transaction Does Not Exist");
+        // Add a dummy body to ensure Content-Length is recalculated
+        peer_response.body = bytes::Bytes::from_static(b"oops");
+        let response = handler.build_in_dialog_response(&request, &peer_response);
+        assert_eq!(response.start.code, 481);
+        assert!(response.headers.get("Contact").is_some());
+        assert!(response.headers.get("Allow").is_some());
+        assert!(response.headers.get("Supported").is_some());
+        assert_eq!(
+            response.headers.get("Content-Length").unwrap().as_str(),
+            response.body.len().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_timer_emits_refresh_for_refresher() {
+        let manager = SessionTimerManager::new();
+        let dialog_id = sip_dialog::DialogId::new("call1", "local", "remote");
+        let mut rx = manager.subscribe().await;
+
+        manager.start_timer(dialog_id.clone(), Duration::from_millis(40), true);
+
+        let first = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("timeout waiting for refresh");
+        assert_eq!(
+            first,
+            Some(SessionTimerEvent::RefreshNeeded(dialog_id.clone()))
+        );
+
+        let second = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("timeout waiting for expiration");
+        assert_eq!(
+            second,
+            Some(SessionTimerEvent::SessionExpired(dialog_id.clone()))
+        );
+    }
+
+    #[tokio::test]
+    async fn session_timer_skips_refresh_when_not_refresher() {
+        let manager = SessionTimerManager::new();
+        let dialog_id = sip_dialog::DialogId::new("call2", "local", "remote");
+        let mut rx = manager.subscribe().await;
+
+        manager.start_timer(dialog_id.clone(), Duration::from_millis(30), false);
+
+        let evt = tokio::time::timeout(Duration::from_millis(200), rx.recv())
+            .await
+            .expect("timeout waiting for expiration");
+        assert_eq!(
+            evt,
+            Some(SessionTimerEvent::SessionExpired(dialog_id.clone()))
+        );
+    }
+
+    #[test]
+    fn dialog_refresher_role_matches_leg() {
+        let uri = SipUri::parse("sip:alice@example.com").unwrap();
+        let id = sip_dialog::DialogId::new("call3", "local", "remote");
+        let base_dialog = sip_dialog::Dialog {
+            id,
+            state: sip_dialog::DialogStateType::Confirmed,
+            remote_target: uri.clone(),
+            route_set: Vec::new(),
+            local_cseq: 1,
+            remote_cseq: 1,
+            last_ack_cseq: None,
+            local_uri: uri.clone(),
+            remote_uri: uri.clone(),
+            secure: false,
+            session_expires: Some(Duration::from_secs(90)),
+            refresher: Some(sip_core::RefresherRole::Uac),
+            is_uac: true,
+        };
+
+        assert!(SipMessageHandler::dialog_is_refresher(&base_dialog));
+
+        let mut uas_dialog = base_dialog.clone();
+        uas_dialog.refresher = Some(sip_core::RefresherRole::Uas);
+        uas_dialog.is_uac = false;
+        assert!(SipMessageHandler::dialog_is_refresher(&uas_dialog));
+
+        let mut mismatch = base_dialog.clone();
+        mismatch.refresher = Some(sip_core::RefresherRole::Uas);
+        mismatch.is_uac = true;
+        assert!(!SipMessageHandler::dialog_is_refresher(&mismatch));
     }
 
     #[tokio::test]
@@ -2011,5 +3686,80 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    fn build_invite_with_sdp(call_id: &str, has_audio: bool) -> sip_core::Request {
+        let mut headers = Headers::new();
+        headers.push("Via".into(), "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123".into());
+        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push("To".into(), "<sip:bob@example.com>".into());
+        headers.push("Call-ID".into(), call_id.into());
+        headers.push("CSeq".into(), "1 INVITE".into());
+        headers.push("Contact".into(), "<sip:alice@127.0.0.1:5060>".into());
+        headers.push("Content-Type".into(), "application/sdp".into());
+
+        let sdp = if has_audio {
+            "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 0\r\n".to_string()
+        } else {
+            "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n".to_string()
+        };
+        headers.push("Content-Length".into(), format!("{}", sdp.len()).into());
+
+        sip_core::Request {
+            start: RequestLine {
+                method: Method::Invite,
+                uri: SipUri::parse("sip:bob@example.com").unwrap().into(),
+                version: SipVersion::V2,
+            },
+            headers,
+            body: StdBytes::from(sdp.into_bytes()),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_store_sdp_on_reinvite() {
+        let call = crate::call::Call::from_invite(
+            build_invite_with_sdp("call-a", true),
+            "127.0.0.1:5060".parse().unwrap(),
+        );
+        let call_id = call.id;
+        let cm = crate::call_manager::CallManager::new();
+        cm.create_call(call.clone());
+
+        store_leg_sdp(&cm, &call_id, true, "test-sdp".to_string());
+        let updated = cm.get_call(&call_id).unwrap();
+        assert_eq!(updated.a_leg.sdp.as_deref(), Some("test-sdp"));
+    }
+
+    #[test]
+    fn test_validate_sdp_body_good() {
+        let req = build_invite_with_sdp("call-b", true);
+        let body = validate_sdp_body_static(&req, None).unwrap();
+        assert!(body.is_some());
+    }
+
+    #[test]
+    fn test_validate_sdp_body_missing_audio() {
+        let req = build_invite_with_sdp("call-c", false);
+        let result = validate_sdp_body_static(&req, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_sdp_body_empty_without_prior_fails() {
+        let mut req = build_invite_with_sdp("call-d", true);
+        req.body = StdBytes::new();
+        req.headers.push("Content-Length".into(), "0".into());
+        let result = validate_sdp_body_static(&req, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_sdp_body_empty_with_prior_passes() {
+        let mut req = build_invite_with_sdp("call-e", true);
+        req.body = StdBytes::new();
+        req.headers.push("Content-Length".into(), "0".into());
+        let result = validate_sdp_body_static(&req, Some("v=0\r\ns=-\r\n"));
+        assert!(result.is_ok());
     }
 }
