@@ -109,8 +109,8 @@ pub struct CallLeg {
     /// Outbound call handle (B-leg) for transaction control (CANCEL, etc.)
     pub outbound_handle: Option<Arc<Mutex<Option<CallHandle>>>>,
 
-    /// Last reliable provisional response (for PRACK forwarding)
-    pub last_reliable_provisional: Option<Response>,
+    /// Reliable provisional responses by RSeq (for PRACK forwarding)
+    pub reliable_provisionals: Vec<Response>,
 
     /// Remote party URI (From/To)
     pub remote_uri: String,
@@ -148,7 +148,7 @@ impl CallLeg {
             direction: CallDirection::Inbound,
             dialog: None,
             outbound_handle: None,
-            last_reliable_provisional: None,
+            reliable_provisionals: Vec::new(),
             remote_uri,
             remote_display_name,
             contact: Some(peer),
@@ -163,7 +163,7 @@ impl CallLeg {
             direction: CallDirection::Outbound,
             dialog: None,
             outbound_handle: None,
-            last_reliable_provisional: None,
+            reliable_provisionals: Vec::new(),
             remote_uri,
             remote_display_name,
             contact: None,
@@ -217,8 +217,8 @@ impl fmt::Debug for CallLeg {
                 &self.outbound_handle.is_some(),
             )
             .field(
-                "has_reliable_prov",
-                &self.last_reliable_provisional.is_some(),
+                "reliable_prov_count",
+                &self.reliable_provisionals.len(),
             )
             .field("remote_uri", &self.remote_uri)
             .field("remote_display_name", &self.remote_display_name)

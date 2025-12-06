@@ -240,6 +240,9 @@ impl SipMessageHandler {
         // Start session timer event loop
         this.spawn_session_timer_listener();
 
+        // Start session timer health monitor
+        this.spawn_session_timer_monitor();
+
         this
     }
 
@@ -2904,6 +2907,53 @@ impl SipMessageHandler {
                             warn!(error = %e, dialog_id = ?dialog_id, "Session expired handling failed");
                         }
                     }
+                }
+            }
+        });
+    }
+
+    /// Spawns a background task to monitor session timer health.
+    ///
+    /// This task periodically checks the session timer manager state and logs
+    /// statistics for observability. It also validates that active timers match
+    /// active dialogs to detect potential leaks.
+    fn spawn_session_timer_monitor(&self) {
+        let stm = Arc::clone(&self.session_timer_manager);
+        let dm = Arc::clone(&self.dialog_manager);
+        let cm = self.call_manager.clone();
+        let metrics = self.metrics.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+
+                let timer_count = stm.active_count();
+                let dialog_count = dm.count();
+                let call_count = cm.active_call_count();
+
+                // Log health metrics
+                debug!(
+                    active_session_timers = timer_count,
+                    active_dialogs = dialog_count,
+                    active_calls = call_count,
+                    "Session timer health check"
+                );
+
+                // Update metrics
+                metrics.inc_counter("fcp_sip_session_timer_health_check", &[]);
+
+                // Warn if timer count significantly differs from dialog count
+                // (some dialogs may not have session timers, so this is informational)
+                if timer_count > dialog_count + 10 {
+                    warn!(
+                        timer_count = timer_count,
+                        dialog_count = dialog_count,
+                        diff = timer_count - dialog_count,
+                        "Session timer count exceeds dialog count - possible leak"
+                    );
                 }
             }
         });

@@ -18,6 +18,8 @@ pub mod registrar;
 pub mod service;
 pub mod transport;
 pub mod uac;
+pub mod metrics;
+pub mod settings;
 
 // Re-export commonly used types for convenience
 pub use exports::*;

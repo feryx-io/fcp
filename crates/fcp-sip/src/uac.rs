@@ -6,6 +6,9 @@ use anyhow::Result;
 use sip_dialog::{Dialog, Subscription};
 use sip_uac::integrated::{CallHandle, IntegratedUAC};
 use std::sync::Arc;
+use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 /// User Agent Client for initiating outbound calls.
 ///
@@ -18,6 +21,7 @@ use std::sync::Arc;
 pub struct SipUserAgentClient {
     /// Siphon-rs integrated UAC with full transaction management
     inner: Arc<IntegratedUAC>,
+    transcript_dir: Option<PathBuf>,
 }
 
 impl SipUserAgentClient {
@@ -28,6 +32,18 @@ impl SipUserAgentClient {
     pub fn new(integrated_uac: Arc<IntegratedUAC>) -> Self {
         Self {
             inner: integrated_uac,
+            transcript_dir: None,
+        }
+    }
+
+    /// Create a new UAC with a transcript directory for SIP logging.
+    pub fn with_transcript_dir(
+        integrated_uac: Arc<IntegratedUAC>,
+        transcript_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            inner: integrated_uac,
+            transcript_dir,
         }
     }
 
@@ -119,6 +135,7 @@ impl SipUserAgentClient {
         dialog: &mut Dialog,
         sdp_body: Option<&str>,
     ) -> Result<sip_core::Response> {
+        self.log_outbound("UPDATE", Some(&dialog.id));
         self.inner.send_update(dialog, sdp_body).await
     }
 
@@ -128,6 +145,7 @@ impl SipUserAgentClient {
         dialog: &mut Dialog,
         sdp_body: Option<&str>,
     ) -> Result<sip_core::Response> {
+        self.log_outbound("INVITE", Some(&dialog.id));
         self.inner.send_reinvite(dialog, sdp_body).await
     }
 
@@ -138,6 +156,7 @@ impl SipUserAgentClient {
         content_type: &str,
         body: &str,
     ) -> Result<sip_core::Response> {
+        self.log_outbound("INFO", Some(&dialog.id));
         self.inner.send_info(dialog, content_type, body).await
     }
 
@@ -148,6 +167,7 @@ impl SipUserAgentClient {
         refer_to: &sip_core::SipUri,
         target_dialog: Option<&Dialog>,
     ) -> Result<(sip_core::Response, Option<Subscription>)> {
+        self.log_outbound("REFER", Some(&dialog.id));
         self.inner.send_refer(dialog, refer_to, target_dialog).await
     }
 
@@ -157,7 +177,74 @@ impl SipUserAgentClient {
         dialog: &mut Dialog,
         provisional: &sip_core::Response,
     ) -> Result<sip_core::Response> {
+        self.log_outbound("PRACK", Some(&dialog.id));
         self.inner.send_prack(dialog, provisional).await
+    }
+
+    /// Send SUBSCRIBE within a dialog.
+    pub async fn send_subscribe(
+        &self,
+        dialog: &mut Dialog,
+        event: &str,
+        expires: Option<u32>,
+    ) -> Result<(sip_core::Response, Option<Subscription>)> {
+        self.log_outbound("SUBSCRIBE", Some(&dialog.id));
+        // Target is remote target of dialog
+        self.inner
+            .subscribe(dialog.remote_target.clone(), event, expires)
+            .await
+    }
+
+    /// Send NOTIFY for a subscription.
+    pub async fn send_notify(
+        &self,
+        subscription: &Subscription,
+        state: sip_dialog::SubscriptionState,
+        body: Option<&str>,
+    ) -> Result<sip_core::Response> {
+        let dialog_id = sip_dialog::DialogId::new(
+            subscription.id.call_id.clone(),
+            subscription.id.from_tag.clone(),
+            subscription.id.to_tag.clone(),
+        );
+        self.log_outbound("NOTIFY", Some(&dialog_id));
+        self.inner.notify(subscription, state, body).await
+    }
+
+    /// Refresh an active dialog per RFC 4028.
+    pub async fn refresh_session(
+        &self,
+        dialog: &mut Dialog,
+        session_expires: u32,
+        refresher: &str,
+        use_update: bool,
+        sdp_body: Option<&str>,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .refresh_session(dialog, session_expires, refresher, use_update, sdp_body)
+            .await
+    }
+
+    fn log_outbound(&self, method: &str, dialog_id: Option<&sip_dialog::DialogId>) {
+        if let Some(dir) = &self.transcript_dir {
+            if let Some(did) = dialog_id {
+                let call_id = did.call_id.as_str();
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join(format!("{}.log", call_id.replace(':', "_"))))
+                {
+                    let _ = writeln!(
+                        file,
+                        "{:?} outbound {} call_id={} dialog={:?}",
+                        std::time::SystemTime::now(),
+                        method,
+                        call_id,
+                        did
+                    );
+                }
+            }
+        }
     }
 }
 
