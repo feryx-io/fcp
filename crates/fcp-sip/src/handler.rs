@@ -1736,6 +1736,13 @@ impl SipMessageHandler {
 
         self.check_body_size(request, self.settings.notify_max_body_bytes)?;
 
+        // Record body size histogram
+        self.metrics.record_histogram(
+            "fcp_sip_notify_body_bytes",
+            request.body.len() as f64,
+            &[("event", event.as_str())],
+        );
+
         // Create a synthetic subscription to use contact/route info from dialog target
         // (we don't track full subscription state yet beyond storage)
         if let Some(sub) = self.find_subscription(&target_dialog.id, event.as_str()) {
@@ -2128,6 +2135,14 @@ impl SipMessageHandler {
         let body = String::from_utf8_lossy(&request.body).to_string();
 
         self.check_body_size(request, self.settings.info_max_body_bytes)?;
+
+        // Record body size histogram
+        self.metrics.record_histogram(
+            "fcp_sip_info_body_bytes",
+            request.body.len() as f64,
+            &[("content_type", content_type.as_str())],
+        );
+
         self.check_info_content_type(content_type.as_str())?;
         if self.check_rate_limit(
             "INFO",
@@ -2870,6 +2885,15 @@ impl SipMessageHandler {
             return true;
         }
         *count += 1;
+
+        // Record rate limit utilization as histogram (percentage)
+        let utilization_pct = (*count as f64 / limit as f64) * 100.0;
+        self.metrics.record_histogram(
+            "fcp_sip_rate_limit_utilization_percent",
+            utilization_pct,
+            &[("method", method)],
+        );
+
         false
     }
 
@@ -2949,6 +2973,11 @@ impl SipMessageHandler {
 
                 // Update metrics
                 metrics.inc_counter("fcp_sip_session_timer_health_check", &[]);
+
+                // Record gauge metrics for monitoring
+                metrics.set_gauge("fcp_sip_active_session_timers", timer_count as f64, &[]);
+                metrics.set_gauge("fcp_sip_active_dialogs", dialog_count as f64, &[]);
+                metrics.set_gauge("fcp_sip_active_calls", call_count as f64, &[]);
 
                 // Warn if timer count significantly differs from dialog count
                 // (some dialogs may not have session timers, so this is informational)

@@ -171,6 +171,7 @@ impl ServerSettings {
     /// # Example
     /// ```no_run
     /// use fcp_sip::settings::ServerSettings;
+    /// use std::time::Duration;
     ///
     /// let settings = ServerSettings::from_env()
     ///     .with_rate_limits(Duration::from_secs(1), 10, 3, 5)
