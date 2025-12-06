@@ -580,6 +580,7 @@ dependencies = [
  "clap",
  "fcp-core",
  "fcp-runtime",
+ "fcp-sip",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

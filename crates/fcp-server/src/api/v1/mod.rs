@@ -1,5 +1,6 @@
 //! API v1 routes.
 
+pub mod debug;
 pub mod registrations;
 pub mod system;
 pub mod users;
@@ -16,6 +17,12 @@ pub fn router() -> Router<ApiState> {
         // System endpoints
         .route("/health", get(system::health))
         .route("/status", get(system::status))
+        // Debug endpoints (for live system inspection)
+        .route("/debug/summary", get(debug::debug_summary))
+        .route("/debug/dialogs", get(debug::list_dialogs))
+        .route("/debug/subscriptions", get(debug::list_subscriptions))
+        .route("/debug/calls", get(debug::list_calls))
+        .route("/debug/rate-limits", get(debug::list_rate_limits))
         // User management endpoints
         .route("/users", get(users::list_users).post(users::create_user))
         .route(

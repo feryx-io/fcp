@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_runtime::Runtime;
+use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
 
@@ -41,31 +42,36 @@ async fn main() -> Result<()> {
 
     info!(node_id = %runtime.node_id(), "Runtime built successfully");
 
-    // Get configuration reference
+    // Get configuration reference and runtime components for API
     let api_config = runtime.config().api.clone();
     let storage = runtime.storage().cloned();
+    let dialog_manager = Arc::clone(runtime.dialog_manager());
+    let subscription_manager = Arc::clone(runtime.subscription_manager());
+    let call_manager = Arc::clone(runtime.call_manager());
+    let handler = Arc::clone(runtime.handler());
 
     // Start the runtime
     runtime.start().await?;
 
-    // Start API server if enabled and storage is available
+    // Start API server if enabled
     let api_handle = if api_config.enabled {
-        if let Some(storage) = storage {
-            info!(
-                bind = %api_config.bind,
-                "Starting API server"
-            );
+        info!(
+            bind = %api_config.bind,
+            "Starting API server"
+        );
 
-            let api_state = api::state::ApiState::new(storage);
-            let bind_addr = api_config.bind;
+        let api_state = api::state::ApiState::new(
+            storage,
+            dialog_manager,
+            subscription_manager,
+            call_manager,
+            handler,
+        );
+        let bind_addr = api_config.bind;
 
-            Some(tokio::spawn(async move {
-                api::serve(bind_addr, api_state).await
-            }))
-        } else {
-            tracing::warn!("API enabled but registrar/storage not available, skipping API server");
-            None
-        }
+        Some(tokio::spawn(async move {
+            api::serve(bind_addr, api_state).await
+        }))
     } else {
         None
     };

@@ -6,6 +6,8 @@
 use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
 use fcp_sip::prelude::*;
+use fcp_sip::call_manager::CallManager;
+use fcp_sip::handler::SipMessageHandler;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -37,6 +39,12 @@ pub struct Runtime {
 
     /// User Agent Client for outbound calls
     uac: Arc<SipUserAgentClient>,
+
+    /// Call manager for B2BUA call tracking
+    call_manager: Arc<CallManager>,
+
+    /// SIP message handler (for accessing rate limits, subscription index, etc.)
+    handler: Arc<SipMessageHandler>,
 
     /// Transport listener for receiving inbound SIP messages
     listener: Option<TransportListener>,
@@ -85,6 +93,16 @@ impl Runtime {
     /// Get the User Agent Client for making outbound calls.
     pub fn uac(&self) -> &Arc<SipUserAgentClient> {
         &self.uac
+    }
+
+    /// Get the call manager.
+    pub fn call_manager(&self) -> &Arc<CallManager> {
+        &self.call_manager
+    }
+
+    /// Get the SIP message handler.
+    pub fn handler(&self) -> &Arc<SipMessageHandler> {
+        &self.handler
     }
 
     /// Get the storage (if registrar is enabled).

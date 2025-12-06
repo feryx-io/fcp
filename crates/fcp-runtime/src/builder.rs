@@ -100,7 +100,7 @@ impl RuntimeBuilder {
         };
 
         // Create transport listener
-        let listener = create_transport_listener(
+        let (listener, handler, call_manager) = create_transport_listener(
             &config,
             Arc::clone(&transaction_manager_ref),
             Arc::clone(&dialog_manager_ref),
@@ -117,6 +117,8 @@ impl RuntimeBuilder {
             dialog_manager: dialog_manager_ref,
             subscription_manager: subscription_manager_ref,
             uac,
+            call_manager,
+            handler,
             listener: Some(listener),
             shutdown_tx: None,
             storage,
@@ -268,6 +270,7 @@ async fn create_routing_service(
 }
 
 /// Create a transport listener for receiving inbound SIP messages.
+/// Returns (listener, handler, call_manager) tuple.
 fn create_transport_listener(
     config: &FcpConfig,
     transaction_manager: Arc<TransactionManager>,
@@ -275,7 +278,7 @@ fn create_transport_listener(
     registrar: Option<Arc<fcp_sip::registrar::FcpRegistrar>>,
     routing_service: Option<Arc<fcp_routing::RoutingService>>,
     uac: Arc<SipUserAgentClient>,
-) -> Result<TransportListener> {
+) -> Result<(TransportListener, Arc<SipMessageHandler>, Arc<CallManager>)> {
     use fcp_sip::prelude::{ListenerConfig, SipMessageHandler};
 
     // Build listener config from FCP config
@@ -335,12 +338,16 @@ fn create_transport_listener(
         config.transport.rtp_port,
         registrar,
         routing_service,
-        call_manager,
+        Arc::clone(&call_manager),
         Some(uac),
     ));
 
-    // Create and return the listener
-    Ok(TransportListener::new(listener_config, handler))
+    // Create listener (cast handler to trait object)
+    let handler_dyn: Arc<dyn InboundMessageHandler> = Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
+    let listener = TransportListener::new(listener_config, handler_dyn);
+
+    // Return listener, handler, and call_manager
+    Ok((listener, handler, call_manager))
 }
 
 /// Create a UAC for outbound calls (reuses existing dispatcher).

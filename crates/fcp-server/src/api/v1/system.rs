@@ -36,9 +36,12 @@ pub async fn health() -> Json<HealthResponse> {
 ///
 /// GET /api/v1/status
 pub async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse>, ApiError> {
-    // Count users
-    let users = state.storage.list_users().await?;
-    let users_count = users.len();
+    // Count users if storage is available
+    let users_count = if let Some(storage) = &state.storage {
+        storage.list_users().await?.len()
+    } else {
+        0
+    };
 
     // Count active registrations across all AORs
     // Note: This is a simplified count. In production, you might want to

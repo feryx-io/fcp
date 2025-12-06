@@ -1,6 +1,15 @@
 //! User management API endpoints.
 
 use crate::api::{error::ApiError, state::ApiState};
+
+/// Helper macro to get storage or return error.
+macro_rules! require_storage {
+    ($state:expr) => {
+        $state.storage.as_ref().ok_or_else(|| {
+            ApiError::NotFound("User management requires registrar to be enabled".to_string())
+        })?
+    };
+}
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -73,7 +82,8 @@ pub struct UpdatePasswordRequest {
 pub async fn list_users(
     State(state): State<ApiState>,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
-    let users = state.storage.list_users().await?;
+    let storage = require_storage!(state);
+    let users = storage.list_users().await?;
     let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
     Ok(Json(responses))
 }
@@ -85,8 +95,8 @@ pub async fn get_user(
     State(state): State<ApiState>,
     Path(username): Path<String>,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user = state
-        .storage
+    let storage = require_storage!(state);
+    let user = storage
         .get_user(&username)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
@@ -102,7 +112,7 @@ pub async fn create_user(
     Json(req): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Check if user already exists
-    if let Some(_) = state.storage.get_user(&req.username).await? {
+    if let Some(_) = require_storage!(state).get_user(&req.username).await? {
         return Err(ApiError::Conflict(format!(
             "User '{}' already exists",
             req.username
@@ -124,7 +134,7 @@ pub async fn create_user(
         updated_at: std::time::SystemTime::now(),
     };
 
-    state.storage.put_user(user.clone()).await?;
+    require_storage!(state).put_user(user.clone()).await?;
 
     Ok((StatusCode::CREATED, Json(UserResponse::from(user))))
 }
@@ -138,8 +148,8 @@ pub async fn update_user(
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
     // Get existing user
-    let mut user = state
-        .storage
+    let storage = require_storage!(state);
+    let mut user = storage
         .get_user(&username)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
@@ -154,7 +164,7 @@ pub async fn update_user(
     user.updated_at = std::time::SystemTime::now();
 
     // Save user
-    state.storage.put_user(user.clone()).await?;
+    require_storage!(state).put_user(user.clone()).await?;
 
     Ok(Json(UserResponse::from(user)))
 }
@@ -168,8 +178,8 @@ pub async fn update_password(
     Json(req): Json<UpdatePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
     // Get existing user
-    let mut user = state
-        .storage
+    let storage = require_storage!(state);
+    let mut user = storage
         .get_user(&username)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
@@ -183,7 +193,7 @@ pub async fn update_password(
     user.updated_at = std::time::SystemTime::now();
 
     // Save user
-    state.storage.put_user(user).await?;
+    require_storage!(state).put_user(user).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -196,7 +206,7 @@ pub async fn delete_user(
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     // Check if user exists
-    if state.storage.get_user(&username).await?.is_none() {
+    if require_storage!(state).get_user(&username).await?.is_none() {
         return Err(ApiError::NotFound(format!(
             "User '{}' not found",
             username
@@ -204,7 +214,7 @@ pub async fn delete_user(
     }
 
     // Delete user
-    state.storage.delete_user(&username).await?;
+    require_storage!(state).delete_user(&username).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
