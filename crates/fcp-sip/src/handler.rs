@@ -1790,22 +1790,49 @@ fn extract_from_uri(request: &sip_core::Request) -> anyhow::Result<sip_core::Sip
 }
 
 /// Helper to extract display name from From header.
-/// Returns Some(name) if a quoted display name is found, None otherwise.
+/// Returns Some(name) if a quoted display name is found, or falls back to username from URI.
 ///
 /// Examples:
 /// - "Bob Smith" <sip:bob@example.com> => Some("Bob Smith")
-/// - <sip:bob@example.com> => None
-/// - sip:bob@example.com => None
+/// - <sip:bob@example.com> => Some("bob")
+/// - <sip:bob%40192.168.1.81@192.168.1.81> => Some("bob@192.168.1.81")
+/// - sip:bob@example.com => Some("bob")
 fn extract_from_display_name(request: &sip_core::Request) -> Option<String> {
     let from_header = sip_parse::header(&request.headers, "From")?;
 
-    // Look for quoted display name before '<'
+    // First, look for quoted display name before '<'
     if let Some(quote_start) = from_header.find('"') {
         if let Some(quote_end) = from_header[quote_start + 1..].find('"') {
             let display_name = &from_header[quote_start + 1..quote_start + 1 + quote_end];
             if !display_name.is_empty() {
                 return Some(display_name.to_string());
             }
+        }
+    }
+
+    // No quoted display name found - fallback to extracting username from URI
+    // Extract URI part (between angle brackets or entire string before parameters)
+    let uri_str = if let Some(start) = from_header.find('<') {
+        if let Some(end) = from_header[start..].find('>') {
+            &from_header[start + 1..start + end]
+        } else {
+            return None;
+        }
+    } else {
+        // No brackets, take until semicolon or end
+        if let Some(semi) = from_header.find(';') {
+            from_header[..semi].trim()
+        } else {
+            from_header.trim()
+        }
+    };
+
+    // Parse the URI to extract username
+    if let Some(sip_core::Uri::Sip(uri)) = sip_core::Uri::parse(uri_str) {
+        if let Some(user) = uri.user {
+            // URL decode the username (e.g., "bob%40192.168.1.81" -> "bob@192.168.1.81")
+            let decoded = urlencoding::decode(&user).ok()?.into_owned();
+            return Some(decoded);
         }
     }
 

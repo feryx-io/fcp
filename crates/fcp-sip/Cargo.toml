@@ -39,6 +39,7 @@ socket2 = "0.5"
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+urlencoding = "2.1"
 uuid = { workspace = true }
 
 # TLS support (optional) - must match sip-transport's rustls version (0.22)
