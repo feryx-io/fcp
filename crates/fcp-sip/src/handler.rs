@@ -497,14 +497,20 @@ impl SipMessageHandler {
             None
         };
 
-        // Extract caller's display name from A-leg for B2BUA caller ID preservation
+        // Extract caller's identity from A-leg for B2BUA caller ID preservation
         let caller_display_name = extract_from_display_name(request);
+        let caller_from_uri = extract_from_uri(request).ok();
+
         if let Some(ref name) = caller_display_name {
             debug!(call_id = %call_id, caller_name = %name, "Preserving caller display name for B-leg");
         }
+        if let Some(ref uri) = caller_from_uri {
+            debug!(call_id = %call_id, caller_uri = ?uri, "Preserving caller From URI for B-leg");
+        }
 
-        // Set display name on UAC for this call (caller ID preservation)
+        // Set caller identity on UAC for this call (B2BUA caller ID preservation)
         uac.inner().set_display_name(caller_display_name.clone()).await;
+        uac.inner().set_from_uri(caller_from_uri.clone()).await;
 
         // Create outbound INVITE to B-leg using UAC
         debug!(
@@ -523,8 +529,9 @@ impl SipMessageHandler {
                     error = %e,
                     "Failed to create B-leg INVITE"
                 );
-                // Clear display name to prevent leaking to subsequent calls
+                // Clear caller identity overrides to prevent leaking to subsequent calls
                 uac.inner().set_display_name(None).await;
+                uac.inner().set_from_uri(None).await;
 
                 let response = self.create_simple_response(request, 500, "Failed to forward call");
                 a_leg_handle.send_final(response).await;
@@ -533,8 +540,9 @@ impl SipMessageHandler {
             }
         };
 
-        // Clear display name after INVITE sent to prevent leaking to subsequent calls
+        // Clear caller identity overrides after INVITE sent to prevent leaking to subsequent calls
         uac.inner().set_display_name(None).await;
+        uac.inner().set_from_uri(None).await;
 
         // Shareable handle for cancel/final response tracking
         let b_leg_handle = Arc::new(tokio::sync::Mutex::new(Some(b_leg_call)));
