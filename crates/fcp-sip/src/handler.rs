@@ -1,4 +1,179 @@
 //! Message handler for routing inbound SIP messages.
+//!
+//! # SUBSCRIBE/NOTIFY Event Notification Flow (RFC 3265)
+//!
+//! This B2BUA implementation provides transparent proxying of event subscriptions
+//! between two SIP dialogs, enabling event notifications to flow through the B2BUA
+//! while maintaining proper subscription state management.
+//!
+//! ## Overview
+//!
+//! When a SIP endpoint subscribes to events (e.g., call transfer status via REFER),
+//! the B2BUA forwards the SUBSCRIBE request to the opposite dialog leg and manages
+//! the resulting subscription state. Subsequent NOTIFY requests for that subscription
+//! are automatically forwarded to the original subscriber.
+//!
+//! ## Detailed Flow
+//!
+//! ### Initial SUBSCRIBE (A → B2BUA → B)
+//!
+//! 1. **Inbound SUBSCRIBE received** (from A-leg dialog)
+//!    - Method: `handle_subscribe()`
+//!    - Lookup call by dialog ID (Call-ID, From-tag, To-tag)
+//!    - Determine which dialog leg received the SUBSCRIBE (A-leg or B-leg)
+//!    - Acquire mid-dialog lock to prevent race conditions
+//!
+//! 2. **Forward SUBSCRIBE to opposite dialog** (to B-leg)
+//!    - Clone target dialog (opposite leg)
+//!    - Extract Event header (e.g., "refer", "message-summary")
+//!    - Extract Expires header (subscription duration, defaults to 3600s)
+//!    - Call `uac.send_subscribe(&mut target_dialog, event, expires)`
+//!    - Transaction manager handles request/response transaction
+//!
+//! 3. **Process SUBSCRIBE response from B**
+//!    - On success (200 OK):
+//!      - Create Subscription object with SubscriptionId (Call-ID, tags, event)
+//!      - Store subscription in SubscriptionManager (global subscription registry)
+//!      - Index subscription by (DialogId, Event) for fast NOTIFY lookup
+//!      - Persist updated target dialog state (incremented CSeq)
+//!    - On failure (481, 403, etc.):
+//!      - Cleanup dialog state if peer indicates dialog doesn't exist (481)
+//!      - Return error response to original subscriber
+//!
+//! 4. **Return response to A**
+//!    - Build response based on B's response code
+//!    - Copy relevant headers (Expires, Contact)
+//!    - Maintain proper Via headers for response routing
+//!
+//! ### Subsequent NOTIFY (B → B2BUA → A)
+//!
+//! 1. **Inbound NOTIFY received** (from B-leg dialog)
+//!    - Method: `handle_notify()`
+//!    - Lookup call by dialog ID
+//!    - Determine which leg sent the NOTIFY (typically B-leg)
+//!    - Acquire mid-dialog lock
+//!
+//! 2. **Lookup subscription**
+//!    - Extract Event header from NOTIFY
+//!    - Call `find_subscription(&target_dialog_id, event)`
+//!    - Uses subscription_index: `DashMap<(DialogId, Event), SubscriptionId>`
+//!    - Fast O(1) lookup via index
+//!    - Fallback to linear scan if index miss occurs
+//!
+//! 3. **Forward NOTIFY to opposite dialog** (to A-leg)
+//!    - Extract Subscription-State header (active/pending/terminated)
+//!    - Extract body (e.g., message/sipfrag for REFER status)
+//!    - Body size check (max bytes configured via settings)
+//!    - Call `uac.send_notify(&subscription, state, body)`
+//!
+//! 4. **Handle subscription termination**
+//!    - If Subscription-State: terminated
+//!    - Remove subscription from SubscriptionManager
+//!    - Remove from subscription_index
+//!    - No automatic cleanup yet (TODO: add subscription expiry monitoring)
+//!
+//! 5. **Return 200 OK to B**
+//!    - NOTIFY always receives 200 OK if successfully processed
+//!    - Build response preserving dialog context
+//!
+//! ## Data Structures
+//!
+//! ### SubscriptionId (from sip-dialog crate)
+//! ```ignore
+//! pub struct SubscriptionId {
+//!     call_id: SmolStr,
+//!     from_tag: SmolStr,
+//!     to_tag: SmolStr,
+//!     event: SmolStr,  // e.g., "refer", "message-summary"
+//! }
+//! ```
+//!
+//! ### Subscription (from sip-dialog crate)
+//! ```ignore
+//! pub struct Subscription {
+//!     id: SubscriptionId,
+//!     state: SubscriptionState,  // Active, Pending, Terminated
+//!     expires: Instant,
+//!     contact: SipUri,
+//!     route_set: Vec<SipUri>,
+//!     local_cseq: u32,
+//!     remote_cseq: u32,
+//! }
+//! ```
+//!
+//! ### Subscription Index (SipMessageHandler field)
+//! ```ignore
+//! subscription_index: DashMap<(DialogId, SmolStr), SubscriptionId>
+//! ```
+//! - Key: (DialogId, Event)
+//! - Value: SubscriptionId
+//! - Purpose: Fast NOTIFY routing lookup
+//! - Populated when SUBSCRIBE succeeds (2xx response)
+//! - Cleaned up when dialog terminates (BYE, 481, etc.)
+//!
+//! ## Common Event Packages
+//!
+//! - **refer** (RFC 3515): Call transfer status notifications
+//!   - NOTIFY body: message/sipfrag (e.g., "SIP/2.0 100 Trying")
+//!   - Use case: Transferor monitors transfer progress
+//!
+//! - **message-summary** (RFC 3842): Voicemail waiting indicator
+//!   - NOTIFY body: application/simple-message-summary
+//!   - Use case: Phone displays MWI light
+//!
+//! - **dialog** (RFC 4235): Dialog state (used by BLF)
+//!   - NOTIFY body: application/dialog-info+xml
+//!   - Use case: Busy Lamp Field (BLF) on phone
+//!
+//! - **presence** (RFC 3856): Presence status
+//!   - NOTIFY body: application/pidf+xml
+//!   - Use case: IM client presence indicators
+//!
+//! ## Cleanup and Memory Management
+//!
+//! Subscription state is cleaned up in the following scenarios:
+//!
+//! 1. **Dialog termination (BYE)**: `terminate_dialog_with_cleanup()`
+//!    - Removes all subscriptions for dialog from subscription_index
+//!    - Uses iterator filter to find all `(dialog_id, *)` entries
+//!
+//! 2. **Forward failure (481, transport error)**: `cleanup_after_forward_failure()`
+//!    - Same cleanup as BYE
+//!    - Prevents memory leaks when peer dialog no longer exists
+//!
+//! 3. **Subscription expiry**: Not yet implemented (TODO)
+//!    - Should monitor `subscription.expires` timestamp
+//!    - Automatically remove expired subscriptions
+//!    - Similar to session timer monitoring task
+//!
+//! ## Rate Limiting
+//!
+//! Currently no rate limiting on SUBSCRIBE/NOTIFY (future enhancement).
+//! Consider adding limits similar to INFO/UPDATE:
+//! - `subscribe_rate_limit`: Max SUBSCRIBE per dialog per window
+//! - `notify_rate_limit`: Max NOTIFY per subscription per window
+//!
+//! ## Metrics
+//!
+//! - `fcp_sip_mid_dialog_forward_total{method="SUBSCRIBE", result}` - Counter
+//! - `fcp_sip_mid_dialog_forward_ms{method="SUBSCRIBE", result}` - Histogram
+//! - `fcp_sip_notify_body_bytes{event}` - Histogram (body size distribution)
+//!
+//! ## Error Handling
+//!
+//! - Missing Event header → 400 Bad Request
+//! - Subscription not found (NOTIFY) → 481 Call/Transaction Does Not Exist
+//! - Body size exceeds limit → 413 Request Entity Too Large
+//! - Forward failure → 481 + cleanup
+//!
+//! ## Future Enhancements
+//!
+//! 1. Subscription expiry monitoring task (similar to session timer monitor)
+//! 2. Rate limiting for SUBSCRIBE/NOTIFY
+//! 3. Event package validation (only allow configured packages)
+//! 4. Subscription metrics (active subscriptions gauge by event type)
+//! 5. Automatic NOTIFY retransmission handling
+//! 6. Fork detection (multiple 2xx to SUBSCRIBE)
 
 use anyhow::Result;
 use bytes::Bytes;
