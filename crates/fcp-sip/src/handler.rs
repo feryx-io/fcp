@@ -7,7 +7,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
-use std::io::Write;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -73,6 +72,9 @@ pub struct SipMessageHandler {
     /// Optional transcript directory for SIP message capture
     transcript_dir: Option<PathBuf>,
 
+    /// Channel for async transcript writes (background task)
+    transcript_tx: Option<mpsc::UnboundedSender<TranscriptEntry>>,
+
     /// Settings
     settings: ServerSettings,
 
@@ -84,6 +86,16 @@ pub struct SipMessageHandler {
 struct RateWindow {
     window_start: Instant,
     counts: HashMap<&'static str, u32>,
+}
+
+/// Entry for async transcript logging
+struct TranscriptEntry {
+    call_id: String,
+    timestamp: std::time::SystemTime,
+    direction: String,
+    method_or_status: String,
+    dialog_id_str: String,
+    cseq: String,
 }
 
 impl SipMessageHandler {
@@ -148,6 +160,61 @@ impl SipMessageHandler {
         let subscription_manager = Arc::new(sip_dialog::SubscriptionManager::new());
         let session_timer_manager = Arc::new(SessionTimerManager::new());
 
+        // Initialize transcript background writer if directory configured
+        let transcript_tx = if let Some(ref dir) = settings.transcript_dir {
+            let (tx, mut rx) = mpsc::unbounded_channel::<TranscriptEntry>();
+            let transcript_dir = dir.clone();
+
+            tokio::spawn(async move {
+                use std::collections::HashMap;
+                use std::io::Write;
+
+                // Keep file handles open per call_id for efficient writing
+                let mut file_handles: HashMap<String, std::fs::File> = HashMap::new();
+
+                while let Some(entry) = rx.recv().await {
+                    let filename = format!("{}.log", entry.call_id.replace(':', "_"));
+                    let path = transcript_dir.join(&filename);
+
+                    // Get or create file handle for this call_id
+                    let file = file_handles.entry(entry.call_id.clone()).or_insert_with(|| {
+                        OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&path)
+                            .expect("Failed to open transcript file")
+                    });
+
+                    // Write entry
+                    let _ = writeln!(
+                        file,
+                        "{:?} {} dialog={} cseq={}",
+                        entry.timestamp,
+                        entry.direction,
+                        entry.dialog_id_str,
+                        entry.cseq
+                    );
+
+                    // Flush to ensure data is written
+                    let _ = file.flush();
+
+                    // Limit cache size - close files for old calls (simple LRU)
+                    if file_handles.len() > 100 {
+                        // Keep most recent 50, close others
+                        let mut keys: Vec<_> = file_handles.keys().cloned().collect();
+                        keys.sort();
+                        for key in keys.iter().take(50) {
+                            file_handles.remove(key);
+                        }
+                    }
+                }
+            });
+
+            Some(tx)
+        } else {
+            None
+        };
+
         let this = Self {
             transaction_manager,
             dialog_manager,
@@ -165,6 +232,7 @@ impl SipMessageHandler {
             session_timer_manager,
             metrics: settings.metrics.clone(),
             transcript_dir: settings.transcript_dir.clone(),
+            transcript_tx,
             settings,
             rate_limits: Arc::new(dashmap::DashMap::new()),
         };
@@ -2725,22 +2793,18 @@ impl SipMessageHandler {
         }
         self.metrics.inc_counter("fcp_sip_message_total", &labels);
 
-        if let (Some(dir), Some(cid)) = (&self.transcript_dir, call_id) {
-            if let Ok(mut file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join(format!("{}.log", cid.replace(':', "_"))))
-            {
-                let _ = writeln!(
-                    file,
-                    "{} {} call_id={} dialog={:?} cseq={}",
-                    format!("{:?}", std::time::SystemTime::now()),
-                    direction,
-                    cid,
-                    dialog_id,
-                    cseq.unwrap_or("")
-                );
-            }
+        // Send to background writer via channel (non-blocking)
+        if let (Some(ref tx), Some(cid)) = (&self.transcript_tx, call_id) {
+            let entry = TranscriptEntry {
+                call_id: cid.to_string(),
+                timestamp: std::time::SystemTime::now(),
+                direction: direction.to_string(),
+                method_or_status: method_or_status.to_string(),
+                dialog_id_str: dialog_id.map(|d| format!("{:?}", d)).unwrap_or_else(|| "none".to_string()),
+                cseq: cseq.unwrap_or("").to_string(),
+            };
+            // Fire and forget - if channel is full/closed, log is dropped (non-critical)
+            let _ = tx.send(entry);
         }
     }
 
