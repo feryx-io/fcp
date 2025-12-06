@@ -153,6 +153,11 @@ impl SipMessageHandler {
         uac: Option<Arc<SipUserAgentClient>>,
         settings: ServerSettings,
     ) -> Self {
+        // Validate settings early to catch configuration errors at startup
+        if let Err(e) = settings.validate() {
+            panic!("Invalid ServerSettings: {}", e);
+        }
+
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
         uas.dialog_manager = Arc::clone(&dialog_manager);
