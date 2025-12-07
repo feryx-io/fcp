@@ -184,6 +184,9 @@ use std::path::PathBuf;
 use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use std::io::Write;
+use chrono::Utc;
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use sip_sdp::parse::parse_sdp;
@@ -271,6 +274,11 @@ struct TranscriptEntry {
     method_or_status: String,
     dialog_id_str: String,
     cseq: String,
+    peer: Option<String>,
+    transport: Option<String>,
+    record_route: String,
+    route: String,
+    body_hash: Option<String>,
 }
 
 impl SipMessageHandler {
@@ -344,48 +352,40 @@ impl SipMessageHandler {
         let transcript_tx = if let Some(ref dir) = settings.transcript_dir {
             let (tx, mut rx) = mpsc::unbounded_channel::<TranscriptEntry>();
             let transcript_dir = dir.clone();
+            let max_bytes = settings.transcript_max_bytes;
 
             tokio::spawn(async move {
-                use std::collections::HashMap;
-                use std::io::Write;
-
-                // Keep file handles open per call_id for efficient writing
-                let mut file_handles: HashMap<String, std::fs::File> = HashMap::new();
-
                 while let Some(entry) = rx.recv().await {
                     let filename = format!("{}.log", entry.call_id.replace(':', "_"));
                     let path = transcript_dir.join(&filename);
 
-                    // Get or create file handle for this call_id
-                    let file = file_handles.entry(entry.call_id.clone()).or_insert_with(|| {
-                        OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&path)
-                            .expect("Failed to open transcript file")
-                    });
-
-                    // Write entry
-                    let _ = writeln!(
-                        file,
-                        "{:?} {} dialog={} cseq={}",
-                        entry.timestamp,
-                        entry.direction,
-                        entry.dialog_id_str,
-                        entry.cseq
-                    );
-
-                    // Flush to ensure data is written
-                    let _ = file.flush();
-
-                    // Limit cache size - close files for old calls (simple LRU)
-                    if file_handles.len() > 100 {
-                        // Keep most recent 50, close others
-                        let mut keys: Vec<_> = file_handles.keys().cloned().collect();
-                        keys.sort();
-                        for key in keys.iter().take(50) {
-                            file_handles.remove(key);
+                    if let Some(max) = max_bytes {
+                        if let Ok(meta) = std::fs::metadata(&path) {
+                            if meta.len() > max {
+                                let ts = chrono::Utc::now().timestamp();
+                                let _ = std::fs::rename(&path, transcript_dir.join(format!("{}.{}.log", entry.call_id.replace(':', "_"), ts)));
+                            }
                         }
+                    }
+
+                    if let Ok(mut file) = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        let _ = writeln!(
+                            file,
+                            "{} {} dialog={} cseq={} peer={} transport={} rr={} route={} body_hash={}",
+                            chrono::Utc::now().to_rfc3339(),
+                            entry.direction,
+                            entry.dialog_id_str,
+                            entry.cseq,
+                            entry.peer.as_deref().unwrap_or(""),
+                            entry.transport.as_deref().unwrap_or(""),
+                            entry.record_route,
+                            entry.route,
+                            entry.body_hash.as_deref().unwrap_or("")
+                        );
                     }
                 }
             });
@@ -1677,7 +1677,9 @@ impl SipMessageHandler {
             self.settings.reinvite_rate_limit,
         ) {
             warn!(call_id = %call.id, "re-INVITE rate limited");
-            return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+            resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+            return Ok(resp);
         }
         let body = validate_sdp_body_static(request, prior_sdp)?;
 
@@ -1687,6 +1689,10 @@ impl SipMessageHandler {
             Some(call.id.to_string().as_str()),
             Some(&target_dialog.id),
             cseq.as_ref().map(|v| v.as_str()),
+            None,
+            None,
+            None,
+            None,
         );
         let peer_resp = match uac.send_reinvite(&mut target_dialog, body.as_deref()).await {
             Ok(r) => {
@@ -1802,12 +1808,28 @@ impl SipMessageHandler {
         let expires = sip_parse::header(&request.headers, "Expires")
             .and_then(|v| v.parse::<u32>().ok());
 
+        if self.check_rate_limit(
+            "SUBSCRIBE",
+            src_dialog_id
+                .as_ref()
+                .unwrap_or(&target_dialog.id),
+            self.settings.update_rate_limit,
+        ) {
+            warn!(call_id = %call.id, "SUBSCRIBE rate limited");
+            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+            resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+            return Ok(resp);
+        }
         self.log_sip_message(
             "outbound",
             "SUBSCRIBE",
             Some(call.id.to_string().as_str()),
             Some(&target_dialog.id),
             cseq.as_ref().map(|v| v.as_str()),
+            None,
+            None,
+            None,
+            None,
         );
         let (peer_resp, subscription) = match uac
             .send_subscribe(&mut target_dialog, event.as_str(), expires)
@@ -1922,13 +1944,29 @@ impl SipMessageHandler {
         // (we don't track full subscription state yet beyond storage)
         if let Some(sub) = self.find_subscription(&target_dialog.id, event.as_str()) {
             let state = sip_dialog::SubscriptionState::Active;
-        self.log_sip_message(
-            "outbound",
-            "NOTIFY",
-            Some(call.id.to_string().as_str()),
-            Some(&target_dialog.id),
-            cseq.as_ref().map(|v| v.as_str()),
-        );
+            self.log_sip_message(
+                "outbound",
+                "NOTIFY",
+                Some(call.id.to_string().as_str()),
+                Some(&target_dialog.id),
+                cseq.as_ref().map(|v| v.as_str()),
+                None,
+                None,
+                None,
+                body.as_ref().map(|b| b.as_bytes()),
+            );
+            if self.check_rate_limit(
+                "NOTIFY",
+                src_dialog_id
+                    .as_ref()
+                    .unwrap_or(&target_dialog.id),
+                self.settings.info_rate_limit,
+            ) {
+                warn!(call_id = %call.id, "NOTIFY rate limited");
+                let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+                return Ok(resp);
+            }
             let peer_resp = match uac
                 .send_notify(&sub, state, body.as_deref())
                 .await
@@ -1993,7 +2031,23 @@ impl SipMessageHandler {
                 Some(call.id.to_string().as_str()),
                 Some(&target_dialog.id),
                 cseq.as_ref().map(|v| v.as_str()),
+                None,
+                None,
+                None,
+                body.as_ref().map(|b| b.as_bytes()),
             );
+            if self.check_rate_limit(
+                "NOTIFY",
+                src_dialog_id
+                    .as_ref()
+                    .unwrap_or(&target_dialog.id),
+                self.settings.info_rate_limit,
+            ) {
+                warn!(call_id = %call.id, "NOTIFY rate limited");
+                let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+                resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+                return Ok(resp);
+            }
             let peer_resp = match uac
                 .send_notify(&sub, state, body.as_deref())
                 .await
@@ -2093,7 +2147,9 @@ impl SipMessageHandler {
             self.settings.update_rate_limit,
         ) {
             warn!(call_id = %call.id, "UPDATE rate limited");
-            return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+            resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+            return Ok(resp);
         }
         let body = validate_sdp_body_static(request, prior_sdp)?;
 
@@ -2103,6 +2159,10 @@ impl SipMessageHandler {
             Some(call.id.to_string().as_str()),
             Some(&target_dialog.id),
             cseq.as_ref().map(|v| v.as_str()),
+            None,
+            None,
+            None,
+            None,
         );
         let peer_resp = match uac.send_update(&mut target_dialog, body.as_deref()).await {
             Ok(r) => {
@@ -2218,12 +2278,28 @@ impl SipMessageHandler {
             .get_opposite_reliable_provisional(&call, is_a_leg)
             .ok_or_else(|| anyhow::anyhow!("No reliable provisional to PRACK"))?;
 
+        if self.check_rate_limit(
+            "PRACK",
+            src_dialog_id
+                .as_ref()
+                .unwrap_or(&target_dialog.id),
+            self.settings.update_rate_limit,
+        ) {
+            warn!(call_id = %call.id, "PRACK rate limited");
+            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+            resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+            return Ok(resp);
+        }
         self.log_sip_message(
             "outbound",
             "PRACK",
             Some(call.id.to_string().as_str()),
             Some(&target_dialog.id),
             cseq.as_ref().map(|v| v.as_str()),
+            None,
+            None,
+            None,
+            None,
         );
         let peer_resp = match uac.send_prack(&mut target_dialog, &reliable).await {
             Ok(r) => {
@@ -2327,7 +2403,9 @@ impl SipMessageHandler {
             self.settings.info_rate_limit,
         ) {
             warn!(call_id = %call.id, "INFO rate limited");
-            return Ok(self.create_simple_response(request, 429, "Too Many Requests"));
+            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+            resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+            return Ok(resp);
         }
         self.log_sip_message(
             "outbound",
@@ -2335,6 +2413,10 @@ impl SipMessageHandler {
             Some(call.id.to_string().as_str()),
             Some(&target_dialog.id),
             cseq.as_ref().map(|v| v.as_str()),
+            None,
+            None,
+            None,
+            None,
         );
         let peer_resp = match uac.send_info(&mut target_dialog, content_type.as_str(), &body).await {
             Ok(r) => {
@@ -2432,12 +2514,28 @@ impl SipMessageHandler {
             warn!(call_id = %call.id, "REFER not allowed by policy");
             return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
         }
+        if self.check_rate_limit(
+            "REFER",
+            src_dialog_id
+                .as_ref()
+                .unwrap_or(&target_dialog.id),
+            self.settings.reinvite_rate_limit,
+        ) {
+            warn!(call_id = %call.id, "REFER rate limited");
+            let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
+            resp.headers.push(SmolStr::new("Retry-After"), SmolStr::new(self.settings.rate_window.as_secs().to_string()));
+            return Ok(resp);
+        }
         self.log_sip_message(
             "outbound",
             "REFER",
             Some(call.id.to_string().as_str()),
             Some(&target_dialog.id),
             cseq.as_ref().map(|v| v.as_str()),
+            None,
+            None,
+            None,
+            None,
         );
         let (peer_resp, _) = match uac
             .send_refer(&mut target_dialog, &refer_uri, None)
@@ -2583,6 +2681,10 @@ impl SipMessageHandler {
             sip_parse::header(&request.headers, "Call-ID").map(|s| s.as_str()),
             None,
             sip_parse::header(&request.headers, "CSeq").map(|s| s.as_str()),
+            None,
+            None,
+            Some(&resp.headers),
+            Some(&resp.body),
         );
         resp
     }
@@ -2831,6 +2933,10 @@ impl SipMessageHandler {
             sip_parse::header(&request.headers, "Call-ID").map(|s| s.as_str()),
             None,
             sip_parse::header(&request.headers, "CSeq").map(|s| s.as_str()),
+            None,
+            None,
+            Some(&response.headers),
+            Some(&response.body),
         );
 
         response
@@ -2973,6 +3079,10 @@ impl SipMessageHandler {
         call_id: Option<&str>,
         dialog_id: Option<&sip_dialog::DialogId>,
         cseq: Option<&str>,
+        peer: Option<SocketAddr>,
+        transport: Option<&str>,
+        headers: Option<&sip_core::Headers>,
+        body: Option<&[u8]>,
     ) {
         debug!(
             direction = direction,
@@ -2980,6 +3090,8 @@ impl SipMessageHandler {
             call_id = call_id.unwrap_or("unknown"),
             dialog_id = ?dialog_id,
             cseq = cseq.unwrap_or(""),
+            peer = ?peer,
+            transport = transport.unwrap_or(""),
             "SIP message trace"
         );
         let mut labels = vec![
@@ -2991,8 +3103,30 @@ impl SipMessageHandler {
         }
         self.metrics.inc_counter("fcp_sip_message_total", &labels);
 
-        // Send to background writer via channel (non-blocking)
         if let (Some(ref tx), Some(cid)) = (&self.transcript_tx, call_id) {
+            let body_hash = if self.settings.transcript_capture_bodies {
+                body.map(|b| {
+                    let mut hasher = Sha256::new();
+                    hasher.update(b);
+                    format!("{:x}", hasher.finalize())
+                })
+            } else {
+                None
+            };
+
+            let record_route = headers
+                .map(|h| {
+                    let vals: Vec<_> = h.get_all("Record-Route").collect();
+                    vals.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(",")
+                })
+                .unwrap_or_default();
+            let route = headers
+                .map(|h| {
+                    let vals: Vec<_> = h.get_all("Route").collect();
+                    vals.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(",")
+                })
+                .unwrap_or_default();
+
             let entry = TranscriptEntry {
                 call_id: cid.to_string(),
                 timestamp: std::time::SystemTime::now(),
@@ -3000,8 +3134,12 @@ impl SipMessageHandler {
                 method_or_status: method_or_status.to_string(),
                 dialog_id_str: dialog_id.map(|d| format!("{:?}", d)).unwrap_or_else(|| "none".to_string()),
                 cseq: cseq.unwrap_or("").to_string(),
+                peer: peer.map(|p| p.to_string()),
+                transport: transport.map(|t| t.to_string()),
+                record_route,
+                route,
+                body_hash,
             };
-            // Fire and forget - if channel is full/closed, log is dropped (non-critical)
             let _ = tx.send(entry);
         }
     }
@@ -3268,6 +3406,16 @@ impl InboundMessageHandler for SipMessageHandler {
                 sip_parse::header(&req.headers, "Call-ID").map(|s| s.as_str()),
                 self.dialog_manager.find_by_request(&req).map(|d| d.id.clone()).as_ref(),
                 sip_parse::header(&req.headers, "CSeq").map(|s| s.as_str()),
+                Some(peer),
+                Some(match transport {
+                    sip_transaction::TransportKind::Udp => "udp",
+                    sip_transaction::TransportKind::Tcp => "tcp",
+                    sip_transaction::TransportKind::Tls => "tls",
+                    sip_transaction::TransportKind::Ws => "ws",
+                    _ => "other",
+                }),
+                Some(&req.headers),
+                Some(&req.body),
             );
             debug!(
                 method = ?req.start.method,
@@ -3313,6 +3461,16 @@ impl InboundMessageHandler for SipMessageHandler {
                 sip_parse::header(&resp.headers, "Call-ID").map(|s| s.as_str()),
                 None,
                 sip_parse::header(&resp.headers, "CSeq").map(|s| s.as_str()),
+                Some(peer),
+                Some(match transport {
+                    sip_transaction::TransportKind::Udp => "udp",
+                    sip_transaction::TransportKind::Tcp => "tcp",
+                    sip_transaction::TransportKind::Tls => "tls",
+                    sip_transaction::TransportKind::Ws => "ws",
+                    _ => "other",
+                }),
+                Some(&resp.headers),
+                Some(&resp.body),
             );
             debug!(
                 status = resp.start.code,

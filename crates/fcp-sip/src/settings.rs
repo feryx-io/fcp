@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use crate::metrics::{MetricsHandle, noop_metrics};
 use anyhow::{Result, bail};
+use serde::Deserialize;
+use std::fs;
+use std::path::Path;
 
 /// Top-level server settings for fcp-sip.
 #[derive(Clone)]
@@ -16,6 +19,23 @@ pub struct ServerSettings {
     pub update_rate_limit: u32,
     pub info_max_body_bytes: usize,
     pub notify_max_body_bytes: usize,
+    pub transcript_capture_bodies: bool,
+    pub transcript_max_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServerSettingsFile {
+    transcript_dir: Option<PathBuf>,
+    allow_info_content_types: Option<Vec<String>>,
+    allow_refer: Option<bool>,
+    rate_window_secs: Option<u64>,
+    info_rate_limit: Option<u32>,
+    reinvite_rate_limit: Option<u32>,
+    update_rate_limit: Option<u32>,
+    info_max_body_bytes: Option<usize>,
+    notify_max_body_bytes: Option<usize>,
+    transcript_capture_bodies: Option<bool>,
+    transcript_max_bytes: Option<u64>,
 }
 
 impl ServerSettings {
@@ -37,7 +57,50 @@ impl ServerSettings {
             update_rate_limit: 5,
             info_max_body_bytes: 4096,
             notify_max_body_bytes: 4096,
+            transcript_capture_bodies: false,
+            transcript_max_bytes: Some(5 * 1024 * 1024), // 5MB per file by default
         }
+    }
+
+    /// Build settings from a config file (TOML), overlaying env defaults.
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let raw = fs::read_to_string(path)?;
+        let cfg: ServerSettingsFile = toml::from_str(&raw)?;
+        let mut base = Self::from_env();
+        if let Some(dir) = cfg.transcript_dir {
+            base.transcript_dir = Some(dir);
+        }
+        if let Some(types) = cfg.allow_info_content_types {
+            base.allow_info_content_types = types;
+        }
+        if let Some(allow_refer) = cfg.allow_refer {
+            base.allow_refer = allow_refer;
+        }
+        if let Some(secs) = cfg.rate_window_secs {
+            base.rate_window = Duration::from_secs(secs);
+        }
+        if let Some(v) = cfg.info_rate_limit {
+            base.info_rate_limit = v;
+        }
+        if let Some(v) = cfg.reinvite_rate_limit {
+            base.reinvite_rate_limit = v;
+        }
+        if let Some(v) = cfg.update_rate_limit {
+            base.update_rate_limit = v;
+        }
+        if let Some(v) = cfg.info_max_body_bytes {
+            base.info_max_body_bytes = v;
+        }
+        if let Some(v) = cfg.notify_max_body_bytes {
+            base.notify_max_body_bytes = v;
+        }
+        if let Some(v) = cfg.transcript_capture_bodies {
+            base.transcript_capture_bodies = v;
+        }
+        if let Some(v) = cfg.transcript_max_bytes {
+            base.transcript_max_bytes = Some(v);
+        }
+        Ok(base)
     }
 
     pub fn with_metrics(mut self, metrics: MetricsHandle) -> Self {
@@ -78,6 +141,21 @@ impl ServerSettings {
         self.info_max_body_bytes = info_max;
         self.notify_max_body_bytes = notify_max;
         self
+    }
+
+    pub fn with_transcript_limits(mut self, capture_bodies: bool, max_bytes: Option<u64>) -> Self {
+        self.transcript_capture_bodies = capture_bodies;
+        self.transcript_max_bytes = max_bytes;
+        self
+    }
+
+    /// Load settings from an optional file; defaults to env when None.
+    pub fn load(path: Option<&Path>) -> Result<Self> {
+        if let Some(p) = path {
+            Self::from_file(p)
+        } else {
+            Ok(Self::from_env())
+        }
     }
 
     /// Validate settings and return detailed errors if invalid.
@@ -189,9 +267,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_allowlist_defaults() {
+        let settings = ServerSettings::from_env();
+        assert!(settings.allow_info_content_types.iter().any(|v| v == "application/dtmf-relay"));
+    }
+
+    #[test]
+    fn test_rate_limit_overrides() {
+        let settings = ServerSettings::from_env()
+            .with_rate_limits(Duration::from_secs(2), 5, 2, 3);
+        assert_eq!(settings.rate_window, Duration::from_secs(2));
+        assert_eq!(settings.info_rate_limit, 5);
+        assert_eq!(settings.reinvite_rate_limit, 2);
+        assert_eq!(settings.update_rate_limit, 3);
+    }
+
+    #[test]
+    fn test_body_limit_overrides() {
+        let settings = ServerSettings::from_env().with_body_limits(1024, 2048);
+        assert_eq!(settings.info_max_body_bytes, 1024);
+        assert_eq!(settings.notify_max_body_bytes, 2048);
+    }
+
+    #[test]
     fn test_valid_default_settings() {
         let settings = ServerSettings::from_env();
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn test_from_file_overrides() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let toml_str = r#"
+allow_refer = false
+rate_window_secs = 2
+info_rate_limit = 5
+transcript_capture_bodies = true
+"#;
+        std::fs::write(tmp.path(), toml_str).unwrap();
+        let settings = ServerSettings::load(Some(tmp.path())).unwrap();
+        assert_eq!(settings.allow_refer, false);
+        assert_eq!(settings.rate_window, Duration::from_secs(2));
+        assert_eq!(settings.info_rate_limit, 5);
+        assert_eq!(settings.transcript_capture_bodies, true);
     }
 
     #[test]

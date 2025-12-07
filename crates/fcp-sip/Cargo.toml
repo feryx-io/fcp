@@ -34,14 +34,19 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 bytes = { workspace = true }
 dashmap = "6.0"
+serde = { workspace = true }
 smol_str = "0.3"
 socket2 = "0.5"
 thiserror = { workspace = true }
 tokio = { version = "1", features = ["full"] }
+toml = "0.8"
 tracing = "0.1"
 urlencoding = "2.1"
 uuid = { workspace = true }
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # TLS support (optional) - must match sip-transport's rustls version (0.22)
 tokio-rustls = { version = "0.25", optional = true }
 rustls-native-certs = { version = "0.7", optional = true }
+tempfile = "3.23.0"

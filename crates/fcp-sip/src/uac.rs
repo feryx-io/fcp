@@ -6,6 +6,7 @@ use anyhow::Result;
 use sip_dialog::{Dialog, Subscription};
 use sip_uac::integrated::{CallHandle, IntegratedUAC};
 use std::sync::Arc;
+use crate::settings::ServerSettings;
 use std::path::PathBuf;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -22,6 +23,7 @@ pub struct SipUserAgentClient {
     /// Siphon-rs integrated UAC with full transaction management
     inner: Arc<IntegratedUAC>,
     transcript_dir: Option<PathBuf>,
+    _metrics: crate::metrics::MetricsHandle,
 }
 
 impl SipUserAgentClient {
@@ -33,6 +35,7 @@ impl SipUserAgentClient {
         Self {
             inner: integrated_uac,
             transcript_dir: None,
+            _metrics: crate::metrics::noop_metrics(),
         }
     }
 
@@ -44,6 +47,15 @@ impl SipUserAgentClient {
         Self {
             inner: integrated_uac,
             transcript_dir,
+            _metrics: crate::metrics::noop_metrics(),
+        }
+    }
+
+    pub fn from_settings(integrated_uac: Arc<IntegratedUAC>, settings: &ServerSettings) -> Self {
+        Self {
+            inner: integrated_uac,
+            transcript_dir: settings.transcript_dir.clone(),
+            _metrics: settings.metrics.clone(),
         }
     }
 
