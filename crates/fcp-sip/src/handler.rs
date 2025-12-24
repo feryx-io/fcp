@@ -748,7 +748,7 @@ impl SipMessageHandler {
             a_leg_codecs,
             b_leg_codecs: None, // B-leg not known yet
             recording_requested: false, // TODO: Could be set based on call attributes
-            dtmf_requested: false,      // TODO: Could be set based on call attributes
+            dtmf_requested: true,       // Enable for testing media anchoring
             conference_call: false,      // TODO: Detect conference scenarios
         };
 

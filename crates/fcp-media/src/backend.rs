@@ -228,6 +228,12 @@ pub mod embedded {
 
             self.sessions.insert(call_id.clone(), session_info);
 
+            // Start RTP forwarding (required for media to flow)
+            forge_session
+                .start_forwarding()
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to start forwarding: {}", e)))?;
+
             // Get RTP/RTCP ports from forge-media session
             let ports = forge_session.ports();
 
