@@ -211,14 +211,21 @@ impl TransportListener {
                     // Convert sip_transport::TransportKind to sip_transaction::TransportKind
                     let txn_transport = convert_transport_kind(packet.transport);
 
-                    if let Err(e) = handler.handle_inbound(
-                        txn_transport,
-                        packet.peer,
-                        packet.payload,
-                        packet.stream,
-                    ).await {
-                        error!("Failed to handle inbound message: {}", e);
-                    }
+                    // IMPORTANT: Spawn message handling in separate task to avoid blocking
+                    // This allows the listener to immediately process the next packet,
+                    // which is critical for B2BUA operation where responses must be
+                    // processed while waiting for B-leg responses
+                    let handler = Arc::clone(&handler);
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_inbound(
+                            txn_transport,
+                            packet.peer,
+                            packet.payload,
+                            packet.stream,
+                        ).await {
+                            error!("Failed to handle inbound message: {}", e);
+                        }
+                    });
                 }
                 _ = shutdown.recv() => {
                     info!("UDP listener shutting down");
@@ -259,14 +266,18 @@ impl TransportListener {
 
                     let txn_transport = convert_transport_kind(packet.transport);
 
-                    if let Err(e) = handler.handle_inbound(
-                        txn_transport,
-                        packet.peer,
-                        packet.payload,
-                        packet.stream,
-                    ).await {
-                        error!("Failed to handle TCP message: {}", e);
-                    }
+                    // IMPORTANT: Spawn message handling in separate task to avoid blocking
+                    let handler = Arc::clone(&handler);
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_inbound(
+                            txn_transport,
+                            packet.peer,
+                            packet.payload,
+                            packet.stream,
+                        ).await {
+                            error!("Failed to handle TCP message: {}", e);
+                        }
+                    });
                 }
                 _ = shutdown.recv() => {
                     info!("TCP listener shutting down");
