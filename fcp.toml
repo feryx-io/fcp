@@ -1,43 +1,31 @@
-# FCP Server Configuration
-
 [node]
-name = "fcp-node"
+name = "fcp-test"
 local_domain = "fcp.local"
 
 [transport]
+local_ip = "192.168.1.81"
 udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
 max_message_size = 65535
 connection_pool_size = 1000
 connection_timeout = { secs = 300, nanos = 0 }
-enable_sdp = true
-local_ip = "192.168.1.81"
 rtp_port = 10000
+enable_sdp = true
+
+[registrar]
+enabled = true
+auth_enabled = false
+realm = "fcp.local"
+data_dir = "./data"
+default_expires = 3600
+min_expires = 60
+max_expires = 86400
 
 [storage]
 backend = "sqlite"
 connection_string = "sqlite://fcp.db"
 max_connections = 10
 connection_timeout = { secs = 30, nanos = 0 }
-
-[registrar]
-enabled = true
-auth_enabled = false
-realm = "fcp.local"
-data_dir = "/tmp/fcp-data"
-users_file = "examples/users.json"
-default_expires = 3600
-min_expires = 60
-max_expires = 86400
-
-[routing]
-enabled = false
-default_tenant_id = "default"
-
-[routing.backend]
-type = "yaml"
-path = "examples/routing.yaml"
-watch = true
 
 [api]
 enabled = true
@@ -47,7 +35,25 @@ metrics_path = "/metrics"
 auth_enabled = false
 
 [observability]
-log_level = "info"
+log_level = "debug"
 log_format = "pretty"
 tracing_enabled = false
 service_name = "fcp"
+
+[routing]
+enabled = false
+default_tenant_id = "default"
+
+[routing.backend]
+type = "yaml"
+path = "routing.yaml"
+watch = true
+
+[media]
+enabled = false
+rtp_port_start = 10000
+rtp_port_end = 20000
+enable_srtp = false
+enable_transcoding = false
+enable_recording = false
+enable_dtmf = true
