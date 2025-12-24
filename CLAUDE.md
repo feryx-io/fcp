@@ -78,7 +78,7 @@ cargo run -p siphond -- --mode b2bua --local-uri sip:b2bua@192.168.1.81 --tcp-bi
 cargo run -p siphond -- --help
 ```
 
-For detailed siphond documentation, see `crates/siphon-rs/bins/siphond/README.md`.
+For detailed siphond documentation, see `external/siphon-rs/bins/siphond/README.md`.
 
 ### Running fcp-server (FCP Platform)
 
@@ -263,7 +263,7 @@ All errors are defined in `fcp-core/src/error.rs`:
 
 ### SIP Stack Integration (siphon-rs)
 
-The SIP stack in `crates/siphon-rs` is a complete, production-grade implementation:
+The SIP stack in `external/siphon-rs` is a complete, production-grade implementation:
 
 **Transaction Layer** (sip-transaction):
 - RFC 3261 compliant state machines with transport-aware timer optimization
@@ -302,7 +302,7 @@ The SIP stack in `crates/siphon-rs` is a complete, production-grade implementati
 - RFC 3966 telephone number URIs: global E.164 and local with phone-context
 - Unified `Uri` enum supporting both SIP and tel URIs
 
-See `crates/siphon-rs/CLAUDE.md` for comprehensive SIP stack documentation.
+See `external/siphon-rs/CLAUDE.md` for comprehensive SIP stack documentation.
 
 ## Development Guidelines
 
@@ -429,7 +429,7 @@ while let Some(event) = ctx.wait_event().await {
 - Focus on parser round-trips and canonicalization
 
 **Fuzz Tests:**
-- Located in `crates/siphon-rs/fuzz/`
+- Located in `external/siphon-rs/fuzz/`
 - Use `cargo-fuzz` for parser hardening
 
 ### Observability
@@ -530,12 +530,12 @@ The siphon-rs SIP stack is maintained as a separate repository and linked as a g
 
 ```bash
 # Update submodule to latest from remote
-cd crates/siphon-rs
+cd external/siphon-rs
 git pull origin main
 cd ../..
 
 # Commit the submodule update in FCP
-git add crates/siphon-rs
+git add external/siphon-rs
 git commit -m "Update siphon-rs submodule to latest"
 ```
 
@@ -544,7 +544,7 @@ git commit -m "Update siphon-rs submodule to latest"
 If you need to modify siphon-rs code:
 
 ```bash
-cd crates/siphon-rs
+cd external/siphon-rs
 
 # Create a branch for your changes
 git checkout -b feature/my-sip-feature
@@ -565,7 +565,7 @@ git push origin feature/my-sip-feature
 git checkout main
 git pull origin main
 cd ../..
-git add crates/siphon-rs
+git add external/siphon-rs
 git commit -m "Update siphon-rs submodule with new feature"
 ```
 
@@ -576,7 +576,7 @@ git commit -m "Update siphon-rs submodule with new feature"
 git submodule status
 
 # See if submodule has uncommitted changes
-cd crates/siphon-rs
+cd external/siphon-rs
 git status
 ```
 
@@ -636,9 +636,9 @@ cargo run -p siphond -- --mode registrar
 
 - **ARCHITECTURE-v0.2.md**: Complete architecture vision and roadmap
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
-- **crates/siphon-rs/CLAUDE.md**: Comprehensive SIP stack documentation
-- **crates/siphon-rs/bins/siphond/README.md**: siphond daemon documentation
-- **RFC Implementation Docs**: `crates/siphon-rs/RFC_*_IMPLEMENTATION.md`
+- **external/siphon-rs/CLAUDE.md**: Comprehensive SIP stack documentation
+- **external/siphon-rs/bins/siphond/README.md**: siphond daemon documentation
+- **RFC Implementation Docs**: `external/siphon-rs/RFC_*_IMPLEMENTATION.md`
 
 ### RFC Compliance
 
@@ -654,7 +654,7 @@ Core RFCs implemented in siphon-rs:
 - **RFC 4028**: Session Timers
 - **RFC 7616/7617**: Digest authentication
 
-See `crates/siphon-rs/CLAUDE.md` for complete RFC compliance details.
+See `external/siphon-rs/CLAUDE.md` for complete RFC compliance details.
 
 ## Troubleshooting
 

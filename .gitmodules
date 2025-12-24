@@ -1,3 +1,6 @@
-[submodule "crates/siphon-rs"]
-	path = crates/siphon-rs
+[submodule "external/siphon-rs"]
+	path = external/siphon-rs
 	url = https://github.com/thevoiceguy/siphon-rs.git
+[submodule "external/forge-media"]
+	path = external/forge-media
+	url = https://github.com/thevoiceguy/forge-media

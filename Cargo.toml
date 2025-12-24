@@ -3,7 +3,7 @@ members = [
     "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing",
 ]
 exclude = [
-    "crates/siphon-rs",
+    "external/siphon-rs",
 ]
 resolver = "2"
 
