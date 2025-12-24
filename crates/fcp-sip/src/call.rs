@@ -194,6 +194,12 @@ pub struct Call {
     /// Original INVITE request from caller
     pub original_invite: Option<Request>,
 
+    /// Media session ID (if media is anchored on server)
+    pub media_session_id: Option<fcp_core::CallId>,
+
+    /// Whether media is anchored for this call
+    pub media_anchored: bool,
+
     /// Time when call was created
     pub created_at: SystemTime,
 
@@ -238,6 +244,8 @@ impl fmt::Debug for Call {
             .field("a_leg_invite_tx", &self.a_leg_invite_tx)
             .field("b_leg", &self.b_leg)
             .field("original_invite", &self.original_invite.is_some())
+            .field("media_session_id", &self.media_session_id)
+            .field("media_anchored", &self.media_anchored)
             .field("created_at", &self.created_at)
             .field("established_at", &self.established_at)
             .field("ended_at", &self.ended_at)
@@ -258,6 +266,8 @@ impl Call {
             a_leg_invite_tx: None,
             b_leg: None,
             original_invite: Some(request),
+            media_session_id: None,
+            media_anchored: false,
             created_at: SystemTime::now(),
             established_at: None,
             ended_at: None,

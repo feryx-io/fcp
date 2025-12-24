@@ -13,6 +13,9 @@ pub struct FcpConfig {
     /// Transport configuration
     pub transport: TransportConfig,
 
+    /// Media configuration
+    pub media: MediaConfig,
+
     /// Storage configuration
     pub storage: StorageConfig,
 
@@ -316,4 +319,56 @@ pub enum RoutingBackend {
         /// Database connection string
         connection_string: String,
     },
+}
+
+/// Media configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaConfig {
+    /// Enable media anchoring (RTP flows through FCP server)
+    /// If false, all calls use pass-through mode (RTP flows direct between endpoints)
+    pub enabled: bool,
+
+    /// RTP port range start
+    pub rtp_port_start: u16,
+
+    /// RTP port range end
+    pub rtp_port_end: u16,
+
+    /// Enable SRTP encryption
+    pub enable_srtp: bool,
+
+    /// Enable transcoding between different codecs
+    pub enable_transcoding: bool,
+
+    /// Enable call recording
+    pub enable_recording: bool,
+
+    /// Enable DTMF detection and relay
+    pub enable_dtmf: bool,
+
+    /// Public IP address for RTP (if behind NAT)
+    pub public_ip: Option<String>,
+
+    /// STUN server for NAT traversal (optional)
+    pub stun_server: Option<String>,
+
+    /// TURN server for NAT traversal (optional)
+    pub turn_server: Option<String>,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, // Disabled by default - use pass-through mode
+            rtp_port_start: 10000,
+            rtp_port_end: 20000,
+            enable_srtp: false,
+            enable_transcoding: false,
+            enable_recording: false,
+            enable_dtmf: true,
+            public_ip: None,
+            stun_server: None,
+            turn_server: None,
+        }
+    }
 }

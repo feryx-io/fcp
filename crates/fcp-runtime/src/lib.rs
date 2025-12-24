@@ -8,6 +8,7 @@ use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
 use fcp_sip::prelude::*;
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
+use fcp_media::MediaManager;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -45,6 +46,9 @@ pub struct Runtime {
 
     /// SIP message handler (for accessing rate limits, subscription index, etc.)
     handler: Arc<SipMessageHandler>,
+
+    /// Media manager for RTP handling
+    media_manager: Arc<MediaManager>,
 
     /// Transport listener for receiving inbound SIP messages
     listener: Option<TransportListener>,
@@ -103,6 +107,11 @@ impl Runtime {
     /// Get the SIP message handler.
     pub fn handler(&self) -> &Arc<SipMessageHandler> {
         &self.handler
+    }
+
+    /// Get the media manager.
+    pub fn media_manager(&self) -> &Arc<MediaManager> {
+        &self.media_manager
     }
 
     /// Get the storage (if registrar is enabled).

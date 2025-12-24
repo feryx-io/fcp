@@ -1,7 +1,7 @@
 //! Runtime builder for configuring and constructing the FCP runtime.
 
 use crate::Runtime;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, ServiceManager};
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
@@ -99,6 +99,9 @@ impl RuntimeBuilder {
             None
         };
 
+        // Create media manager
+        let media_manager = create_media_manager(&config).await?;
+
         // Create transport listener
         let (listener, handler, call_manager) = create_transport_listener(
             &config,
@@ -107,6 +110,7 @@ impl RuntimeBuilder {
             registrar,
             routing_service,
             Arc::clone(&uac),
+            Arc::clone(&media_manager),
         )?;
 
         Ok(Runtime {
@@ -119,6 +123,7 @@ impl RuntimeBuilder {
             uac,
             call_manager,
             handler,
+            media_manager,
             listener: Some(listener),
             shutdown_tx: None,
             storage,
@@ -269,6 +274,43 @@ async fn create_routing_service(
     }
 }
 
+/// Create a media manager based on configuration.
+async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::MediaManager>> {
+    use fcp_media::{BackendType, MediaConfig};
+
+    info!(
+        enabled = config.media.enabled,
+        rtp_port_range = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        "Creating media manager"
+    );
+
+    // Build media configuration from FCP config
+    let media_config = MediaConfig {
+        backend: BackendType::Embedded, // Always use embedded mode for now
+        rtp_port_start: config.media.rtp_port_start,
+        rtp_port_end: config.media.rtp_port_end,
+        enable_srtp: config.media.enable_srtp,
+        enable_transcoding: config.media.enable_transcoding,
+        enable_recording: config.media.enable_recording,
+        enable_dtmf: config.media.enable_dtmf,
+        public_ip: config.media.public_ip.clone(),
+        stun_server: config.media.stun_server.clone(),
+        turn_server: config.media.turn_server.clone(),
+    };
+
+    // Create manager
+    let manager = fcp_media::MediaManager::new(media_config)
+        .await
+        .context("Failed to create media manager")?;
+
+    info!(
+        backend = manager.backend_name(),
+        "Media manager created successfully"
+    );
+
+    Ok(Arc::new(manager))
+}
+
 /// Create a transport listener for receiving inbound SIP messages.
 /// Returns (listener, handler, call_manager) tuple.
 fn create_transport_listener(
@@ -278,6 +320,7 @@ fn create_transport_listener(
     registrar: Option<Arc<fcp_sip::registrar::FcpRegistrar>>,
     routing_service: Option<Arc<fcp_routing::RoutingService>>,
     uac: Arc<SipUserAgentClient>,
+    media_manager: Arc<fcp_media::MediaManager>,
 ) -> Result<(TransportListener, Arc<SipMessageHandler>, Arc<CallManager>)> {
     use fcp_sip::prelude::{ListenerConfig, SipMessageHandler};
 
@@ -340,6 +383,8 @@ fn create_transport_listener(
         routing_service,
         Arc::clone(&call_manager),
         Some(uac),
+        Some(media_manager),
+        Some(config.media.clone()),
     ));
 
     // Create listener (cast handler to trait object)

@@ -1,0 +1,62 @@
+[package]
+name = "fcp-media"
+version = "0.1.1"
+edition = "2021"
+authors = ["FCP Contributors"]
+description = "Media integration layer for FCP - bridges SIP signaling with forge-media engine"
+
+[features]
+default = ["embedded"]
+# Embedded mode: forge-media runs in-process (Phase 1)
+embedded = []
+# Remote mode: forge-media runs as separate service (Future)
+remote = ["reqwest"]
+# Enable both modes
+full = ["embedded", "remote"]
+
+[dependencies]
+# Internal FCP dependencies
+fcp-core = { path = "../fcp-core" }
+
+# forge-media as library (for embedded mode)
+forge-core = { path = "../../external/forge-media/crates/forge-core", optional = false }
+forge-engine = { path = "../../external/forge-media/crates/forge-engine", optional = false }
+forge-rtp = { path = "../../external/forge-media/crates/forge-rtp", optional = false }
+forge-codecs = { path = "../../external/forge-media/crates/forge-codecs", optional = false }
+
+# SIP dependencies (for SDP handling)
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
+
+# HTTP client (for remote mode - optional)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Concurrent collections
+dashmap = "6"
+parking_lot = "0.12"
+
+# Time
+chrono = "0.4"
+
+# UUIDs
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.13"

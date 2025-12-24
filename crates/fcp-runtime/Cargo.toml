@@ -16,6 +16,7 @@ tls = ["fcp-sip/tls"]
 fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip" }
 fcp-routing = { path = "../fcp-routing" }
+fcp-media = { path = "../fcp-media" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

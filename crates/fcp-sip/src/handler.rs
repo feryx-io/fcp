@@ -230,6 +230,12 @@ pub struct SipMessageHandler {
     /// User Agent Client for making outbound calls (B-leg)
     uac: Option<Arc<SipUserAgentClient>>,
 
+    /// Media manager for RTP handling
+    media_manager: Option<Arc<fcp_media::MediaManager>>,
+
+    /// Media configuration
+    media_config: Option<fcp_core::config::MediaConfig>,
+
     /// Per-dialog lock to serialize mid-dialog requests (re-INVITE/UPDATE) to avoid glare
     mid_dialog_lock: Arc<dashmap::DashMap<sip_dialog::DialogId, Arc<tokio::sync::Mutex<()>>>>,
 
@@ -294,6 +300,8 @@ impl SipMessageHandler {
     /// * `routing_service` - Optional routing service for call authorization
     /// * `call_manager` - Call manager for B2BUA functionality
     /// * `uac` - Optional User Agent Client for outbound calls (B-leg forwarding)
+    /// * `media_manager` - Optional media manager for RTP handling
+    /// * `media_config` - Optional media configuration
     pub fn new(
         transaction_manager: Arc<TransactionManager>,
         dialog_manager: Arc<DialogManager>,
@@ -305,6 +313,8 @@ impl SipMessageHandler {
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
         call_manager: Arc<crate::call_manager::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
+        media_manager: Option<Arc<fcp_media::MediaManager>>,
+        media_config: Option<fcp_core::config::MediaConfig>,
     ) -> Self {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -318,6 +328,8 @@ impl SipMessageHandler {
             routing_service,
             call_manager,
             uac,
+            media_manager,
+            media_config,
             settings,
         )
     }
@@ -333,6 +345,8 @@ impl SipMessageHandler {
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
         call_manager: Arc<crate::call_manager::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
+        media_manager: Option<Arc<fcp_media::MediaManager>>,
+        media_config: Option<fcp_core::config::MediaConfig>,
         settings: ServerSettings,
     ) -> Self {
         // Validate settings early to catch configuration errors at startup
@@ -408,6 +422,8 @@ impl SipMessageHandler {
             routing_service,
             call_manager,
             uac,
+            media_manager,
+            media_config,
             mid_dialog_lock: Arc::new(dashmap::DashMap::new()),
             subscription_manager,
             subscription_index: Arc::new(dashmap::DashMap::new()),
@@ -671,6 +687,9 @@ impl SipMessageHandler {
             "Created B2BUA call"
         );
 
+        // Evaluate media anchoring decision
+        self.evaluate_media_anchoring(request, &call_id).await;
+
         // If UAC is available, forward to B-leg; otherwise use UAS mode
         if let Some(uac) = &self.uac {
             // Full B2BUA mode: Forward INVITE to B-leg
@@ -678,6 +697,125 @@ impl SipMessageHandler {
         } else {
             // Fallback UAS mode: Accept call directly without B-leg forwarding
             self.handle_invite_uas_mode(request, handle, call_id).await
+        }
+    }
+
+    /// Evaluate whether to anchor media for this call.
+    ///
+    /// This method analyzes the call's requirements and makes a decision on whether
+    /// RTP should flow through the server (anchored) or directly between endpoints (pass-through).
+    ///
+    /// Decision factors:
+    /// - Global media.enabled flag
+    /// - Codec compatibility between endpoints
+    /// - Recording requirements
+    /// - DTMF detection/injection needs
+    /// - Conference call requirements
+    async fn evaluate_media_anchoring(
+        &self,
+        request: &sip_core::Request,
+        call_id: &crate::call::CallId,
+    ) {
+        // Check if media manager and config are available
+        let (media_manager, media_config) = match (&self.media_manager, &self.media_config) {
+            (Some(mm), Some(mc)) => (mm, mc),
+            _ => {
+                debug!(call_id = %call_id, "Media manager not available, using pass-through");
+                return;
+            }
+        };
+
+        // Extract codecs from A-leg SDP
+        let a_leg_codecs = if !request.body.is_empty() {
+            let sdp = String::from_utf8_lossy(&request.body);
+            fcp_media::extract_codecs_from_sdp(&sdp)
+        } else {
+            Vec::new()
+        };
+
+        debug!(
+            call_id = %call_id,
+            codecs = ?a_leg_codecs,
+            "Extracted codecs from A-leg SDP"
+        );
+
+        // Build decision context
+        let ctx = fcp_media::MediaDecisionContext {
+            media_enabled: media_config.enabled,
+            transcoding_enabled: media_config.enable_transcoding,
+            recording_enabled: media_config.enable_recording,
+            dtmf_enabled: media_config.enable_dtmf,
+            a_leg_codecs,
+            b_leg_codecs: None, // B-leg not known yet
+            recording_requested: false, // TODO: Could be set based on call attributes
+            dtmf_requested: false,      // TODO: Could be set based on call attributes
+            conference_call: false,      // TODO: Detect conference scenarios
+        };
+
+        // Make anchoring decision
+        let decision = fcp_media::should_anchor_media(&ctx);
+
+        match decision {
+            fcp_media::MediaAnchoringDecision::PassThrough { reason } => {
+                info!(
+                    call_id = %call_id,
+                    reason = %reason,
+                    "Media decision: Pass-through (RTP flows directly)"
+                );
+                // No action needed - existing behavior continues
+            }
+            fcp_media::MediaAnchoringDecision::Anchored {
+                reason,
+                requires_transcoding,
+            } => {
+                info!(
+                    call_id = %call_id,
+                    reason = %reason,
+                    transcoding = requires_transcoding,
+                    "Media decision: Anchored (RTP flows through server)"
+                );
+
+                // Create FCP-internal CallId for media session
+                // Note: This is different from SIP Call-ID
+                let fcp_call_id = fcp_core::CallId::new();
+
+                // Create FCP DialogId for the session
+                let fcp_dialog_id = fcp_core::DialogId::new();
+
+                // Create media session
+                match media_manager
+                    .create_session_default(fcp_call_id.clone(), fcp_dialog_id)
+                    .await
+                {
+                    Ok(session) => {
+                        let session_state = session.state().await;
+                        info!(
+                            call_id = %call_id,
+                            media_session_id = %fcp_call_id,
+                            state = ?session_state,
+                            "Created media session"
+                        );
+
+                        // Update call object to track media session
+                        let _ = self.call_manager.update_call(call_id, |call| {
+                            call.media_session_id = Some(fcp_call_id);
+                            call.media_anchored = true;
+                        });
+
+                        // TODO: Store session for later SDP rewriting
+                        // When we forward the INVITE, we'll need to rewrite the SDP
+                        // to point to the server's RTP ports
+                    }
+                    Err(e) => {
+                        error!(
+                            call_id = %call_id,
+                            error = %e,
+                            "Failed to create media session, falling back to pass-through"
+                        );
+                        // Fall back to pass-through on error
+                    }
+                }
+            }
         }
     }
 
@@ -895,11 +1033,57 @@ impl SipMessageHandler {
         });
 
         // Extract SDP from A-leg INVITE to forward to B-leg
-        let a_leg_sdp = if !request.body.is_empty() {
+        let mut a_leg_sdp = if !request.body.is_empty() {
             Some(String::from_utf8_lossy(&request.body).to_string())
         } else {
             None
         };
+
+        // Rewrite SDP if media is anchored on server
+        if let Some(ref original_sdp) = a_leg_sdp {
+            // Check if this call has anchored media
+            let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
+                if call.media_anchored {
+                    call.media_session_id.clone()
+                } else {
+                    None
+                }
+            });
+
+            if let (Some(media_session_id), Some(media_manager)) = (media_session_id, &self.media_manager) {
+                // Get media session to extract RTP port
+                match media_manager.get_session(&media_session_id).await {
+                    Ok(session) => {
+                        let rtp_port = session.rtp_port;
+
+                        // Rewrite SDP to point to server's RTP endpoint
+                        let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                            original_sdp,
+                            &self.local_addr,
+                            rtp_port,
+                        );
+
+                        info!(
+                            call_id = %call_id,
+                            original_port = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
+                            server_ip = %self.local_addr,
+                            rtp_port = rtp_port,
+                            "Rewrote SDP for media anchoring"
+                        );
+
+                        a_leg_sdp = Some(rewritten_sdp);
+                    }
+                    Err(e) => {
+                        error!(
+                            call_id = %call_id,
+                            media_session_id = %media_session_id,
+                            error = %e,
+                            "Failed to get media session for SDP rewriting, using original SDP"
+                        );
+                    }
+                }
+            }
+        }
 
         // Extract caller's identity from A-leg for B2BUA caller ID preservation
         let caller_display_name = extract_from_display_name(request);
@@ -1156,11 +1340,57 @@ impl SipMessageHandler {
         if b_leg_status == 200 {
             // Success! Relay 200 OK to A-leg
             // Extract SDP from B-leg response
-            let b_leg_sdp = if !b_leg_final.body.is_empty() {
+            let mut b_leg_sdp = if !b_leg_final.body.is_empty() {
                 Some(String::from_utf8_lossy(&b_leg_final.body).to_string())
             } else {
                 None
             };
+
+            // Rewrite B-leg SDP if media is anchored on server
+            if let Some(ref original_sdp) = b_leg_sdp {
+                // Check if this call has anchored media
+                let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
+                    if call.media_anchored {
+                        call.media_session_id.clone()
+                    } else {
+                        None
+                    }
+                });
+
+                if let (Some(media_session_id), Some(media_manager)) = (media_session_id, &self.media_manager) {
+                    // Get media session to extract RTP port
+                    match media_manager.get_session(&media_session_id).await {
+                        Ok(session) => {
+                            let rtp_port = session.rtp_port;
+
+                            // Rewrite SDP to point to server's RTP endpoint
+                            let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                                original_sdp,
+                                &self.local_addr,
+                                rtp_port,
+                            );
+
+                            info!(
+                                call_id = %call_id,
+                                original_port = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
+                                server_ip = %self.local_addr,
+                                rtp_port = rtp_port,
+                                "Rewrote B-leg SDP for media anchoring"
+                            );
+
+                            b_leg_sdp = Some(rewritten_sdp);
+                        }
+                        Err(e) => {
+                            error!(
+                                call_id = %call_id,
+                                media_session_id = %media_session_id,
+                                error = %e,
+                                "Failed to get media session for B-leg SDP rewriting, using original SDP"
+                            );
+                        }
+                    }
+                }
+            }
 
             // Update B-leg dialog with confirmed To-tag from 200 OK
             if let Some(to_header) = sip_parse::header(&b_leg_final.headers, "To") {
@@ -1587,6 +1817,36 @@ impl SipMessageHandler {
 
             // Terminate the call in CallManager
             let _ = self.call_manager.terminate_call(&call.id, None);
+
+            // Terminate media session if anchored
+            if call.media_anchored {
+                if let (Some(media_session_id), Some(media_manager)) = (&call.media_session_id, &self.media_manager) {
+                    let media_session_id = media_session_id.clone();
+                    let media_manager = Arc::clone(media_manager);
+                    let call_id = call.id;
+
+                    // Spawn async task to terminate media session
+                    tokio::spawn(async move {
+                        match media_manager.terminate_session(&media_session_id).await {
+                            Ok(()) => {
+                                info!(
+                                    call_id = %call_id,
+                                    media_session_id = %media_session_id,
+                                    "Terminated media session"
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    call_id = %call_id,
+                                    media_session_id = %media_session_id,
+                                    error = %e,
+                                    "Failed to terminate media session"
+                                );
+                            }
+                        }
+                    });
+                }
+            }
 
             // Cleanup per-dialog state to prevent memory leaks
             if let Some(a_dialog) = &call.a_leg.dialog {
