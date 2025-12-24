@@ -185,7 +185,6 @@ use std::fs::OpenOptions;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use std::io::Write;
-use chrono::Utc;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -248,7 +247,7 @@ pub struct SipMessageHandler {
     metrics: MetricsHandle,
 
     /// Optional transcript directory for SIP message capture
-    transcript_dir: Option<PathBuf>,
+    _transcript_dir: Option<PathBuf>,
 
     /// Channel for async transcript writes (background task)
     transcript_tx: Option<mpsc::UnboundedSender<TranscriptEntry>>,
@@ -373,11 +372,14 @@ impl SipMessageHandler {
                         .append(true)
                         .open(&path)
                     {
+                        let entry_ts = chrono::DateTime::<chrono::Utc>::from(entry.timestamp)
+                            .to_rfc3339();
                         let _ = writeln!(
                             file,
-                            "{} {} dialog={} cseq={} peer={} transport={} rr={} route={} body_hash={}",
-                            chrono::Utc::now().to_rfc3339(),
+                            "{} {} {} dialog={} cseq={} peer={} transport={} rr={} route={} body_hash={}",
+                            entry_ts,
                             entry.direction,
+                            entry.method_or_status,
                             entry.dialog_id_str,
                             entry.cseq,
                             entry.peer.as_deref().unwrap_or(""),
@@ -411,7 +413,7 @@ impl SipMessageHandler {
             subscription_index: Arc::new(dashmap::DashMap::new()),
             session_timer_manager,
             metrics: settings.metrics.clone(),
-            transcript_dir: settings.transcript_dir.clone(),
+            _transcript_dir: settings.transcript_dir.clone(),
             transcript_tx,
             settings,
             rate_limits: Arc::new(dashmap::DashMap::new()),
@@ -2942,49 +2944,6 @@ impl SipMessageHandler {
         response
     }
 
-    /// Validate SDP content for offer/answer forwarding.
-    fn validate_sdp_body(
-        &self,
-        request: &sip_core::Request,
-        prior_sdp: Option<&str>,
-    ) -> Result<Option<String>> {
-        if request.body.is_empty() {
-            // Allow empty body only if we have prior SDP (late-offer/answerless re-INVITE)
-            if prior_sdp.is_some() {
-                return Ok(None);
-            } else {
-                return Err(anyhow::anyhow!("No SDP present and no prior offer/answer"));
-            }
-        }
-
-        // Require application/sdp when body present
-        let ctype = sip_parse::header(&request.headers, "Content-Type")
-            .ok_or_else(|| anyhow::anyhow!("Missing Content-Type"))?;
-        if ctype.to_lowercase() != "application/sdp" {
-            return Err(anyhow::anyhow!("Unsupported Content-Type"));
-        }
-
-        let body_str = String::from_utf8_lossy(&request.body).to_string();
-        let sdp = parse_sdp(&body_str).map_err(|e| anyhow::anyhow!("Invalid SDP: {}", e))?;
-
-        // Basic checks: at least one media line (audio or video)
-        if sdp.media.is_empty() {
-            return Err(anyhow::anyhow!("SDP missing media descriptions"));
-        }
-
-        // Optional: ensure audio present
-        let has_audio = sdp
-            .media
-            .iter()
-            .any(|m| matches!(m.media_type, sip_sdp::MediaType::Audio));
-        if !has_audio {
-            return Err(anyhow::anyhow!("SDP missing audio media"));
-        }
-
-        // Accept hold/resume attributes (sendonly/inactive) without rejecting
-        Ok(Some(body_str))
-    }
-
     /// Find call and which leg the request belongs to.
     fn lookup_call_for_in_dialog(
         &self,
@@ -3439,6 +3398,7 @@ impl InboundMessageHandler for SipMessageHandler {
                 stream,
                 server_name: None,
                 ws_uri: None,
+                udp_socket: None,
             };
 
             // Create server transaction
@@ -3824,6 +3784,7 @@ fn extract_from_uri(request: &sip_core::Request) -> anyhow::Result<sip_core::Sip
     match sip_core::Uri::parse(uri_str) {
         Some(sip_core::Uri::Sip(uri)) => Ok(uri),
         Some(sip_core::Uri::Tel(_)) => Err(anyhow::anyhow!("Tel URI in From header not supported for dialog creation")),
+        Some(sip_core::Uri::Absolute(_)) => Err(anyhow::anyhow!("Absolute URI in From header not supported for dialog creation")),
         None => Err(anyhow::anyhow!("Failed to parse From URI")),
     }
 }

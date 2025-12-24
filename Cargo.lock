@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "sip-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "sip-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "percent-encoding",
@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "sip-dialog"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "sip-dns"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "sip-observe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "once_cell",
  "tracing",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "sip-parse"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "httpdate",
@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "sip-ratelimit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashmap 5.5.3",
  "parking_lot",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "sip-registrar"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1900,7 +1900,7 @@ dependencies = [
 
 [[package]]
 name = "sip-sdp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nom",
  "smol_str",
@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "sip-transaction"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "sip-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "sip-uac"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "sip-uas"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",

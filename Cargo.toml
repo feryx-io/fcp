@@ -4,6 +4,7 @@ members = [
 ]
 exclude = [
     "external/siphon-rs",
+    "external/forge-media",
 ]
 resolver = "2"
 

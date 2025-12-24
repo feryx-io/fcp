@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 /// when the file changes.
 pub struct YamlRoutingStore {
     /// Path to the YAML configuration file
-    config_path: PathBuf,
+    _config_path: PathBuf,
 
     /// Cached routing data (protected by RwLock for concurrent access)
     data: Arc<RwLock<RoutingData>>,
@@ -78,7 +78,7 @@ impl YamlRoutingStore {
         };
 
         Ok(Self {
-            config_path,
+            _config_path: config_path,
             data,
             _watcher: watcher,
         })

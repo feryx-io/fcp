@@ -17,17 +17,17 @@ fcp-core = { path = "../fcp-core" }
 fcp-routing = { path = "../fcp-routing" }
 
 # SIP stack from siphon-rs (as path dependencies from submodule)
-sip-core = { path = "../external/siphon-rs/crates/sip-core" }
-sip-parse = { path = "../external/siphon-rs/crates/sip-parse" }
-sip-transport = { path = "../external/siphon-rs/crates/sip-transport" }
-sip-transaction = { path = "../external/siphon-rs/crates/sip-transaction" }
-sip-dialog = { path = "../external/siphon-rs/crates/sip-dialog" }
-sip-dns = { path = "../external/siphon-rs/crates/sip-dns" }
-sip-auth = { path = "../external/siphon-rs/crates/sip-auth" }
-sip-registrar = { path = "../external/siphon-rs/crates/sip-registrar" }
-sip-sdp = { path = "../external/siphon-rs/crates/sip-sdp" }
-sip-uac = { path = "../external/siphon-rs/crates/sip-uac" }
-sip-uas = { path = "../external/siphon-rs/crates/sip-uas" }
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
+sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-auth = { path = "../../external/siphon-rs/crates/sip-auth" }
+sip-registrar = { path = "../../external/siphon-rs/crates/sip-registrar" }
+sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
 
 # Common dependencies
 anyhow = { workspace = true }
