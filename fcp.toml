@@ -50,7 +50,7 @@ path = "routing.yaml"
 watch = true
 
 [media]
-enabled = false
+enabled = true
 rtp_port_start = 10000
 rtp_port_end = 20000
 enable_srtp = false
