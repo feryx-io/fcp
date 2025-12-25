@@ -462,6 +462,7 @@ mod tests {
             enabled: true,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
+            media_preferences: MediaPreferences::default(),
         };
 
         storage.put_user(user.clone()).await.unwrap();

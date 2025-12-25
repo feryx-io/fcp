@@ -333,6 +333,7 @@ mod tests {
             enabled: true,
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
+            media_preferences: fcp_core::MediaPreferences::default(),
         };
         storage.put_user(user).await.unwrap();
 

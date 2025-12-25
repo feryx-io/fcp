@@ -4206,6 +4206,8 @@ mod tests {
             None, // No routing service
             call_manager,
             None, // No UAC
+            None, // No media manager
+            None, // No media config
         );
 
         // Create a REGISTER request
@@ -4255,6 +4257,8 @@ mod tests {
             None,
             call_manager,
             None,
+            None, // No media manager
+            None, // No media config
         );
 
         let mut headers = Headers::new();
@@ -4307,6 +4311,8 @@ mod tests {
             None,
             call_manager,
             None,
+            None, // No media manager
+            None, // No media config
         );
 
         let mut headers = Headers::new();
@@ -4446,6 +4452,8 @@ mod tests {
             None, // No routing service
             call_manager,
             None, // No UAC
+            None, // No media manager
+            None, // No media config
         );
 
         // Create a REGISTER request
