@@ -126,6 +126,9 @@ pub struct FcpRegistrar {
 
     /// Enable authentication
     auth_enabled: bool,
+
+    /// Credential store for looking up user preferences
+    credential_store: Option<Arc<dyn CredentialStore>>,
 }
 
 impl FcpRegistrar {
@@ -143,9 +146,9 @@ impl FcpRegistrar {
         let location_store = LocationStoreAdapter::new(registration_store);
         let realm_str = realm.unwrap_or_else(|| "fcp.local".to_string());
 
-        let (registrar, auth_enabled) = if let Some(cred_store) = credential_store {
+        let (registrar, auth_enabled) = if let Some(ref cred_store) = credential_store {
             // Create authenticator with async credential store adapter
-            let cred_adapter = CredentialStoreAdapter::new(cred_store, realm_str.clone());
+            let cred_adapter = CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
             let sync_adapter = sip_auth::AsyncToSyncCredentialAdapter::new(cred_adapter);
             let authenticator = DigestAuthenticator::new(&realm_str, sync_adapter);
 
@@ -162,6 +165,7 @@ impl FcpRegistrar {
         Self {
             registrar,
             auth_enabled,
+            credential_store,
         }
     }
 
@@ -233,6 +237,39 @@ impl FcpRegistrar {
         };
 
         self.registrar.location_store().lookup(&normalized).await
+    }
+
+    /// Get media preferences for a user.
+    ///
+    /// # Arguments
+    /// * `username` - The username to look up
+    ///
+    /// # Returns
+    /// The user's media preferences, or default preferences if user not found
+    pub async fn get_user_media_preferences(&self, username: &str) -> fcp_core::MediaPreferences {
+        if let Some(ref cred_store) = self.credential_store {
+            match cred_store.get_user(username).await {
+                Ok(Some(user)) => {
+                    debug!(
+                        username = %username,
+                        force_anchor = %user.media_preferences.force_media_anchoring,
+                        dtmf = %user.media_preferences.enable_dtmf_detection,
+                        record = %user.media_preferences.record_all_calls,
+                        "Retrieved user media preferences"
+                    );
+                    return user.media_preferences;
+                }
+                Ok(None) => {
+                    debug!(username = %username, "User not found, using default media preferences");
+                }
+                Err(e) => {
+                    tracing::error!(username = %username, error = %e, "Failed to look up user");
+                }
+            }
+        }
+
+        // Return default preferences if no credential store or user not found
+        fcp_core::MediaPreferences::default()
     }
 }
 

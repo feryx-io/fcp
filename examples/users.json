@@ -3,18 +3,36 @@
     "username": "alice",
     "password": "secret123",
     "display_name": "Alice Test User",
-    "enabled": true
+    "enabled": true,
+    "media_preferences": {
+      "force_media_anchoring": false,
+      "enable_dtmf_detection": true,
+      "record_all_calls": false,
+      "preferred_codecs": ["PCMU", "PCMA"]
+    }
   },
   {
     "username": "bob",
     "password": "secret123",
     "display_name": "Bob Test User",
-    "enabled": true
+    "enabled": true,
+    "media_preferences": {
+      "force_media_anchoring": true,
+      "enable_dtmf_detection": true,
+      "record_all_calls": false,
+      "preferred_codecs": ["PCMU", "PCMA", "G722"]
+    }
   },
   {
     "username": "charlie",
     "password": "secret123",
     "display_name": "Charlie Test User",
-    "enabled": true
+    "enabled": true,
+    "media_preferences": {
+      "force_media_anchoring": false,
+      "enable_dtmf_detection": false,
+      "record_all_calls": true,
+      "preferred_codecs": ["PCMU"]
+    }
   }
 ]

@@ -739,7 +739,43 @@ impl SipMessageHandler {
             "Extracted codecs from A-leg SDP"
         );
 
-        // Build decision context
+        // Look up user media preferences
+        let user_prefs = if let Some(ref registrar) = self.registrar {
+            // Extract username from From header (simple parsing)
+            // From: "Alice" <sip:alice@example.com> or sip:alice@example.com
+            let username = sip_parse::header(&request.headers, "From")
+                .and_then(|from| {
+                    // Extract URI between < > if present, otherwise use whole string
+                    let uri_part = if let Some(start) = from.as_str().find('<') {
+                        if let Some(end) = from.as_str().find('>') {
+                            &from.as_str()[start + 1..end]
+                        } else {
+                            from.as_str()
+                        }
+                    } else {
+                        from.as_str()
+                    };
+
+                    // Extract username from sip:username@domain
+                    if let Some(user_start) = uri_part.find("sip:") {
+                        let after_sip = &uri_part[user_start + 4..];
+                        if let Some(at_pos) = after_sip.find('@') {
+                            return Some(after_sip[..at_pos].to_string());
+                        }
+                    }
+                    None
+                });
+
+            if let Some(user) = username {
+                registrar.get_user_media_preferences(&user).await
+            } else {
+                fcp_core::MediaPreferences::default()
+            }
+        } else {
+            fcp_core::MediaPreferences::default()
+        };
+
+        // Build decision context using user preferences
         let ctx = fcp_media::MediaDecisionContext {
             media_enabled: media_config.enabled,
             transcoding_enabled: media_config.enable_transcoding,
@@ -747,9 +783,9 @@ impl SipMessageHandler {
             dtmf_enabled: media_config.enable_dtmf,
             a_leg_codecs,
             b_leg_codecs: None, // B-leg not known yet
-            recording_requested: false, // TODO: Could be set based on call attributes
-            dtmf_requested: true,       // Enable for testing media anchoring
-            conference_call: false,      // TODO: Detect conference scenarios
+            recording_requested: user_prefs.record_all_calls,
+            dtmf_requested: user_prefs.enable_dtmf_detection || user_prefs.force_media_anchoring,
+            conference_call: false, // TODO: Detect conference scenarios
         };
 
         // Make anchoring decision

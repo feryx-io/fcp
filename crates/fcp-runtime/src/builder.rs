@@ -512,6 +512,7 @@ async fn load_users_from_file(
             enabled: entry.enabled,
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
+            media_preferences: entry.media_preferences.clone(),
         };
 
         storage.put_user(user).await?;
@@ -544,6 +545,7 @@ async fn create_default_test_users(storage: &Arc<fcp_core::FileBackedStorage>) -
             enabled: true,
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
+            media_preferences: fcp_core::MediaPreferences::default(),
         };
 
         storage.put_user(user.clone()).await?;

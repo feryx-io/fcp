@@ -53,6 +53,8 @@ pub struct CreateUserRequest {
     pub tenant_id: fcp_core::TenantId,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub media_preferences: fcp_core::MediaPreferences,
 }
 
 fn default_tenant_id() -> fcp_core::TenantId {
@@ -132,6 +134,7 @@ pub async fn create_user(
         enabled: req.enabled,
         created_at: std::time::SystemTime::now(),
         updated_at: std::time::SystemTime::now(),
+        media_preferences: req.media_preferences,
     };
 
     require_storage!(state).put_user(user.clone()).await?;

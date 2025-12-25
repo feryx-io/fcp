@@ -25,7 +25,8 @@ pub use crate::error::{
 pub use crate::identifiers::*;
 pub use crate::service::{Service, ServiceManager};
 pub use crate::storage::{
-    CredentialStore, FileBackedStorage, Registration, RegistrationStore, User, UserFileEntry,
+    CredentialStore, FileBackedStorage, MediaPreferences, Registration, RegistrationStore, User,
+    UserFileEntry,
 };
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,

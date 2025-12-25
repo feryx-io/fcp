@@ -63,10 +63,50 @@ pub struct User {
     /// Last modified timestamp
     #[serde(with = "system_time_serde")]
     pub updated_at: SystemTime,
+
+    /// Media preferences for this user
+    #[serde(default)]
+    pub media_preferences: MediaPreferences,
 }
 
 fn default_tenant_id() -> crate::TenantId {
     crate::TenantId::nil()
+}
+
+/// Media preferences for a user account.
+/// These settings control default behavior for calls to/from this user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaPreferences {
+    /// Force media to always flow through server (for testing/debugging)
+    #[serde(default)]
+    pub force_media_anchoring: bool,
+
+    /// Enable DTMF detection for this user's calls
+    #[serde(default = "default_true")]
+    pub enable_dtmf_detection: bool,
+
+    /// Record all calls for this user
+    #[serde(default)]
+    pub record_all_calls: bool,
+
+    /// Preferred audio codecs in priority order
+    #[serde(default = "default_codecs")]
+    pub preferred_codecs: Vec<String>,
+}
+
+impl Default for MediaPreferences {
+    fn default() -> Self {
+        Self {
+            force_media_anchoring: false,
+            enable_dtmf_detection: true,
+            record_all_calls: false,
+            preferred_codecs: default_codecs(),
+        }
+    }
+}
+
+fn default_codecs() -> Vec<String> {
+    vec!["PCMU".to_string(), "PCMA".to_string()]
 }
 
 /// User definition for config files (passwords are plaintext and will be hashed on load).
@@ -88,6 +128,10 @@ pub struct UserFileEntry {
     /// Enabled flag (default: true)
     #[serde(default = "default_true")]
     pub enabled: bool,
+
+    /// Media preferences for this user
+    #[serde(default)]
+    pub media_preferences: MediaPreferences,
 }
 
 fn default_true() -> bool {
