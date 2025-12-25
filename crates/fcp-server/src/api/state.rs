@@ -1,6 +1,7 @@
 //! Shared API state.
 
 use fcp_core::FileBackedStorage;
+use fcp_media::MediaManager;
 use fcp_sip::prelude::{DialogManager, SubscriptionManager};
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
@@ -23,6 +24,9 @@ pub struct ApiState {
 
     /// SIP message handler (for accessing rate limits, subscription index)
     pub handler: Arc<SipMessageHandler>,
+
+    /// Media manager for recording control (optional)
+    pub media_manager: Option<Arc<MediaManager>>,
 }
 
 impl ApiState {
@@ -32,6 +36,7 @@ impl ApiState {
         subscription_manager: Arc<SubscriptionManager>,
         call_manager: Arc<CallManager>,
         handler: Arc<SipMessageHandler>,
+        media_manager: Option<Arc<MediaManager>>,
     ) -> Self {
         Self {
             storage,
@@ -39,6 +44,7 @@ impl ApiState {
             subscription_manager,
             call_manager,
             handler,
+            media_manager,
         }
     }
 }

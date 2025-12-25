@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
     let subscription_manager = Arc::clone(runtime.subscription_manager());
     let call_manager = Arc::clone(runtime.call_manager());
     let handler = Arc::clone(runtime.handler());
+    let media_manager = Some(Arc::clone(runtime.media_manager()));
 
     // Start the runtime
     runtime.start().await?;
@@ -66,6 +67,7 @@ async fn main() -> Result<()> {
             subscription_manager,
             call_manager,
             handler,
+            media_manager,
         );
         let bind_addr = api_config.bind;
 

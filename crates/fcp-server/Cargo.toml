@@ -20,6 +20,7 @@ path = "src/main.rs"
 fcp-core = { path = "../fcp-core" }
 fcp-runtime = { path = "../fcp-runtime" }
 fcp-sip = { path = "../fcp-sip" }
+fcp-media = { path = "../fcp-media" }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

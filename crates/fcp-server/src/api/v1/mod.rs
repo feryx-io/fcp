@@ -1,13 +1,14 @@
 //! API v1 routes.
 
 pub mod debug;
+pub mod media;
 pub mod registrations;
 pub mod system;
 pub mod users;
 
 use crate::api::state::ApiState;
 use axum::{
-    routing::{delete, get, put},
+    routing::{delete, get, post, put},
     Router,
 };
 
@@ -41,5 +42,15 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/registrations/:aor/:contact",
             delete(registrations::delete_registration),
+        )
+        // Media and recording endpoints
+        .route("/calls", get(media::list_calls))
+        .route(
+            "/calls/:call_id/recording/start",
+            post(media::start_recording),
+        )
+        .route(
+            "/calls/:call_id/recording/stop",
+            post(media::stop_recording),
         )
 }
