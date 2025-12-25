@@ -293,6 +293,8 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
         enable_transcoding: config.media.enable_transcoding,
         enable_recording: config.media.enable_recording,
         enable_dtmf: config.media.enable_dtmf,
+        recording_dir: "./recordings".to_string(), // Default recording directory
+        recording_format: "wav".to_string(), // Default to WAV format
         public_ip: config.media.public_ip.clone(),
         stun_server: config.media.stun_server.clone(),
         turn_server: config.media.turn_server.clone(),

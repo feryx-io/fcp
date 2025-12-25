@@ -402,24 +402,49 @@ pub mod embedded {
         }
 
         async fn start_recording(&self, call_id: &fcp_core::CallId, path: String) -> Result<()> {
-            let _session_info = self
+            let session_info = self
                 .sessions
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
-            // forge-media recording integration would go here
-            debug!(?call_id, path, "Starting recording");
+            // Determine format from file extension
+            let format = if path.ends_with(".opus") {
+                forge_core::AudioFormat::opus_mono()
+            } else {
+                // Default to WAV (PCM)
+                forge_core::AudioFormat::pcm_mono()
+            };
+
+            debug!(?call_id, path = %path, format = ?format, "Starting recording");
+
+            // Enable recording on forge-media session
+            session_info
+                .forge_session
+                .enable_recording(&path, format)
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to start recording: {}", e)))?;
+
+            info!(?call_id, path = %path, "Recording started");
 
             Ok(())
         }
 
         async fn stop_recording(&self, call_id: &fcp_core::CallId) -> Result<()> {
-            let _session_info = self
+            let session_info = self
                 .sessions
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
             debug!(?call_id, "Stopping recording");
+
+            // Disable recording on forge-media session
+            session_info
+                .forge_session
+                .disable_recording()
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to stop recording: {}", e)))?;
+
+            info!(?call_id, "Recording stopped");
 
             Ok(())
         }

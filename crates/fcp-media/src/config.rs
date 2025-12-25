@@ -33,6 +33,14 @@ pub struct MediaConfig {
     #[serde(default = "default_true")]
     pub enable_dtmf: bool,
 
+    /// Recording directory path
+    #[serde(default = "default_recording_dir")]
+    pub recording_dir: String,
+
+    /// Recording format (wav or opus)
+    #[serde(default = "default_recording_format")]
+    pub recording_format: String,
+
     /// Public IP address for media (for NAT scenarios)
     pub public_ip: Option<String>,
 
@@ -92,6 +100,8 @@ impl Default for MediaConfig {
             enable_transcoding: true,
             enable_recording: false,
             enable_dtmf: true,
+            recording_dir: default_recording_dir(),
+            recording_format: default_recording_format(),
             public_ip: None,
             stun_server: None,
             turn_server: None,
@@ -118,6 +128,14 @@ fn default_timeout_ms() -> u64 {
 
 fn default_max_retries() -> u32 {
     3
+}
+
+fn default_recording_dir() -> String {
+    "./recordings".to_string()
+}
+
+fn default_recording_format() -> String {
+    "wav".to_string()
 }
 
 #[cfg(test)]
