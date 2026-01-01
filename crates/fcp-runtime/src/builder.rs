@@ -418,6 +418,7 @@ async fn create_uac(
             .transport
             .udp_bind
             .map(|addr| addr.port())
+            .filter(|&p| p != 0) // Port 0 means OS-assigned, use default instead
             .unwrap_or(5060);
         format!("{}:{}", local_ip, port)
     } else {
@@ -425,7 +426,10 @@ async fn create_uac(
         config
             .transport
             .udp_bind
-            .map(|addr| addr.to_string())
+            .map(|addr| {
+                let port = if addr.port() == 0 { 5060 } else { addr.port() };
+                format!("{}:{}", addr.ip(), port)
+            })
             .unwrap_or_else(|| "0.0.0.0:5060".to_string())
     };
 
@@ -471,7 +475,8 @@ fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
 
     let bind_port = bind_addr.port();
 
-    let uri_str = if bind_port != 5060 {
+    // Don't include port in URI if it's 0 (OS-assigned) or 5060 (default)
+    let uri_str = if bind_port != 0 && bind_port != 5060 {
         format!("sip:{}@{}:{}", config.node.name, domain, bind_port)
     } else {
         format!("sip:{}@{}", config.node.name, domain)
