@@ -132,14 +132,14 @@ impl CallLeg {
     /// Create a new inbound call leg from an INVITE request.
     pub fn from_invite(request: &Request, peer: SocketAddr) -> Self {
         // Extract From header
-        let from = sip_parse::header(&request.headers, "From")
+        let from = sip_parse::header(request.headers(), "From")
             .map(|s| s.as_str())
             .unwrap_or("");
         let (remote_uri, remote_display_name) = parse_name_addr(from);
 
         // Extract SDP body if present
-        let sdp = if !request.body.is_empty() {
-            Some(String::from_utf8_lossy(&request.body).to_string())
+        let sdp = if !request.body().is_empty() {
+            Some(String::from_utf8_lossy(&request.body()).to_string())
         } else {
             None
         };
@@ -318,7 +318,7 @@ impl Call {
             Some(&b_leg.remote_uri)
         } else if let Some(invite) = &self.original_invite {
             // Parse To header from original INVITE
-            sip_parse::header(&invite.headers, "To").map(|s| s.as_str())
+            sip_parse::header(invite.headers(), "To").map(|s| s.as_str())
         } else {
             None
         }

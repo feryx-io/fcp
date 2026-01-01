@@ -136,7 +136,7 @@ impl CallManager {
                     .value()
                     .original_invite
                     .as_ref()
-                    .and_then(|inv| sip_parse::header(&inv.headers, "Call-ID"))
+                    .and_then(|inv| sip_parse::header(inv.headers(), "Call-ID"))
                     .map(|cid| cid.as_str() == sip_call_id)
                     .unwrap_or(false)
             })
@@ -176,11 +176,11 @@ impl CallManager {
                 if let Some(dialog) = &call.a_leg.dialog {
                     debug!(
                         call_id = %call.id,
-                        a_leg_call_id = %dialog.id.call_id,
+                        a_leg_call_id = %dialog.id().call_id(),
                         searching_for = dialog_call_id,
                         "Checking A-leg dialog"
                     );
-                    if dialog.id.call_id.as_str() == dialog_call_id {
+                    if dialog.id().call_id() == dialog_call_id {
                         debug!(call_id = %call.id, "Found call via A-leg dialog");
                         return true;
                     }
@@ -191,11 +191,11 @@ impl CallManager {
                     if let Some(dialog) = &b_leg.dialog {
                         debug!(
                             call_id = %call.id,
-                            b_leg_call_id = %dialog.id.call_id,
+                            b_leg_call_id = %dialog.id().call_id(),
                             searching_for = dialog_call_id,
                             "Checking B-leg dialog"
                         );
-                        if dialog.id.call_id.as_str() == dialog_call_id {
+                        if dialog.id().call_id() == dialog_call_id {
                             debug!(call_id = %call.id, "Found call via B-leg dialog");
                             return true;
                         }

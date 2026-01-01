@@ -202,14 +202,14 @@ impl TransportListener {
             tokio::select! {
                 Some(packet) = rx.recv() => {
                     debug!(
-                        transport = ?packet.transport,
-                        peer = %packet.peer,
-                        size = packet.payload.len(),
+                        transport = ?packet.transport(),
+                        peer = %packet.peer(),
+                        size = packet.payload().len(),
                         "Received inbound packet"
                     );
 
                     // Convert sip_transport::TransportKind to sip_transaction::TransportKind
-                    let txn_transport = convert_transport_kind(packet.transport);
+                    let txn_transport = convert_transport_kind(packet.transport());
 
                     // IMPORTANT: Spawn message handling in separate task to avoid blocking
                     // This allows the listener to immediately process the next packet,
@@ -219,9 +219,9 @@ impl TransportListener {
                     tokio::spawn(async move {
                         if let Err(e) = handler.handle_inbound(
                             txn_transport,
-                            packet.peer,
-                            packet.payload,
-                            packet.stream,
+                            packet.peer(),
+                            packet.payload().clone(),
+                            packet.stream(),
                         ).await {
                             error!("Failed to handle inbound message: {}", e);
                         }
@@ -258,22 +258,22 @@ impl TransportListener {
             tokio::select! {
                 Some(packet) = rx.recv() => {
                     debug!(
-                        transport = ?packet.transport,
-                        peer = %packet.peer,
-                        size = packet.payload.len(),
+                        transport = ?packet.transport(),
+                        peer = %packet.peer(),
+                        size = packet.payload().len(),
                         "Received TCP packet"
                     );
 
-                    let txn_transport = convert_transport_kind(packet.transport);
+                    let txn_transport = convert_transport_kind(packet.transport());
 
                     // IMPORTANT: Spawn message handling in separate task to avoid blocking
                     let handler = Arc::clone(&handler);
                     tokio::spawn(async move {
                         if let Err(e) = handler.handle_inbound(
                             txn_transport,
-                            packet.peer,
-                            packet.payload,
-                            packet.stream,
+                            packet.peer(),
+                            packet.payload().clone(),
+                            packet.stream(),
                         ).await {
                             error!("Failed to handle TCP message: {}", e);
                         }
@@ -312,19 +312,19 @@ impl TransportListener {
             tokio::select! {
                 Some(packet) = rx.recv() => {
                     debug!(
-                        transport = ?packet.transport,
-                        peer = %packet.peer,
-                        size = packet.payload.len(),
+                        transport = ?packet.transport(),
+                        peer = %packet.peer(),
+                        size = packet.payload().len(),
                         "Received TLS packet"
                     );
 
-                    let txn_transport = convert_transport_kind(packet.transport);
+                    let txn_transport = convert_transport_kind(packet.transport());
 
                     if let Err(e) = handler.handle_inbound(
                         txn_transport,
-                        packet.peer,
-                        packet.payload,
-                        packet.stream,
+                        packet.peer(),
+                        packet.payload().clone(),
+                        packet.stream(),
                     ).await {
                         error!("Failed to handle TLS message: {}", e);
                     }

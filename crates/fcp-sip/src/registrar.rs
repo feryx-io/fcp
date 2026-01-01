@@ -187,12 +187,12 @@ impl FcpRegistrar {
         // Use siphon-rs registrar to handle the request
         match self.registrar.handle_register_async(request).await {
             Ok(response) => {
-                if response.start().code == 200 {
+                if response.start_line().code() == 200 {
                     info!(
                         aor = %sip_parse::header(request.headers(), "To").map(|s| s.as_str()).unwrap_or(""),
                         "Registration successful"
                     );
-                } else if response.start().code == 401 {
+                } else if response.start_line().code() == 401 {
                     debug!("Sent 401 Unauthorized challenge");
                 }
                 response
@@ -219,10 +219,12 @@ impl FcpRegistrar {
                 headers.push("Content-Length".into(), "0".into());
 
                 Response::new(
-                    sip_core::StatusLine::new(500, "Internal Server Error".into()),
+                    sip_core::StatusLine::new(500, "Internal Server Error")
+                        .expect("Failed to create status line"),
                     headers,
                     bytes::Bytes::new(),
                 )
+                .expect("Failed to create response")
             }
         }
     }
@@ -307,7 +309,7 @@ mod tests {
         );
 
         let response = registrar.handle_register(&request).await;
-        assert_eq!(response.start().code, 200);
+        assert_eq!(response.start_line().code(), 200);
 
         // Verify registration was stored
         let regs = storage
@@ -368,7 +370,7 @@ mod tests {
         let response = registrar.handle_register(&request).await;
 
         // Should get 401 Unauthorized
-        assert_eq!(response.start().code, 401);
+        assert_eq!(response.start_line().code(), 401);
         assert!(response.headers().get("WWW-Authenticate").is_some());
 
         // Verify no registration was stored (auth required)

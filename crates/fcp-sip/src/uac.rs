@@ -200,10 +200,10 @@ impl SipUserAgentClient {
         event: &str,
         expires: Option<u32>,
     ) -> Result<(sip_core::Response, Option<Subscription>)> {
-        self.log_outbound("SUBSCRIBE", Some(&dialog.id));
+        self.log_outbound("SUBSCRIBE", Some(&dialog.id()));
         // Target is remote target of dialog
         self.inner
-            .subscribe(dialog.remote_target.clone(), event, expires)
+            .subscribe(dialog.remote_target().clone(), event, expires)
             .await
     }
 
@@ -215,11 +215,11 @@ impl SipUserAgentClient {
         body: Option<&str>,
     ) -> Result<sip_core::Response> {
         let dialog_id = sip_dialog::DialogId::new(
-            subscription.id.call_id.clone(),
-            subscription.id.from_tag.clone(),
-            subscription.id.to_tag.clone(),
+            subscription.id().call_id().clone(),
+            subscription.id().from_tag().clone(),
+            subscription.id().to_tag().clone(),
         );
-        self.log_outbound("NOTIFY", Some(&dialog_id));
+        self.log_outbound("NOTIFY", Some(&dialog_id.unwrap()));
         self.inner.notify(subscription, state, body).await
     }
 
@@ -240,7 +240,7 @@ impl SipUserAgentClient {
     fn log_outbound(&self, method: &str, dialog_id: Option<&sip_dialog::DialogId>) {
         if let Some(dir) = &self.transcript_dir {
             if let Some(did) = dialog_id {
-                let call_id = did.call_id.as_str();
+                let call_id = did.call_id();
                 if let Ok(mut file) = OpenOptions::new()
                     .create(true)
                     .append(true)
