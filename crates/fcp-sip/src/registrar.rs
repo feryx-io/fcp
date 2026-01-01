@@ -281,6 +281,7 @@ impl FcpRegistrar {
 mod tests {
     use super::*;
     use fcp_core::FileBackedStorage;
+    use smol_str::SmolStr;
 
     #[tokio::test]
     async fn test_registrar_without_auth() {
@@ -291,13 +292,13 @@ mod tests {
 
         // Create a simple REGISTER request
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
-        headers.push(SmolStr::new("From"), "<sip:alice@example.com>;tag=abc123".into());
-        headers.push(SmolStr::new("To"), "<sip:alice@example.com>".into());
-        headers.push(SmolStr::new("Call-ID"), "test-call-id@example.com".into());
-        headers.push(SmolStr::new("CSeq"), "1 REGISTER".into());
-        headers.push("Contact".into(), "<sip:alice@192.168.1.1:5060>;expires=3600".into());
-        headers.push("Expires".into(), "3600".into());
+        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"));
+        headers.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=abc123"));
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id@example.com"));
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"));
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(
@@ -350,13 +351,13 @@ mod tests {
 
         // First request without auth - should get 401
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
-        headers.push(SmolStr::new("From"), "<sip:alice@example.com>;tag=abc123".into());
-        headers.push(SmolStr::new("To"), "<sip:alice@example.com>".into());
-        headers.push(SmolStr::new("Call-ID"), "test-call-auth@example.com".into());
-        headers.push(SmolStr::new("CSeq"), "1 REGISTER".into());
-        headers.push("Contact".into(), "<sip:alice@192.168.1.1:5060>;expires=3600".into());
-        headers.push("Expires".into(), "3600".into());
+        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"));
+        headers.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=abc123"));
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-auth@example.com"));
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"));
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(

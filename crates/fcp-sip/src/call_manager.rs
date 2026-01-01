@@ -313,23 +313,20 @@ mod tests {
     fn create_test_call() -> Call {
         use sip_core::{Headers, Method, RequestLine, SipVersion};
         use bytes::Bytes;
+        use smol_str::SmolStr;
 
         let peer: SocketAddr = "127.0.0.1:5060".parse().unwrap();
 
         let mut headers = Headers::new();
-        headers.push("From".into(), "Alice <sip:alice@example.com>".into());
-        headers.push("To".into(), "Bob <sip:bob@example.com>".into());
-        headers.push("Call-ID".into(), "test-call-id".into());
+        headers.push(SmolStr::new("From"), SmolStr::new("Alice <sip:alice@example.com>"));
+        headers.push(SmolStr::new("To"), SmolStr::new("Bob <sip:bob@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
 
-        let request = sip_core::Request {
-            start: RequestLine {
-                method: Method::Invite,
-                uri: sip_core::SipUri::parse("sip:bob@example.com").unwrap().into(),
-                version: SipVersion::V2,
-            },
+        let request = sip_core::Request::new(
+            RequestLine::new(Method::Invite, sip_core::SipUri::parse("sip:bob@example.com").unwrap()),
             headers,
-            body: Bytes::new(),
-        };
+            Bytes::new(),
+        ).expect("Failed to create request");
 
         Call::from_invite(request, peer)
     }
