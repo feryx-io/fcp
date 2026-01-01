@@ -115,7 +115,7 @@ impl SipUserAgentClient {
     /// # use sip_dialog::Dialog;
     /// # async fn example(uac: &SipUserAgentClient, dialog: &Dialog) -> anyhow::Result<()> {
     /// let response = uac.bye(dialog).await?;
-    /// println!("Call terminated: {} {}", response.start.code, response.start.reason);
+    /// println!("Call terminated: {} {}", response.start_line().code(), response.start_line().reason());
     /// # Ok(())
     /// # }
     /// ```
