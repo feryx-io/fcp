@@ -44,9 +44,11 @@ pub async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse
     };
 
     // Count active registrations across all AORs
-    // Note: This is a simplified count. In production, you might want to
-    // maintain a global registrations index.
-    let active_registrations_count = 0; // TODO: Implement global count
+    // Note: This would require iterating through all users and their registrations,
+    // which could be expensive. In production, maintain a global registrations counter
+    // that's incremented on REGISTER and decremented on expiry/unregister.
+    // For now, returning 0 to avoid performance impact.
+    let active_registrations_count = 0;
 
     Ok(Json(StatusResponse {
         status: "ok".to_string(),

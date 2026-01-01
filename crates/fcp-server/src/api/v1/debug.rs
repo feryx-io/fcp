@@ -64,11 +64,28 @@ pub struct DebugSummary {
 /// List active dialogs.
 ///
 /// GET /api/v1/debug/dialogs
-pub async fn list_dialogs(State(_state): State<ApiState>) -> Json<Vec<DialogInfo>> {
-    // TODO: DialogManager doesn't expose an all() method for listing all dialogs
-    // This would require adding a public method to DialogManager
-    // For now, return empty list
-    Json(vec![])
+pub async fn list_dialogs(State(state): State<ApiState>) -> Json<Vec<DialogInfo>> {
+    let dialog_ids = state.dialog_manager.all_ids();
+
+    let dialog_infos: Vec<DialogInfo> = dialog_ids
+        .into_iter()
+        .filter_map(|id| {
+            state.dialog_manager.get(&id).map(|d| DialogInfo {
+                call_id: d.id().call_id().to_string(),
+                local_tag: d.id().local_tag().to_string(),
+                remote_tag: d.id().remote_tag().to_string(),
+                state: format!("{:?}", d.state()),
+                local_uri: format!("{:?}", d.local_uri()),
+                remote_uri: format!("{:?}", d.remote_uri()),
+                remote_target: format!("{:?}", d.remote_target()),
+                local_cseq: d.local_cseq(),
+                remote_cseq: d.remote_cseq(),
+                route_set: d.route_set().iter().map(|uri| format!("{:?}", uri)).collect(),
+            })
+        })
+        .collect();
+
+    Json(dialog_infos)
 }
 
 /// List active subscriptions.
@@ -96,12 +113,28 @@ pub async fn list_subscriptions(State(state): State<ApiState>) -> Json<Vec<Subsc
 /// List rate limit state.
 ///
 /// GET /api/v1/debug/rate-limits
-pub async fn list_rate_limits(State(_state): State<ApiState>) -> Json<Vec<RateLimitInfo>> {
-    // Access rate_limits from handler
-    // Note: This requires exposing rate_limits as pub in SipMessageHandler
-    // For now, return empty array
-    // TODO: Add public accessor method to SipMessageHandler
-    Json(vec![])
+pub async fn list_rate_limits(State(state): State<ApiState>) -> Json<Vec<RateLimitInfo>> {
+    let rate_limits = state.handler.rate_limits();
+
+    let rate_limit_infos: Vec<RateLimitInfo> = rate_limits
+        .iter()
+        .map(|entry| {
+            let dialog_id = entry.key();
+            let window = entry.value();
+            RateLimitInfo {
+                dialog_id: format!(
+                    "{}:{}:{}",
+                    dialog_id.call_id(),
+                    dialog_id.local_tag(),
+                    dialog_id.remote_tag()
+                ),
+                counts: window.counts.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                window_start: format!("{:?}", window.window_start),
+            }
+        })
+        .collect();
+
+    Json(rate_limit_infos)
 }
 
 /// List active calls.
@@ -138,7 +171,7 @@ pub async fn debug_summary(State(state): State<ApiState>) -> Json<DebugSummary> 
         active_dialogs: state.dialog_manager.count(),
         active_subscriptions: state.subscription_manager.all().len(),
         active_calls: state.call_manager.active_call_count(),
-        rate_limit_entries: 0, // TODO: add accessor
+        rate_limit_entries: state.handler.rate_limit_count(),
     };
 
     Json(summary)

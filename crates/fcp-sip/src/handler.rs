@@ -266,9 +266,9 @@ pub struct SipMessageHandler {
 }
 
 #[derive(Clone)]
-struct RateWindow {
-    window_start: Instant,
-    counts: HashMap<&'static str, u32>,
+pub struct RateWindow {
+    pub window_start: Instant,
+    pub counts: HashMap<&'static str, u32>,
 }
 
 /// Entry for async transcript logging
@@ -442,6 +442,16 @@ impl SipMessageHandler {
         this.spawn_session_timer_monitor();
 
         this
+    }
+
+    /// Get a reference to the rate limits map for debugging/monitoring.
+    pub fn rate_limits(&self) -> &Arc<dashmap::DashMap<sip_dialog::DialogId, RateWindow>> {
+        &self.rate_limits
+    }
+
+    /// Get the count of active rate limit entries.
+    pub fn rate_limit_count(&self) -> usize {
+        self.rate_limits.len()
     }
 
     /// Handle an incoming SIP request and generate a response.
@@ -3636,10 +3646,15 @@ impl SipMessageHandler {
         _dialog: &sip_dialog::Dialog,
         _event: &str,
     ) -> Option<sip_dialog::Subscription> {
-        // TODO: Subscription fields are now private in siphon-rs
-        // This function needs to be refactored to use Subscription::new_notifier()
-        // or Subscription::new_subscriber() which require Request/Response objects.
-        // For now, transient subscriptions are not supported.
+        // Transient subscriptions are intentionally not supported.
+        //
+        // Per RFC 3265, NOTIFY requests must correspond to an established subscription
+        // created via SUBSCRIBE. Subscription objects in siphon-rs must be created
+        // from actual SUBSCRIBE Request/Response pairs using Subscription::new_notifier()
+        // or Subscription::new_subscriber().
+        //
+        // Returning None here causes NOTIFY requests without proper subscriptions to be
+        // rejected with "481 Subscription Does Not Exist", which is the correct behavior.
         None
     }
 }

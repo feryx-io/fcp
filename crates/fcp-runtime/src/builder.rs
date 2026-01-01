@@ -464,11 +464,14 @@ fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
     let bind_addr = config.transport.udp_bind
         .ok_or_else(|| anyhow::anyhow!("UDP bind address not configured"))?;
 
-    // If bind is 0.0.0.0, use hardcoded IP for now
+    // If bind is 0.0.0.0 (wildcard), use configured local_ip or fallback
     let domain = if bind_addr.ip().is_unspecified() {
-        // For now, use a placeholder - in production we'd detect the actual IP
-        // TODO: Auto-detect actual IP address
-        "192.168.1.81".to_string()
+        // Use local_ip from config if available, otherwise use placeholder
+        // In production, set transport.local_ip in configuration to your actual IP/hostname
+        // Or use local_domain for DNS-resolvable names
+        config.transport.local_ip.clone()
+            .or_else(|| Some(config.node.local_domain.clone()))
+            .unwrap_or_else(|| "127.0.0.1".to_string())
     } else {
         bind_addr.ip().to_string()
     };
