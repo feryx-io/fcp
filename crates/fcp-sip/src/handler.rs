@@ -903,10 +903,11 @@ impl SipMessageHandler {
         }
 
         // Ensure Content-Length matches body
+        let body_len = response.body().len();
         response.headers_mut().remove("Content-Length");
         response.headers_mut().push(
             SmolStr::new("Content-Length"),
-            SmolStr::new(response.body().len().to_string()),
+            SmolStr::new(body_len.to_string()),
         );
     }
 
@@ -1253,38 +1254,55 @@ impl SipMessageHandler {
                 // CRITICAL: We MUST use the same To-tag for both provisional and final responses (RFC 3261 §12.1.1)
                 let response = if a_leg_to_tag.is_none() {
                     // First provisional - use UAS helper to generate proper To-tag
-                    let mut resp = self.uas.create_ringing(request);
+                    let initial_resp = self.uas.create_ringing(request);
 
                     // Extract and save the To-tag for later use with 200 OK
-                    if let Some(to_header) = resp.headers().get("To") {
-                        if let Some(tag) = extract_tag_value(Some(to_header)) {
+                    if let Some(to_header) = initial_resp.headers().get("To") {
+                        if let Some(tag) = extract_tag_value(Some(&to_header.to_string().into())) {
                             a_leg_to_tag = Some(tag.to_string());
                             debug!(call_id = %call_id, a_leg_to_tag = %tag, "Generated A-leg To-tag from first provisional");
                         }
                     }
 
-                    // Update status code and reason if not 180
-                    if status_code != 180 {
-                        resp.start_line_mut().code = status_code;
-                        resp.start_line_mut().reason = provisional.start_line().reason().clone();
+                    // Determine final status and body
+                    let final_status = if status_code != 180 { status_code } else { 180 };
+                    let final_reason = if status_code != 180 {
+                        provisional.start_line().reason()
+                    } else {
+                        initial_resp.start_line().reason()
+                    };
+                    let final_body = if !provisional.body().is_empty() {
+                        provisional.body().clone()
+                    } else {
+                        initial_resp.body().clone()
+                    };
+
+                    // Build headers from initial response
+                    let mut headers = sip_core::Headers::new();
+                    for header in initial_resp.headers().iter() {
+                        headers.push(header.name_smol().clone(), header.value_smol().clone());
                     }
 
-                    // Copy body from B-leg provisional (if any) for early media
+                    // Add Content-Type if we have a body from B-leg
                     if !provisional.body().is_empty() {
-                        *resp.body_mut() = provisional.body().clone();
                         if let Some(ct) = provisional.headers().get("Content-Type") {
-                            resp.headers_mut().push(SmolStr::new("Content-Type"), ct.clone());
+                            headers.push(SmolStr::new("Content-Type"), ct.clone());
                         }
                         // Update Content-Length
-                        for header in resp.headers_mut().iter_mut() {
-                            if header.name().as_str() == "Content-Length" {
-                                header.value = SmolStr::new(resp.body().len().to_string());
-                                break;
-                            }
-                        }
+                        headers.remove("Content-Length");
+                        headers.push(
+                            SmolStr::new("Content-Length"),
+                            SmolStr::new(&final_body.len().to_string())
+                        );
                     }
 
-                    resp
+                    // Reconstruct response with desired status and body
+                    sip_core::Response::new(
+                        StatusLine::new(final_status, final_reason)
+                            .expect("Failed to create status line"),
+                        headers,
+                        final_body
+                    ).expect("Failed to create response")
                 } else {
                     // Subsequent provisionals - reuse the established To-tag
                     self.create_provisional_from_b_leg(request, &provisional)
@@ -1693,7 +1711,8 @@ impl SipMessageHandler {
         }
 
         // Generate SDP answer using our media profile
-        let username = self.uas.local_uri.user().as_deref().unwrap_or("fcp");
+        let user_opt = self.uas.local_uri.user();
+        let username = user_opt.as_deref().unwrap_or("fcp");
         let session_desc = profile.build(
             username,
             &self.local_addr,
@@ -2914,11 +2933,12 @@ impl SipMessageHandler {
             headers.push(SmolStr::new("From"), from.clone());
         }
         if let Some(to) = request.headers().get("To") {
-            let mut to_val = to.clone();
-            if !to_val.contains(";tag=") {
+            let to_val = if !to.contains(";tag=") {
                 let tag = Uuid::new_v4().simple().to_string();
-                to_val = SmolStr::new(format!("{};tag={}", to_val, tag));
-            }
+                SmolStr::new(format!("{};tag={}", to, tag))
+            } else {
+                SmolStr::new(to)
+            };
             headers.push(SmolStr::new("To"), to_val);
         }
         if let Some(call_id) = request.headers().get("Call-ID") {
@@ -3059,14 +3079,24 @@ impl SipMessageHandler {
         if let Some(to) = response.headers().get("To") {
             if !to.contains(";tag=") {
                 let tag = Uuid::new_v4().simple().to_string();
-                let new_to = format!("{};tag={}", to, tag);
+                let new_to = SmolStr::new(format!("{};tag={}", to, tag));
 
-                for header in response.headers_mut().iter_mut() {
-                    if header.name().as_str() == "To" {
-                        header.value = SmolStr::new(new_to);
-                        break;
+                // Reconstruct headers with updated To
+                let mut new_headers = sip_core::Headers::new();
+                for header in response.headers().iter() {
+                    if header.name_smol() == "To" {
+                        new_headers.push(SmolStr::new("To"), new_to.clone());
+                    } else {
+                        new_headers.push(header.name_smol().clone(), header.value_smol().clone());
                     }
                 }
+
+                // Reconstruct response
+                response = sip_core::Response::new(
+                    response.start_line().clone(),
+                    new_headers,
+                    response.body().clone(),
+                ).expect("Failed to reconstruct response");
             }
         }
 
@@ -3092,8 +3122,14 @@ impl SipMessageHandler {
         }
         if let Some(to) = a_leg_invite.headers().get("To") {
             // Preserve the To-tag from B-leg provisional if present
-            let to_with_tag = if let Some(tag) = extract_tag_value(b_leg_resp.headers().get("To")) {
-                format!("{};tag={}", to, tag)
+            let to_smol = SmolStr::new(to);
+            let to_with_tag = if let Some(to_header) = b_leg_resp.headers().get("To") {
+                let to_header_smol = SmolStr::new(to_header);
+                if let Some(tag) = extract_tag_value(Some(&to_header_smol)) {
+                    format!("{};tag={}", to, tag)
+                } else {
+                    to.to_string()
+                }
             } else {
                 to.to_string()
             };
@@ -3131,10 +3167,11 @@ impl SipMessageHandler {
         );
 
         sip_core::Response::new(
-            StatusLine::new(b_leg_resp.start_line().expect("Failed to create status line").code(), b_leg_resp.start_line().reason().clone()),
+            StatusLine::new(b_leg_resp.start_line().code(), b_leg_resp.start_line().reason())
+                .expect("Failed to create status line"),
             headers,
             body,
-        )
+        ).expect("Failed to create response")
     }
 
     /// Build an in-dialog response for the requester based on the peer response.
@@ -3150,22 +3187,33 @@ impl SipMessageHandler {
             } else {
                 Some(String::from_utf8_lossy(peer_response.body()).to_string())
             };
-            self.uas.create_ok(request, body.as_deref())?
+            self.uas.create_ok(request, body.as_deref()).expect("Failed to create OK response")
         } else {
-            let mut r = self.create_simple_response(
+            let r = self.create_simple_response(
                 request,
                 peer_response.start_line().code(),
                 peer_response.start_line().reason(),
             );
+            // If peer has a body, need to reconstruct response with it
             if !peer_response.body().is_empty() {
-                *r.body_mut() = peer_response.body().clone();
-                if let Some(ct) = peer_response.headers().get("Content-Type") {
-                    r.headers_mut().push(SmolStr::new("Content-Type"), ct.clone());
+                let mut headers = sip_core::Headers::new();
+                for header in r.headers().iter() {
+                    headers.push(header.name_smol().clone(), header.value_smol().clone());
                 }
-                r.headers_mut()
-                    .push(SmolStr::new("Content-Length"), SmolStr::new(r.body().len().to_string()));
+                if let Some(ct) = peer_response.headers().get("Content-Type") {
+                    headers.push(SmolStr::new("Content-Type"), ct.clone());
+                }
+                let body = peer_response.body().clone();
+                headers.push(SmolStr::new("Content-Length"), SmolStr::new(body.len().to_string()));
+
+                sip_core::Response::new(
+                    r.start_line().clone(),
+                    headers,
+                    body
+                ).expect("Failed to create response with body")
+            } else {
+                r
             }
-            r
         };
 
         // Propagate capability headers from peer
@@ -3191,9 +3239,10 @@ impl SipMessageHandler {
         }
 
         // Ensure Content-Length matches body
+        let body_len = response.body().len();
         response.headers_mut().push(
             SmolStr::new("Content-Length"),
-            SmolStr::new(response.body().len().to_string()),
+            SmolStr::new(body_len.to_string()),
         );
 
         self.ensure_response_hygiene(request, &mut response);
@@ -3344,13 +3393,13 @@ impl SipMessageHandler {
             let record_route = headers
                 .map(|h| {
                     let vals: Vec<_> = h.get_all("Record-Route").collect();
-                    vals.iter().map(|v| v).collect::<Vec<_>>().join(",")
+                    vals.iter().map(|v| v).map(|v| *v).collect::<Vec<_>>().join(",")
                 })
                 .unwrap_or_default();
             let route = headers
                 .map(|h| {
                     let vals: Vec<_> = h.get_all("Route").collect();
-                    vals.iter().map(|v| v).collect::<Vec<_>>().join(",")
+                    vals.iter().map(|v| v).map(|v| *v).collect::<Vec<_>>().join(",")
                 })
                 .unwrap_or_default();
 
@@ -3557,8 +3606,8 @@ impl SipMessageHandler {
                 sub.id().call_id().clone(),
                 sub.id().from_tag().clone(),
                 sub.id().to_tag().clone(),
-            ),
-            sub.id().event().clone(),
+            ).expect("Failed to create DialogId from subscription"),
+            smol_str::SmolStr::new(sub.id().event().to_string()),
         );
         self.subscription_manager.insert(sub.clone());
         self.subscription_index.insert(key, sub.id().clone());
@@ -3584,28 +3633,14 @@ impl SipMessageHandler {
 
     fn create_transient_subscription(
         &self,
-        dialog: &sip_dialog::Dialog,
-        event: &str,
+        _dialog: &sip_dialog::Dialog,
+        _event: &str,
     ) -> Option<sip_dialog::Subscription> {
-        let local_uri = dialog.local_uri().clone();
-        let remote_uri = dialog.remote_uri().clone();
-        let contact = dialog.remote_target().clone();
-        let expires = std::time::Duration::from_secs(60);
-        Some(sip_dialog::Subscription {
-            id: sip_dialog::SubscriptionId::new(
-                dialog.id().call_id().clone(),
-                dialog.id().local_tag().clone(),
-                dialog.id().remote_tag().clone(),
-                smol_str::SmolStr::new(event.to_string()),
-            ),
-            state: sip_dialog::SubscriptionState::Active,
-            local_uri,
-            remote_uri,
-            contact,
-            expires,
-            local_cseq: 1,
-            remote_cseq: 0,
-        })
+        // TODO: Subscription fields are now private in siphon-rs
+        // This function needs to be refactored to use Subscription::new_notifier()
+        // or Subscription::new_subscriber() which require Request/Response objects.
+        // For now, transient subscriptions are not supported.
+        None
     }
 }
 
@@ -3652,7 +3687,7 @@ impl InboundMessageHandler for SipMessageHandler {
 
             // Special handling for ACK - it doesn't create a server transaction
             // ACK for 2xx responses is handled outside the transaction layer (RFC 3261 §17.1.1.3)
-            if req.method() == sip_core::Method::Ack {
+            if req.method() == &sip_core::Method::Ack {
                 if let Err(e) = self.handle_ack(&req) {
                     error!("Failed to handle ACK: {}", e);
                 }
@@ -3660,14 +3695,7 @@ impl InboundMessageHandler for SipMessageHandler {
             }
 
             // Create transport context
-            let ctx = sip_transaction::TransportContext {
-                transport,
-                peer,
-                stream,
-                server_name: None,
-                ws_uri: None,
-                udp_socket: None,
-            };
+            let ctx = sip_transaction::TransportContext::new(transport, peer, stream);
 
             // Create server transaction
             let handle = self
@@ -3998,13 +4026,13 @@ fn find_call_and_dialog(
 ) -> Option<(sip_dialog::Dialog, crate::call::CallId, bool)> {
     for call in call_manager.all_calls() {
         if let Some(a) = &call.a_leg.dialog {
-            if a.id() == *dialog_id {
+            if *a.id() == *dialog_id {
                 return Some((a.clone(), call.id, true));
             }
         }
         if let Some(b_leg) = &call.b_leg {
             if let Some(d) = &b_leg.dialog {
-                if d.id() == *dialog_id {
+                if *d.id() == *dialog_id {
                     return Some((d.clone(), call.id, false));
                 }
             }

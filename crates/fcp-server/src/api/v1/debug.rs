@@ -80,13 +80,13 @@ pub async fn list_subscriptions(State(state): State<ApiState>) -> Json<Vec<Subsc
     let sub_infos: Vec<SubscriptionInfo> = subscriptions
         .into_iter()
         .map(|s| SubscriptionInfo {
-            call_id: s.id.call_id.to_string(),
-            from_tag: s.id.from_tag.to_string(),
-            to_tag: s.id.to_tag.to_string(),
-            event: s.id.event.to_string(),
-            state: format!("{:?}", s.state),
-            contact: format!("{:?}", s.contact),
-            expires_at: format!("{:?}", s.expires),
+            call_id: s.id().call_id().to_string(),
+            from_tag: s.id().from_tag().to_string(),
+            to_tag: s.id().to_tag().to_string(),
+            event: s.id().event().to_string(),
+            state: format!("{:?}", s.state()),
+            contact: format!("{:?}", s.contact()),
+            expires_at: format!("{:?}", s.expires()),
         })
         .collect();
 
@@ -116,11 +116,11 @@ pub async fn list_calls(State(state): State<ApiState>) -> Json<Vec<CallInfo>> {
             call_id: c.id.to_string(),
             a_leg_dialog_id: c.a_leg.dialog.as_ref().map(|d| format!(
                 "{}:{}:{}",
-                d.id.call_id, d.id.local_tag, d.id.remote_tag
+                d.id().call_id(), d.id().local_tag(), d.id().remote_tag()
             )),
             b_leg_dialog_id: c.b_leg.as_ref().and_then(|b| {
                 b.dialog.as_ref().map(|d| {
-                    format!("{}:{}:{}", d.id.call_id, d.id.local_tag, d.id.remote_tag)
+                    format!("{}:{}:{}", d.id().call_id(), d.id().local_tag(), d.id().remote_tag())
                 })
             }),
             state: format!("{:?}", c.state),

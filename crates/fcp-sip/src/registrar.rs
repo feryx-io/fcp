@@ -6,8 +6,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use fcp_core::{CredentialStore, Registration, RegistrationStore};
 use sip_auth::DigestAuthenticator;
-use sip_core::{Request, Response};
+use sip_core::{Request, Response, StatusLine};
 use sip_registrar::{AsyncLocationStore, BasicRegistrar, Binding};
+use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
@@ -104,11 +105,11 @@ impl sip_auth::AsyncCredentialStore for CredentialStoreAdapter {
     async fn fetch(&self, username: &str, _realm: &str) -> Option<sip_auth::Credentials> {
         if let Ok(Some(user)) = self.store.get_user(username).await {
             if user.enabled {
-                return Some(sip_auth::Credentials {
-                    username: username.into(),
-                    password: user.password.into(),
-                    realm: self.realm.clone().into(),
-                });
+                return Some(sip_auth::Credentials::new(
+                    username,
+                    user.password,
+                    self.realm.clone(),
+                ));
             }
         }
         None
@@ -202,21 +203,21 @@ impl FcpRegistrar {
                 // Return 500 Internal Server Error
                 let mut headers = sip_core::Headers::new();
                 if let Some(via) = request.headers().get("Via") {
-                    headers.push("Via".into(), via.clone());
+                    headers.push(SmolStr::new("Via"), via.clone());
                 }
                 if let Some(from) = request.headers().get("From") {
-                    headers.push("From".into(), from.clone());
+                    headers.push(SmolStr::new("From"), from.clone());
                 }
                 if let Some(to) = request.headers().get("To") {
-                    headers.push("To".into(), to.clone());
+                    headers.push(SmolStr::new("To"), to.clone());
                 }
                 if let Some(call_id) = request.headers().get("Call-ID") {
-                    headers.push("Call-ID".into(), call_id.clone());
+                    headers.push(SmolStr::new("Call-ID"), call_id.clone());
                 }
                 if let Some(cseq) = request.headers().get("CSeq") {
-                    headers.push("CSeq".into(), cseq.clone());
+                    headers.push(SmolStr::new("CSeq"), cseq.clone());
                 }
-                headers.push("Content-Length".into(), "0".into());
+                headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
                 Response::new(
                     sip_core::StatusLine::new(500, "Internal Server Error")
@@ -290,14 +291,14 @@ mod tests {
 
         // Create a simple REGISTER request
         let mut headers = sip_core::Headers::new();
-        headers.push("Via".into(), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
-        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
-        headers.push("To".into(), "<sip:alice@example.com>".into());
-        headers.push("Call-ID".into(), "test-call-id@example.com".into());
-        headers.push("CSeq".into(), "1 REGISTER".into());
+        headers.push(SmolStr::new("Via"), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
+        headers.push(SmolStr::new("From"), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push(SmolStr::new("To"), "<sip:alice@example.com>".into());
+        headers.push(SmolStr::new("Call-ID"), "test-call-id@example.com".into());
+        headers.push(SmolStr::new("CSeq"), "1 REGISTER".into());
         headers.push("Contact".into(), "<sip:alice@192.168.1.1:5060>;expires=3600".into());
         headers.push("Expires".into(), "3600".into());
-        headers.push("Content-Length".into(), "0".into());
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(
             sip_core::RequestLine::new(
@@ -306,7 +307,7 @@ mod tests {
             ),
             headers,
             bytes::Bytes::new(),
-        );
+        ).expect("Failed to create request");
 
         let response = registrar.handle_register(&request).await;
         assert_eq!(response.start_line().code(), 200);
@@ -349,14 +350,14 @@ mod tests {
 
         // First request without auth - should get 401
         let mut headers = sip_core::Headers::new();
-        headers.push("Via".into(), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
-        headers.push("From".into(), "<sip:alice@example.com>;tag=abc123".into());
-        headers.push("To".into(), "<sip:alice@example.com>".into());
-        headers.push("Call-ID".into(), "test-call-auth@example.com".into());
-        headers.push("CSeq".into(), "1 REGISTER".into());
+        headers.push(SmolStr::new("Via"), "SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123".into());
+        headers.push(SmolStr::new("From"), "<sip:alice@example.com>;tag=abc123".into());
+        headers.push(SmolStr::new("To"), "<sip:alice@example.com>".into());
+        headers.push(SmolStr::new("Call-ID"), "test-call-auth@example.com".into());
+        headers.push(SmolStr::new("CSeq"), "1 REGISTER".into());
         headers.push("Contact".into(), "<sip:alice@192.168.1.1:5060>;expires=3600".into());
         headers.push("Expires".into(), "3600".into());
-        headers.push("Content-Length".into(), "0".into());
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(
             sip_core::RequestLine::new(
@@ -365,7 +366,7 @@ mod tests {
             ),
             headers,
             bytes::Bytes::new(),
-        );
+        ).expect("Failed to create request");
 
         let response = registrar.handle_register(&request).await;
 

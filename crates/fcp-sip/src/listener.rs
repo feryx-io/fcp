@@ -221,7 +221,7 @@ impl TransportListener {
                             txn_transport,
                             packet.peer(),
                             packet.payload().clone(),
-                            packet.stream(),
+                            packet.stream().cloned(),
                         ).await {
                             error!("Failed to handle inbound message: {}", e);
                         }
@@ -273,7 +273,7 @@ impl TransportListener {
                             txn_transport,
                             packet.peer(),
                             packet.payload().clone(),
-                            packet.stream(),
+                            packet.stream().cloned(),
                         ).await {
                             error!("Failed to handle TCP message: {}", e);
                         }
@@ -324,7 +324,7 @@ impl TransportListener {
                         txn_transport,
                         packet.peer(),
                         packet.payload().clone(),
-                        packet.stream(),
+                        packet.stream().cloned(),
                     ).await {
                         error!("Failed to handle TLS message: {}", e);
                     }

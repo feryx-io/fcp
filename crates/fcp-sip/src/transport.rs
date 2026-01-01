@@ -153,17 +153,14 @@ impl TransportDispatcher for RealTransportDispatcher {
                     if let Some(tls_config) = &self.tls_config {
                         // Extract server name from context or use peer IP as string
                         let server_name = match ctx.server_name() {
-                            Some(name) => name.clone(),
+                            Some(name) => name.to_string(),
                             None => {
                                 // Fall back to IP address as server name
                                 peer.ip().to_string()
                             }
                         };
 
-                        let tls_cfg = sip_transport::TlsConfig {
-                            server_name,
-                            client_config: tls_config.clone(),
-                        };
+                        let tls_cfg = sip_transport::TlsConfig::new(server_name, tls_config.clone());
 
                         sip_transport::send_tls(&peer, &payload, &tls_cfg).await?;
                     } else {
