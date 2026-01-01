@@ -147,7 +147,7 @@ impl SipUserAgentClient {
         dialog: &mut Dialog,
         sdp_body: Option<&str>,
     ) -> Result<sip_core::Response> {
-        self.log_outbound("UPDATE", Some(&dialog.id));
+        self.log_outbound("UPDATE", Some(dialog.id()));
         self.inner.send_update(dialog, sdp_body).await
     }
 
@@ -157,7 +157,7 @@ impl SipUserAgentClient {
         dialog: &mut Dialog,
         sdp_body: Option<&str>,
     ) -> Result<sip_core::Response> {
-        self.log_outbound("INVITE", Some(&dialog.id));
+        self.log_outbound("INVITE", Some(dialog.id()));
         self.inner.send_reinvite(dialog, sdp_body).await
     }
 
@@ -168,7 +168,7 @@ impl SipUserAgentClient {
         content_type: &str,
         body: &str,
     ) -> Result<sip_core::Response> {
-        self.log_outbound("INFO", Some(&dialog.id));
+        self.log_outbound("INFO", Some(dialog.id()));
         self.inner.send_info(dialog, content_type, body).await
     }
 
@@ -179,7 +179,7 @@ impl SipUserAgentClient {
         refer_to: &sip_core::SipUri,
         target_dialog: Option<&Dialog>,
     ) -> Result<(sip_core::Response, Option<Subscription>)> {
-        self.log_outbound("REFER", Some(&dialog.id));
+        self.log_outbound("REFER", Some(dialog.id()));
         self.inner.send_refer(dialog, refer_to, target_dialog).await
     }
 
@@ -189,7 +189,7 @@ impl SipUserAgentClient {
         dialog: &mut Dialog,
         provisional: &sip_core::Response,
     ) -> Result<sip_core::Response> {
-        self.log_outbound("PRACK", Some(&dialog.id));
+        self.log_outbound("PRACK", Some(dialog.id()));
         self.inner.send_prack(dialog, provisional).await
     }
 

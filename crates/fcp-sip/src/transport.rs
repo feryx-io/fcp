@@ -114,8 +114,8 @@ impl TransportDispatcher for RealTransportDispatcher {
     async fn dispatch(&self, ctx: &TransportContext, payload: Bytes) -> Result<()> {
         use sip_transaction::TransportKind as TxnTransportKind;
 
-        let peer = ctx.peer;
-        let transport = ctx.transport;
+        let peer = ctx.peer();
+        let transport = ctx.transport();
 
         debug!(
             transport = ?transport,
@@ -125,7 +125,7 @@ impl TransportDispatcher for RealTransportDispatcher {
         );
 
         // Check if we have a stream sender (for existing TCP/TLS connection)
-        if let Some(stream_tx) = &ctx.stream {
+        if let Some(stream_tx) = ctx.stream() {
             debug!("using existing stream connection");
             if stream_tx.send(payload.clone()).await.is_ok() {
                 return Ok(());
@@ -152,7 +152,7 @@ impl TransportDispatcher for RealTransportDispatcher {
                 {
                     if let Some(tls_config) = &self.tls_config {
                         // Extract server name from context or use peer IP as string
-                        let server_name = match &ctx.server_name {
+                        let server_name = match ctx.server_name() {
                             Some(name) => name.clone(),
                             None => {
                                 // Fall back to IP address as server name

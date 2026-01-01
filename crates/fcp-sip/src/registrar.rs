@@ -23,32 +23,33 @@ impl LocationStoreAdapter {
     }
 
     /// Convert FCP Registration to siphon-rs Binding.
-    fn to_binding(reg: &Registration) -> Binding {
+    fn to_binding(reg: &Registration) -> anyhow::Result<Binding> {
         let expires_duration = reg
             .expires_at
             .duration_since(SystemTime::now())
             .unwrap_or_default();
 
-        Binding {
-            aor: reg.aor.clone().into(),
-            contact: reg.contact.clone().into(),
-            expires: expires_duration,
-            call_id: reg.call_id.clone().into(),
-            cseq: reg.cseq,
-            q_value: reg.q.unwrap_or(1.0),
-        }
+        Binding::new(
+            reg.aor.clone().into(),
+            reg.contact.clone().into(),
+            expires_duration,
+        )
+        .and_then(|b| b.with_call_id(reg.call_id.clone().into()))
+        .and_then(|b| b.with_cseq(reg.cseq))
+        .and_then(|b| b.with_q_value(reg.q.unwrap_or(1.0)))
+        .map_err(|e| anyhow::anyhow!("Failed to create binding: {}", e))
     }
 
     /// Convert siphon-rs Binding to FCP Registration.
     fn from_binding(binding: &Binding) -> Registration {
         Registration {
-            aor: binding.aor.to_string(),
-            contact: binding.contact.to_string(),
-            expires_at: SystemTime::now() + binding.expires,
-            call_id: binding.call_id.to_string(),
-            cseq: binding.cseq,
+            aor: binding.aor().to_string(),
+            contact: binding.contact().to_string(),
+            expires_at: SystemTime::now() + binding.expires(),
+            call_id: binding.call_id().to_string(),
+            cseq: binding.cseq(),
             user_agent: None,
-            q: Some(binding.q_value),
+            q: Some(binding.q_value()),
             registered_at: SystemTime::now(),
         }
     }
@@ -74,11 +75,11 @@ impl AsyncLocationStore for LocationStoreAdapter {
 
         // Filter out expired registrations
         let now = SystemTime::now();
-        Ok(registrations
+        registrations
             .iter()
             .filter(|r| r.expires_at > now)
             .map(Self::to_binding)
-            .collect())
+            .collect()
     }
 
     async fn cleanup_expired(&self) -> Result<usize> {
@@ -186,12 +187,12 @@ impl FcpRegistrar {
         // Use siphon-rs registrar to handle the request
         match self.registrar.handle_register_async(request).await {
             Ok(response) => {
-                if response.start.code == 200 {
+                if response.start().code == 200 {
                     info!(
-                        aor = %sip_parse::header(&request.headers, "To").map(|s| s.as_str()).unwrap_or(""),
+                        aor = %sip_parse::header(request.headers(), "To").map(|s| s.as_str()).unwrap_or(""),
                         "Registration successful"
                     );
-                } else if response.start.code == 401 {
+                } else if response.start().code == 401 {
                     debug!("Sent 401 Unauthorized challenge");
                 }
                 response
@@ -200,19 +201,19 @@ impl FcpRegistrar {
                 tracing::error!("Failed to handle REGISTER: {}", e);
                 // Return 500 Internal Server Error
                 let mut headers = sip_core::Headers::new();
-                if let Some(via) = request.headers.get("Via") {
+                if let Some(via) = request.headers().get("Via") {
                     headers.push("Via".into(), via.clone());
                 }
-                if let Some(from) = request.headers.get("From") {
+                if let Some(from) = request.headers().get("From") {
                     headers.push("From".into(), from.clone());
                 }
-                if let Some(to) = request.headers.get("To") {
+                if let Some(to) = request.headers().get("To") {
                     headers.push("To".into(), to.clone());
                 }
-                if let Some(call_id) = request.headers.get("Call-ID") {
+                if let Some(call_id) = request.headers().get("Call-ID") {
                     headers.push("Call-ID".into(), call_id.clone());
                 }
-                if let Some(cseq) = request.headers.get("CSeq") {
+                if let Some(cseq) = request.headers().get("CSeq") {
                     headers.push("CSeq".into(), cseq.clone());
                 }
                 headers.push("Content-Length".into(), "0".into());
@@ -231,9 +232,9 @@ impl FcpRegistrar {
         // Normalize AOR so lookups match stored keys even if clients send
         // params or percent-encoded users.
         let normalized = match sip_core::Uri::parse(aor) {
-            Some(uri) => sip_registrar::normalize_aor(&uri)
+            Ok(uri) => sip_registrar::normalize_aor(&uri)
                 .unwrap_or_else(|_| aor.split(';').next().unwrap_or(aor).to_string()),
-            None => aor.split(';').next().unwrap_or(aor).to_string(),
+            Err(_) => aor.split(';').next().unwrap_or(aor).to_string(),
         };
 
         self.registrar.location_store().lookup(&normalized).await
@@ -306,7 +307,7 @@ mod tests {
         );
 
         let response = registrar.handle_register(&request).await;
-        assert_eq!(response.start.code, 200);
+        assert_eq!(response.start().code, 200);
 
         // Verify registration was stored
         let regs = storage
@@ -367,8 +368,8 @@ mod tests {
         let response = registrar.handle_register(&request).await;
 
         // Should get 401 Unauthorized
-        assert_eq!(response.start.code, 401);
-        assert!(response.headers.get("WWW-Authenticate").is_some());
+        assert_eq!(response.start().code, 401);
+        assert!(response.headers().get("WWW-Authenticate").is_some());
 
         // Verify no registration was stored (auth required)
         let regs = storage

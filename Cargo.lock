@@ -2639,12 +2639,14 @@ dependencies = [
 
 [[package]]
 name = "sip-core"
-version = "0.3.0"
+version = "0.6.26"
 dependencies = [
  "bytes",
+ "httpdate",
  "percent-encoding",
  "serde",
  "smol_str",
+ "subtle",
 ]
 
 [[package]]
@@ -2686,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "sip-parse"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "httpdate",
@@ -2771,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "sip-uac"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
