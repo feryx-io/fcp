@@ -26,7 +26,7 @@ The server will start on:
 
 ```bash
 # Create user alice
-curl -X POST http://localhost:8080/v1/users \
+curl -X POST http://localhost:8080/api/v1/users \
   -H "Content-Type: application/json" \
   -d '{
     "username": "alice",
@@ -36,7 +36,7 @@ curl -X POST http://localhost:8080/v1/users \
   }'
 
 # Create user bob
-curl -X POST http://localhost:8080/v1/users \
+curl -X POST http://localhost:8080/api/v1/users \
   -H "Content-Type: application/json" \
   -d '{
     "username": "bob",
@@ -46,7 +46,7 @@ curl -X POST http://localhost:8080/v1/users \
   }'
 
 # Verify users were created
-curl http://localhost:8080/v1/users
+curl http://localhost:8080/api/v1/users
 ```
 
 ## Step 3: Configure SIP Softphones
@@ -76,8 +76,8 @@ INFO Registration successful aor="sip:bob@192.168.1.81"
 
 Verify registrations via API:
 ```bash
-curl http://localhost:8080/v1/registrations/sip:alice@192.168.1.81
-curl http://localhost:8080/v1/registrations/sip:bob@192.168.1.81
+curl http://localhost:8080/api/v1/registrations/sip:alice@192.168.1.81
+curl http://localhost:8080/api/v1/registrations/sip:bob@192.168.1.81
 ```
 
 ## Step 5: Initiate a Call
@@ -97,7 +97,7 @@ INFO Media session created call_id="call-abc123..."
 
 Alternatively, query the debug endpoint:
 ```bash
-curl http://localhost:8080/v1/debug/calls
+curl http://localhost:8080/api/v1/debug/calls
 ```
 
 ## Step 7: Start Recording
@@ -108,7 +108,7 @@ Once the call is active and you have the Call ID, start recording:
 # Replace CALL_ID with the actual call ID from logs
 CALL_ID="call-abc12345-..."
 
-curl -X POST "http://localhost:8080/v1/calls/${CALL_ID}/recording/start" \
+curl -X POST "http://localhost:8080/api/v1/calls/${CALL_ID}/recording/start" \
   -H "Content-Type: application/json" \
   -d '{
     "path": "/tmp/test_recording.wav"
@@ -130,7 +130,7 @@ Talk between Alice and Bob for 10-20 seconds. Both sides of the conversation wil
 ## Step 9: Stop Recording
 
 ```bash
-curl -X POST "http://localhost:8080/v1/calls/${CALL_ID}/recording/stop"
+curl -X POST "http://localhost:8080/api/v1/calls/${CALL_ID}/recording/stop"
 ```
 
 You should see:
@@ -209,7 +209,7 @@ To test Opus format recording (requires opus feature):
 cargo build --release --features opus
 
 # Start recording with .opus extension
-curl -X POST "http://localhost:8080/v1/calls/${CALL_ID}/recording/start" \
+curl -X POST "http://localhost:8080/api/v1/calls/${CALL_ID}/recording/start" \
   -H "Content-Type: application/json" \
   -d '{
     "path": "/tmp/test_recording.opus"
@@ -228,7 +228,7 @@ rm /tmp/test_recording.*
 
 ### Start Recording
 ```
-POST /v1/calls/:call_id/recording/start
+POST /api/v1/calls/:call_id/recording/start
 Content-Type: application/json
 
 {
@@ -238,12 +238,12 @@ Content-Type: application/json
 
 ### Stop Recording
 ```
-POST /v1/calls/:call_id/recording/stop
+POST /api/v1/calls/:call_id/recording/stop
 ```
 
 ### List Active Calls (future)
 ```
-GET /v1/calls
+GET /api/v1/calls
 ```
 
 ## Notes

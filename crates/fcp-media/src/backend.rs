@@ -341,6 +341,13 @@ pub mod embedded {
             debug!(?call_id, "Terminating media session");
 
             if let Some((_, session_info)) = self.sessions.remove(call_id) {
+                // Stop recording if active (must do this before terminating session)
+                if session_info.forge_session.is_recording().await {
+                    if let Err(e) = session_info.forge_session.disable_recording().await {
+                        warn!(?call_id, error = %e, "Failed to stop recording during session termination");
+                    }
+                }
+
                 // Stop forwarding (terminate session)
                 session_info
                     .forge_session
@@ -407,12 +414,15 @@ pub mod embedded {
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
-            // Determine format from file extension
+            // Determine format from file extension and codec
+            // For G.711 codecs (PCMU/PCMA), use 8kHz sample rate
+            // For other codecs, use 48kHz
             let format = if path.ends_with(".opus") {
                 forge_core::AudioFormat::opus_mono()
             } else {
-                // Default to WAV (PCM)
-                forge_core::AudioFormat::pcm_mono()
+                // Default to WAV (PCM) at 8kHz for G.711 compatibility
+                // Most VoIP codecs operate at 8kHz (G.711, G.729)
+                forge_core::AudioFormat::new(8000, 1, forge_core::AudioCodec::PCM)
             };
 
             debug!(?call_id, path = %path, format = ?format, "Starting recording");

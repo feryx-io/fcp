@@ -2,7 +2,7 @@
 # Test script for call recording feature
 set -e
 
-API_BASE="http://localhost:8080/v1"
+API_BASE="http://localhost:8081/api/v1"
 SERVER_IP="${SERVER_IP:-192.168.1.81}"
 
 echo "======================================"

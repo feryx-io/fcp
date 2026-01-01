@@ -29,7 +29,7 @@ connection_timeout = { secs = 30, nanos = 0 }
 
 [api]
 enabled = true
-bind = "127.0.0.1:8080"
+bind = "127.0.0.1:8081"
 metrics_enabled = true
 metrics_path = "/metrics"
 auth_enabled = false

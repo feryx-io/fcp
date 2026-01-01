@@ -40,7 +40,7 @@ macro_rules! define_id {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}-{}", $prefix, &self.0.to_string()[..8])
+                write!(f, "{}-{}", $prefix, self.0)
             }
         }
 
