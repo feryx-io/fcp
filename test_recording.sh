@@ -3,7 +3,7 @@
 set -e
 
 API_BASE="http://localhost:8081/api/v1"
-SERVER_IP="${SERVER_IP:-192.168.1.81}"
+SERVER_IP="${SERVER_IP:-192.168.1.225}"
 
 echo "======================================"
 echo "FCP Call Recording Test Script"

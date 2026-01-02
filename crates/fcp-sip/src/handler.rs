@@ -1548,7 +1548,9 @@ impl SipMessageHandler {
             }
 
             // Send 200 OK to A-leg
+            info!(call_id = %call_id, "Sending 200 OK to A-leg");
             a_leg_handle.send_final(a_leg_response).await;
+            info!(call_id = %call_id, "200 OK sent to A-leg");
 
             // Note: ACK to B-leg is handled automatically by the UAC transaction layer
             debug!(call_id = %call_id, "ACK will be sent automatically to B-leg");
@@ -1563,7 +1565,10 @@ impl SipMessageHandler {
             // Map B-leg rejection to A-leg response
             let reason = b_leg_final.start_line().reason();
             let response = self.create_simple_response(request, b_leg_status, reason);
+
+            info!(call_id = %call_id, code = b_leg_status, "Sending rejection to A-leg");
             a_leg_handle.send_final(response).await;
+            info!(call_id = %call_id, code = b_leg_status, "Rejection sent to A-leg");
 
             let _ = self.call_manager.terminate_call(
                 &call_id,
@@ -1745,12 +1750,13 @@ impl SipMessageHandler {
     /// Handle an ACK request (B2BUA mode).
     ///
     /// ACK confirms dialog establishment after 200 OK.
-    /// In B2BUA mode, we need to:
-    /// 1. Find the call by dialog Call-ID
-    /// 2. Confirm the call is established
-    /// 3. TODO: Forward ACK to B-leg
+    /// In B2BUA mode:
+    /// 1. The ACK from A-leg (caller) confirms they received our 200 OK
+    /// 2. The ACK to B-leg (callee) was already sent automatically by IntegratedUAC
+    ///    when it received the 200 OK from B-leg
+    /// 3. No forwarding needed - both legs have received their ACKs
     fn handle_ack(&self, request: &sip_core::Request) -> Result<()> {
-        debug!("Received ACK (B2BUA mode)");
+        debug!("Received ACK from A-leg (B2BUA mode)");
 
         // Extract Call-ID to find the call
         let dialog_call_id = sip_parse::header(request.headers(), "Call-ID")
@@ -1758,16 +1764,16 @@ impl SipMessageHandler {
 
         // Find the call by dialog Call-ID
         if let Some(call) = self.call_manager.find_by_dialog_call_id(dialog_call_id.as_str()) {
-            debug!(
+            info!(
                 call_id = %call.id,
                 dialog_call_id = %dialog_call_id,
-                "ACK received, call confirmed established"
+                state = ?call.state,
+                "ACK received from A-leg - call dialog fully established"
             );
 
             // The call should already be in Established state from the 200 OK
             // ACK is just confirmation, no state change needed
-
-            // TODO: Forward ACK to B-leg when we implement full B2BUA forwarding
+            // B-leg already received ACK from IntegratedUAC when 200 OK was received
         } else {
             debug!(
                 dialog_call_id = %dialog_call_id,
