@@ -199,6 +199,7 @@ use crate::settings::ServerSettings;
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
+#[derive(Clone)]
 pub struct SipMessageHandler {
     /// Transaction manager for handling SIP transactions
     transaction_manager: Arc<TransactionManager>,
@@ -1200,6 +1201,38 @@ impl SipMessageHandler {
             call.state = crate::call::CallState::Proceeding;
         });
 
+        // Spawn background task to handle B-leg responses asynchronously
+        // This prevents blocking the A-leg transaction while waiting for B-leg responses
+        let handler = self.clone();
+        let request_clone = request.clone();
+        let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
+        let b_leg_handle_clone = Arc::clone(&b_leg_handle);
+        let call_id_clone = call_id.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = handler.handle_b_leg_responses(
+                request_clone,
+                a_leg_handle_arc,
+                b_leg_handle_clone,
+                call_id_clone,
+            ).await {
+                error!(call_id = %call_id_clone, error = %e, "Error handling B-leg responses");
+            }
+        });
+
+        // Return immediately - responses will be handled in background task
+        info!(call_id = %call_id, "B-leg INVITE sent, handling responses in background");
+        return Ok(());
+    }
+
+    /// Handle B-leg responses in background task (spawned from forward_invite_to_b_leg)
+    async fn handle_b_leg_responses(
+        &self,
+        request: sip_core::Request,
+        a_leg_handle: Arc<ServerTransactionHandle>,
+        b_leg_handle: Arc<tokio::sync::Mutex<Option<crate::uac::OutboundCall>>>,
+        call_id: crate::call::CallId,
+    ) -> Result<()> {
         // Track A-leg To-tag for dialog consistency (RFC 3261 §12.1.1)
         // Once we send a provisional with a To-tag, we must use the SAME tag for 200 OK
         let mut a_leg_to_tag: Option<String> = None;
@@ -1264,7 +1297,7 @@ impl SipMessageHandler {
                 // CRITICAL: We MUST use the same To-tag for both provisional and final responses (RFC 3261 §12.1.1)
                 let response = if a_leg_to_tag.is_none() {
                     // First provisional - use UAS helper to generate proper To-tag
-                    let initial_resp = self.uas.create_ringing(request);
+                    let initial_resp = self.uas.create_ringing(&request);
 
                     // Extract and save the To-tag for later use with 200 OK
                     if let Some(to_header) = initial_resp.headers().get("To") {
@@ -1315,7 +1348,7 @@ impl SipMessageHandler {
                     ).expect("Failed to create response")
                 } else {
                     // Subsequent provisionals - reuse the established To-tag
-                    self.create_provisional_from_b_leg(request, &provisional)
+                    self.create_provisional_from_b_leg(&request, &provisional)
                 };
 
                 info!(call_id = %call_id, code = status_code, "Sending provisional to A-leg");
@@ -1368,7 +1401,7 @@ impl SipMessageHandler {
                         error = %e,
                         "Failed to receive final response from B-leg"
                     );
-                    let response = self.create_simple_response(request, 408, "Request Timeout");
+                    let response = self.create_simple_response(&request, 408, "Request Timeout");
                     a_leg_handle.send_final(response).await;
                     let _ = self.call_manager.terminate_call(&call_id, Some(format!("B-leg timeout: {}", e)));
                 }
@@ -1479,7 +1512,7 @@ impl SipMessageHandler {
             // CRITICAL: Must reuse the To-tag from the provisional response (RFC 3261 §12.1.1)
             let a_leg_response = if let Some(ref saved_tag) = a_leg_to_tag {
                 // Build 200 OK with the SAME To-tag as the provisional
-                let mut resp = self.uas.create_ok(request, b_leg_sdp.as_deref())?;
+                let mut resp = self.uas.create_ok(&request, b_leg_sdp.as_deref())?;
 
                 // Replace To header with one containing our saved tag
                 if let Some(to) = request.headers().get("To") {
@@ -1494,20 +1527,20 @@ impl SipMessageHandler {
             } else {
                 // Fallback: No provisional was sent (shouldn't happen in B2BUA)
                 warn!(call_id = %call_id, "No A-leg To-tag saved, generating new one (dialog mismatch possible)");
-                self.uas.create_ok(request, b_leg_sdp.as_deref())?
+                self.uas.create_ok(&request, b_leg_sdp.as_deref())?
             };
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
-                request,
+                &request,
                 &a_leg_response,
                 self.uas.local_uri.clone(),
-                extract_from_uri(request).unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
+                extract_from_uri(&request).unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
             ) {
                 Some(dialog) => dialog,
                 None => {
                     error!(call_id = %call_id, "Failed to create A-leg dialog from 200 OK");
-                    let response = self.create_simple_response(request, 500, "Internal Server Error");
+                    let response = self.create_simple_response(&request, 500, "Internal Server Error");
                     a_leg_handle.send_final(response).await;
                     let _ = self.call_manager.terminate_call(&call_id, Some("Failed to create A-leg dialog".to_string()));
                     return Ok(());
@@ -1564,7 +1597,7 @@ impl SipMessageHandler {
 
             // Map B-leg rejection to A-leg response
             let reason = b_leg_final.start_line().reason();
-            let response = self.create_simple_response(request, b_leg_status, reason);
+            let response = self.create_simple_response(&request, b_leg_status, reason);
 
             info!(call_id = %call_id, code = b_leg_status, "Sending rejection to A-leg");
             a_leg_handle.send_final(response).await;
