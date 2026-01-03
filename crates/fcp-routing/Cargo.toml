@@ -33,6 +33,7 @@ regex = "1.10"
 
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 
 # File watching for hot-reload
 notify = "7.0"

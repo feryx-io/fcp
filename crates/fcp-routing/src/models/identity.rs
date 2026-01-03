@@ -97,6 +97,82 @@ pub struct IdentityContext {
     pub user_agent: Option<String>,
 }
 
+impl User {
+    /// Validates user data for security and correctness.
+    ///
+    /// # Security Checks
+    /// - Prevents CRLF injection in all string fields (id, display_name, roles, groups)
+    /// - Ensures user ID is not empty
+    /// - Recursively validates all endpoints
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.is_empty() {
+            return Err("user.id must not be empty".to_string());
+        }
+        reject_crlf("user.id", &self.id)?;
+        if let Some(name) = &self.display_name {
+            reject_crlf("user.display_name", name)?;
+        }
+        for role in &self.roles {
+            reject_crlf("user.roles", role)?;
+        }
+        for group in &self.groups {
+            reject_crlf("user.groups", group)?;
+        }
+        for endpoint in &self.endpoints {
+            endpoint.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl Endpoint {
+    /// Validates endpoint fields for security and correctness.
+    ///
+    /// # Security Checks
+    /// - Prevents CRLF injection in URI and location fields
+    /// - Validates URI scheme is sip: or sips: (RFC 3261)
+    /// - Ensures URI is not empty
+    pub fn validate(&self) -> Result<(), String> {
+        if self.uri.is_empty() {
+            return Err("endpoint.uri must not be empty".to_string());
+        }
+        reject_crlf("endpoint.uri", &self.uri)?;
+
+        // Validate URI scheme (RFC 3261 - SIP URIs)
+        let uri_lower = self.uri.to_lowercase();
+        if !uri_lower.starts_with("sip:") && !uri_lower.starts_with("sips:") {
+            return Err(format!(
+                "endpoint.uri must start with 'sip:' or 'sips:', got: {}",
+                self.uri
+            ));
+        }
+
+        if let Some(loc) = &self.location {
+            reject_crlf("endpoint.location", loc)?;
+        }
+        Ok(())
+    }
+}
+
+impl IdentityContext {
+    /// Validate identity context strings for CR/LF.
+    pub fn validate(&self) -> Result<(), String> {
+        reject_crlf("identity.user_id", &self.user_id)?;
+        if let Some(ua) = &self.user_agent {
+            reject_crlf("identity.user_agent", ua)?;
+        }
+        Ok(())
+    }
+}
+
+fn reject_crlf(field: &str, value: &str) -> Result<(), String> {
+    if value.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+        Err(format!("{field} must not contain CR or LF characters"))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

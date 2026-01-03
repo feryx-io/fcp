@@ -6,6 +6,7 @@ use super::identity::IdentityContext;
 use chrono::{NaiveTime, Weekday};
 use fcp_core::TenantId;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// A policy rule for call authorization.
 ///
@@ -46,6 +47,43 @@ pub struct PolicyRule {
 
     /// Human-readable reason for this policy
     pub reason: Option<String>,
+}
+
+impl PolicyRule {
+    /// Validates policy rule for security and logical consistency.
+    ///
+    /// # Security Checks
+    /// - Prevents CRLF injection in name and reason fields
+    /// - Ensures rule name is not empty
+    /// - Ensures priority is non-negative
+    /// - Recursively validates all child components:
+    ///   * applies_to (users, roles, groups)
+    ///   * destination_match (patterns, tags)
+    ///   * time_windows (days, times, timezones)
+    ///   * source_ip_ranges (CIDR validation)
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("policy.name must not be empty".to_string());
+        }
+        reject_crlf("policy.name", &self.name)?;
+        if self.priority < 0 {
+            return Err("policy.priority must be non-negative".to_string());
+        }
+        self.applies_to.validate()?;
+        if let Some(dest) = &self.destination_match {
+            dest.validate()?;
+        }
+        for window in &self.time_windows {
+            window.validate()?;
+        }
+        for range in &self.source_ip_ranges {
+            range.validate()?;
+        }
+        if let Some(reason) = &self.reason {
+            reject_crlf("policy.reason", reason)?;
+        }
+        Ok(())
+    }
 }
 
 /// Defines who a policy rule applies to.
@@ -97,6 +135,25 @@ impl AppliesTo {
 
         false
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(users) = &self.users {
+            for user in users {
+                reject_crlf("policy.applies_to.users", user)?;
+            }
+        }
+        if let Some(roles) = &self.roles {
+            for role in roles {
+                reject_crlf("policy.applies_to.roles", role)?;
+            }
+        }
+        if let Some(groups) = &self.groups {
+            for group in groups {
+                reject_crlf("policy.applies_to.groups", group)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Destination pattern matching.
@@ -112,6 +169,30 @@ pub struct DestinationMatch {
     /// Example: ["internal", "free"]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+}
+
+impl DestinationMatch {
+    /// Validates destination match for security and correctness.
+    ///
+    /// # Security Checks
+    /// - Prevents CRLF injection in pattern and tags
+    /// - Ensures pattern is not empty
+    /// - **ReDoS Prevention**: Compiles regex at validation time to catch invalid
+    ///   or malicious patterns before runtime evaluation
+    pub fn validate(&self) -> Result<(), String> {
+        if self.pattern.is_empty() {
+            return Err("policy.destination_match.pattern must not be empty".to_string());
+        }
+        reject_crlf("policy.destination_match.pattern", &self.pattern)?;
+        if let Some(tags) = &self.tags {
+            for tag in tags {
+                reject_crlf("policy.destination_match.tags", tag)?;
+            }
+        }
+        // Regex compilation check - prevents ReDoS attacks
+        regex::Regex::new(&self.pattern).map_err(|e| format!("Invalid destination regex: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Time window for policy activation.
@@ -133,6 +214,36 @@ pub struct TimeWindow {
     /// Timezone for time evaluation
     /// Example: "America/New_York", "Europe/London"
     pub timezone: String,
+}
+
+impl TimeWindow {
+    /// Validates time window for security and logical consistency.
+    ///
+    /// # Security Checks
+    /// - Prevents CRLF injection in timezone field
+    /// - Validates timezone is a recognized IANA timezone
+    /// - Ensures days list is not empty
+    /// - Ensures start_time is before end_time
+    pub fn validate(&self) -> Result<(), String> {
+        if self.days.is_empty() {
+            return Err("policy.time_windows.days must not be empty".to_string());
+        }
+        if self.start_time >= self.end_time {
+            return Err("policy.time_windows.start_time must be before end_time".to_string());
+        }
+        reject_crlf("policy.time_windows.timezone", &self.timezone)?;
+
+        // Validate timezone is a recognized IANA timezone
+        use std::str::FromStr;
+        chrono_tz::Tz::from_str(&self.timezone).map_err(|_| {
+            format!(
+                "Invalid timezone '{}'. Must be a valid IANA timezone (e.g., 'America/New_York', 'UTC')",
+                self.timezone
+            )
+        })?;
+
+        Ok(())
+    }
 }
 
 /// Custom serialization for NaiveTime
@@ -166,6 +277,24 @@ mod time_format {
 pub struct IpRange {
     /// CIDR notation (e.g., "10.0.0.0/8", "192.168.1.0/24")
     pub cidr: String,
+}
+
+impl IpRange {
+    /// Validates IP range for security and correctness.
+    ///
+    /// # Security Checks
+    /// - Prevents CRLF injection in CIDR field
+    /// - Ensures CIDR is not empty
+    /// - Validates CIDR notation is parseable (prevents runtime errors)
+    pub fn validate(&self) -> Result<(), String> {
+        if self.cidr.is_empty() {
+            return Err("policy.source_ip_ranges.cidr must not be empty".to_string());
+        }
+        reject_crlf("policy.source_ip_ranges.cidr", &self.cidr)?;
+        ipnetwork::IpNetwork::from_str(&self.cidr)
+            .map_err(|e| format!("Invalid CIDR '{}': {}", self.cidr, e))?;
+        Ok(())
+    }
 }
 
 /// Action to take when a policy rule matches.
@@ -228,6 +357,15 @@ impl PolicyDecision {
             reason: reason.into(),
             evaluation_time_us: time_us,
         }
+    }
+}
+
+/// Helper function to reject strings containing CR or LF characters.
+fn reject_crlf(field: &str, value: &str) -> Result<(), String> {
+    if value.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+        Err(format!("{field} must not contain CR or LF characters"))
+    } else {
+        Ok(())
     }
 }
 

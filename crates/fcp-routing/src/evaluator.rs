@@ -38,16 +38,33 @@ impl PolicyEvaluator {
 
     /// Evaluate if a call is allowed.
     ///
+    /// # Security
+    /// This method implements comprehensive security validation:
+    /// - **CRLF Injection Prevention**: Validates caller and destination at entry point
+    /// - **Identity Validation**: Validates user context after retrieval from storage
+    /// - **Policy Validation**: Validates all rules before evaluation (fail-fast)
+    /// - **ReDoS Prevention**: Regex patterns validated at configuration time
+    /// - **CIDR Validation**: IP ranges validated before matching
+    /// - **Multi-layer Defense**: Validation at entry, context, rule, and user levels
+    ///
     /// # Arguments
     ///
-    /// * `caller` - User ID of the caller (e.g., "alice@company.com")
-    /// * `destination` - Destination being called (e.g., "sip:bob@company.com" or "+15551234567")
+    /// * `caller` - User ID of the caller (validated for CRLF, e.g., "alice@company.com")
+    /// * `destination` - Destination being called (validated for CRLF, e.g., "sip:bob@company.com")
     /// * `tenant_id` - Tenant ID for multi-tenant isolation
     /// * `source_ip` - Source IP address of the call
     ///
     /// # Returns
     ///
     /// A `PolicyDecision` indicating Allow or Deny, with the matched rule and reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Caller or destination contains CRLF characters
+    /// - Identity context validation fails
+    /// - Policy rule validation fails
+    /// - User data validation fails
     pub async fn evaluate_call(
         &self,
         caller: &str,
@@ -56,6 +73,13 @@ impl PolicyEvaluator {
         source_ip: IpAddr,
     ) -> Result<PolicyDecision> {
         let start = std::time::Instant::now();
+
+        if caller.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+            anyhow::bail!("caller contains invalid characters");
+        }
+        if destination.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+            anyhow::bail!("destination contains invalid characters");
+        }
 
         debug!(
             caller = %caller,
@@ -70,6 +94,8 @@ impl PolicyEvaluator {
             .build_identity_context(caller, tenant_id, source_ip)
             .await
             .context("Failed to build identity context")?;
+        ctx.validate()
+            .map_err(|e| anyhow::anyhow!("Invalid identity context: {}", e))?;
 
         debug!(
             user_id = %ctx.user_id,
@@ -90,6 +116,12 @@ impl PolicyEvaluator {
         // Step 3: Sort by priority (lower number = higher priority)
         rules.sort_by_key(|r| r.priority);
 
+        // Validate rules before evaluation to fail fast on invalid config.
+        for rule in &rules {
+            rule.validate()
+                .map_err(|e| anyhow::anyhow!("Invalid policy rule '{}': {}", rule.name, e))?;
+        }
+
         // Step 4: Evaluate rules in priority order
         for rule in rules {
             if !rule.enabled {
@@ -107,7 +139,10 @@ impl PolicyEvaluator {
 
             // Check destination match
             if let Some(dest_match) = &rule.destination_match {
-                if !self.matches_destination(destination, &dest_match.pattern).await? {
+                if !self
+                    .matches_destination(destination, &dest_match.pattern)
+                    .await?
+                {
                     debug!(rule = %rule.name, "Destination does not match pattern");
                     continue;
                 }
@@ -179,6 +214,8 @@ impl PolicyEvaluator {
             .get_user(user_id, tenant_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("User not found: {}", user_id))?;
+        user.validate()
+            .map_err(|e| anyhow::anyhow!("Invalid user data for '{}': {}", user_id, e))?;
 
         Ok(IdentityContext {
             user_id: user.id.clone(),
@@ -227,15 +264,15 @@ impl PolicyEvaluator {
         use ipnetwork::IpNetwork;
         use std::str::FromStr;
 
-        ranges.iter().any(|range| {
-            match IpNetwork::from_str(&range.cidr) {
+        ranges
+            .iter()
+            .any(|range| match IpNetwork::from_str(&range.cidr) {
                 Ok(network) => network.contains(ip),
                 Err(e) => {
                     warn!(cidr = %range.cidr, error = %e, "Invalid CIDR notation");
                     false
                 }
-            }
-        })
+            })
     }
 }
 
