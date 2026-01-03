@@ -107,7 +107,8 @@ pub struct CallLeg {
     pub dialog: Option<Dialog>,
 
     /// Outbound call handle (B-leg) for transaction control (CANCEL, etc.)
-    pub outbound_handle: Option<Arc<Mutex<Option<CallHandle>>>>,
+    /// Since await_final() and cancel() both take &self, we only need Arc (no Mutex or Option)
+    pub outbound_handle: Option<Arc<CallHandle>>,
 
     /// Reliable provisional responses by RSeq (for PRACK forwarding)
     pub reliable_provisionals: Vec<Response>,

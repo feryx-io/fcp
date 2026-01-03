@@ -591,27 +591,25 @@ impl SipMessageHandler {
                         }
                     });
 
-                    // Use the cloned handle (not the one from the old call snapshot)
+                    // Send CANCEL to B-leg using the outbound handle
+                    // Since cancel() takes &self, we can call it directly on the Arc
+                    // This works concurrently with await_final() which is likely running
                     if let Some(outbound) = outbound_handle_clone {
-                        let outbound = Arc::clone(&outbound);
+                        info!(call_id = %call.id, "Sending CANCEL to B-leg");
+                        let call_id_log = call.id;
+
                         tokio::spawn(async move {
-                            let (result, dialog_id) = {
-                                let guard = outbound.lock().await;
-                                let dialog_id = guard.as_ref().map(|h| h.dialog.id().clone());
-                                let res = if let Some(handle) = guard.as_ref() {
-                                    Some(handle.cancel().await)
-                                } else {
-                                    None
-                                };
-                                (res, dialog_id)
-                            };
-                            if let Some(Err(e)) = result {
-                                warn!(error = %e, "Failed to send CANCEL to B-leg");
-                            }
-                            if let Some(id) = dialog_id {
-                                dialog_manager.remove(&id);
+                            match outbound.cancel().await {
+                                Ok(_response) => {
+                                    info!(call_id = %call_id_log, "Successfully sent CANCEL to B-leg");
+                                }
+                                Err(e) => {
+                                    warn!(call_id = %call_id_log, error = %e, "Failed to send CANCEL to B-leg");
+                                }
                             }
                         });
+                    } else {
+                        debug!(call_id = %call.id, "No B-leg outbound handle found for CANCEL");
                     }
                 }
 
@@ -1190,7 +1188,8 @@ impl SipMessageHandler {
         uac.inner().set_from_uri(None).await;
 
         // Shareable handle for cancel/final response tracking
-        let b_leg_handle = Arc::new(tokio::sync::Mutex::new(Some(b_leg_call)));
+        // Since await_final() and cancel() both take &self, we only need Arc (no Mutex)
+        let b_leg_handle = Arc::new(b_leg_call);
 
         // Persist the outbound handle for later control (CANCEL/BYE)
         let _ = self.call_manager.update_call(&call_id, |call| {
@@ -1239,7 +1238,7 @@ impl SipMessageHandler {
         &self,
         request: sip_core::Request,
         a_leg_handle: Arc<ServerTransactionHandle>,
-        b_leg_handle: Arc<tokio::sync::Mutex<Option<crate::uac::OutboundCall>>>,
+        b_leg_handle: Arc<crate::uac::OutboundCall>,
         call_id: crate::call::CallId,
     ) -> Result<()> {
         // Track A-leg To-tag for dialog consistency (RFC 3261 §12.1.1)
@@ -1249,33 +1248,10 @@ impl SipMessageHandler {
         // Relay provisional responses from B-leg to A-leg until we get a 180 Ringing
         info!(call_id = %call_id, "Waiting for provisional responses from B-leg");
         loop {
-            // Take the handle out without holding the lock during async operations
-            let mut call_handle = {
-                let mut guard = b_leg_handle.lock().await;
-                guard.take()
-            };
-
-            let provisional = if let Some(ref mut call) = call_handle {
-                // Await WITHOUT holding the lock
-                let res = call.await_provisional().await;
-                if let Some(ref r) = res {
-                    call.dialog.update_from_response(r);
-                }
-                res
-            } else {
-                None
-            };
-
-            // Put the handle back
-            if let Some(call) = call_handle {
-                let mut guard = b_leg_handle.lock().await;
-                *guard = Some(call);
-            }
-
-            // Check if we got a provisional response
-            let provisional = match provisional {
+            // await_provisional() takes &self, so we can call it directly on the Arc
+            let provisional = match b_leg_handle.await_provisional().await {
                 Some(p) => p,
-                None => break,
+                None => break, // No more provisionals
             };
             let status_code = provisional.start_line().code();
             debug!(
@@ -1369,14 +1345,9 @@ impl SipMessageHandler {
             }
         }
 
-        // Clone the early B-leg dialog before consuming CallHandle
+        // Clone the early B-leg dialog before await_final
         // This will be updated with the confirmed tag from the 200 OK
-        let mut b_leg_dialog = b_leg_handle
-            .lock()
-            .await
-            .as_ref()
-            .map(|h| h.dialog.clone())
-            .ok_or_else(|| anyhow::anyhow!("B-leg handle missing dialog"))?;
+        let mut b_leg_dialog = b_leg_handle.dialog.clone();
         debug!(
             call_id = %call_id,
             early_dialog_id = ?b_leg_dialog.id(),
@@ -1384,15 +1355,11 @@ impl SipMessageHandler {
         );
 
         // Wait for final response from B-leg
+        // Since await_final() takes &self, we can call it directly on the Arc
+        // The CANCEL handler can call cancel() concurrently on the same Arc
         info!(call_id = %call_id, "Waiting for final response from B-leg");
-        let b_leg_final = match {
-            let mut guard = b_leg_handle.lock().await;
-            let handle = guard
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("B-leg handle missing for await_final"))?;
-            drop(guard);
-            handle.await_final().await
-        } {
+
+        let b_leg_final = match b_leg_handle.await_final().await {
             Ok(response) => response,
             Err(e) => {
                 // If call was cancelled, avoid sending 408 and just terminate.
