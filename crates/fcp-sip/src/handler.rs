@@ -1841,6 +1841,22 @@ impl SipMessageHandler {
         let dialog_call_id = sip_parse::header(request.headers(), "Call-ID")
             .ok_or_else(|| anyhow::anyhow!("Missing Call-ID in BYE"))?;
 
+        // Try to find the dialog - it might be in dialog_manager (A-leg/UAS) or only in call_manager (B-leg/UAC)
+        let dialog_opt = self.dialog_manager.find_by_request(request);
+
+        // Create response immediately before any cleanup
+        // For A-leg (UAS): use UAS helper with dialog
+        // For B-leg (UAC): create simple 200 OK response
+        let response = if let Some(dialog) = dialog_opt {
+            // A-leg BYE: use UAS helper
+            self.uas.handle_bye(request, &dialog)?
+        } else {
+            // B-leg BYE: create simple 200 OK response
+            debug!("BYE dialog not in dialog_manager (likely B-leg UAC), creating simple 200 OK");
+            self.create_simple_response(request, 200, "OK")
+        };
+
+        // Now that we've responded, proceed with forwarding and cleanup
         // Find the call by dialog Call-ID
         if let Some(call) = self.call_manager.find_by_dialog_call_id(dialog_call_id.as_str()) {
             info!(
@@ -1852,12 +1868,13 @@ impl SipMessageHandler {
 
             stop_timers_for_call(&self.session_timer_manager, &call);
 
+            // Check if BYE is from A-leg
+            let is_a_leg = call.a_leg.dialog.as_ref()
+                .map(|d| d.id().call_id() == dialog_call_id.as_str())
+                .unwrap_or(false);
+
             // Determine which leg sent the BYE and forward to the other leg
             if let Some(uac) = &self.uac {
-                // Check if BYE is from A-leg
-                let is_a_leg = call.a_leg.dialog.as_ref()
-                    .map(|d| d.id().call_id() == dialog_call_id.as_str())
-                    .unwrap_or(false);
 
                 if is_a_leg {
                     // BYE from A-leg, send BYE to B-leg
@@ -1902,68 +1919,113 @@ impl SipMessageHandler {
                 debug!(call_id = %call.id, "No UAC available, cannot forward BYE");
             }
 
-            // Terminate the call in CallManager
-            let _ = self.call_manager.terminate_call(&call.id, None);
-
-            // Terminate media session if anchored
-            if call.media_anchored {
-                if let (Some(media_session_id), Some(media_manager)) = (&call.media_session_id, &self.media_manager) {
-                    let media_session_id = media_session_id.clone();
-                    let media_manager = Arc::clone(media_manager);
-                    let call_id = call.id;
-
-                    // Spawn async task to terminate media session
-                    tokio::spawn(async move {
-                        match media_manager.terminate_session(&media_session_id).await {
-                            Ok(()) => {
-                                info!(
-                                    call_id = %call_id,
-                                    media_session_id = %media_session_id,
-                                    "Terminated media session"
-                                );
-                            }
-                            Err(e) => {
-                                error!(
-                                    call_id = %call_id,
-                                    media_session_id = %media_session_id,
-                                    error = %e,
-                                    "Failed to terminate media session"
-                                );
-                            }
+            // Remove the dialog for the leg that sent the BYE
+            // The other leg's dialog will be removed by spawn_bye_with_retry when that BYE completes
+            let removing_dialog_id = if is_a_leg {
+                let dialog_id = call.a_leg.dialog.as_ref().map(|d| d.id().clone());
+                let _ = self.call_manager.update_call(&call.id, |call| {
+                    call.a_leg.dialog = None;
+                });
+                dialog_id
+            } else if let Some(b_leg) = &call.b_leg {
+                let dialog_id = b_leg.dialog.as_ref().map(|d| d.id().clone());
+                if b_leg.dialog.is_some() {
+                    let _ = self.call_manager.update_call(&call.id, |call| {
+                        if let Some(b) = &mut call.b_leg {
+                            b.dialog = None;
                         }
                     });
                 }
+                dialog_id
+            } else {
+                None
+            };
+
+            // Remove the dialog from dialog manager
+            if let Some(dialog_id) = removing_dialog_id {
+                self.dialog_manager.remove(&dialog_id);
             }
 
-            // Cleanup per-dialog state to prevent memory leaks
-            if let Some(a_dialog) = &call.a_leg.dialog {
-                self.rate_limits.remove(&a_dialog.id());
-                self.mid_dialog_lock.remove(&a_dialog.id());
-                // Clean subscription_index entries for A-leg dialog
-                let keys: Vec<_> = self.subscription_index
-                    .iter()
-                    .filter(|entry| entry.key().0 == *a_dialog.id())
-                    .map(|entry| entry.key().clone())
-                    .collect();
-                for key in keys {
-                    self.subscription_index.remove(&key);
-                }
-                debug!(dialog_id = ?a_dialog.id(), "Cleaned up A-leg dialog state");
-            }
-            if let Some(b_leg) = &call.b_leg {
-                if let Some(b_dialog) = &b_leg.dialog {
-                    self.rate_limits.remove(&b_dialog.id());
-                    self.mid_dialog_lock.remove(&b_dialog.id());
-                    // Clean subscription_index entries for B-leg dialog
-                    let keys: Vec<_> = self.subscription_index
-                        .iter()
-                        .filter(|entry| entry.key().0 == *b_dialog.id())
-                        .map(|entry| entry.key().clone())
-                        .collect();
-                    for key in keys {
-                        self.subscription_index.remove(&key);
+            // Check if both legs are now done (no more dialogs)
+            // If so, terminate the call and clean up
+            if let Some(updated_call) = self.call_manager.get_call(&call.id) {
+                let a_done = updated_call.a_leg.dialog.is_none();
+                let b_done = updated_call.b_leg.as_ref()
+                    .map(|b| b.dialog.is_none())
+                    .unwrap_or(true);
+
+                if a_done && b_done {
+                    info!(call_id = %call.id, "Both legs terminated, cleaning up call");
+
+                    // Terminate media session if anchored
+                    if call.media_anchored {
+                        if let (Some(media_session_id), Some(media_manager)) = (&call.media_session_id, &self.media_manager) {
+                            let media_session_id = media_session_id.clone();
+                            let media_manager = Arc::clone(media_manager);
+                            let call_id = call.id;
+
+                            // Spawn async task to terminate media session
+                            tokio::spawn(async move {
+                                match media_manager.terminate_session(&media_session_id).await {
+                                    Ok(()) => {
+                                        info!(
+                                            call_id = %call_id,
+                                            media_session_id = %media_session_id,
+                                            "Terminated media session"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            call_id = %call_id,
+                                            media_session_id = %media_session_id,
+                                            error = %e,
+                                            "Failed to terminate media session"
+                                        );
+                                    }
+                                }
+                            });
+                        }
                     }
-                    debug!(dialog_id = ?b_dialog.id(), "Cleaned up B-leg dialog state");
+
+                    // Cleanup per-dialog state for remaining dialogs to prevent memory leaks
+                    if let Some(a_dialog) = &updated_call.a_leg.dialog {
+                        self.rate_limits.remove(&a_dialog.id());
+                        self.mid_dialog_lock.remove(&a_dialog.id());
+                        let keys: Vec<_> = self.subscription_index
+                            .iter()
+                            .filter(|entry| entry.key().0 == *a_dialog.id())
+                            .map(|entry| entry.key().clone())
+                            .collect();
+                        for key in keys {
+                            self.subscription_index.remove(&key);
+                        }
+                        debug!(dialog_id = ?a_dialog.id(), "Cleaned up A-leg dialog state");
+                    }
+                    if let Some(b_leg) = &updated_call.b_leg {
+                        if let Some(b_dialog) = &b_leg.dialog {
+                            self.rate_limits.remove(&b_dialog.id());
+                            self.mid_dialog_lock.remove(&b_dialog.id());
+                            let keys: Vec<_> = self.subscription_index
+                                .iter()
+                                .filter(|entry| entry.key().0 == *b_dialog.id())
+                                .map(|entry| entry.key().clone())
+                                .collect();
+                            for key in keys {
+                                self.subscription_index.remove(&key);
+                            }
+                            debug!(dialog_id = ?b_dialog.id(), "Cleaned up B-leg dialog state");
+                        }
+                    }
+
+                    // Finally, terminate the call in CallManager
+                    let _ = self.call_manager.terminate_call(&call.id, None);
+                } else {
+                    debug!(
+                        call_id = %call.id,
+                        a_done = a_done,
+                        b_done = b_done,
+                        "Waiting for other leg to complete BYE"
+                    );
                 }
             }
         } else {
@@ -1973,14 +2035,8 @@ impl SipMessageHandler {
             );
         }
 
-        // Find the dialog to send proper response
-        let dialog = self
-            .dialog_manager
-            .find_by_request(request)
-            .ok_or_else(|| anyhow::anyhow!("Dialog not found for BYE"))?;
-
-        // Handle BYE using UAS helper (sends 200 OK)
-        self.uas.handle_bye(request, &dialog)
+        // Return the response we already created at the beginning
+        Ok(response)
     }
 
     /// Handle in-dialog re-INVITE by forwarding to the opposite leg.
@@ -3058,6 +3114,7 @@ impl SipMessageHandler {
                         debug!(call_id = %call_id, attempt = attempts, "Successfully sent BYE to peer leg");
                         stm.stop_timer(dialog.id());
                         dialog_manager.remove(dialog.id());
+
                         // Remove dialog from CallManager leg and clean subscriptions
                         let _ = call_manager.update_call(&call_id, |call| {
                             if is_a_leg {
@@ -3068,6 +3125,7 @@ impl SipMessageHandler {
                                 b.reliable_provisionals.clear();
                             }
                         });
+
                         // Clean subscriptions tied to this dialog id in index
                         let dialog_id = dialog.id().clone();
                         let keys: Vec<_> = subscription_index
@@ -3078,6 +3136,20 @@ impl SipMessageHandler {
                         for key in keys {
                             subscription_index.remove(&key);
                         }
+
+                        // Check if both legs are now done, and if so, terminate the call
+                        if let Some(updated_call) = call_manager.get_call(&call_id) {
+                            let a_done = updated_call.a_leg.dialog.is_none();
+                            let b_done = updated_call.b_leg.as_ref()
+                                .map(|b| b.dialog.is_none())
+                                .unwrap_or(true);
+
+                            if a_done && b_done {
+                                info!(call_id = %call_id, "Both legs terminated after forwarded BYE, terminating call");
+                                let _ = call_manager.terminate_call(&call_id, None);
+                            }
+                        }
+
                         break;
                     }
                     Err(e) => {
