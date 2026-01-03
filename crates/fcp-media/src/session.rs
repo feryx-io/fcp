@@ -2,44 +2,43 @@
 
 use fcp_core::{CallId, DialogId};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Represents a media session tied to a SIP dialog
 #[derive(Debug)]
 pub struct MediaSession {
     /// Internal FCP call identifier
-    pub call_id: CallId,
+    call_id: CallId,
 
     /// SIP dialog identifier
-    pub dialog_id: DialogId,
+    dialog_id: DialogId,
 
     /// forge-media session identifier
-    pub forge_session_id: String,
+    forge_session_id: String,
 
     /// Current state
-    pub state: RwLock<MediaSessionState>,
+    state: RwLock<MediaSessionState>,
 
     /// Session configuration
-    pub config: MediaSessionConfig,
+    config: MediaSessionConfig,
 
     /// Local SDP (answer we generated)
-    pub local_sdp: RwLock<Option<String>>,
+    local_sdp: RwLock<Option<String>>,
 
     /// Remote SDP (offer we received)
-    pub remote_sdp: RwLock<Option<String>>,
+    remote_sdp: RwLock<Option<String>>,
 
     /// Negotiated codecs
-    pub negotiated_codecs: RwLock<Vec<String>>,
+    negotiated_codecs: RwLock<Vec<String>>,
 
     /// Session statistics
-    pub stats: RwLock<MediaSessionStats>,
+    stats: RwLock<MediaSessionStats>,
 
     /// RTP port allocated for this session
-    pub rtp_port: u16,
+    rtp_port: u16,
 
     /// RTCP port allocated for this session
-    pub rtcp_port: u16,
+    rtcp_port: u16,
 }
 
 impl MediaSession {
@@ -65,6 +64,31 @@ impl MediaSession {
             rtp_port,
             rtcp_port,
         }
+    }
+
+    /// Call identifier.
+    pub fn call_id(&self) -> &CallId {
+        &self.call_id
+    }
+
+    /// Dialog identifier.
+    pub fn dialog_id(&self) -> &DialogId {
+        &self.dialog_id
+    }
+
+    /// forge-media session identifier.
+    pub fn forge_session_id(&self) -> &str {
+        &self.forge_session_id
+    }
+
+    /// Session configuration.
+    pub fn config(&self) -> &MediaSessionConfig {
+        &self.config
+    }
+
+    /// RTP/RTCP ports assigned to this session.
+    pub fn ports(&self) -> (u16, u16) {
+        (self.rtp_port, self.rtcp_port)
     }
 
     /// Get current state
@@ -95,6 +119,16 @@ impl MediaSession {
     /// Get remote SDP
     pub async fn remote_sdp(&self) -> Option<String> {
         self.remote_sdp.read().await.clone()
+    }
+
+    /// Snapshot of negotiated codecs.
+    pub async fn negotiated_codecs(&self) -> Vec<String> {
+        self.negotiated_codecs.read().await.clone()
+    }
+
+    /// Snapshot of stats.
+    pub async fn stats(&self) -> MediaSessionStats {
+        self.stats.read().await.clone()
     }
 }
 
@@ -166,6 +200,53 @@ impl Default for MediaSessionConfig {
             enable_plc: true,
             enable_echo_cancellation: false,
         }
+    }
+}
+
+impl MediaSessionConfig {
+    /// Validates configuration for security and correctness.
+    ///
+    /// # Security Checks
+    /// - **Recording paths**: Prevents CRLF injection and rejects empty paths
+    ///   - Note: Full path traversal validation (checking for "..", absolute paths, etc.)
+    ///     is performed by `MediaManager::start_recording()` where the base directory is known
+    /// - **Codec list**: Limits to 32 entries to prevent DoS via excessive codec lists
+    /// - **Jitter buffer**: Bounds check (1-5000ms) prevents resource exhaustion
+    ///
+    /// # Errors
+    /// Returns `Error::Config` if any validation check fails.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.enable_recording {
+            if let Some(path) = &self.recording_path {
+                if path.is_empty() {
+                    return Err(crate::Error::Config(
+                        "recording_path must not be empty when recording is enabled".into(),
+                    ));
+                }
+                if contains_crlf(path) {
+                    return Err(crate::Error::Config(
+                        "recording_path must not contain CR or LF characters".into(),
+                    ));
+                }
+                // Path traversal checks (absolute paths, "..", etc.) are performed
+                // by MediaManager::start_recording() where base_dir is available
+                validate_path_components(path)?;
+            }
+        }
+
+        if self.preferred_codecs.len() > 32 {
+            return Err(crate::Error::Config(
+                "preferred_codecs list is too long (max 32 entries)".into(),
+            ));
+        }
+
+        if self.jitter_buffer_ms == 0 || self.jitter_buffer_ms > 5000 {
+            return Err(crate::Error::Config(
+                "jitter_buffer_ms must be between 1 and 5000".into(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -247,5 +328,53 @@ mod tests {
         assert!(!config.enable_recording);
         assert_eq!(config.dtmf_mode, DtmfMode::Rfc2833);
         assert!(config.preferred_codecs.contains(&"PCMU".to_string()));
+        assert!(config.validate().is_ok());
     }
+}
+
+fn contains_crlf(value: &str) -> bool {
+    value.bytes().any(|b| matches!(b, b'\r' | b'\n'))
+}
+
+/// Validates path components for basic path traversal patterns.
+///
+/// This performs early validation that can be done without knowing the base directory.
+/// Full path traversal validation is performed by `MediaManager::start_recording()`.
+fn validate_path_components(path: &str) -> crate::Result<()> {
+    use std::path::{Component, Path};
+
+    let path_obj = Path::new(path);
+
+    // Reject absolute paths
+    if path_obj.is_absolute() {
+        return Err(crate::Error::Config(
+            "Recording path must be relative, not absolute".into(),
+        ));
+    }
+
+    // Check for suspicious components
+    for component in path_obj.components() {
+        match component {
+            Component::ParentDir => {
+                return Err(crate::Error::Config(
+                    "Recording path must not contain '..' (path traversal attempt)".into(),
+                ));
+            }
+            Component::RootDir => {
+                return Err(crate::Error::Config(
+                    "Recording path must not contain root directory".into(),
+                ));
+            }
+            Component::Prefix(_) => {
+                return Err(crate::Error::Config(
+                    "Recording path must not contain Windows drive prefix".into(),
+                ));
+            }
+            Component::Normal(_) | Component::CurDir => {
+                // These are safe
+            }
+        }
+    }
+
+    Ok(())
 }

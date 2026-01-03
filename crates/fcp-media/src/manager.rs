@@ -5,8 +5,8 @@ use crate::{
     MediaSessionConfig, MediaSessionStats, Result,
 };
 use fcp_core::{CallId, DialogId};
-use std::sync::Arc;
-use tracing::{info, warn};
+use std::{path::Path, sync::Arc};
+use tracing::info;
 
 /// Media manager - unified interface for all media operations
 ///
@@ -24,6 +24,8 @@ impl MediaManager {
     /// Create a new media manager
     pub async fn new(config: MediaConfig) -> Result<Self> {
         info!(backend = ?config.backend, "Initializing media manager");
+
+        config.validate()?;
 
         // Create backend based on configuration
         let backend: Arc<dyn MediaBackend> = match &config.backend {
@@ -69,6 +71,7 @@ impl MediaManager {
         dialog_id: DialogId,
         config: MediaSessionConfig,
     ) -> Result<Arc<MediaSession>> {
+        config.validate()?;
         self.backend
             .create_session(call_id, dialog_id, config)
             .await
@@ -129,7 +132,13 @@ impl MediaManager {
     }
 
     /// Start recording a call
+    ///
+    /// # Security
+    /// - Validates path for CRLF injection
+    /// - Prevents path traversal attacks
+    /// - Ensures path stays within configured recording directory
     pub async fn start_recording(&self, call_id: &CallId, path: String) -> Result<()> {
+        validate_recording_path(&path, Path::new(&self.config.recording_dir))?;
         self.backend.start_recording(call_id, path).await
     }
 
@@ -194,4 +203,86 @@ mod tests {
             assert!(!digit.is_ascii_digit() && digit != '*' && digit != '#');
         }
     }
+}
+
+fn contains_crlf(value: &str) -> bool {
+    value.bytes().any(|b| matches!(b, b'\r' | b'\n'))
+}
+
+/// Validates a recording path for security issues.
+///
+/// # Security Checks
+/// - Prevents CRLF injection
+/// - Rejects empty paths
+/// - Prevents path traversal with ".." components
+/// - Rejects absolute paths (must be relative to recording_dir)
+/// - Ensures resolved path stays within base directory
+///
+/// # Arguments
+/// * `path` - The recording path to validate
+/// * `base_dir` - The base recording directory
+///
+/// # Errors
+/// Returns `Error::Config` if any validation check fails.
+fn validate_recording_path(path: &str, base_dir: &Path) -> Result<()> {
+    // Empty path check
+    if path.is_empty() {
+        return Err(Error::Config("Recording path must not be empty".into()));
+    }
+
+    // CRLF injection check
+    if contains_crlf(path) {
+        return Err(Error::Config(
+            "Recording path must not contain CR or LF characters".into(),
+        ));
+    }
+
+    let path_obj = Path::new(path);
+
+    // Reject absolute paths - must be relative to recording_dir
+    if path_obj.is_absolute() {
+        return Err(Error::Config(
+            "Recording path must be relative, not absolute".into(),
+        ));
+    }
+
+    // Check for path traversal attempts
+    use std::path::Component;
+    for component in path_obj.components() {
+        match component {
+            Component::ParentDir => {
+                return Err(Error::Config(
+                    "Recording path must not contain '..' (path traversal attempt)".into(),
+                ));
+            }
+            Component::RootDir => {
+                return Err(Error::Config(
+                    "Recording path must not contain root directory".into(),
+                ));
+            }
+            Component::Normal(_) | Component::CurDir => {
+                // These are safe
+            }
+            Component::Prefix(_) => {
+                return Err(Error::Config(
+                    "Recording path must not contain Windows drive prefix".into(),
+                ));
+            }
+        }
+    }
+
+    // Verify the resolved path stays within base_dir (defense in depth)
+    // Note: We can't canonicalize here because the file might not exist yet,
+    // but we can verify the logical path construction is safe
+    let full_path = base_dir.join(path_obj);
+
+    // Ensure the constructed path starts with base_dir
+    // This catches any edge cases the component check might miss
+    if !full_path.starts_with(base_dir) {
+        return Err(Error::Config(
+            "Recording path escapes base directory (path traversal detected)".into(),
+        ));
+    }
+
+    Ok(())
 }

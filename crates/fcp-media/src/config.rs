@@ -1,6 +1,11 @@
 //! Configuration for fcp-media
 
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+
+const MAX_RTP_PORT_SPAN: u16 = 10_000;
+const MAX_TIMEOUT_MS: u64 = 120_000;
+const MAX_MAX_RETRIES: u32 = 10;
 
 /// Media subsystem configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +114,88 @@ impl Default for MediaConfig {
     }
 }
 
+impl MediaConfig {
+    /// Validates configuration for security and correctness.
+    ///
+    /// # Security Checks
+    /// - **CRLF Injection Prevention**: All string fields are checked for CR/LF characters
+    ///   to prevent header injection attacks
+    /// - **RTP Port Range**: Validates port range is non-zero, properly ordered, and within
+    ///   reasonable bounds (max 10,000 ports) to prevent resource exhaustion
+    /// - **Backend Endpoint**: Ensures remote backend URLs use http:// or https:// schemes
+    ///   to prevent protocol confusion attacks
+    /// - **Timeout Bounds**: Limits timeout to 2 minutes to prevent indefinite hangs
+    /// - **Retry Limits**: Caps retry attempts at 10 to prevent infinite retry loops
+    ///
+    /// # Errors
+    /// Returns `Error::Config` if any validation check fails.
+    pub fn validate(&self) -> Result<()> {
+        if self.rtp_port_start == 0 || self.rtp_port_end == 0 {
+            return Err(Error::Config(
+                "RTP port range must be greater than zero".to_string(),
+            ));
+        }
+        if self.rtp_port_start > self.rtp_port_end {
+            return Err(Error::Config(
+                "rtp_port_start cannot exceed rtp_port_end".to_string(),
+            ));
+        }
+        if self.rtp_port_end - self.rtp_port_start > MAX_RTP_PORT_SPAN {
+            return Err(Error::Config(format!(
+                "RTP port range span is too large (max {} ports)",
+                MAX_RTP_PORT_SPAN
+            )));
+        }
+
+        reject_crlf("recording_dir", &self.recording_dir)?;
+        reject_crlf("recording_format", &self.recording_format)?;
+        if let Some(ip) = &self.public_ip {
+            reject_crlf("public_ip", ip)?;
+        }
+        if let Some(stun) = &self.stun_server {
+            reject_crlf("stun_server", stun)?;
+        }
+        if let Some(turn) = &self.turn_server {
+            reject_crlf("turn_server", turn)?;
+        }
+
+        match &self.backend {
+            BackendType::Embedded => {}
+            BackendType::Remote {
+                endpoint,
+                auth_token,
+                timeout_ms,
+                retry_enabled,
+                max_retries,
+            } => {
+                reject_crlf("backend.endpoint", endpoint)?;
+                if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                    return Err(Error::Config(
+                        "backend.endpoint must start with http:// or https://".to_string(),
+                    ));
+                }
+                if let Some(token) = auth_token {
+                    reject_crlf("backend.auth_token", token)?;
+                }
+                if *timeout_ms == 0 || *timeout_ms > MAX_TIMEOUT_MS {
+                    return Err(Error::Config(format!(
+                        "backend.timeout_ms must be between 1 and {}",
+                        MAX_TIMEOUT_MS
+                    )));
+                }
+                if *retry_enabled && (*max_retries == 0 || *max_retries > MAX_MAX_RETRIES) {
+                    return Err(Error::Config(format!(
+                        "backend.max_retries must be between 1 and {} when retry_enabled",
+                        MAX_MAX_RETRIES
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 // Default value functions
 fn default_rtp_port_start() -> u16 {
     10000
@@ -138,6 +225,16 @@ fn default_recording_format() -> String {
     "wav".to_string()
 }
 
+fn reject_crlf(field: &str, value: &str) -> Result<()> {
+    if value.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+        Err(Error::Config(format!(
+            "{field} must not contain CR or LF characters"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +246,7 @@ mod tests {
         assert_eq!(config.rtp_port_start, 10000);
         assert_eq!(config.rtp_port_end, 20000);
         assert!(config.enable_transcoding);
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -173,5 +271,13 @@ mod tests {
             }
             _ => panic!("Expected Remote backend"),
         }
+    }
+
+    #[test]
+    fn test_invalid_port_range() {
+        let mut config = MediaConfig::default();
+        config.rtp_port_start = 5000;
+        config.rtp_port_end = 4000;
+        assert!(config.validate().is_err());
     }
 }

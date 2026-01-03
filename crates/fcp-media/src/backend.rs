@@ -611,7 +611,11 @@ pub mod remote {
 
             self.sessions.insert(call_id.clone(), session.clone());
 
-            info!(?call_id, forge_session_id = ?session.forge_session_id, "Remote media session created");
+            info!(
+                ?call_id,
+                forge_session_id = session.forge_session_id(),
+                "Remote media session created"
+            );
 
             Ok(session)
         }
@@ -644,7 +648,8 @@ pub mod remote {
 
             let url = format!(
                 "{}/v1/sessions/{}/sdp",
-                self.base_url, session.forge_session_id
+                self.base_url,
+                session.forge_session_id()
             );
             let mut request = self.client.post(&url).json(&UpdateReq {
                 sdp: remote_sdp.clone(),
@@ -683,7 +688,11 @@ pub mod remote {
                     .set_state(crate::session::MediaSessionState::Terminated)
                     .await;
 
-                let url = format!("{}/v1/sessions/{}", self.base_url, session.forge_session_id);
+                let url = format!(
+                    "{}/v1/sessions/{}",
+                    self.base_url,
+                    session.forge_session_id()
+                );
                 let mut request = self.client.delete(&url);
 
                 if let Some(auth) = self.auth_header() {
@@ -703,7 +712,8 @@ pub mod remote {
 
             let url = format!(
                 "{}/v1/sessions/{}/stats",
-                self.base_url, session.forge_session_id
+                self.base_url,
+                session.forge_session_id()
             );
             let mut request = self.client.get(&url);
 
