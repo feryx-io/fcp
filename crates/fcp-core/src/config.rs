@@ -1,11 +1,15 @@
+use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+const MAX_SIP_MESSAGE_SIZE: usize = 65_535;
+const MAX_CONNECTION_POOL_SIZE: usize = 10_000;
+const MAX_RTP_PORT_SPAN: u16 = 10_000;
+
 /// Complete runtime configuration for FCP.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FcpConfig {
     /// Node configuration
     pub node: NodeConfig,
@@ -32,6 +36,20 @@ pub struct FcpConfig {
     pub routing: RoutingConfig,
 }
 
+impl FcpConfig {
+    /// Validate configuration values for common bounds and CRLF safety.
+    pub fn validate(&self) -> Result<(), Error> {
+        self.node.validate().map_err(Error::Config)?;
+        self.transport.validate().map_err(Error::Config)?;
+        self.media.validate().map_err(Error::Config)?;
+        self.storage.validate().map_err(Error::Config)?;
+        self.registrar.validate().map_err(Error::Config)?;
+        self.api.validate().map_err(Error::Config)?;
+        self.observability.validate().map_err(Error::Config)?;
+        self.routing.validate().map_err(Error::Config)?;
+        Ok(())
+    }
+}
 
 /// Node-level configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +71,49 @@ impl Default for NodeConfig {
             name: "fcp-node".to_string(),
             local_domain: "fcp.local".to_string(),
         }
+    }
+}
+
+fn reject_crlf(field: &str, value: &str) -> Result<(), String> {
+    if value.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+        Err(format!("{field} must not contain CR or LF characters"))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_validates() {
+        let config = FcpConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_bad_values() {
+        let mut config = FcpConfig::default();
+        config.transport.max_message_size = MAX_SIP_MESSAGE_SIZE + 1;
+        assert!(matches!(config.validate(), Err(Error::Config(_))));
+
+        config.transport.max_message_size = MAX_SIP_MESSAGE_SIZE;
+        config.node.name = "bad\r\nname".to_string();
+        assert!(matches!(config.validate(), Err(Error::Config(_))));
+    }
+}
+impl NodeConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.is_empty() {
+            return Err("node.name must not be empty".to_string());
+        }
+        if self.local_domain.is_empty() {
+            return Err("node.local_domain must not be empty".to_string());
+        }
+        reject_crlf("node.name", &self.name)?;
+        reject_crlf("node.local_domain", &self.local_domain)?;
+        Ok(())
     }
 }
 
@@ -111,6 +172,77 @@ impl Default for TransportConfig {
     }
 }
 
+impl TransportConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_message_size == 0 || self.max_message_size > MAX_SIP_MESSAGE_SIZE {
+            return Err(format!(
+                "transport.max_message_size must be between 1 and {} bytes",
+                MAX_SIP_MESSAGE_SIZE
+            ));
+        }
+        if self.connection_pool_size == 0 || self.connection_pool_size > MAX_CONNECTION_POOL_SIZE {
+            return Err(format!(
+                "transport.connection_pool_size must be between 1 and {}",
+                MAX_CONNECTION_POOL_SIZE
+            ));
+        }
+        if self.connection_timeout.is_zero() {
+            return Err("transport.connection_timeout must be greater than zero".to_string());
+        }
+        if self.rtp_port == 0 {
+            return Err("transport.rtp_port must be greater than zero".to_string());
+        }
+        if let Some(ip) = &self.local_ip {
+            reject_crlf("transport.local_ip", ip)?;
+        }
+
+        // Validate TLS configuration if TLS is enabled
+        if self.tls_bind.is_some() {
+            // If TLS is enabled, both cert and key must be provided
+            if self.tls_cert.is_none() || self.tls_key.is_none() {
+                return Err(
+                    "transport.tls_cert and transport.tls_key must be provided when TLS is enabled"
+                        .to_string(),
+                );
+            }
+
+            // Verify certificate file exists
+            if let Some(cert_path) = &self.tls_cert {
+                if !cert_path.exists() {
+                    return Err(format!(
+                        "TLS certificate file not found: {}",
+                        cert_path.display()
+                    ));
+                }
+                if !cert_path.is_file() {
+                    return Err(format!(
+                        "TLS certificate path is not a file: {}",
+                        cert_path.display()
+                    ));
+                }
+            }
+
+            // Verify key file exists
+            if let Some(key_path) = &self.tls_key {
+                if !key_path.exists() {
+                    return Err(format!(
+                        "TLS private key file not found: {}",
+                        key_path.display()
+                    ));
+                }
+                if !key_path.is_file() {
+                    return Err(format!(
+                        "TLS private key path is not a file: {}",
+                        key_path.display()
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Registrar configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrarConfig {
@@ -156,6 +288,25 @@ impl Default for RegistrarConfig {
     }
 }
 
+impl RegistrarConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        reject_crlf("registrar.realm", &self.realm)?;
+        if self.min_expires == 0 {
+            return Err("registrar.min_expires must be greater than zero".to_string());
+        }
+        if self.min_expires > self.max_expires {
+            return Err("registrar.min_expires cannot exceed registrar.max_expires".to_string());
+        }
+        if self.default_expires < self.min_expires || self.default_expires > self.max_expires {
+            return Err(
+                "registrar.default_expires must fall between min_expires and max_expires"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Storage configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -180,6 +331,18 @@ impl Default for StorageConfig {
             max_connections: 10,
             connection_timeout: Duration::from_secs(30),
         }
+    }
+}
+
+impl StorageConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_connections == 0 {
+            return Err("storage.max_connections must be greater than zero".to_string());
+        }
+        if self.connection_timeout.is_zero() {
+            return Err("storage.connection_timeout must be greater than zero".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -232,6 +395,19 @@ impl Default for ApiConfig {
     }
 }
 
+impl ApiConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        reject_crlf("api.metrics_path", &self.metrics_path)?;
+        if !self.metrics_path.starts_with('/') {
+            return Err("api.metrics_path must start with '/'".to_string());
+        }
+        if let Some(token) = &self.auth_token {
+            reject_crlf("api.auth_token", token)?;
+        }
+        Ok(())
+    }
+}
+
 /// Observability configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
@@ -260,6 +436,17 @@ impl Default for ObservabilityConfig {
             tracing_endpoint: None,
             service_name: "fcp".to_string(),
         }
+    }
+}
+
+impl ObservabilityConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        reject_crlf("observability.log_level", &self.log_level)?;
+        reject_crlf("observability.service_name", &self.service_name)?;
+        if let Some(endpoint) = &self.tracing_endpoint {
+            reject_crlf("observability.tracing_endpoint", endpoint)?;
+        }
+        Ok(())
     }
 }
 
@@ -300,6 +487,26 @@ impl Default for RoutingConfig {
             },
             default_tenant_id: "default".to_string(),
         }
+    }
+}
+
+impl RoutingConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        reject_crlf("routing.default_tenant_id", &self.default_tenant_id)?;
+        match &self.backend {
+            RoutingBackend::Yaml { path, .. } => {
+                if let Some(path_str) = path.to_str() {
+                    reject_crlf("routing.backend.yaml.path", path_str)?;
+                }
+            }
+            RoutingBackend::Database { connection_string } => {
+                reject_crlf(
+                    "routing.backend.database.connection_string",
+                    connection_string,
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -370,5 +577,34 @@ impl Default for MediaConfig {
             stun_server: None,
             turn_server: None,
         }
+    }
+}
+
+impl MediaConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.rtp_port_start == 0 || self.rtp_port_end == 0 {
+            return Err(
+                "media.rtp_port_start and media.rtp_port_end must be greater than zero".to_string(),
+            );
+        }
+        if self.rtp_port_start > self.rtp_port_end {
+            return Err("media.rtp_port_start cannot exceed media.rtp_port_end".to_string());
+        }
+        if self.rtp_port_end - self.rtp_port_start > MAX_RTP_PORT_SPAN {
+            return Err(format!(
+                "media RTP port span is too large (max {} ports)",
+                MAX_RTP_PORT_SPAN
+            ));
+        }
+        if let Some(ip) = &self.public_ip {
+            reject_crlf("media.public_ip", ip)?;
+        }
+        if let Some(stun) = &self.stun_server {
+            reject_crlf("media.stun_server", stun)?;
+        }
+        if let Some(turn) = &self.turn_server {
+            reject_crlf("media.turn_server", turn)?;
+        }
+        Ok(())
     }
 }

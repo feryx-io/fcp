@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use fcp_core::FcpConfig;
 use std::fs;
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Load configuration from file or use defaults.
 ///
@@ -13,21 +13,36 @@ use tracing::info;
 /// 2. ./fcp.toml in current directory
 /// 3. Default configuration
 pub fn load_config(config_path: Option<&Path>) -> Result<FcpConfig> {
-    // Try provided path first
-    if let Some(path) = config_path {
-        return load_config_from_file(path);
-    }
+    let config = if let Some(path) = config_path {
+        load_config_from_file(path)?
+    } else {
+        let default_path = Path::new("fcp.toml");
+        if default_path.exists() {
+            info!("Loading configuration from {}", default_path.display());
+            load_config_from_file(default_path)?
+        } else {
+            info!("No configuration file found, using defaults");
+            FcpConfig::default()
+        }
+    };
 
-    // Try default path
-    let default_path = Path::new("fcp.toml");
-    if default_path.exists() {
-        info!("Loading configuration from {}", default_path.display());
-        return load_config_from_file(default_path);
+    match config.validate() {
+        Ok(_) => {
+            info!(
+                event = "config_validated",
+                "Configuration validated successfully"
+            );
+            Ok(config)
+        }
+        Err(e) => {
+            warn!(
+                event = "config_validation_failed",
+                error = %e,
+                "Configuration validation failed"
+            );
+            Err(e).context("invalid configuration")
+        }
     }
-
-    // Fall back to defaults
-    info!("No configuration file found, using defaults");
-    Ok(FcpConfig::default())
 }
 
 /// Load configuration from a specific file.

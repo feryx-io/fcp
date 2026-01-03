@@ -28,10 +28,7 @@ async fn main() -> Result<()> {
     // Initialize tracing/logging
     fcp_runtime::init_tracing(&config).context("Failed to initialize tracing")?;
 
-    info!(
-        version = env!("CARGO_PKG_VERSION"),
-        "Starting FCP server"
-    );
+    info!(version = env!("CARGO_PKG_VERSION"), "Starting FCP server");
 
     // Build runtime
     let mut runtime = Runtime::builder()
@@ -58,6 +55,7 @@ async fn main() -> Result<()> {
     let api_handle = if api_config.enabled {
         info!(
             bind = %api_config.bind,
+            auth_enabled = api_config.auth_enabled,
             "Starting API server"
         );
 
@@ -70,9 +68,10 @@ async fn main() -> Result<()> {
             media_manager,
         );
         let bind_addr = api_config.bind;
+        let api_config_clone = api_config.clone();
 
         Some(tokio::spawn(async move {
-            api::serve(bind_addr, api_state).await
+            api::serve(bind_addr, api_state, &api_config_clone).await
         }))
     } else {
         None
@@ -80,7 +79,9 @@ async fn main() -> Result<()> {
 
     // Wait for shutdown signal
     info!("FCP server running. Press Ctrl+C to shutdown.");
-    signal::ctrl_c().await.context("Failed to listen for shutdown signal")?;
+    signal::ctrl_c()
+        .await
+        .context("Failed to listen for shutdown signal")?;
     info!("Received shutdown signal (Ctrl+C)");
 
     // Shutdown runtime

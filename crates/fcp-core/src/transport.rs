@@ -2,8 +2,11 @@ use crate::Result;
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Transport protocol supported by the runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -63,27 +66,57 @@ impl fmt::Display for TransportType {
 #[derive(Debug, Clone)]
 pub struct TransportMessage<T> {
     /// The message payload
-    pub payload: T,
+    payload: T,
 
     /// Remote peer address
-    pub remote: SocketAddr,
+    remote: SocketAddr,
 
     /// Local address where message was received/will be sent
-    pub local: SocketAddr,
+    local: SocketAddr,
 
     /// Transport protocol used
-    pub transport: TransportType,
+    transport: TransportType,
 }
 
 impl<T> TransportMessage<T> {
     /// Create a new transport message.
-    pub fn new(payload: T, remote: SocketAddr, local: SocketAddr, transport: TransportType) -> Self {
+    pub fn new(
+        payload: T,
+        remote: SocketAddr,
+        local: SocketAddr,
+        transport: TransportType,
+    ) -> Self {
         Self {
             payload,
             remote,
             local,
             transport,
         }
+    }
+
+    /// Borrow the message payload.
+    pub fn payload(&self) -> &T {
+        &self.payload
+    }
+
+    /// Consume and return the payload.
+    pub fn into_payload(self) -> T {
+        self.payload
+    }
+
+    /// Remote peer address.
+    pub fn remote(&self) -> SocketAddr {
+        self.remote
+    }
+
+    /// Local socket address.
+    pub fn local(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// Transport used to deliver this message.
+    pub fn transport(&self) -> TransportType {
+        self.transport
     }
 
     /// Map the payload to a different type.
@@ -170,32 +203,356 @@ pub enum ConnectionState {
 #[derive(Debug, Clone)]
 pub struct ConnectionMetadata {
     /// Unique connection identifier
-    pub id: ConnectionId,
+    id: ConnectionId,
 
     /// Local address
-    pub local: SocketAddr,
+    local: SocketAddr,
 
     /// Remote peer address
-    pub remote: SocketAddr,
+    remote: SocketAddr,
 
     /// Transport type
-    pub transport: TransportType,
+    transport: TransportType,
 
     /// Connection state
-    pub state: ConnectionState,
+    state: ConnectionState,
 
     /// Timestamp when connection was established
-    pub established_at: std::time::Instant,
+    established_at: std::time::Instant,
 
     /// Number of messages sent over this connection
-    pub messages_sent: u64,
+    messages_sent: u64,
 
     /// Number of messages received over this connection
-    pub messages_received: u64,
+    messages_received: u64,
 
     /// Total bytes sent
-    pub bytes_sent: u64,
+    bytes_sent: u64,
 
     /// Total bytes received
-    pub bytes_received: u64,
+    bytes_received: u64,
+}
+
+impl ConnectionMetadata {
+    /// Create a new metadata snapshot for a connection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: ConnectionId,
+        local: SocketAddr,
+        remote: SocketAddr,
+        transport: TransportType,
+        state: ConnectionState,
+        established_at: std::time::Instant,
+        messages_sent: u64,
+        messages_received: u64,
+        bytes_sent: u64,
+        bytes_received: u64,
+    ) -> Self {
+        Self {
+            id,
+            local,
+            remote,
+            transport,
+            state,
+            established_at,
+            messages_sent,
+            messages_received,
+            bytes_sent,
+            bytes_received,
+        }
+    }
+
+    pub fn id(&self) -> ConnectionId {
+        self.id
+    }
+
+    pub fn local(&self) -> SocketAddr {
+        self.local
+    }
+
+    pub fn remote(&self) -> SocketAddr {
+        self.remote
+    }
+
+    pub fn transport(&self) -> TransportType {
+        self.transport
+    }
+
+    pub fn state(&self) -> ConnectionState {
+        self.state
+    }
+
+    pub fn established_at(&self) -> std::time::Instant {
+        self.established_at
+    }
+
+    pub fn messages_sent(&self) -> u64 {
+        self.messages_sent
+    }
+
+    pub fn messages_received(&self) -> u64 {
+        self.messages_received
+    }
+
+    pub fn bytes_sent(&self) -> u64 {
+        self.bytes_sent
+    }
+
+    pub fn bytes_received(&self) -> u64 {
+        self.bytes_received
+    }
+
+    pub fn set_state(&mut self, state: ConnectionState) {
+        self.state = state;
+    }
+
+    pub fn record_sent(&mut self, bytes: u64) {
+        self.messages_sent = self.messages_sent.saturating_add(1);
+        self.bytes_sent = self.bytes_sent.saturating_add(bytes);
+    }
+
+    pub fn record_received(&mut self, bytes: u64) {
+        self.messages_received = self.messages_received.saturating_add(1);
+        self.bytes_received = self.bytes_received.saturating_add(bytes);
+    }
+}
+
+/// Rate limiter for connection-based traffic control.
+///
+/// Uses a sliding window algorithm to track requests over time.
+#[derive(Debug)]
+pub struct RateLimiter {
+    /// Maximum requests allowed per window
+    max_requests: u32,
+
+    /// Maximum bytes allowed per window
+    max_bytes: u64,
+
+    /// Time window for rate limiting
+    window: Duration,
+
+    /// Request timestamps (sliding window)
+    request_times: Mutex<VecDeque<Instant>>,
+
+    /// Byte counts with timestamps (sliding window)
+    byte_window: Mutex<VecDeque<(Instant, u64)>>,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter.
+    ///
+    /// # Arguments
+    /// * `max_requests` - Maximum number of requests allowed per window
+    /// * `max_bytes` - Maximum bytes allowed per window
+    /// * `window` - Time window duration (e.g., 1 minute)
+    pub fn new(max_requests: u32, max_bytes: u64, window: Duration) -> Self {
+        Self {
+            max_requests,
+            max_bytes,
+            window,
+            request_times: Mutex::new(VecDeque::new()),
+            byte_window: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Create a default rate limiter with reasonable limits.
+    ///
+    /// Default: 100 requests/minute, 1MB/minute
+    pub fn default_limits() -> Self {
+        Self::new(100, 1_048_576, Duration::from_secs(60))
+    }
+
+    /// Check if a request is allowed (does not consume the limit).
+    ///
+    /// Returns `true` if the request would be allowed, `false` if rate limited.
+    pub fn check_request(&self, bytes: u64) -> bool {
+        let now = Instant::now();
+        let cutoff = now - self.window;
+
+        // Check request rate
+        let mut request_times = self.request_times.lock().unwrap();
+
+        // Remove old entries
+        while let Some(&time) = request_times.front() {
+            if time < cutoff {
+                request_times.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if request_times.len() >= self.max_requests as usize {
+            return false;
+        }
+
+        // Check byte rate
+        let mut byte_window = self.byte_window.lock().unwrap();
+
+        // Remove old entries and sum remaining bytes
+        let mut total_bytes = 0u64;
+        while let Some(&(time, _)) = byte_window.front() {
+            if time < cutoff {
+                byte_window.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        for (_, b) in byte_window.iter() {
+            total_bytes = total_bytes.saturating_add(*b);
+        }
+
+        if total_bytes.saturating_add(bytes) > self.max_bytes {
+            return false;
+        }
+
+        true
+    }
+
+    /// Record a request (consumes the limit).
+    ///
+    /// Should only be called after `check_request()` returns `true`.
+    pub fn record_request(&self, bytes: u64) {
+        let now = Instant::now();
+
+        let mut request_times = self.request_times.lock().unwrap();
+        request_times.push_back(now);
+
+        let mut byte_window = self.byte_window.lock().unwrap();
+        byte_window.push_back((now, bytes));
+    }
+
+    /// Check and record a request atomically.
+    ///
+    /// Returns `true` if allowed and recorded, `false` if rate limited.
+    pub fn allow_request(&self, bytes: u64) -> bool {
+        if self.check_request(bytes) {
+            self.record_request(bytes);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get current request count in the window.
+    pub fn current_request_count(&self) -> usize {
+        let now = Instant::now();
+        let cutoff = now - self.window;
+
+        let mut request_times = self.request_times.lock().unwrap();
+
+        // Remove old entries
+        while let Some(&time) = request_times.front() {
+            if time < cutoff {
+                request_times.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        request_times.len()
+    }
+
+    /// Get current byte count in the window.
+    pub fn current_byte_count(&self) -> u64 {
+        let now = Instant::now();
+        let cutoff = now - self.window;
+
+        let mut byte_window = self.byte_window.lock().unwrap();
+
+        // Remove old entries and sum
+        let mut total = 0u64;
+        while let Some(&(time, _)) = byte_window.front() {
+            if time < cutoff {
+                byte_window.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        for (_, bytes) in byte_window.iter() {
+            total = total.saturating_add(*bytes);
+        }
+
+        total
+    }
+
+    /// Reset the rate limiter (clear all history).
+    pub fn reset(&self) {
+        self.request_times.lock().unwrap().clear();
+        self.byte_window.lock().unwrap().clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    #[test]
+    fn test_rate_limiter_basic() {
+        let limiter = RateLimiter::new(3, 1000, Duration::from_secs(1));
+
+        // Should allow first 3 requests
+        assert!(limiter.allow_request(100));
+        assert!(limiter.allow_request(100));
+        assert!(limiter.allow_request(100));
+
+        // Should deny 4th request
+        assert!(!limiter.allow_request(100));
+    }
+
+    #[test]
+    fn test_rate_limiter_byte_limit() {
+        let limiter = RateLimiter::new(100, 500, Duration::from_secs(1));
+
+        // Should allow requests up to byte limit
+        assert!(limiter.allow_request(200));
+        assert!(limiter.allow_request(200));
+
+        // Should deny request that would exceed byte limit
+        assert!(!limiter.allow_request(200));
+    }
+
+    #[test]
+    fn test_rate_limiter_window_expiry() {
+        let limiter = RateLimiter::new(2, 1000, Duration::from_millis(100));
+
+        // Fill the limit
+        assert!(limiter.allow_request(100));
+        assert!(limiter.allow_request(100));
+        assert!(!limiter.allow_request(100));
+
+        // Wait for window to expire
+        thread::sleep(Duration::from_millis(150));
+
+        // Should allow again
+        assert!(limiter.allow_request(100));
+    }
+
+    #[test]
+    fn test_rate_limiter_stats() {
+        let limiter = RateLimiter::new(10, 1000, Duration::from_secs(1));
+
+        limiter.allow_request(100);
+        limiter.allow_request(200);
+        limiter.allow_request(150);
+
+        assert_eq!(limiter.current_request_count(), 3);
+        assert_eq!(limiter.current_byte_count(), 450);
+    }
+
+    #[test]
+    fn test_rate_limiter_reset() {
+        let limiter = RateLimiter::new(2, 1000, Duration::from_secs(1));
+
+        limiter.allow_request(100);
+        limiter.allow_request(100);
+        assert!(!limiter.allow_request(100));
+
+        limiter.reset();
+
+        // Should allow again after reset
+        assert!(limiter.allow_request(100));
+    }
 }

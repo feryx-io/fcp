@@ -1,6 +1,7 @@
 //! User management API endpoints.
 
 use crate::api::{error::ApiError, state::ApiState};
+use tracing::{info, warn};
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -109,21 +110,28 @@ pub async fn get_user(
 /// Create a new user.
 ///
 /// POST /api/v1/users
+///
+/// **Security Note**: This endpoint uses constant-time operations to prevent
+/// user enumeration attacks. Even if a user exists, we perform password hashing
+/// before returning an error to match the timing of successful creation.
 pub async fn create_user(
     State(state): State<ApiState>,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Check if user already exists
-    if let Some(_) = require_storage!(state).get_user(&req.username).await? {
-        return Err(ApiError::Conflict(format!(
-            "User '{}' already exists",
-            req.username
-        )));
-    }
+    let storage = require_storage!(state);
 
-    // Hash the password
+    // Always hash the password first (constant-time operation regardless of user existence)
+    // This prevents timing attacks that could reveal which usernames exist
     let password_hash = password::hash_password(&req.password)
-        .map_err(|e| ApiError::Internal(format!("Failed to hash password: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("Invalid password: {}", e)))?;
+
+    // Check if user already exists
+    if let Some(_) = storage.get_user(&req.username).await? {
+        // Use generic error message to avoid user enumeration
+        return Err(ApiError::Conflict(
+            "Unable to create user with provided credentials".to_string(),
+        ));
+    }
 
     // Create user
     let user = User {
@@ -137,7 +145,16 @@ pub async fn create_user(
         media_preferences: req.media_preferences,
     };
 
-    require_storage!(state).put_user(user.clone()).await?;
+    storage.put_user(user.clone()).await?;
+
+    // Security audit log
+    info!(
+        event = "user_created",
+        username = %user.username,
+        tenant_id = %user.tenant_id,
+        enabled = user.enabled,
+        "User account created"
+    );
 
     Ok((StatusCode::CREATED, Json(UserResponse::from(user))))
 }
@@ -169,6 +186,13 @@ pub async fn update_user(
     // Save user
     require_storage!(state).put_user(user.clone()).await?;
 
+    // Security audit log
+    info!(
+        event = "user_updated",
+        username = %username,
+        "User account updated"
+    );
+
     Ok(Json(UserResponse::from(user)))
 }
 
@@ -198,6 +222,13 @@ pub async fn update_password(
     // Save user
     require_storage!(state).put_user(user).await?;
 
+    // Security audit log
+    warn!(
+        event = "password_changed",
+        username = %username,
+        "User password changed"
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -210,14 +241,18 @@ pub async fn delete_user(
 ) -> Result<StatusCode, ApiError> {
     // Check if user exists
     if require_storage!(state).get_user(&username).await?.is_none() {
-        return Err(ApiError::NotFound(format!(
-            "User '{}' not found",
-            username
-        )));
+        return Err(ApiError::NotFound(format!("User '{}' not found", username)));
     }
 
     // Delete user
     require_storage!(state).delete_user(&username).await?;
+
+    // Security audit log
+    warn!(
+        event = "user_deleted",
+        username = %username,
+        "User account deleted"
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

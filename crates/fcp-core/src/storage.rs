@@ -15,15 +15,69 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
+use tracing::{info, warn};
 
 /// Password hashing utilities using bcrypt.
 pub mod password {
-    use anyhow::Result;
+    use anyhow::{bail, Result};
 
     const BCRYPT_COST: u32 = 12; // Higher = more secure but slower
+    const MIN_PASSWORD_LENGTH: usize = 8;
+    const MAX_PASSWORD_LENGTH: usize = 128;
+
+    /// Validate password strength requirements.
+    ///
+    /// Requirements:
+    /// - Minimum 8 characters
+    /// - Maximum 128 characters
+    /// - At least one uppercase letter
+    /// - At least one lowercase letter
+    /// - At least one digit
+    /// - At least one special character
+    pub fn validate_password_strength(password: &str) -> Result<()> {
+        if password.len() < MIN_PASSWORD_LENGTH {
+            bail!(
+                "Password must be at least {} characters long",
+                MIN_PASSWORD_LENGTH
+            );
+        }
+
+        if password.len() > MAX_PASSWORD_LENGTH {
+            bail!(
+                "Password must not exceed {} characters",
+                MAX_PASSWORD_LENGTH
+            );
+        }
+
+        let has_uppercase = password.chars().any(|c| c.is_uppercase());
+        let has_lowercase = password.chars().any(|c| c.is_lowercase());
+        let has_digit = password.chars().any(|c| c.is_ascii_digit());
+        let has_special = password.chars().any(|c| !c.is_alphanumeric());
+
+        if !has_uppercase {
+            bail!("Password must contain at least one uppercase letter");
+        }
+
+        if !has_lowercase {
+            bail!("Password must contain at least one lowercase letter");
+        }
+
+        if !has_digit {
+            bail!("Password must contain at least one digit");
+        }
+
+        if !has_special {
+            bail!("Password must contain at least one special character");
+        }
+
+        Ok(())
+    }
 
     /// Hash a plaintext password using bcrypt.
+    ///
+    /// This function validates password strength before hashing.
     pub fn hash_password(password: &str) -> Result<String> {
+        validate_password_strength(password)?;
         bcrypt::hash(password, BCRYPT_COST)
             .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))
     }
@@ -32,6 +86,47 @@ pub mod password {
     pub fn verify_password(password: &str, hash: &str) -> Result<bool> {
         bcrypt::verify(password, hash)
             .map_err(|e| anyhow::anyhow!("Failed to verify password: {}", e))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_password_strength_validation() {
+            // Valid passwords
+            assert!(validate_password_strength("Passw0rd!").is_ok());
+            assert!(validate_password_strength("MyS3cur3P@ss").is_ok());
+            assert!(validate_password_strength("Tr0ng#Password").is_ok());
+
+            // Too short
+            assert!(validate_password_strength("Pass1!").is_err());
+
+            // Too long
+            let long_password = "A1!".to_string() + &"a".repeat(MAX_PASSWORD_LENGTH);
+            assert!(validate_password_strength(&long_password).is_err());
+
+            // Missing uppercase
+            assert!(validate_password_strength("passw0rd!").is_err());
+
+            // Missing lowercase
+            assert!(validate_password_strength("PASSW0RD!").is_err());
+
+            // Missing digit
+            assert!(validate_password_strength("Password!").is_err());
+
+            // Missing special character
+            assert!(validate_password_strength("Passw0rd").is_err());
+        }
+
+        #[test]
+        fn test_hash_password_validates_strength() {
+            // Weak password should be rejected
+            assert!(hash_password("weak").is_err());
+
+            // Strong password should be accepted
+            assert!(hash_password("Str0ng!Pass").is_ok());
+        }
     }
 }
 
@@ -185,14 +280,59 @@ pub trait CredentialStore: Send + Sync {
 
     /// Check if a username/password combination is valid.
     /// Uses bcrypt to verify the password against the stored hash.
+    ///
+    /// **Security Note**: This implementation performs constant-time verification
+    /// to prevent user enumeration timing attacks. Even when a user doesn't exist,
+    /// we perform a dummy bcrypt verification to match the timing of real verifications.
     async fn verify_credentials(&self, username: &str, password: &str) -> Result<bool> {
+        // Dummy hash for constant-time comparison when user doesn't exist
+        // This is a valid bcrypt hash that will always fail verification
+        const DUMMY_HASH: &str = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC";
+
         if let Some(user) = self.get_user(username).await? {
             if !user.enabled {
+                // Still perform bcrypt check for constant time
+                let _ = password::verify_password(password, DUMMY_HASH);
+                // Security audit log
+                warn!(
+                    event = "auth_failure_disabled",
+                    username = %username,
+                    "Authentication failed: account disabled"
+                );
                 return Ok(false);
             }
             // Use bcrypt to verify password against hash
-            password::verify_password(password, &user.password)
+            let result = password::verify_password(password, &user.password)?;
+
+            if result {
+                // Security audit log for successful authentication
+                info!(
+                    event = "auth_success",
+                    username = %username,
+                    tenant_id = %user.tenant_id,
+                    "Authentication successful"
+                );
+            } else {
+                // Security audit log for failed authentication
+                warn!(
+                    event = "auth_failure_invalid_password",
+                    username = %username,
+                    "Authentication failed: invalid password"
+                );
+            }
+
+            Ok(result)
         } else {
+            // User doesn't exist - perform dummy bcrypt verification
+            // to match timing of real verification
+            let _ = password::verify_password(password, DUMMY_HASH);
+
+            // Security audit log (no username reveal)
+            warn!(
+                event = "auth_failure_user_not_found",
+                "Authentication failed: user not found"
+            );
+
             Ok(false)
         }
     }
@@ -271,9 +411,7 @@ impl FileBackedStorage {
     }
 
     /// Load registrations from JSON file.
-    async fn load_registrations(
-        path: &PathBuf,
-    ) -> Result<HashMap<String, Vec<Registration>>> {
+    async fn load_registrations(path: &PathBuf) -> Result<HashMap<String, Vec<Registration>>> {
         if path.exists() {
             let data = tokio::fs::read_to_string(path).await?;
             let regs: Vec<Registration> = serde_json::from_str(&data)?;
@@ -301,11 +439,7 @@ impl FileBackedStorage {
     /// Save registrations to JSON file.
     async fn save_registrations(&self) -> Result<()> {
         let registrations = self.registrations.read().await;
-        let reg_list: Vec<Registration> = registrations
-            .values()
-            .flatten()
-            .cloned()
-            .collect();
+        let reg_list: Vec<Registration> = registrations.values().flatten().cloned().collect();
         let data = serde_json::to_string_pretty(&reg_list)?;
         tokio::fs::write(&self.registrations_file, data).await?;
         Ok(())
@@ -452,8 +586,8 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("fcp-test-storage");
         let storage = FileBackedStorage::new(temp_dir.clone()).await.unwrap();
 
-        // Create user with hashed password
-        let password_hash = password::hash_password("secret123").unwrap();
+        // Create user with hashed password (must meet strength requirements)
+        let password_hash = password::hash_password("Secr3t!Pass").unwrap();
         let user = User {
             username: "alice".to_string(),
             password: password_hash,
@@ -473,13 +607,10 @@ mod tests {
 
         // Verify credentials
         assert!(storage
-            .verify_credentials("alice", "secret123")
+            .verify_credentials("alice", "Secr3t!Pass")
             .await
             .unwrap());
-        assert!(!storage
-            .verify_credentials("alice", "wrong")
-            .await
-            .unwrap());
+        assert!(!storage.verify_credentials("alice", "wrong").await.unwrap());
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
