@@ -42,11 +42,37 @@ pub struct RealTransportDispatcher {
 impl RealTransportDispatcher {
     /// Create a new dispatcher with optional UDP socket.
     ///
+    /// This creates an internal ConnectionPool. For better resource sharing,
+    /// consider using `new_with_pool()` to provide an external pool.
+    ///
     /// If udp_socket is None, UDP sends will fail.
     pub fn new(udp_socket: Option<Arc<UdpSocket>>) -> Self {
         Self {
             udp_socket,
             tcp_pool: Arc::new(ConnectionPool::new()),
+            #[cfg(feature = "tls")]
+            tls_config: None,
+        }
+    }
+
+    /// Create a new dispatcher with optional UDP socket and external TCP connection pool.
+    ///
+    /// **Recommended for production**: This allows sharing a single ConnectionPool
+    /// between the dispatcher and transaction manager, avoiding duplicate connections
+    /// and better resource utilization at scale.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let pool = Arc::new(ConnectionPool::new());
+    /// let dispatcher = RealTransportDispatcher::new_with_pool(udp_socket, pool);
+    /// ```
+    pub fn new_with_pool(
+        udp_socket: Option<Arc<UdpSocket>>,
+        tcp_pool: Arc<ConnectionPool>,
+    ) -> Self {
+        Self {
+            udp_socket,
+            tcp_pool,
             #[cfg(feature = "tls")]
             tls_config: None,
         }

@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, ServiceManager};
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
+use fcp_sip::transport::ConnectionPool;
 use std::sync::Arc;
 use tracing::info;
 
@@ -53,21 +54,22 @@ impl RuntimeBuilder {
         let dialog_manager = DialogManager::new();
         let subscription_manager = SubscriptionManager::new();
 
-        // Create shared transport dispatcher
-        let dispatcher = create_transport_dispatcher(&config).await?;
+        // Create a single shared TCP connection pool for efficient resource usage
+        // This pool is shared between the dispatcher and transaction manager,
+        // avoiding duplicate connections and reducing file descriptor usage.
+        let tcp_pool = Arc::new(ConnectionPool::new());
 
-        // Create transaction manager with shared dispatcher
-        let transaction_manager = TransactionManager::new(dispatcher.clone());
-
-        // Keep a clone for later use (TCP response routing)
-        let dispatcher_clone = dispatcher.clone();
-
-        // Route responses arriving on outbound TCP connections back into the handler
-        // CRITICAL: Set this up BEFORE creating services, so both the dispatcher
-        // and transaction manager pools are configured for TCP response routing.
+        // Setup TCP response routing BEFORE creating components
+        // This enables responses on outbound TCP connections to be routed back to the handler
         let (client_tx, client_rx) = tokio::sync::mpsc::channel(1024);
-        dispatcher_clone.set_inbound_tx(client_tx.clone()).await;
-        transaction_manager.set_inbound_tx(client_tx).await;
+        tcp_pool.set_inbound_tx(client_tx).await;
+
+        // Create shared transport dispatcher with the shared pool
+        let dispatcher = create_transport_dispatcher(&config, Arc::clone(&tcp_pool)).await?;
+
+        // Create transaction manager with shared dispatcher and shared pool
+        // This ensures both components use the same connection pool for optimal resource sharing
+        let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
 
         // Create services that wrap the managers
         let transaction_service = TransactionService::new(transaction_manager);
@@ -178,9 +180,13 @@ impl Default for RuntimeBuilder {
 }
 
 /// Create a transport dispatcher shared by TransactionManager and UAC.
-async fn create_transport_dispatcher(config: &FcpConfig) -> Result<Arc<RealTransportDispatcher>> {
+async fn create_transport_dispatcher(
+    config: &FcpConfig,
+    tcp_pool: Arc<ConnectionPool>,
+) -> Result<Arc<RealTransportDispatcher>> {
     use anyhow::Context;
     use fcp_sip::prelude::RealTransportDispatcher;
+    use socket2::{Domain, Protocol, Socket, Type};
 
     // Use the same UDP port as the listener for the dispatcher
     // This ensures that SIP responses come back to the correct port via rport mechanism
@@ -190,11 +196,21 @@ async fn create_transport_dispatcher(config: &FcpConfig) -> Result<Arc<RealTrans
         .udp_bind
         .unwrap_or_else(|| "0.0.0.0:5060".parse().unwrap());
 
-    // Create dispatcher with UDP socket
+    // Create UDP socket with SO_REUSEADDR
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .context("Failed to create UDP socket")?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&bind_addr.into())?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
+
+    // Create dispatcher with UDP socket and shared TCP pool
     #[allow(unused_mut)]
-    let mut dispatcher = RealTransportDispatcher::with_udp(bind_addr)
-        .await
-        .context("Failed to create transport dispatcher")?;
+    let mut dispatcher = RealTransportDispatcher::new_with_pool(
+        Some(Arc::new(udp_socket)),
+        tcp_pool,
+    );
 
     // Optionally load TLS configuration if TLS support is enabled
     #[cfg(feature = "tls")]
