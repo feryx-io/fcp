@@ -28,9 +28,11 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message, details) = match self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "Not Found".to_string(), Some(msg)),
-            ApiError::BadRequest(msg) => {
-                (StatusCode::BAD_REQUEST, "Bad Request".to_string(), Some(msg))
-            }
+            ApiError::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                "Bad Request".to_string(),
+                Some(msg),
+            ),
             ApiError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal Server Error".to_string(),

@@ -5,10 +5,10 @@
 
 use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
-use fcp_sip::prelude::*;
+use fcp_media::MediaManager;
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
-use fcp_media::MediaManager;
+use fcp_sip::prelude::*;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -140,7 +140,10 @@ impl Runtime {
         // Start registration cleanup task if storage is available
         if let Some(storage) = self.storage.clone() {
             let cleanup_interval = std::time::Duration::from_secs(60); // Run every 60 seconds
-            info!("Starting registration cleanup task (interval: {:?})", cleanup_interval);
+            info!(
+                "Starting registration cleanup task (interval: {:?})",
+                cleanup_interval
+            );
 
             let task = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(cleanup_interval);
@@ -217,8 +220,7 @@ impl Runtime {
     /// Trigger shutdown from another task.
     pub fn trigger_shutdown(&self) -> Result<()> {
         if let Some(tx) = &self.shutdown_tx {
-            tx.try_send(())
-                .context("Failed to send shutdown signal")?;
+            tx.try_send(()).context("Failed to send shutdown signal")?;
         }
         Ok(())
     }

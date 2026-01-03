@@ -80,7 +80,11 @@ pub async fn list_dialogs(State(state): State<ApiState>) -> Json<Vec<DialogInfo>
                 remote_target: format!("{:?}", d.remote_target()),
                 local_cseq: d.local_cseq(),
                 remote_cseq: d.remote_cseq(),
-                route_set: d.route_set().iter().map(|uri| format!("{:?}", uri)).collect(),
+                route_set: d
+                    .route_set()
+                    .iter()
+                    .map(|uri| format!("{:?}", uri))
+                    .collect(),
             })
         })
         .collect();
@@ -128,7 +132,11 @@ pub async fn list_rate_limits(State(state): State<ApiState>) -> Json<Vec<RateLim
                     dialog_id.local_tag(),
                     dialog_id.remote_tag()
                 ),
-                counts: window.counts.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                counts: window
+                    .counts
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), *v))
+                    .collect(),
                 window_start: format!("{:?}", window.window_start),
             }
         })
@@ -147,13 +155,22 @@ pub async fn list_calls(State(state): State<ApiState>) -> Json<Vec<CallInfo>> {
         .into_iter()
         .map(|c| CallInfo {
             call_id: c.id.to_string(),
-            a_leg_dialog_id: c.a_leg.dialog.as_ref().map(|d| format!(
-                "{}:{}:{}",
-                d.id().call_id(), d.id().local_tag(), d.id().remote_tag()
-            )),
+            a_leg_dialog_id: c.a_leg.dialog.as_ref().map(|d| {
+                format!(
+                    "{}:{}:{}",
+                    d.id().call_id(),
+                    d.id().local_tag(),
+                    d.id().remote_tag()
+                )
+            }),
             b_leg_dialog_id: c.b_leg.as_ref().and_then(|b| {
                 b.dialog.as_ref().map(|d| {
-                    format!("{}:{}:{}", d.id().call_id(), d.id().local_tag(), d.id().remote_tag())
+                    format!(
+                        "{}:{}:{}",
+                        d.id().call_id(),
+                        d.id().local_tag(),
+                        d.id().remote_tag()
+                    )
                 })
             }),
             state: format!("{:?}", c.state),

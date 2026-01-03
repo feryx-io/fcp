@@ -2,7 +2,7 @@
 //!
 //! Provides a unified interface for both embedded and remote media backends.
 
-use crate::{adapters, Error, Result, MediaSession, MediaSessionConfig};
+use crate::{adapters, Error, MediaSession, MediaSessionConfig, Result};
 use async_trait::async_trait;
 use fcp_core::{CallId, DialogId};
 use std::sync::Arc;
@@ -26,11 +26,7 @@ pub trait MediaBackend: Send + Sync {
     async fn get_session(&self, call_id: &CallId) -> Result<Arc<MediaSession>>;
 
     /// Update session with SDP offer/answer
-    async fn update_session(
-        &self,
-        call_id: &CallId,
-        remote_sdp: String,
-    ) -> Result<String>; // Returns local SDP
+    async fn update_session(&self, call_id: &CallId, remote_sdp: String) -> Result<String>; // Returns local SDP
 
     /// Put session on hold
     async fn hold_session(&self, call_id: &CallId) -> Result<()>;
@@ -69,8 +65,7 @@ pub mod embedded {
     use forge_core::{EventBus, ParticipantId};
     use forge_engine::{
         session::{DtmfConfig, ParticipantCodecConfig, TranscodingConfig},
-        MediaSession as ForgeMediaSession,
-        SessionManager, SessionManagerConfig,
+        MediaSession as ForgeMediaSession, SessionManager, SessionManagerConfig,
     };
     use forge_rtp::PortPoolConfig;
     use std::time::Duration;
@@ -472,10 +467,7 @@ pub mod embedded {
 
     /// Generate a simple SDP for testing
     /// TODO: Use forge-sdp for proper SDP generation
-    fn generate_simple_sdp(
-        session_info: &SessionInfo,
-        _remote_sdp: &str,
-    ) -> Result<String> {
+    fn generate_simple_sdp(session_info: &SessionInfo, _remote_sdp: &str) -> Result<String> {
         let ports = session_info.forge_session.ports();
 
         let sdp = format!(
@@ -488,8 +480,7 @@ pub mod embedded {
              a=rtpmap:0 PCMU/8000\r\n\
              a=rtpmap:8 PCMA/8000\r\n\
              a=sendrecv\r\n",
-            session_info.forge_call_id.0,
-            ports.rtp_port
+            session_info.forge_call_id.0, ports.rtp_port
         );
 
         Ok(sdp)
@@ -655,10 +646,9 @@ pub mod remote {
                 "{}/v1/sessions/{}/sdp",
                 self.base_url, session.forge_session_id
             );
-            let mut request = self
-                .client
-                .post(&url)
-                .json(&UpdateReq { sdp: remote_sdp.clone() });
+            let mut request = self.client.post(&url).json(&UpdateReq {
+                sdp: remote_sdp.clone(),
+            });
 
             if let Some(auth) = self.auth_header() {
                 request = request.header("Authorization", auth);

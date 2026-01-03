@@ -57,10 +57,7 @@ impl CallManager {
     where
         F: FnOnce(&mut Call),
     {
-        let mut entry = self
-            .calls
-            .get_mut(call_id)
-            .context("Call not found")?;
+        let mut entry = self.calls.get_mut(call_id).context("Call not found")?;
 
         update_fn(entry.value_mut());
 
@@ -211,7 +208,10 @@ impl CallManager {
             .map(|entry| entry.value().clone());
 
         if result.is_none() {
-            debug!(dialog_call_id = dialog_call_id, "No call found for dialog Call-ID");
+            debug!(
+                dialog_call_id = dialog_call_id,
+                "No call found for dialog Call-ID"
+            );
         }
 
         result
@@ -307,26 +307,36 @@ pub struct CallStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::{Call, CallLeg, CallDirection};
+    use crate::call::{Call, CallDirection, CallLeg};
     use std::net::SocketAddr;
 
     fn create_test_call() -> Call {
-        use sip_core::{Headers, Method, RequestLine, SipVersion};
         use bytes::Bytes;
+        use sip_core::{Headers, Method, RequestLine, SipVersion};
         use smol_str::SmolStr;
 
         let peer: SocketAddr = "127.0.0.1:5060".parse().unwrap();
 
         let mut headers = Headers::new();
-        headers.push(SmolStr::new("From"), SmolStr::new("Alice <sip:alice@example.com>"));
-        headers.push(SmolStr::new("To"), SmolStr::new("Bob <sip:bob@example.com>"));
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new("Alice <sip:alice@example.com>"),
+        );
+        headers.push(
+            SmolStr::new("To"),
+            SmolStr::new("Bob <sip:bob@example.com>"),
+        );
         headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
 
         let request = sip_core::Request::new(
-            RequestLine::new(Method::Invite, sip_core::SipUri::parse("sip:bob@example.com").unwrap()),
+            RequestLine::new(
+                Method::Invite,
+                sip_core::SipUri::parse("sip:bob@example.com").unwrap(),
+            ),
             headers,
             Bytes::new(),
-        ).expect("Failed to create request");
+        )
+        .expect("Failed to create request");
 
         Call::from_invite(request, peer)
     }

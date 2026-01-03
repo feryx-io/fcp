@@ -74,9 +74,7 @@ pub async fn stop_recording(
         .ok_or_else(|| ApiError::NotFound("Media manager not available".into()))?;
 
     // Stop recording
-    let result: Result<(), fcp_media::Error> = media_manager
-        .stop_recording(&call_id)
-        .await;
+    let result: Result<(), fcp_media::Error> = media_manager.stop_recording(&call_id).await;
 
     result.map_err(|e| ApiError::NotFound(format!("Failed to stop recording: {}", e)))?;
 
@@ -100,9 +98,7 @@ pub struct CallSessionInfo {
 
 /// GET /v1/calls
 /// List active calls
-pub async fn list_calls(
-    State(_state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_calls(State(_state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     // For now, return empty list - this would need to track active calls
     // In a real implementation, we'd query the media manager for active sessions
     let calls: Vec<CallSessionInfo> = vec![];

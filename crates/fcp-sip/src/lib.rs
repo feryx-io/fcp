@@ -14,12 +14,12 @@ pub mod call_manager;
 pub mod exports;
 pub mod handler;
 pub mod listener;
+pub mod metrics;
 pub mod registrar;
 pub mod service;
+pub mod settings;
 pub mod transport;
 pub mod uac;
-pub mod metrics;
-pub mod settings;
 
 // Re-export commonly used types for convenience
 pub use exports::*;
@@ -32,10 +32,10 @@ pub mod prelude {
     pub use crate::exports::*;
     pub use crate::handler::SipMessageHandler;
     pub use crate::listener::{InboundMessageHandler, ListenerConfig, TransportListener};
+    pub use crate::registrar::{CredentialStoreAdapter, FcpRegistrar, LocationStoreAdapter};
     pub use crate::service::*;
     pub use crate::transport::{
         to_fcp_transport_type, to_sip_transport_kind, ConnectionPool, RealTransportDispatcher,
     };
-    pub use crate::registrar::{CredentialStoreAdapter, FcpRegistrar, LocationStoreAdapter};
     pub use crate::uac::{OutboundCall, SipUserAgentClient};
 }

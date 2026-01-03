@@ -36,8 +36,7 @@ pub fn router() -> Router<ApiState> {
         // Registration viewing endpoints
         .route(
             "/registrations/:aor",
-            get(registrations::get_registrations)
-                .delete(registrations::delete_registrations),
+            get(registrations::get_registrations).delete(registrations::delete_registrations),
         )
         .route(
             "/registrations/:aor/:contact",

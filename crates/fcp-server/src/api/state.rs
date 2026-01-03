@@ -2,9 +2,9 @@
 
 use fcp_core::FileBackedStorage;
 use fcp_media::MediaManager;
-use fcp_sip::prelude::{DialogManager, SubscriptionManager};
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
+use fcp_sip::prelude::{DialogManager, SubscriptionManager};
 use std::sync::Arc;
 
 /// Shared state for API handlers.

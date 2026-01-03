@@ -101,20 +101,22 @@ impl TransportListener {
 
             // Create socket with SO_REUSEADDR to allow port reuse
             let socket = {
-                use socket2::{Socket, Domain, Type, Protocol};
+                use socket2::{Domain, Protocol, Socket, Type};
 
                 let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
                     .context("Failed to create socket")?;
-                socket.set_reuse_address(true)
+                socket
+                    .set_reuse_address(true)
                     .context("Failed to set SO_REUSEADDR")?;
-                socket.set_nonblocking(true)
+                socket
+                    .set_nonblocking(true)
                     .context("Failed to set non-blocking")?;
-                socket.bind(&udp_bind.into())
+                socket
+                    .bind(&udp_bind.into())
                     .context("Failed to bind UDP socket")?;
 
                 let std_socket: std::net::UdpSocket = socket.into();
-                UdpSocket::from_std(std_socket)
-                    .context("Failed to convert to tokio UdpSocket")?
+                UdpSocket::from_std(std_socket).context("Failed to convert to tokio UdpSocket")?
             };
             let socket = Arc::new(socket);
 
@@ -149,8 +151,7 @@ impl TransportListener {
         // Start TLS listener
         #[cfg(feature = "tls")]
         if let Some(tls_bind) = self.config.tls_bind {
-            if let (Some(cert_path), Some(key_path)) =
-                (&self.config.tls_cert, &self.config.tls_key)
+            if let (Some(cert_path), Some(key_path)) = (&self.config.tls_cert, &self.config.tls_key)
             {
                 info!(%tls_bind, "Starting TLS listener");
 
@@ -162,12 +163,9 @@ impl TransportListener {
                 let mut shutdown = shutdown_rx.resubscribe();
 
                 let task = tokio::spawn(async move {
-                    if let Err(e) = Self::run_tls_listener(
-                        tls_bind,
-                        tls_config,
-                        handler,
-                        &mut shutdown
-                    ).await {
+                    if let Err(e) =
+                        Self::run_tls_listener(tls_bind, tls_config, handler, &mut shutdown).await
+                    {
                         error!("TLS listener error: {}", e);
                     }
                 });
@@ -369,8 +367,8 @@ impl TransportListener {
 fn convert_transport_kind(
     transport: sip_transport::TransportKind,
 ) -> sip_transaction::TransportKind {
-    use sip_transport::TransportKind as SipT;
     use sip_transaction::TransportKind as TxnT;
+    use sip_transport::TransportKind as SipT;
 
     match transport {
         SipT::Udp => TxnT::Udp,

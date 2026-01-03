@@ -39,8 +39,8 @@ impl AudioCodec {
             AudioCodec::G722 => 9,
             AudioCodec::Gsm => 3,
             AudioCodec::G729 => 18,
-            AudioCodec::Opus => 96, // Dynamic payload type
-            AudioCodec::Ilbc => 97, // Dynamic payload type
+            AudioCodec::Opus => 96,  // Dynamic payload type
+            AudioCodec::Ilbc => 97,  // Dynamic payload type
             AudioCodec::Speex => 98, // Dynamic payload type
         }
     }
@@ -143,10 +143,37 @@ impl Codec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodecPreferences {
     /// Preferred audio codecs in priority order.
-    pub audio: Vec<AudioCodec>,
+    audio: Vec<AudioCodec>,
 
     /// Preferred video codecs in priority order.
-    pub video: Vec<VideoCodec>,
+    video: Vec<VideoCodec>,
+}
+
+impl CodecPreferences {
+    /// Create codec preferences with explicit lists.
+    pub fn new(audio: Vec<AudioCodec>, video: Vec<VideoCodec>) -> Self {
+        Self { audio, video }
+    }
+
+    /// Preferred audio codecs in priority order.
+    pub fn audio(&self) -> &[AudioCodec] {
+        &self.audio
+    }
+
+    /// Preferred video codecs in priority order.
+    pub fn video(&self) -> &[VideoCodec] {
+        &self.video
+    }
+
+    /// Replace the audio preference list.
+    pub fn set_audio(&mut self, audio: Vec<AudioCodec>) {
+        self.audio = audio;
+    }
+
+    /// Replace the video preference list.
+    pub fn set_video(&mut self, video: Vec<VideoCodec>) {
+        self.video = video;
+    }
 }
 
 impl Default for CodecPreferences {

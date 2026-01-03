@@ -96,10 +96,7 @@ impl RealTransportDispatcher {
 
     /// Set TLS client configuration for secure connections.
     #[cfg(feature = "tls")]
-    pub fn with_tls_config(
-        mut self,
-        config: Arc<tokio_rustls::rustls::ClientConfig>,
-    ) -> Self {
+    pub fn with_tls_config(mut self, config: Arc<tokio_rustls::rustls::ClientConfig>) -> Self {
         self.tls_config = Some(config);
         self
     }
@@ -120,9 +117,7 @@ impl RealTransportDispatcher {
     /// This creates a client config suitable for outbound SIPS connections.
     #[cfg(feature = "tls")]
     pub fn load_tls_client_config() -> Result<Arc<tokio_rustls::rustls::ClientConfig>> {
-        use tokio_rustls::rustls::{
-            pki_types::CertificateDer, ClientConfig, RootCertStore,
-        };
+        use tokio_rustls::rustls::{pki_types::CertificateDer, ClientConfig, RootCertStore};
 
         // Use system root certificates
         let mut root_store = RootCertStore::empty();
@@ -225,7 +220,8 @@ impl TransportDispatcher for RealTransportDispatcher {
                             }
                         };
 
-                        let tls_cfg = sip_transport::TlsConfig::new(server_name, tls_config.clone());
+                        let tls_cfg =
+                            sip_transport::TlsConfig::new(server_name, tls_config.clone());
 
                         sip_transport::send_tls(&peer, &payload, &tls_cfg).await?;
                     } else {

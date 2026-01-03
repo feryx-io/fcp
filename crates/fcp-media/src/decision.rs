@@ -8,9 +8,7 @@ use crate::codec;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaAnchoringDecision {
     /// Pass-through mode: RTP flows directly between endpoints
-    PassThrough {
-        reason: String,
-    },
+    PassThrough { reason: String },
     /// Anchored mode: RTP flows through the server
     Anchored {
         reason: String,

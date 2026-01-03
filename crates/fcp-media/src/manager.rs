@@ -92,11 +92,7 @@ impl MediaManager {
     /// Update session with remote SDP (offer/answer exchange)
     ///
     /// Returns local SDP to send in response
-    pub async fn update_session(
-        &self,
-        call_id: &CallId,
-        remote_sdp: String,
-    ) -> Result<String> {
+    pub async fn update_session(&self, call_id: &CallId, remote_sdp: String) -> Result<String> {
         self.backend.update_session(call_id, remote_sdp).await
     }
 
@@ -121,12 +117,7 @@ impl MediaManager {
     }
 
     /// Send DTMF digit on a call
-    pub async fn send_dtmf(
-        &self,
-        call_id: &CallId,
-        digit: char,
-        duration_ms: u32,
-    ) -> Result<()> {
+    pub async fn send_dtmf(&self, call_id: &CallId, digit: char, duration_ms: u32) -> Result<()> {
         if !digit.is_ascii_digit() && digit != '*' && digit != '#' {
             return Err(Error::InvalidState(format!(
                 "Invalid DTMF digit: {}",

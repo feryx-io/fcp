@@ -9,8 +9,8 @@ use sip_core::Response;
 use sip_dialog::Dialog;
 use sip_transaction::TransactionKey;
 use sip_uac::integrated::CallHandle;
-use std::net::SocketAddr;
 use std::fmt;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -219,14 +219,8 @@ impl fmt::Debug for CallLeg {
         f.debug_struct("CallLeg")
             .field("direction", &self.direction)
             .field("dialog", &self.dialog)
-            .field(
-                "has_outbound_handle",
-                &self.outbound_handle.is_some(),
-            )
-            .field(
-                "reliable_prov_count",
-                &self.reliable_provisionals.len(),
-            )
+            .field("has_outbound_handle", &self.outbound_handle.is_some())
+            .field("reliable_prov_count", &self.reliable_provisionals.len())
             .field("remote_uri", &self.remote_uri)
             .field("remote_display_name", &self.remote_display_name)
             .field("contact", &self.contact)

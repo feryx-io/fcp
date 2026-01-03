@@ -52,7 +52,9 @@ pub async fn get_registrations(
     State(state): State<ApiState>,
     Path(aor): Path<String>,
 ) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
-    let storage = state.storage.as_ref()
+    let storage = state
+        .storage
+        .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
     let registrations = storage.get_registrations(&aor).await?;
@@ -75,7 +77,9 @@ pub async fn delete_registrations(
     State(state): State<ApiState>,
     Path(aor): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let storage = state.storage.as_ref()
+    let storage = state
+        .storage
+        .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
     storage.delete_all_registrations(&aor).await?;
@@ -89,7 +93,9 @@ pub async fn delete_registration(
     State(state): State<ApiState>,
     Path((aor, contact)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let storage = state.storage.as_ref()
+    let storage = state
+        .storage
+        .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
     storage.delete_registration(&aor, &contact).await?;

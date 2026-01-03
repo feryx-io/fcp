@@ -150,7 +150,8 @@ impl FcpRegistrar {
 
         let (registrar, auth_enabled) = if let Some(ref cred_store) = credential_store {
             // Create authenticator with async credential store adapter
-            let cred_adapter = CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
+            let cred_adapter =
+                CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
             let sync_adapter = sip_auth::AsyncToSyncCredentialAdapter::new(cred_adapter);
             let authenticator = DigestAuthenticator::new(&realm_str, sync_adapter);
 
@@ -292,12 +293,24 @@ mod tests {
 
         // Create a simple REGISTER request
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"));
-        headers.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=abc123"));
+        headers.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"),
+        );
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:alice@example.com>;tag=abc123"),
+        );
         headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id@example.com"));
+        headers.push(
+            SmolStr::new("Call-ID"),
+            SmolStr::new("test-call-id@example.com"),
+        );
         headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"));
+        headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"),
+        );
         headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
@@ -308,7 +321,8 @@ mod tests {
             ),
             headers,
             bytes::Bytes::new(),
-        ).expect("Failed to create request");
+        )
+        .expect("Failed to create request");
 
         let response = registrar.handle_register(&request).await;
         assert_eq!(response.start_line().code(), 200);
@@ -351,12 +365,24 @@ mod tests {
 
         // First request without auth - should get 401
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"));
-        headers.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=abc123"));
+        headers.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"),
+        );
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:alice@example.com>;tag=abc123"),
+        );
         headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-auth@example.com"));
+        headers.push(
+            SmolStr::new("Call-ID"),
+            SmolStr::new("test-call-auth@example.com"),
+        );
         headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"));
+        headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"),
+        );
         headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
@@ -367,7 +393,8 @@ mod tests {
             ),
             headers,
             bytes::Bytes::new(),
-        ).expect("Failed to create request");
+        )
+        .expect("Failed to create request");
 
         let response = registrar.handle_register(&request).await;
 

@@ -131,7 +131,9 @@ mod tests {
         let sip_call_id = CallIdAdapter::to_sip_call_id(&fcp_call_id);
 
         // Should contain the UUID
-        assert!(sip_call_id.as_str().contains(&fcp_call_id.as_uuid().to_string()));
+        assert!(sip_call_id
+            .as_str()
+            .contains(&fcp_call_id.as_uuid().to_string()));
 
         // Round trip should preserve or generate valid CallId
         let recovered = CallIdAdapter::from_sip_call_id(sip_call_id.as_str());

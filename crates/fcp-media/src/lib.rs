@@ -60,11 +60,13 @@ pub mod session;
 // Re-exports
 pub use backend::{EmbeddedBackend, MediaBackend};
 pub use config::{BackendType, MediaConfig};
-pub use decision::{MediaAnchoringDecision, MediaDecisionContext, should_anchor_media};
+pub use decision::{should_anchor_media, MediaAnchoringDecision, MediaDecisionContext};
 pub use error::{Error, Result};
 pub use manager::{MediaManager, MediaManagerStats};
 pub use sdp::{extract_codecs_from_sdp, rewrite_sdp_for_anchoring};
-pub use session::{DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats};
+pub use session::{
+    DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,
+};
 
 #[cfg(feature = "remote")]
 pub use backend::RemoteBackend;

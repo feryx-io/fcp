@@ -41,11 +41,7 @@ pub fn convert_forge_to_sip_sdp(forge_sdp: &str) -> Result<String> {
 /// let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000);
 /// // Result: c= line changed to 10.0.0.5, m= line port changed to 20000
 /// ```
-pub fn rewrite_sdp_for_anchoring(
-    original_sdp: &str,
-    server_ip: &str,
-    rtp_port: u16,
-) -> String {
+pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: u16) -> String {
     let mut result = String::new();
     let mut in_audio_section = false;
     let mut audio_connection_replaced = false;

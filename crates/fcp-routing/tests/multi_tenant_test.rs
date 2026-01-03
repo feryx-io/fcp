@@ -89,12 +89,7 @@ policies:
 
     // Test 1: Tenant A user calling 1xxx (allowed by Tenant A policy)
     let decision = service
-        .evaluate_call(
-            "alice@tenant-a.com",
-            "1234",
-            &tenant_a,
-            source_ip,
-        )
+        .evaluate_call("alice@tenant-a.com", "1234", &tenant_a, source_ip)
         .await
         .unwrap();
     assert!(decision.action.is_allow());
@@ -105,12 +100,7 @@ policies:
 
     // Test 2: Tenant A user calling 2xxx (denied - Tenant B's range)
     let decision = service
-        .evaluate_call(
-            "alice@tenant-a.com",
-            "2234",
-            &tenant_a,
-            source_ip,
-        )
+        .evaluate_call("alice@tenant-a.com", "2234", &tenant_a, source_ip)
         .await
         .unwrap();
     assert!(decision.action.is_deny());
@@ -118,12 +108,7 @@ policies:
 
     // Test 3: Tenant B user calling 2xxx (allowed by Tenant B policy)
     let decision = service
-        .evaluate_call(
-            "bob@tenant-b.com",
-            "2234",
-            &tenant_b,
-            source_ip,
-        )
+        .evaluate_call("bob@tenant-b.com", "2234", &tenant_b, source_ip)
         .await
         .unwrap();
     assert!(decision.action.is_allow());
@@ -134,12 +119,7 @@ policies:
 
     // Test 4: Tenant B user calling 1xxx (denied - Tenant A's range)
     let decision = service
-        .evaluate_call(
-            "bob@tenant-b.com",
-            "1234",
-            &tenant_b,
-            source_ip,
-        )
+        .evaluate_call("bob@tenant-b.com", "1234", &tenant_b, source_ip)
         .await
         .unwrap();
     assert!(decision.action.is_deny());
@@ -198,10 +178,7 @@ policies: []
         .await;
     assert!(result.is_err());
     // The error is wrapped with context, so check for the context message
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("identity context"));
+    assert!(result.unwrap_err().to_string().contains("identity context"));
 
     // Test 2: Calling as Alice with correct tenant ID should work
     let result = service
@@ -258,16 +235,10 @@ policies: []
     let service = Arc::new(RoutingService::new(Arc::new(store)));
 
     // Test: get_user_tenant returns correct tenant (default tenant)
-    let alice_tenant = service
-        .get_user_tenant("alice@company.com")
-        .await
-        .unwrap();
+    let alice_tenant = service.get_user_tenant("alice@company.com").await.unwrap();
     assert_eq!(alice_tenant, default_tenant);
 
-    let bob_tenant = service
-        .get_user_tenant("bob@company.com")
-        .await
-        .unwrap();
+    let bob_tenant = service.get_user_tenant("bob@company.com").await.unwrap();
     assert_eq!(bob_tenant, default_tenant);
 
     // Test: get_user_tenant fails for non-existent user

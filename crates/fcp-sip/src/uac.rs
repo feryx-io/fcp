@@ -2,14 +2,14 @@
 //!
 //! This module provides a thin wrapper around siphon-rs IntegratedUAC.
 
+use crate::settings::ServerSettings;
 use anyhow::Result;
 use sip_dialog::{Dialog, Subscription};
 use sip_uac::integrated::{CallHandle, IntegratedUAC};
-use std::sync::Arc;
-use crate::settings::ServerSettings;
-use std::path::PathBuf;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// User Agent Client for initiating outbound calls.
 ///
@@ -133,11 +133,7 @@ impl SipUserAgentClient {
     /// The final response (200 OK on success, 401 if auth fails)
     ///
     /// Note: IntegratedUAC handles automatic authentication retry
-    pub async fn register(
-        &self,
-        registrar_uri: &str,
-        expires: u32,
-    ) -> Result<sip_core::Response> {
+    pub async fn register(&self, registrar_uri: &str, expires: u32) -> Result<sip_core::Response> {
         self.inner.register(registrar_uri, Some(expires)).await
     }
 

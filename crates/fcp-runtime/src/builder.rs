@@ -40,6 +40,7 @@ impl RuntimeBuilder {
     pub async fn build(self) -> Result<Runtime> {
         // Get or create config
         let config = self.config.unwrap_or_default();
+        config.validate().context("invalid runtime configuration")?;
 
         // Get or generate node ID
         let node_id = self.node_id.unwrap_or_default();
@@ -207,10 +208,8 @@ async fn create_transport_dispatcher(
 
     // Create dispatcher with UDP socket and shared TCP pool
     #[allow(unused_mut)]
-    let mut dispatcher = RealTransportDispatcher::new_with_pool(
-        Some(Arc::new(udp_socket)),
-        tcp_pool,
-    );
+    let mut dispatcher =
+        RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
 
     // Optionally load TLS configuration if TLS support is enabled
     #[cfg(feature = "tls")]
@@ -284,7 +283,10 @@ async fn create_registrar(
                 create_default_test_users(&storage).await?;
             }
         } else {
-            info!(user_count = users.len(), "Loaded existing users from storage");
+            info!(
+                user_count = users.len(),
+                "Loaded existing users from storage"
+            );
         }
 
         Some(storage.clone())
@@ -303,9 +305,7 @@ async fn create_registrar(
 }
 
 /// Create a routing service based on configuration.
-async fn create_routing_service(
-    config: &FcpConfig,
-) -> Result<Arc<fcp_routing::RoutingService>> {
+async fn create_routing_service(config: &FcpConfig) -> Result<Arc<fcp_routing::RoutingService>> {
     use fcp_core::config::RoutingBackend;
     use fcp_routing::{RoutingService, YamlRoutingStore};
 
@@ -335,7 +335,10 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
 
     info!(
         enabled = config.media.enabled,
-        rtp_port_range = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        rtp_port_range = format!(
+            "{}-{}",
+            config.media.rtp_port_start, config.media.rtp_port_end
+        ),
         "Creating media manager"
     );
 
@@ -349,7 +352,7 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
         enable_recording: config.media.enable_recording,
         enable_dtmf: config.media.enable_dtmf,
         recording_dir: "./recordings".to_string(), // Default recording directory
-        recording_format: "wav".to_string(), // Default to WAV format
+        recording_format: "wav".to_string(),       // Default to WAV format
         public_ip: config.media.public_ip.clone(),
         stun_server: config.media.stun_server.clone(),
         turn_server: config.media.turn_server.clone(),
@@ -412,18 +415,14 @@ fn create_transport_listener(
     };
 
     // Determine local IP for SDP
-    let local_addr = config
-        .transport
-        .local_ip
-        .clone()
-        .unwrap_or_else(|| {
-            // Derive from UDP bind address if not specified
-            config
-                .transport
-                .udp_bind
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or_else(|| "127.0.0.1".to_string())
-        });
+    let local_addr = config.transport.local_ip.clone().unwrap_or_else(|| {
+        // Derive from UDP bind address if not specified
+        config
+            .transport
+            .udp_bind
+            .map(|addr| addr.ip().to_string())
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    });
 
     // Create CallManager for B2BUA functionality
     let call_manager = Arc::new(fcp_sip::call_manager::CallManager::new());
@@ -445,7 +444,8 @@ fn create_transport_listener(
     ));
 
     // Create listener (cast handler to trait object)
-    let handler_dyn: Arc<dyn InboundMessageHandler> = Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
+    let handler_dyn: Arc<dyn InboundMessageHandler> =
+        Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
     let listener = TransportListener::new(listener_config, handler_dyn);
 
     // Return listener, handler, and call_manager
@@ -490,15 +490,14 @@ async fn create_uac(
 
     // Create DNS resolver (system resolver)
     let resolver = Arc::new(
-        fcp_sip::prelude::SipResolver::from_system()
-            .context("Failed to create DNS resolver")?,
+        fcp_sip::prelude::SipResolver::from_system().context("Failed to create DNS resolver")?,
     );
 
     // Build IntegratedUAC (reuses shared dispatcher)
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
         .local_addr(&local_addr)?
-        .via_advertised_addr(&local_addr)?  // Explicitly set Via header address for B2BUA
+        .via_advertised_addr(&local_addr)? // Explicitly set Via header address for B2BUA
         .transaction_manager(transaction_manager)
         .resolver(resolver)
         .dispatcher(dispatcher)
@@ -517,7 +516,9 @@ fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
 
     // Always use the bind address IP for Contact URI (not .local domain)
     // This ensures the Contact header is routable
-    let bind_addr = config.transport.udp_bind
+    let bind_addr = config
+        .transport
+        .udp_bind
         .ok_or_else(|| anyhow::anyhow!("UDP bind address not configured"))?;
 
     // If bind is 0.0.0.0 (wildcard), use configured local_ip or fallback
@@ -525,7 +526,10 @@ fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
         // Use local_ip from config if available, otherwise use placeholder
         // In production, set transport.local_ip in configuration to your actual IP/hostname
         // Or use local_domain for DNS-resolvable names
-        config.transport.local_ip.clone()
+        config
+            .transport
+            .local_ip
+            .clone()
             .or_else(|| Some(config.node.local_domain.clone()))
             .unwrap_or_else(|| "127.0.0.1".to_string())
     } else {
@@ -594,10 +598,7 @@ async fn create_default_test_users(storage: &Arc<fcp_core::FileBackedStorage>) -
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User};
 
-    let test_users = vec![
-        ("alice", "secret123", "Alice"),
-        ("bob", "secret456", "Bob"),
-    ];
+    let test_users = vec![("alice", "secret123", "Alice"), ("bob", "secret456", "Bob")];
 
     for (username, plaintext_password, display_name) in test_users {
         // Hash the password using bcrypt
@@ -633,7 +634,11 @@ mod tests {
     async fn test_builder_default() {
         let mut config = FcpConfig::default();
         config.transport.udp_bind = Some("0.0.0.0:0".parse().unwrap());
-        let runtime = RuntimeBuilder::new().with_config(config).build().await.unwrap();
+        let runtime = RuntimeBuilder::new()
+            .with_config(config)
+            .build()
+            .await
+            .unwrap();
         assert!(!runtime.node_id().is_nil());
     }
 

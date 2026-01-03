@@ -14,7 +14,9 @@ async fn test_create_embedded_backend() {
     };
 
     // Create media manager
-    let manager = MediaManager::new(config).await.expect("Failed to create MediaManager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create MediaManager");
 
     // Verify backend type
     assert_eq!(manager.backend_name(), "embedded");
@@ -30,7 +32,9 @@ async fn test_session_lifecycle() {
         ..Default::default()
     };
 
-    let manager = MediaManager::new(config).await.expect("Failed to create manager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create manager");
 
     // Create session
     let call_id = CallId::new();
@@ -74,7 +78,9 @@ async fn test_multiple_sessions() {
         ..Default::default()
     };
 
-    let manager = MediaManager::new(config).await.expect("Failed to create manager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create manager");
 
     // Create multiple sessions
     let call_id_1 = CallId::new();
@@ -120,7 +126,9 @@ async fn test_multiple_sessions() {
 #[tokio::test]
 async fn test_health_check() {
     let config = MediaConfig::default();
-    let manager = MediaManager::new(config).await.expect("Failed to create manager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create manager");
 
     let health = manager.health_check().await.expect("Health check failed");
     assert!(health, "Backend should be healthy");
@@ -136,7 +144,9 @@ async fn test_session_with_opus_codec() {
         ..Default::default()
     };
 
-    let manager = MediaManager::new(config).await.expect("Failed to create manager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create manager");
 
     let session_config = MediaSessionConfig {
         preferred_codecs: vec!["opus".to_string()],
@@ -175,7 +185,9 @@ async fn test_recording_lifecycle() {
         ..Default::default()
     };
 
-    let manager = MediaManager::new(config).await.expect("Failed to create manager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create manager");
 
     // Create session
     let call_id = CallId::new();
@@ -210,7 +222,10 @@ async fn test_recording_lifecycle() {
 
     // Check file size (should have WAV header at minimum)
     let metadata = std::fs::metadata(&recording_path).expect("Failed to get file metadata");
-    assert!(metadata.len() >= 44, "WAV file should have at least 44 bytes for header");
+    assert!(
+        metadata.len() >= 44,
+        "WAV file should have at least 44 bytes for header"
+    );
 
     // Terminate session
     manager
@@ -239,7 +254,9 @@ async fn test_recording_with_opus_format() {
         ..Default::default()
     };
 
-    let manager = MediaManager::new(config).await.expect("Failed to create manager");
+    let manager = MediaManager::new(config)
+        .await
+        .expect("Failed to create manager");
 
     // Create session
     let call_id = CallId::new();

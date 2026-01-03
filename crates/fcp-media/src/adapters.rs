@@ -27,7 +27,9 @@ pub fn generate_participant_id(leg: &str) -> forge::ParticipantId {
 }
 
 /// Create participant IDs for both legs of a call
-pub fn create_participant_ids(call_id: &fcp::CallId) -> (forge::ParticipantId, forge::ParticipantId) {
+pub fn create_participant_ids(
+    call_id: &fcp::CallId,
+) -> (forge::ParticipantId, forge::ParticipantId) {
     let call_id_str = call_id.to_string();
     (
         forge::ParticipantId::new(format!("{}-leg-a", call_id_str)),

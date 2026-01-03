@@ -2,11 +2,11 @@
 
 /// Codec priority for negotiation
 pub const CODEC_PRIORITY: &[&str] = &[
-    "opus",  // Highest quality, best for VoIP
-    "G722",  // Wideband, good quality
-    "PCMU",  // G.711 µ-law, universal compatibility
-    "PCMA",  // G.711 A-law, universal compatibility
-    "G729",  // Low bandwidth
+    "opus", // Highest quality, best for VoIP
+    "G722", // Wideband, good quality
+    "PCMU", // G.711 µ-law, universal compatibility
+    "PCMA", // G.711 A-law, universal compatibility
+    "G729", // Low bandwidth
 ];
 
 /// Check if codec requires transcoding
@@ -29,10 +29,7 @@ pub fn canonical_codec_name(codec: &str) -> String {
 /// Select best codec from available list based on priority
 pub fn select_best_codec(available: &[String]) -> Option<String> {
     for preferred in CODEC_PRIORITY {
-        if available
-            .iter()
-            .any(|c| c.eq_ignore_ascii_case(preferred))
-        {
+        if available.iter().any(|c| c.eq_ignore_ascii_case(preferred)) {
             return Some((*preferred).to_string());
         }
     }
@@ -77,11 +74,7 @@ mod tests {
 
     #[test]
     fn test_select_best_codec() {
-        let codecs = vec![
-            "PCMU".to_string(),
-            "PCMA".to_string(),
-            "opus".to_string(),
-        ];
+        let codecs = vec!["PCMU".to_string(), "PCMA".to_string(), "opus".to_string()];
 
         let best = select_best_codec(&codecs);
         assert_eq!(best, Some("opus".to_string())); // opus has highest priority

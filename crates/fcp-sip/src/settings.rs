@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use std::time::Duration;
-use crate::metrics::{MetricsHandle, noop_metrics};
-use anyhow::{Result, bail};
+use crate::metrics::{noop_metrics, MetricsHandle};
+use anyhow::{bail, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
 
 /// Top-level server settings for fcp-sip.
 #[derive(Clone)]
@@ -49,7 +49,10 @@ impl ServerSettings {
         Self {
             metrics: noop_metrics(),
             transcript_dir,
-            allow_info_content_types: vec!["application/dtmf-relay".into(), "application/media_control+xml".into()],
+            allow_info_content_types: vec![
+                "application/dtmf-relay".into(),
+                "application/media_control+xml".into(),
+            ],
             allow_refer: true,
             rate_window: Duration::from_secs(1),
             info_rate_limit: 10,
@@ -173,10 +176,16 @@ impl ServerSettings {
 
         // Rate window should be between 100ms and 1 hour
         if self.rate_window.as_millis() < 100 {
-            bail!("rate_window too short (minimum 100ms), got {:?}", self.rate_window);
+            bail!(
+                "rate_window too short (minimum 100ms), got {:?}",
+                self.rate_window
+            );
         }
         if self.rate_window.as_secs() > 3600 {
-            bail!("rate_window too long (maximum 1 hour), got {:?}", self.rate_window);
+            bail!(
+                "rate_window too long (maximum 1 hour), got {:?}",
+                self.rate_window
+            );
         }
 
         // Validate rate limits (0 means unlimited, which is allowed but we warn via comments)
@@ -194,13 +203,25 @@ impl ServerSettings {
         // Check rate limits are reasonable (not excessively high)
         const MAX_RATE_LIMIT: u32 = 1000;
         if self.info_rate_limit > MAX_RATE_LIMIT {
-            bail!("info_rate_limit too high (maximum {}), got {}", MAX_RATE_LIMIT, self.info_rate_limit);
+            bail!(
+                "info_rate_limit too high (maximum {}), got {}",
+                MAX_RATE_LIMIT,
+                self.info_rate_limit
+            );
         }
         if self.reinvite_rate_limit > MAX_RATE_LIMIT {
-            bail!("reinvite_rate_limit too high (maximum {}), got {}", MAX_RATE_LIMIT, self.reinvite_rate_limit);
+            bail!(
+                "reinvite_rate_limit too high (maximum {}), got {}",
+                MAX_RATE_LIMIT,
+                self.reinvite_rate_limit
+            );
         }
         if self.update_rate_limit > MAX_RATE_LIMIT {
-            bail!("update_rate_limit too high (maximum {}), got {}", MAX_RATE_LIMIT, self.update_rate_limit);
+            bail!(
+                "update_rate_limit too high (maximum {}), got {}",
+                MAX_RATE_LIMIT,
+                self.update_rate_limit
+            );
         }
 
         // Validate body size limits
@@ -208,17 +229,33 @@ impl ServerSettings {
         const MAX_BODY_SIZE: usize = 100 * 1024 * 1024; // 100MB
 
         if self.info_max_body_bytes < MIN_BODY_SIZE {
-            bail!("info_max_body_bytes too small (minimum {} bytes), got {}", MIN_BODY_SIZE, self.info_max_body_bytes);
+            bail!(
+                "info_max_body_bytes too small (minimum {} bytes), got {}",
+                MIN_BODY_SIZE,
+                self.info_max_body_bytes
+            );
         }
         if self.info_max_body_bytes > MAX_BODY_SIZE {
-            bail!("info_max_body_bytes too large (maximum {} bytes / 100MB), got {}", MAX_BODY_SIZE, self.info_max_body_bytes);
+            bail!(
+                "info_max_body_bytes too large (maximum {} bytes / 100MB), got {}",
+                MAX_BODY_SIZE,
+                self.info_max_body_bytes
+            );
         }
 
         if self.notify_max_body_bytes < MIN_BODY_SIZE {
-            bail!("notify_max_body_bytes too small (minimum {} bytes), got {}", MIN_BODY_SIZE, self.notify_max_body_bytes);
+            bail!(
+                "notify_max_body_bytes too small (minimum {} bytes), got {}",
+                MIN_BODY_SIZE,
+                self.notify_max_body_bytes
+            );
         }
         if self.notify_max_body_bytes > MAX_BODY_SIZE {
-            bail!("notify_max_body_bytes too large (maximum {} bytes / 100MB), got {}", MAX_BODY_SIZE, self.notify_max_body_bytes);
+            bail!(
+                "notify_max_body_bytes too large (maximum {} bytes / 100MB), got {}",
+                MAX_BODY_SIZE,
+                self.notify_max_body_bytes
+            );
         }
 
         // Validate transcript directory if provided
@@ -232,7 +269,11 @@ impl ServerSettings {
             // Check if writable by attempting to create a test file
             let test_file = dir.join(".fcp_sip_write_test");
             if let Err(e) = std::fs::write(&test_file, b"test") {
-                bail!("transcript_dir is not writable: {} (error: {})", dir.display(), e);
+                bail!(
+                    "transcript_dir is not writable: {} (error: {})",
+                    dir.display(),
+                    e
+                );
             }
             // Clean up test file
             let _ = std::fs::remove_file(test_file);
@@ -269,13 +310,15 @@ mod tests {
     #[test]
     fn test_allowlist_defaults() {
         let settings = ServerSettings::from_env();
-        assert!(settings.allow_info_content_types.iter().any(|v| v == "application/dtmf-relay"));
+        assert!(settings
+            .allow_info_content_types
+            .iter()
+            .any(|v| v == "application/dtmf-relay"));
     }
 
     #[test]
     fn test_rate_limit_overrides() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(2), 5, 2, 3);
+        let settings = ServerSettings::from_env().with_rate_limits(Duration::from_secs(2), 5, 2, 3);
         assert_eq!(settings.rate_window, Duration::from_secs(2));
         assert_eq!(settings.info_rate_limit, 5);
         assert_eq!(settings.reinvite_rate_limit, 2);
@@ -314,102 +357,128 @@ transcript_capture_bodies = true
 
     #[test]
     fn test_zero_rate_window() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(0), 10, 3, 5);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_secs(0), 10, 3, 5);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("rate_window must not be zero"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("rate_window must not be zero"));
     }
 
     #[test]
     fn test_rate_window_too_short() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_millis(50), 10, 3, 5);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_millis(50), 10, 3, 5);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("rate_window too short"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("rate_window too short"));
     }
 
     #[test]
     fn test_rate_window_too_long() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(7200), 10, 3, 5);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_secs(7200), 10, 3, 5);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("rate_window too long"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("rate_window too long"));
     }
 
     #[test]
     fn test_zero_info_rate_limit() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(1), 0, 3, 5);
+        let settings = ServerSettings::from_env().with_rate_limits(Duration::from_secs(1), 0, 3, 5);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("info_rate_limit must be > 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("info_rate_limit must be > 0"));
     }
 
     #[test]
     fn test_zero_reinvite_rate_limit() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(1), 10, 0, 5);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_secs(1), 10, 0, 5);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("reinvite_rate_limit must be > 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("reinvite_rate_limit must be > 0"));
     }
 
     #[test]
     fn test_zero_update_rate_limit() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(1), 10, 3, 0);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_secs(1), 10, 3, 0);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("update_rate_limit must be > 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("update_rate_limit must be > 0"));
     }
 
     #[test]
     fn test_rate_limit_too_high() {
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(1), 2000, 3, 5);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_secs(1), 2000, 3, 5);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("info_rate_limit too high"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("info_rate_limit too high"));
     }
 
     #[test]
     fn test_body_size_too_small() {
-        let settings = ServerSettings::from_env()
-            .with_body_limits(0, 4096);
+        let settings = ServerSettings::from_env().with_body_limits(0, 4096);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("info_max_body_bytes too small"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("info_max_body_bytes too small"));
     }
 
     #[test]
     fn test_body_size_too_large() {
-        let settings = ServerSettings::from_env()
-            .with_body_limits(200 * 1024 * 1024, 4096); // 200MB
+        let settings = ServerSettings::from_env().with_body_limits(200 * 1024 * 1024, 4096); // 200MB
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("info_max_body_bytes too large"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("info_max_body_bytes too large"));
     }
 
     #[test]
     fn test_notify_body_size_too_small() {
-        let settings = ServerSettings::from_env()
-            .with_body_limits(4096, 0);
+        let settings = ServerSettings::from_env().with_body_limits(4096, 0);
 
         let result = settings.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("notify_max_body_bytes too small"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("notify_max_body_bytes too small"));
     }
 
     #[test]
@@ -434,24 +503,27 @@ transcript_capture_bodies = true
     #[test]
     fn test_valid_rate_limits_boundary() {
         // Test boundary values
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_millis(100), 1, 1, 1);
+        let settings =
+            ServerSettings::from_env().with_rate_limits(Duration::from_millis(100), 1, 1, 1);
         assert!(settings.validate().is_ok());
 
-        let settings = ServerSettings::from_env()
-            .with_rate_limits(Duration::from_secs(3600), 1000, 1000, 1000);
+        let settings = ServerSettings::from_env().with_rate_limits(
+            Duration::from_secs(3600),
+            1000,
+            1000,
+            1000,
+        );
         assert!(settings.validate().is_ok());
     }
 
     #[test]
     fn test_valid_body_limits_boundary() {
         // Test boundary values
-        let settings = ServerSettings::from_env()
-            .with_body_limits(1, 1);
+        let settings = ServerSettings::from_env().with_body_limits(1, 1);
         assert!(settings.validate().is_ok());
 
-        let settings = ServerSettings::from_env()
-            .with_body_limits(100 * 1024 * 1024, 100 * 1024 * 1024);
+        let settings =
+            ServerSettings::from_env().with_body_limits(100 * 1024 * 1024, 100 * 1024 * 1024);
         assert!(settings.validate().is_ok());
     }
 }
