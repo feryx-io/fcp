@@ -1,6 +1,6 @@
 [package]
 name = "fcp-media"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 authors = ["FCP Contributors"]
 description = "Media integration layer for FCP - bridges SIP signaling with forge-media engine"
