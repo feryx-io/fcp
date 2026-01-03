@@ -169,6 +169,12 @@ impl ServerSettings {
     /// - Body size limits are within reasonable bounds (1 byte to 100MB)
     /// - transcript_dir exists and is a directory if provided
     pub fn validate(&self) -> Result<()> {
+        for ct in &self.allow_info_content_types {
+            if contains_crlf(ct) {
+                bail!("allow_info_content_types entries must not contain CR/LF");
+            }
+        }
+
         // Validate rate window
         if self.rate_window.is_zero() {
             bail!("rate_window must not be zero");
@@ -260,18 +266,46 @@ impl ServerSettings {
 
         // Validate transcript directory if provided
         if let Some(ref dir) = self.transcript_dir {
-            if !dir.exists() {
-                bail!("transcript_dir does not exist: {}", dir.display());
+            if contains_crlf(&dir.to_string_lossy()) {
+                bail!("transcript_dir must not contain CR/LF");
             }
-            if !dir.is_dir() {
-                bail!("transcript_dir is not a directory: {}", dir.display());
+
+            // Path traversal protection: canonicalize path to resolve ".." and symlinks
+            let canonical = match dir.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    bail!(
+                        "transcript_dir cannot be canonicalized (may not exist or contain invalid path segments): {} (error: {})",
+                        dir.display(),
+                        e
+                    );
+                }
+            };
+
+            // Verify the canonical path doesn't contain ".." in its string representation
+            // This catches attempts to use path traversal sequences
+            let path_str = canonical.to_string_lossy();
+            if path_str.contains("..") {
+                bail!(
+                    "transcript_dir contains path traversal sequences (..): {}",
+                    dir.display()
+                );
             }
+
+            // Use canonical path for remaining checks
+            if !canonical.exists() {
+                bail!("transcript_dir does not exist: {}", canonical.display());
+            }
+            if !canonical.is_dir() {
+                bail!("transcript_dir is not a directory: {}", canonical.display());
+            }
+
             // Check if writable by attempting to create a test file
-            let test_file = dir.join(".fcp_sip_write_test");
+            let test_file = canonical.join(".fcp_sip_write_test");
             if let Err(e) = std::fs::write(&test_file, b"test") {
                 bail!(
                     "transcript_dir is not writable: {} (error: {})",
-                    dir.display(),
+                    canonical.display(),
                     e
                 );
             }
@@ -301,6 +335,10 @@ impl ServerSettings {
         self.validate()?;
         Ok(self)
     }
+}
+
+fn contains_crlf(value: &str) -> bool {
+    value.bytes().any(|b| matches!(b, b'\r' | b'\n'))
 }
 
 #[cfg(test)]

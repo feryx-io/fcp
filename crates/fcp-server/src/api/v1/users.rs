@@ -1,6 +1,6 @@
 //! User management API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::api::{error::ApiError, state::ApiState, validation};
 use tracing::{info, warn};
 
 /// Helper macro to get storage or return error.
@@ -98,6 +98,8 @@ pub async fn get_user(
     State(state): State<ApiState>,
     Path(username): Path<String>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    validation::validate_username(&username)?;
+
     let storage = require_storage!(state);
     let user = storage
         .get_user(&username)
@@ -119,6 +121,10 @@ pub async fn create_user(
     Json(req): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+
+    validation::validate_username(&req.username)?;
+    validation::validate_display_name(&req.display_name)?;
+    validation::reject_crlf("password", &req.password)?;
 
     // Always hash the password first (constant-time operation regardless of user existence)
     // This prevents timing attacks that could reveal which usernames exist
@@ -167,6 +173,9 @@ pub async fn update_user(
     Path(username): Path<String>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    validation::validate_username(&username)?;
+    validation::validate_display_name(&req.display_name)?;
+
     // Get existing user
     let storage = require_storage!(state);
     let mut user = storage
@@ -204,6 +213,9 @@ pub async fn update_password(
     Path(username): Path<String>,
     Json(req): Json<UpdatePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
+    validation::validate_username(&username)?;
+    validation::reject_crlf("password", &req.password)?;
+
     // Get existing user
     let storage = require_storage!(state);
     let mut user = storage
@@ -239,6 +251,8 @@ pub async fn delete_user(
     State(state): State<ApiState>,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    validation::validate_username(&username)?;
+
     // Check if user exists
     if require_storage!(state).get_user(&username).await?.is_none() {
         return Err(ApiError::NotFound(format!("User '{}' not found", username)));

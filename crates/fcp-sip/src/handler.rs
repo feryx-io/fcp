@@ -1133,7 +1133,7 @@ impl SipMessageHandler {
                 // Get media session to extract RTP port
                 match media_manager.get_session(&media_session_id).await {
                     Ok(session) => {
-                        let rtp_port = session.rtp_port;
+                        let (rtp_port, _rtcp_port) = session.ports();
 
                         // Rewrite SDP to point to server's RTP endpoint
                         let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
@@ -1473,7 +1473,7 @@ impl SipMessageHandler {
                     // Get media session to extract RTP port
                     match media_manager.get_session(&media_session_id).await {
                         Ok(session) => {
-                            let rtp_port = session.rtp_port;
+                            let (rtp_port, _rtcp_port) = session.ports();
 
                             // Rewrite SDP to point to server's RTP endpoint
                             let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(

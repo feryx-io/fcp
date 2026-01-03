@@ -1,6 +1,6 @@
 //! Registration viewing API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::api::{error::ApiError, state::ApiState, validation};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -52,6 +52,8 @@ pub async fn get_registrations(
     State(state): State<ApiState>,
     Path(aor): Path<String>,
 ) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
+    validation::validate_aor(&aor)?;
+
     let storage = state
         .storage
         .as_ref()
@@ -77,6 +79,8 @@ pub async fn delete_registrations(
     State(state): State<ApiState>,
     Path(aor): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    validation::validate_aor(&aor)?;
+
     let storage = state
         .storage
         .as_ref()
@@ -93,6 +97,9 @@ pub async fn delete_registration(
     State(state): State<ApiState>,
     Path((aor, contact)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    validation::validate_aor(&aor)?;
+    validation::validate_contact(&contact)?;
+
     let storage = state
         .storage
         .as_ref()

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod error;
 pub mod state;
 pub mod v1;
+pub mod validation;
 
 use axum::{
     http::{header, Method},

@@ -66,7 +66,6 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
     result == 0
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
