@@ -713,7 +713,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-routing"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sip"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
