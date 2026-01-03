@@ -479,7 +479,16 @@ impl SipMessageHandler {
                     let response = self.handle_reinvite(request).await?;
                     handle.send_final(response).await;
                 } else {
-                    self.handle_invite(request, handle, peer).await?;
+                    // Spawn INVITE handling in separate task to avoid blocking server transaction
+                    // This prevents B2BUA from blocking for 32 seconds waiting for B-leg responses
+                    let handler = self.clone();
+                    let request_clone = request.clone();
+                    let handle_clone = handle.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_invite(&request_clone, &handle_clone, peer).await {
+                            error!("INVITE handling failed: {}", e);
+                        }
+                    });
                 }
             }
             Method::Cancel => {

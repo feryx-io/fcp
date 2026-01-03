@@ -8,6 +8,7 @@ use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 // Re-export from siphon-rs
@@ -77,6 +78,17 @@ impl RealTransportDispatcher {
         self
     }
 
+    /// Register an inbound packet sink for client-initiated TCP/TLS connections.
+    /// This allows responses on outbound streams to be routed back into the SIP handler.
+    pub async fn set_inbound_tx(&self, tx: mpsc::Sender<sip_transport::InboundPacket>) {
+        self.tcp_pool.set_inbound_tx(tx.clone()).await;
+        #[cfg(feature = "tls")]
+        {
+            // For symmetry, TLS pool will reuse the same sink once TLS pooling is added.
+            let _ = &self.tls_config;
+        }
+    }
+
     /// Load TLS client configuration from system root certificates.
     ///
     /// This creates a client config suitable for outbound SIPS connections.
@@ -117,21 +129,43 @@ impl TransportDispatcher for RealTransportDispatcher {
         let peer = ctx.peer();
         let transport = ctx.transport();
 
+        // Extract first line for logging (to identify message type)
+        let first_line = payload
+            .split(|&b| b == b'\r' || b == b'\n')
+            .next()
+            .and_then(|line| std::str::from_utf8(line).ok())
+            .unwrap_or("<invalid>");
+
         debug!(
             transport = ?transport,
             peer = %peer,
             size = payload.len(),
+            first_line = %first_line,
+            has_stream = ctx.stream().is_some(),
             "dispatching SIP message"
         );
 
         // Check if we have a stream sender (for existing TCP/TLS connection)
         if let Some(stream_tx) = ctx.stream() {
-            debug!("using existing stream connection");
+            debug!(
+                first_line = %first_line,
+                peer = %peer,
+                "using existing stream connection"
+            );
             if stream_tx.send(payload.clone()).await.is_ok() {
+                debug!(
+                    first_line = %first_line,
+                    peer = %peer,
+                    "stream send successful"
+                );
                 return Ok(());
             }
             // If send failed, fall through to create new connection
-            debug!("existing stream connection failed, creating new connection");
+            debug!(
+                first_line = %first_line,
+                peer = %peer,
+                "existing stream connection failed, creating new connection"
+            );
         }
 
         match transport {
@@ -145,6 +179,11 @@ impl TransportDispatcher for RealTransportDispatcher {
             }
             TxnTransportKind::Tcp => {
                 // Use connection pool for TCP
+                debug!(
+                    first_line = %first_line,
+                    peer = %peer,
+                    "sending via tcp_pool"
+                );
                 self.tcp_pool.send_tcp(peer, payload).await?;
             }
             TxnTransportKind::Tls => {

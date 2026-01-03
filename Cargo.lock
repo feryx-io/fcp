@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-server"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -824,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sip"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "sip-transaction"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "sip-transport"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",

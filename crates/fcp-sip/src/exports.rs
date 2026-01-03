@@ -16,6 +16,7 @@ pub use sip_parse::{parse_request, parse_response};
 pub use sip_transaction::{
     ClientTransaction, ClientTransactionUser, ServerTransaction, TransactionKey,
     TransactionManager, TransportContext, TransportDispatcher,
+    TransportKind as SipTransactionTransportKind,
 };
 
 // Dialog layer

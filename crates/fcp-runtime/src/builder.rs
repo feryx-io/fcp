@@ -59,6 +59,16 @@ impl RuntimeBuilder {
         // Create transaction manager with shared dispatcher
         let transaction_manager = TransactionManager::new(dispatcher.clone());
 
+        // Keep a clone for later use (TCP response routing)
+        let dispatcher_clone = dispatcher.clone();
+
+        // Route responses arriving on outbound TCP connections back into the handler
+        // CRITICAL: Set this up BEFORE creating services, so both the dispatcher
+        // and transaction manager pools are configured for TCP response routing.
+        let (client_tx, client_rx) = tokio::sync::mpsc::channel(1024);
+        dispatcher_clone.set_inbound_tx(client_tx.clone()).await;
+        transaction_manager.set_inbound_tx(client_tx).await;
+
         // Create services that wrap the managers
         let transaction_service = TransactionService::new(transaction_manager);
         let dialog_service = DialogService::new(dialog_manager);
@@ -112,6 +122,35 @@ impl RuntimeBuilder {
             Arc::clone(&uac),
             Arc::clone(&media_manager),
         )?;
+
+        // Spawn task to route responses from outbound TCP connections back into the handler
+        let handler_clone = Arc::clone(&handler);
+        let mut client_rx = client_rx;
+        tokio::spawn(async move {
+            while let Some(packet) = client_rx.recv().await {
+                let txn_transport = match packet.transport() {
+                    SipTransportKind::Udp => SipTransactionTransportKind::Udp,
+                    SipTransportKind::Tcp => SipTransactionTransportKind::Tcp,
+                    SipTransportKind::Tls => SipTransactionTransportKind::Tls,
+                    SipTransportKind::Ws => SipTransactionTransportKind::Ws,
+                    SipTransportKind::Wss => SipTransactionTransportKind::Wss,
+                    SipTransportKind::Sctp => SipTransactionTransportKind::Sctp,
+                    SipTransportKind::TlsSctp => SipTransactionTransportKind::TlsSctp,
+                };
+
+                if let Err(e) = handler_clone
+                    .handle_inbound(
+                        txn_transport,
+                        packet.peer(),
+                        packet.payload().clone(),
+                        packet.stream().cloned(),
+                    )
+                    .await
+                {
+                    tracing::error!("Failed to handle outbound TCP response: {}", e);
+                }
+            }
+        });
 
         Ok(Runtime {
             config: Arc::new(config),
@@ -443,6 +482,7 @@ async fn create_uac(
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
         .local_addr(&local_addr)?
+        .via_advertised_addr(&local_addr)?  // Explicitly set Via header address for B2BUA
         .transaction_manager(transaction_manager)
         .resolver(resolver)
         .dispatcher(dispatcher)

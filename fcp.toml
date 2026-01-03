@@ -3,7 +3,7 @@ name = "fcp-test"
 local_domain = "fcp.local"
 
 [transport]
-local_ip = "192.168.1.81"
+local_ip = "192.168.1.225"
 udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
 max_message_size = 65535
