@@ -1378,14 +1378,8 @@ impl SipMessageHandler {
             }
         }
 
-        // Clone the early B-leg dialog before await_final
-        // This will be updated with the confirmed tag from the 200 OK
-        let mut b_leg_dialog = b_leg_handle.dialog.clone();
-        debug!(
-            call_id = %call_id,
-            early_dialog_id = ?b_leg_dialog.id(),
-            "Cloned early B-leg dialog before await_final"
-        );
+        // Note: The CallHandle's dialog field will be updated with the correct
+        // confirmed dialog (with proper To tag) when await_final() returns a 200 OK
 
         // Wait for final response from B-leg
         // Since await_final() takes &self, we can call it directly on the Arc
@@ -1428,9 +1422,6 @@ impl SipMessageHandler {
             code = b_leg_status,
             "Received final response from B-leg"
         );
-
-        // Update B-leg dialog with routing/target/session info from final response
-        b_leg_dialog.update_from_response(&b_leg_final);
 
         // If call was already terminated (e.g., CANCEL), stop here
         let is_cancelled = self
@@ -1504,15 +1495,17 @@ impl SipMessageHandler {
                 }
             }
 
-            // Update B-leg dialog with confirmed To-tag from 200 OK
-            // Use update_from_response() to handle remote tag and state updates
-            b_leg_dialog.update_from_response(&b_leg_final);
-            b_leg_dialog.confirm();
+            // Get confirmed B-leg dialog from CallHandle
+            // CRITICAL: The CallHandle updates its dialog field with confirmed dialog from 200 OK
+            // This dialog will have the correct To tag from the response
+            let b_leg_dialog = b_leg_handle.dialog.clone();
 
             debug!(
                 call_id = %call_id,
                 confirmed_dialog_id = ?b_leg_dialog.id(),
-                "Updated B-leg dialog with confirmed tag from 200 OK"
+                remote_tag = ?b_leg_dialog.id().remote_tag(),
+                dialog_state = ?b_leg_dialog.state(),
+                "Using confirmed B-leg dialog from CallHandle with correct To tag from 200 OK"
             );
 
             // Register confirmed B-leg dialog in dialog_manager for in-dialog request routing
