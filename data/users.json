@@ -1,21 +1,39 @@
 [
   {
-    "username": "alice",
-    "password": "$2b$12$ROA3YwD1fAYqpC4cV9F3HOOKOVflKuFwdhYh7zntDBsinKUV/vIh2",
-    "display_name": "Alice Test",
-    "tenant_id": "00000000-0000-0000-0000-000000000000",
-    "enabled": true,
-    "created_at": 1764606744,
-    "updated_at": 1764606744
-  },
-  {
     "username": "bob",
     "password": "$2b$12$lwJNmxrap.GcCz2yyDfu9.I5ghcnvo1RCpi7SfB3MKVwFVMqiVKdu",
     "display_name": "Robert Smith",
     "tenant_id": "00000000-0000-0000-0000-000000000000",
     "enabled": true,
     "created_at": 1764606774,
-    "updated_at": 1764606775
+    "updated_at": 1764606775,
+    "media_preferences": {
+      "force_media_anchoring": false,
+      "enable_dtmf_detection": true,
+      "record_all_calls": false,
+      "preferred_codecs": [
+        "PCMU",
+        "PCMA"
+      ]
+    }
+  },
+  {
+    "username": "alice",
+    "password": "$2b$12$ROA3YwD1fAYqpC4cV9F3HOOKOVflKuFwdhYh7zntDBsinKUV/vIh2",
+    "display_name": "Alice Test",
+    "tenant_id": "00000000-0000-0000-0000-000000000000",
+    "enabled": true,
+    "created_at": 1764606744,
+    "updated_at": 1764606744,
+    "media_preferences": {
+      "force_media_anchoring": false,
+      "enable_dtmf_detection": true,
+      "record_all_calls": false,
+      "preferred_codecs": [
+        "PCMU",
+        "PCMA"
+      ]
+    }
   },
   {
     "username": "charlie",
@@ -24,6 +42,33 @@
     "tenant_id": "00000000-0000-0000-0000-000000000000",
     "enabled": true,
     "created_at": 1764606775,
-    "updated_at": 1764606775
+    "updated_at": 1764606775,
+    "media_preferences": {
+      "force_media_anchoring": false,
+      "enable_dtmf_detection": true,
+      "record_all_calls": false,
+      "preferred_codecs": [
+        "PCMU",
+        "PCMA"
+      ]
+    }
+  },
+  {
+    "username": "dave",
+    "password": "$2b$12$mVOd93zV85OZTpe3HMdKouWmzk1TgBNtxjJ/EAP/kjPUUML.a6f8m",
+    "display_name": "Dave Wilson",
+    "tenant_id": "00000000-0000-0000-0000-000000000000",
+    "enabled": true,
+    "created_at": 1767484424,
+    "updated_at": 1767484424,
+    "media_preferences": {
+      "force_media_anchoring": false,
+      "enable_dtmf_detection": true,
+      "record_all_calls": false,
+      "preferred_codecs": [
+        "PCMU",
+        "PCMA"
+      ]
+    }
   }
 ]
