@@ -1495,17 +1495,137 @@ impl SipMessageHandler {
                 }
             }
 
-            // Get confirmed B-leg dialog from CallHandle
-            // CRITICAL: The CallHandle updates its dialog field with confirmed dialog from 200 OK
-            // This dialog will have the correct To tag from the response
-            let b_leg_dialog = b_leg_handle.dialog.clone();
+            // Create confirmed B-leg dialog from the 200 OK response
+            // CRITICAL: The CallHandle's dialog field has "pending" as remote tag (bug in siphon-rs)
+            // We must create a new confirmed dialog from the 200 OK response to get the correct To tag
+
+            // Extract local URI (B2BUA's URI) from the From header in 200 OK response
+            // The From header in the response is the same as the request, so it's the B2BUA's URI
+            let from_header = match b_leg_final.headers().get("From") {
+                Some(h) => h,
+                None => {
+                    error!(call_id = %call_id, "Missing From header in 200 OK response");
+                    let response = self.create_simple_response(&request, 500, "Internal Error");
+                    a_leg_handle.send_final(response).await;
+                    return Ok(());
+                }
+            };
+
+            let from_uri_str = from_header
+                .split('<')
+                .nth(1)
+                .and_then(|s| s.split('>').next())
+                .or_else(|| {
+                    // No angle brackets, extract URI before ;tag=
+                    from_header.split(';').next()
+                })
+                .unwrap_or(&*from_header);
+
+            let local_uri = match sip_core::SipUri::parse(from_uri_str) {
+                Ok(uri) => uri,
+                Err(e) => {
+                    error!(
+                        call_id = %call_id,
+                        error = %e,
+                        "Failed to parse From URI for dialog creation"
+                    );
+                    let response = self.create_simple_response(&request, 500, "Internal Error");
+                    a_leg_handle.send_final(response).await;
+                    return Ok(());
+                }
+            };
+
+            // Extract remote URI (Bob's URI) from the 200 OK To header (without tag)
+            let to_header = match b_leg_final.headers().get("To") {
+                Some(h) => h,
+                None => {
+                    error!(call_id = %call_id, "Missing To header in 200 OK response");
+                    let response = self.create_simple_response(&request, 500, "Internal Error");
+                    a_leg_handle.send_final(response).await;
+                    return Ok(());
+                }
+            };
+
+            let to_uri_str = to_header
+                .split('<')
+                .nth(1)
+                .and_then(|s| s.split('>').next())
+                .or_else(|| to_header.split(';').next())
+                .unwrap_or(&*to_header);
+
+            let remote_uri = match sip_core::SipUri::parse(to_uri_str) {
+                Ok(uri) => uri,
+                Err(e) => {
+                    error!(
+                        call_id = %call_id,
+                        error = %e,
+                        "Failed to parse target URI for dialog creation"
+                    );
+                    let response = self.create_simple_response(&request, 500, "Internal Error");
+                    a_leg_handle.send_final(response).await;
+                    return Ok(());
+                }
+            };
+
+            // Reconstruct minimal INVITE request for dialog creation
+            // We only need the basic headers for Dialog::new_uac to extract route set
+            let mut headers = sip_core::Headers::new();
+            // Copy Call-ID from the response (it's the same in request and response)
+            if let Some(call_id_hdr) = b_leg_final.headers().get("Call-ID") {
+                let _ = headers.push(smol_str::SmolStr::new("Call-ID"), call_id_hdr);
+            }
+            // Copy From from the response (same in request)
+            if let Some(from) = b_leg_final.headers().get("From") {
+                let _ = headers.push(smol_str::SmolStr::new("From"), from);
+            }
+            // Copy To from the response (same in request, but without tag)
+            if let Some(to) = b_leg_final.headers().get("To") {
+                // Strip the tag from To header for the request reconstruction
+                let to_without_tag = to.split(';').next().unwrap_or(&*to);
+                let _ = headers.push(smol_str::SmolStr::new("To"), smol_str::SmolStr::new(to_without_tag));
+            }
+            // Copy CSeq from the response
+            if let Some(cseq) = b_leg_final.headers().get("CSeq") {
+                let _ = headers.push(smol_str::SmolStr::new("CSeq"), cseq);
+            }
+            // Copy Record-Route from the response if present (for route set)
+            for hdr in b_leg_final.headers().iter() {
+                if hdr.name().eq_ignore_ascii_case("Record-Route") {
+                    let _ = headers.push(smol_str::SmolStr::new("Record-Route"), hdr.value_smol().clone());
+                }
+            }
+
+            let invite_req = sip_core::Request::new(
+                sip_core::RequestLine::new(sip_core::Method::Invite, remote_uri.clone()),
+                headers,
+                bytes::Bytes::new(),
+            ).expect("Failed to create minimal INVITE request");
+
+            // Create confirmed dialog from reconstructed INVITE and 200 OK response
+            let b_leg_dialog = match sip_dialog::Dialog::new_uac(
+                &invite_req,
+                &b_leg_final,
+                local_uri,
+                remote_uri,
+            ) {
+                Some(dialog) => dialog,
+                None => {
+                    error!(
+                        call_id = %call_id,
+                        "Failed to create confirmed dialog from 200 OK response"
+                    );
+                    let response = self.create_simple_response(&request, 500, "Internal Error");
+                    a_leg_handle.send_final(response).await;
+                    return Ok(());
+                }
+            };
 
             debug!(
                 call_id = %call_id,
                 confirmed_dialog_id = ?b_leg_dialog.id(),
                 remote_tag = ?b_leg_dialog.id().remote_tag(),
                 dialog_state = ?b_leg_dialog.state(),
-                "Using confirmed B-leg dialog from CallHandle with correct To tag from 200 OK"
+                "Created confirmed B-leg dialog from 200 OK with correct To tag"
             );
 
             // Register confirmed B-leg dialog in dialog_manager for in-dialog request routing
