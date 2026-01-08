@@ -20,13 +20,13 @@ RUST_LOG=info,forge_engine=debug ./target/release/fcp-server
 
 The server will start on:
 - SIP: `0.0.0.0:5060` (UDP)
-- API: `127.0.0.1:8080`
+- API: `127.0.0.1:8081`
 
 ## Step 2: Create Two Test Users
 
 ```bash
 # Create user alice
-curl -X POST http://localhost:8080/api/v1/users \
+curl -X POST http://localhost:8081/api/v1/users \
   -H "Content-Type: application/json" \
   -d '{
     "username": "alice",
@@ -36,7 +36,7 @@ curl -X POST http://localhost:8080/api/v1/users \
   }'
 
 # Create user bob
-curl -X POST http://localhost:8080/api/v1/users \
+curl -X POST http://localhost:8081/api/v1/users \
   -H "Content-Type: application/json" \
   -d '{
     "username": "bob",
@@ -46,7 +46,7 @@ curl -X POST http://localhost:8080/api/v1/users \
   }'
 
 # Verify users were created
-curl http://localhost:8080/api/v1/users
+curl http://localhost:8081/api/v1/users
 ```
 
 ## Step 3: Configure SIP Softphones
@@ -76,8 +76,8 @@ INFO Registration successful aor="sip:bob@192.168.1.81"
 
 Verify registrations via API:
 ```bash
-curl http://localhost:8080/api/v1/registrations/sip:alice@192.168.1.81
-curl http://localhost:8080/api/v1/registrations/sip:bob@192.168.1.81
+curl http://localhost:8081/api/v1/registrations/sip:alice@192.168.1.81
+curl http://localhost:8081/api/v1/registrations/sip:bob@192.168.1.81
 ```
 
 ## Step 5: Initiate a Call
@@ -97,8 +97,10 @@ INFO Media session created call_id="call-abc123..."
 
 Alternatively, query the debug endpoint:
 ```bash
-curl http://localhost:8080/api/v1/debug/calls
+curl http://localhost:8081/api/v1/debug/calls
 ```
+
+Note: the debug output now includes both the B2BUA `call_id` and the media `media_session_id`. Use `media_session_id` for recording calls.
 
 ## Step 7: Start Recording
 
@@ -106,12 +108,13 @@ Once the call is active and you have the Call ID, start recording:
 
 ```bash
 # Replace CALL_ID with the actual call ID from logs
-CALL_ID="call-abc12345-..."
+CALL_ID="call-abc12345-..." # use media_session_id
 
-curl -X POST "http://localhost:8080/api/v1/calls/${CALL_ID}/recording/start" \
+# Path must be relative; files are stored under ./recordings by default
+curl -X POST "http://localhost:8081/api/v1/calls/${CALL_ID}/recording/start" \
   -H "Content-Type: application/json" \
   -d '{
-    "path": "/tmp/test_recording.wav"
+    "path": "test_recording.wav"
   }'
 ```
 
@@ -119,7 +122,7 @@ You should see:
 ```json
 {
   "call_id": "call-abc12345-...",
-  "message": "Recording started to /tmp/test_recording.wav"
+  "message": "Recording started to test_recording.wav"
 }
 ```
 
@@ -130,7 +133,7 @@ Talk between Alice and Bob for 10-20 seconds. Both sides of the conversation wil
 ## Step 9: Stop Recording
 
 ```bash
-curl -X POST "http://localhost:8080/api/v1/calls/${CALL_ID}/recording/stop"
+curl -X POST "http://localhost:8081/api/v1/calls/${CALL_ID}/recording/stop"
 ```
 
 You should see:
@@ -145,16 +148,16 @@ You should see:
 
 ```bash
 # Check the file exists
-ls -lh /tmp/test_recording.wav
+ls -lh recordings/test_recording.wav
 
 # Play the recording (Linux with aplay)
-aplay /tmp/test_recording.wav
+aplay recordings/test_recording.wav
 
 # Or play with ffplay
-ffplay /tmp/test_recording.wav
+ffplay recordings/test_recording.wav
 
 # Or convert to mp3 for easier sharing
-ffmpeg -i /tmp/test_recording.wav /tmp/test_recording.mp3
+ffmpeg -i recordings/test_recording.wav /tmp/test_recording.mp3
 ```
 
 ## Expected Results
@@ -209,10 +212,10 @@ To test Opus format recording (requires opus feature):
 cargo build --release --features opus
 
 # Start recording with .opus extension
-curl -X POST "http://localhost:8080/api/v1/calls/${CALL_ID}/recording/start" \
+curl -X POST "http://localhost:8081/api/v1/calls/${CALL_ID}/recording/start" \
   -H "Content-Type: application/json" \
   -d '{
-    "path": "/tmp/test_recording.opus"
+    "path": "test_recording.opus"
   }'
 ```
 
@@ -255,4 +258,3 @@ GET /api/v1/calls
 - Samples are recorded at the codec's native sample rate
 - Recording starts immediately upon API call
 - Recording stops automatically when call ends
-

@@ -57,12 +57,12 @@ Base URL (default): `http://127.0.0.1:8080/api/v1`
 
 ## Calls & Recording
 - List active calls (currently returns an empty list placeholder): `curl $BASE/calls`
-- Start recording:
+- Start recording (path must be **relative**; files land under `./recordings` by default):
   ```bash
   CALL_ID="call-abc123..."
   curl -X POST "$BASE/calls/$CALL_ID/recording/start" \
     -H "Content-Type: application/json" \
-    -d '{ "path": "/tmp/test_recording.wav" }'
+    -d '{ "path": "test_recording.wav" }'
   ```
 - Stop recording:
   ```bash
@@ -73,7 +73,8 @@ Base URL (default): `http://127.0.0.1:8080/api/v1`
 - Summary counts: `curl $BASE/debug/summary`
 - Active dialogs: `curl $BASE/debug/dialogs`
 - Active subscriptions: `curl $BASE/debug/subscriptions`
-- Active calls (SIP/B2BUA state): `curl $BASE/debug/calls`
+- Active calls (SIP/B2BUA state): `curl $BASE/debug/calls`  
+  Returns both the B2BUA `call_id` and the media `media_session_id` (use the latter for recording/RTCP logs).
 - Rate limits: `curl $BASE/debug/rate-limits`
 
 ## BASE helper

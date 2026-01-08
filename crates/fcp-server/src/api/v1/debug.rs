@@ -47,6 +47,7 @@ pub struct RateLimitInfo {
 #[derive(Debug, Serialize)]
 pub struct CallInfo {
     pub call_id: String,
+    pub media_session_id: Option<String>,
     pub a_leg_dialog_id: Option<String>,
     pub b_leg_dialog_id: Option<String>,
     pub state: String,
@@ -155,6 +156,7 @@ pub async fn list_calls(State(state): State<ApiState>) -> Json<Vec<CallInfo>> {
         .into_iter()
         .map(|c| CallInfo {
             call_id: c.id.to_string(),
+            media_session_id: c.media_session_id.as_ref().map(|id| id.to_string()),
             a_leg_dialog_id: c.a_leg.dialog.as_ref().map(|d| {
                 format!(
                     "{}:{}:{}",
