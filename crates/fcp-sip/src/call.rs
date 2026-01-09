@@ -189,6 +189,10 @@ pub struct Call {
     /// Server transaction key for the inbound INVITE (used to send final responses)
     pub a_leg_invite_tx: Option<TransactionKey>,
 
+    /// A-leg To-tag (RFC 3261 §12.1.1: must be consistent across all responses)
+    /// Generated when first provisional response (180 Ringing) is sent
+    pub a_leg_to_tag: Option<String>,
+
     /// B-leg (callee side), may not exist yet
     pub b_leg: Option<CallLeg>,
 
@@ -259,6 +263,7 @@ impl Call {
             state: CallState::Initiated,
             a_leg,
             a_leg_invite_tx: None,
+            a_leg_to_tag: None,
             b_leg: None,
             original_invite: Some(request),
             media_session_id: None,

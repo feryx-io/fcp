@@ -626,7 +626,10 @@ impl SipMessageHandler {
                 if let (Some(tx_key), Some(invite_req)) =
                     (&call.a_leg_invite_tx, &call.original_invite)
                 {
-                    let response = self.create_cancelled_response(invite_req);
+                    let response = self.create_cancelled_response(
+                        invite_req,
+                        call.a_leg_to_tag.as_deref(),
+                    );
                     self.transaction_manager.send_final(tx_key, response).await;
                 }
 
@@ -1316,11 +1319,16 @@ impl SipMessageHandler {
                     // First provisional - use UAS helper to generate proper To-tag
                     let initial_resp = self.uas.create_ringing(&request);
 
-                    // Extract and save the To-tag for later use with 200 OK
+                    // Extract and save the To-tag for later use with 200 OK and 487
                     if let Some(to_header) = initial_resp.headers().get("To") {
                         if let Some(tag) = extract_tag_value(Some(&to_header.to_string().into())) {
                             a_leg_to_tag = Some(tag.to_string());
                             debug!(call_id = %call_id, a_leg_to_tag = %tag, "Generated A-leg To-tag from first provisional");
+
+                            // Store tag in Call struct for consistency across all responses
+                            let _ = self.call_manager.update_call(&call_id, |call| {
+                                call.a_leg_to_tag = Some(tag.to_string());
+                            });
                         }
                     }
 
@@ -3303,7 +3311,15 @@ impl SipMessageHandler {
     }
 
     /// Create a 487 response for a cancelled INVITE with proper To-tag and Contact.
-    fn create_cancelled_response(&self, invite_req: &sip_core::Request) -> sip_core::Response {
+    ///
+    /// # Arguments
+    /// * `invite_req` - The original INVITE request
+    /// * `saved_tag` - Optional To-tag from earlier provisional responses (RFC 3261 §12.1.1)
+    fn create_cancelled_response(
+        &self,
+        invite_req: &sip_core::Request,
+        saved_tag: Option<&str>,
+    ) -> sip_core::Response {
         let mut response =
             sip_uas::UserAgentServer::create_response(invite_req, 487, "Request Terminated");
 
@@ -3322,10 +3338,12 @@ impl SipMessageHandler {
             }
         }
 
-        // Ensure To header has a tag; generate if missing
+        // Ensure To header has a tag; use saved tag or generate new one
         if let Some(to) = response.headers().get("To") {
             if !to.contains(";tag=") {
-                let tag = Uuid::new_v4().simple().to_string();
+                let tag = saved_tag
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
                 let new_to = SmolStr::new(format!("{};tag={}", to, tag));
 
                 // Reconstruct headers with updated To

@@ -1,0 +1,471 @@
+2026/01/09 12:27:28.695404 192.168.1.206:46293 -> 192.168.1.225:5060
+INVITE sip:alice@192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.206:37457;branch=z9hG4bK-524287-1---e30cc68a15f68004;rport
+Max-Forwards: 70
+Contact: <sip:bob@192.168.1.206:37457;transport=tcp>
+To: <sip:alice@192.168.1.225>
+From: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 INVITE
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Content-Type: application/sdp
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 199
+
+v=0
+o=Zoiper 0 1159415590 IN IP4 192.168.1.206
+s=Zoiper
+c=IN IP4 192.168.1.206
+t=0 0
+m=audio 54667 RTP/AVP 0 101 8 3
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=sendrecv
+a=rtcp-mux
+
+
+2026/01/09 12:27:28.696074 192.168.1.225:5060 -> 192.168.1.206:46293
+SIP/2.0 100 Trying
+Via: SIP/2.0/TCP 192.168.1.206:37457;branch=z9hG4bK-524287-1---e30cc68a15f68004;rport
+From: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 INVITE
+To: <sip:alice@192.168.1.225>;tag=a07df35aebff4a74ba5da7e3a1a2eb07
+Contact: <sip:fcp-test@192.168.1.225>
+Record-Route: <sip:fcp-test@192.168.1.225;lr>
+Allow: INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS
+Supported: 100rel, timer
+Content-Length: 0
+
+
+
+2026/01/09 12:27:28.824109 192.168.1.225:5060 -> 192.168.1.206:46293
+SIP/2.0 180 Ringing
+Via: SIP/2.0/TCP 192.168.1.206:37457;branch=z9hG4bK-524287-1---e30cc68a15f68004;rport
+From: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 INVITE
+To: <sip:alice@192.168.1.225>;tag=kuQt9tooa7
+Content-Length: 0
+
+
+
+2026/01/09 12:27:32.352485 192.168.1.225:5060 -> 192.168.1.206:46293
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.206:37457;branch=z9hG4bK-524287-1---e30cc68a15f68004;rport
+From: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 INVITE
+Contact: <sip:fcp-test@192.168.1.225>
+Content-Type: application/sdp
+To: <sip:alice@192.168.1.225>;tag=kuQt9tooa7
+Content-Length: 328
+
+v=0
+o=Z 0 568706435 IN IP4 192.168.1.81
+s=Z
+c=IN IP4 192.168.1.225
+t=0 0
+m=audio 19288 RTP/AVP 0 106 9 8 3 101 98
+a=rtpmap:106 opus/48000/2
+a=fmtp:106 sprop-maxcapturerate=16000; minptime=20; useinbandfec=1
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=rtpmap:98 telephone-event/48000
+a=fmtp:98 0-16
+a=sendrecv
+a=rtcp-mux
+
+
+2026/01/09 12:27:32.563141 192.168.1.206:37457 -> 192.168.1.225:5060
+ACK sip:fcp-test@192.168.1.225 SIP/2.0
+Via: SIP/2.0/UDP 192.168.1.206:37457;branch=z9hG4bK-524287-1---b3597d189212ae80;rport
+Max-Forwards: 70
+Contact: <sip:bob@192.168.1.206:37457;transport=TCP>
+To: <sip:alice@192.168.1.225>;tag=kuQt9tooa7
+From: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 ACK
+User-Agent: Zoiper v2.10.20.11
+Content-Length: 0
+
+
+
+2026/01/09 12:27:34.156643 192.168.1.225:40318 -> 192.168.1.206:37457
+BYE sip:bob@192.168.1.206:37457;transport=tcp SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKEzIyzVATeCi99DHf;rport
+From: <sip:fcp-test@192.168.1.225>;tag=kuQt9tooa7
+To: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 BYE
+Max-Forwards: 70
+Content-Length: 0
+
+
+
+2026/01/09 12:27:34.186700 192.168.1.206:37457 -> 192.168.1.225:40318
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKEzIyzVATeCi99DHf;rport=40318
+Contact: <sip:bob@192.168.1.206:37457;transport=tcp>
+To: <sip:bob@192.168.1.225;transport=TCP>;tag=95638c43
+From: <sip:fcp-test@192.168.1.225>;tag=kuQt9tooa7
+Call-ID: M-9oCiiE7kqzLjhDsL7koQ..
+CSeq: 1 BYE
+User-Agent: Zoiper v2.10.20.11
+Content-Length: 0
+
+
+
+2026/01/09 12:27:28.696319 192.168.1.225:57580 -> 192.168.1.81:60224
+INVITE sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKguQkn2JjgeErCJos;rport
+From: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+To: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 1 INVITE
+Contact: <sip:fcp-test@192.168.1.225:5060>
+Max-Forwards: 70
+User-Agent: siphon-rs/0.1.0
+Content-Type: application/sdp
+Content-Length: 189
+
+v=0
+o=Zoiper 0 1159415590 IN IP4 192.168.1.206
+s=Zoiper
+c=IN IP4 192.168.1.225
+t=0 0
+m=audio 19288 RTP/AVP 0 101 8 3
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=sendrecv
+a=rtcp-mux
+
+
+2026/01/09 12:27:28.780023 192.168.1.81:60224 -> 192.168.1.225:57580
+SIP/2.0 100 Trying
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKguQkn2JjgeErCJos;rport=57580
+To: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>
+From: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 1 INVITE
+Content-Length: 0
+
+
+
+2026/01/09 12:27:28.823723 192.168.1.81:60224 -> 192.168.1.225:57580
+SIP/2.0 180 Ringing
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKguQkn2JjgeErCJos;rport=57580
+Contact: <sip:alice@192.168.1.81:60224;transport=tcp>
+To: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>;tag=11694608
+From: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 1 INVITE
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Z 5.6.11 v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/01/09 12:27:32.351885 192.168.1.81:60224 -> 192.168.1.225:57580
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKguQkn2JjgeErCJos;rport=57580
+Contact: <sip:alice@192.168.1.81:60224;transport=tcp>
+To: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>;tag=11694608
+From: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 1 INVITE
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Content-Type: application/sdp
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Z 5.6.11 v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 341
+
+v=0
+o=Z 0 568706435 IN IP4 192.168.1.81
+s=Z
+c=IN IP4 192.168.1.81
+t=0 0
+m=audio 58232 RTP/AVP 0 106 9 8 3 101 98
+a=rtpmap:106 opus/48000/2
+a=fmtp:106 sprop-maxcapturerate=16000; minptime=20; useinbandfec=1
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=rtpmap:98 telephone-event/48000
+a=fmtp:98 0-16
+a=sendrecv
+a=rtcp-mux
+
+
+2026/01/09 12:27:32.352317 192.168.1.225:57580 -> 192.168.1.81:60224
+ACK sip:alice@192.168.1.81:60224;transport=tcp SIP/2.0
+From: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+To: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>;tag=11694608
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 1 ACK
+Max-Forwards: 70
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKslGD6BVFoQCeCq5n;rport
+Content-Length: 0
+
+
+
+2026/01/09 12:27:34.156179 192.168.1.81:60224 -> 192.168.1.225:5060
+BYE sip:fcp-test@192.168.1.225:5060 SIP/2.0
+Via: SIP/2.0/UDP 192.168.1.81:60224;branch=z9hG4bK-524287-1---f387686d0118a0c3;rport
+Max-Forwards: 70
+Contact: <sip:alice@192.168.1.81:60224>
+To: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+From: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>;tag=11694608
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 2 BYE
+User-Agent: Z 5.6.11 v2.10.20.11
+Content-Length: 0
+
+
+
+2026/01/09 12:27:34.156476 192.168.1.225:5060 -> 192.168.1.81:60224
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 192.168.1.81:60224;branch=z9hG4bK-524287-1---f387686d0118a0c3;rport
+From: <sip:alice@192.168.1.81:60224;rinstance=87b7f9d2f2c26f4a;transport=tcp>;tag=11694608
+Call-ID: gg5tLTl6wn9NXncR0WCI@localhost
+CSeq: 2 BYE
+To: "bob" <sip:bob@192.168.1.225>;tag=vg34DRHF74
+Contact: <sip:fcp-test@192.168.1.225>
+Content-Length: 0
+
+
+
+2026/01/09 12:27:37.435714 192.168.1.81:50848 -> 192.168.1.225:5060
+INVITE sip:bob@192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+Max-Forwards: 70
+Contact: <sip:alice@192.168.1.81:60224;transport=tcp>
+To: <sip:bob@192.168.1.225>
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 INVITE
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Content-Type: application/sdp
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Z 5.6.11 v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 341
+
+v=0
+o=Z 0 568715047 IN IP4 192.168.1.81
+s=Z
+c=IN IP4 192.168.1.81
+t=0 0
+m=audio 50637 RTP/AVP 0 106 101 98 9 8 3
+a=rtpmap:106 opus/48000/2
+a=fmtp:106 sprop-maxcapturerate=16000; minptime=20; useinbandfec=1
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=rtpmap:98 telephone-event/48000
+a=fmtp:98 0-16
+a=sendrecv
+a=rtcp-mux
+
+
+2026/01/09 12:27:37.436073 192.168.1.225:5060 -> 192.168.1.81:50848
+SIP/2.0 100 Trying
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 INVITE
+To: <sip:bob@192.168.1.225>;tag=4e6da63c815b4ee8879b3430f3816b1c
+Contact: <sip:fcp-test@192.168.1.225>
+Record-Route: <sip:fcp-test@192.168.1.225;lr>
+Allow: INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS
+Supported: 100rel, timer
+Content-Length: 0
+
+
+
+2026/01/09 12:27:37.636942 192.168.1.225:5060 -> 192.168.1.81:50848
+SIP/2.0 180 Ringing
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 INVITE
+To: <sip:bob@192.168.1.225>;tag=BWTBkjN8S9
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.260038 192.168.1.81:50848 -> 192.168.1.225:5060
+CANCEL sip:bob@192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+Max-Forwards: 70
+To: <sip:bob@192.168.1.225>
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 CANCEL
+User-Agent: Z 5.6.11 v2.10.20.11
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.260332 192.168.1.225:5060 -> 192.168.1.81:50848
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+To: <sip:bob@192.168.1.225>;tag=560f0e65480347e99120d3c7fddf87f6
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 CANCEL
+Allow: INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS
+Supported: 100rel, timer
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.316726 192.168.1.225:5060 -> 192.168.1.81:50848
+SIP/2.0 487 Request Terminated
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 INVITE
+To: <sip:bob@192.168.1.225>;tag=1b62bc049fa14886a0f836d74d1339e6
+Contact: <sip:fcp-test@192.168.1.225>
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.317131 192.168.1.81:50848 -> 192.168.1.225:5060
+ACK sip:bob@192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+Max-Forwards: 70
+To: <sip:bob@192.168.1.225>;tag=1b62bc049fa14886a0f836d74d1339e6
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 ACK
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.354164 192.168.1.225:5060 -> 192.168.1.81:50848
+SIP/2.0 487 Request Terminated
+Via: SIP/2.0/TCP 192.168.1.81:60224;branch=z9hG4bK-524287-1---504f2eefd1958ac2;rport
+From: <sip:alice@192.168.1.225;transport=TCP>;tag=da613320
+To: <sip:bob@192.168.1.225>;tag=f8f5ffb087fe4ef1b211473d2a3b07b2
+Call-ID: sr3cPoDVQIdqiQMEME4NrA..
+CSeq: 1 INVITE
+Contact: <sip:fcp-test@192.168.1.225>
+Record-Route: <sip:fcp-test@192.168.1.225;lr>
+Allow: INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS
+Supported: 100rel, timer
+Content-Length: 0
+
+
+
+2026/01/09 12:27:37.436331 192.168.1.225:40318 -> 192.168.1.206:37457
+INVITE sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 INVITE
+Contact: <sip:fcp-test@192.168.1.225:5060>
+Max-Forwards: 70
+User-Agent: siphon-rs/0.1.0
+Content-Type: application/sdp
+Content-Length: 328
+
+v=0
+o=Z 0 568715047 IN IP4 192.168.1.81
+s=Z
+c=IN IP4 192.168.1.225
+t=0 0
+m=audio 19394 RTP/AVP 0 106 101 98 9 8 3
+a=rtpmap:106 opus/48000/2
+a=fmtp:106 sprop-maxcapturerate=16000; minptime=20; useinbandfec=1
+a=rtpmap:101 telephone-event/8000
+a=fmtp:101 0-16
+a=rtpmap:98 telephone-event/48000
+a=fmtp:98 0-16
+a=sendrecv
+a=rtcp-mux
+
+
+2026/01/09 12:27:37.632823 192.168.1.206:37457 -> 192.168.1.225:40318
+SIP/2.0 100 Trying
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport=40318
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 INVITE
+Content-Length: 0
+
+
+
+2026/01/09 12:27:37.636736 192.168.1.206:37457 -> 192.168.1.225:40318
+SIP/2.0 180 Ringing
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport=40318
+Contact: <sip:bob@192.168.1.206:37457;transport=tcp>
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>;tag=0b22b503
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 INVITE
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.260416 192.168.1.225:40318 -> 192.168.1.206:37457
+CANCEL sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 CANCEL
+Max-Forwards: 70
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.348520 192.168.1.206:37457 -> 192.168.1.225:40318
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport=40318
+Contact: <sip:bob@192.168.1.206:37457;transport=tcp>
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>;tag=0b22b503
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 CANCEL
+User-Agent: Zoiper v2.10.20.11
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.353890 192.168.1.206:37457 -> 192.168.1.225:40318
+SIP/2.0 487 Request Terminated
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport=40318
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>;tag=0b22b503
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 INVITE
+User-Agent: Zoiper v2.10.20.11
+Content-Length: 0
+
+
+
+2026/01/09 12:27:39.354065 192.168.1.225:40318 -> 192.168.1.206:37457
+ACK sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp SIP/2.0
+From: "alice" <sip:alice@192.168.1.225>;tag=vg34DRHF74
+To: <sip:bob@192.168.1.206:37457;rinstance=010d69cc70f65bd5;transport=tcp>;tag=0b22b503
+Call-ID: a7xPpTi0RBT8iQrFLAt5@localhost
+CSeq: 1 ACK
+Max-Forwards: 70
+Via: SIP/2.0/TCP 192.168.1.225:5060;branch=z9hG4bKkog0Nfly8UandjHr;rport
+Content-Length: 0
+
+
+
