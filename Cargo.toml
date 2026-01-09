@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-storage-sqlite",
+    "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb",
 ]
 exclude = [
     "external/siphon-rs",
@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.2.1"
+version = "0.3.0"
 license = "MIT OR Apache-2.0"
 authors = ["FCP Team"]
 repository = "https://github.com/thevoiceguy/fcp.git"
