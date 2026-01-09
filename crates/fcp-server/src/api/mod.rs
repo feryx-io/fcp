@@ -8,8 +8,7 @@ pub mod validation;
 
 use axum::{
     http::{header, Method},
-    middleware,
-    Router,
+    middleware, Router,
 };
 use fcp_core::ApiConfig;
 use state::ApiState;
