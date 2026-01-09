@@ -25,7 +25,8 @@ pub use crate::error::{
 pub use crate::identifiers::*;
 pub use crate::service::{Service, ServiceManager};
 pub use crate::storage::{
-    CredentialStore, FileBackedStorage, MediaPreferences, Registration, RegistrationStore, User,
+    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, FileBackedStorage,
+    HangupCause, HangupParty, MediaPreferences, Registration, RegistrationStore, User,
     UserFileEntry,
 };
 pub use crate::transport::{

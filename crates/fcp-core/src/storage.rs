@@ -357,6 +357,189 @@ pub trait RegistrationStore: Send + Sync {
     async fn cleanup_expired(&self) -> Result<usize>;
 }
 
+/// Call disposition (answered, busy, failed, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallDisposition {
+    /// Call was answered (200 OK)
+    Answered,
+    /// Callee was busy (486 Busy)
+    Busy,
+    /// Call was not answered (408/480)
+    NoAnswer,
+    /// Call failed (4xx/5xx/6xx)
+    Failed,
+    /// Call was cancelled (487/CANCEL)
+    Cancelled,
+}
+
+/// Hangup cause codes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HangupCause {
+    /// Normal call clearing (BYE)
+    NormalClearing,
+    /// User busy (486)
+    UserBusy,
+    /// No answer (408/480)
+    NoAnswer,
+    /// Call rejected (603/488/603)
+    CallRejected,
+    /// Request timeout (408)
+    Timeout,
+    /// Network/transport error
+    NetworkError,
+    /// Internal server error (500)
+    InternalError,
+    /// Other cause with SIP status code
+    Other(u16),
+}
+
+/// Which party hung up the call
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HangupParty {
+    /// Caller (A-leg) hung up
+    Caller,
+    /// Callee (B-leg) hung up
+    Callee,
+    /// System terminated the call
+    System,
+}
+
+/// Call Detail Record (CDR)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallDetailRecord {
+    /// Unique call identifier (FCP internal)
+    pub call_id: crate::CallId,
+
+    /// Tenant ID for multi-tenancy
+    pub tenant_id: crate::TenantId,
+
+    /// SIP Call-ID header
+    pub sip_call_id: String,
+
+    /// Caller information
+    pub from_uri: String,
+    pub from_display_name: Option<String>,
+
+    /// Callee information
+    pub to_uri: String,
+    pub to_display_name: Option<String>,
+
+    /// Call timestamps
+    #[serde(with = "system_time_serde")]
+    pub start_time: SystemTime,
+    #[serde(with = "optional_system_time_serde")]
+    pub answer_time: Option<SystemTime>,
+    #[serde(with = "optional_system_time_serde")]
+    pub end_time: Option<SystemTime>,
+
+    /// Call duration (milliseconds)
+    pub setup_duration_ms: Option<u64>,
+    pub call_duration_ms: Option<u64>,
+    pub total_duration_ms: Option<u64>,
+
+    /// Call disposition
+    pub disposition: CallDisposition,
+    pub hangup_cause: HangupCause,
+    pub hangup_party: Option<HangupParty>,
+
+    /// SIP response codes
+    pub sip_status_code: Option<u16>,
+    pub sip_reason: Option<String>,
+
+    /// Routing information (placeholders for future use)
+    pub route_id: Option<String>,
+    pub gateway_id: Option<String>,
+
+    /// Media information
+    pub media_anchored: bool,
+    pub codec_a_leg: Option<String>,
+    pub codec_b_leg: Option<String>,
+    pub rtp_packets_sent: Option<u64>,
+    pub rtp_packets_received: Option<u64>,
+    pub rtp_bytes_sent: Option<u64>,
+    pub rtp_bytes_received: Option<u64>,
+
+    /// Recording
+    pub recording_url: Option<String>,
+
+    /// Cost (for billing)
+    pub cost: Option<f64>,
+    pub currency: Option<String>,
+
+    /// Custom fields (JSON)
+    pub custom_data: Option<serde_json::Value>,
+}
+
+/// CDR query filter
+#[derive(Debug, Clone, Default)]
+pub struct CdrQuery {
+    /// Filter by tenant ID
+    pub tenant_id: Option<crate::TenantId>,
+    /// Filter by call ID
+    pub call_id: Option<crate::CallId>,
+    /// Filter by from URI (caller)
+    pub from_uri: Option<String>,
+    /// Filter by to URI (callee)
+    pub to_uri: Option<String>,
+    /// Filter by start time range
+    pub start_time_from: Option<SystemTime>,
+    pub start_time_to: Option<SystemTime>,
+    /// Filter by disposition
+    pub disposition: Option<CallDisposition>,
+    /// Limit results
+    pub limit: Option<usize>,
+    /// Offset for pagination
+    pub offset: Option<usize>,
+}
+
+/// Storage backend for Call Detail Records
+#[async_trait]
+pub trait CdrStore: Send + Sync {
+    /// Insert a new CDR
+    async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()>;
+
+    /// Get a CDR by call ID
+    async fn get_cdr(&self, call_id: &crate::CallId) -> Result<Option<CallDetailRecord>>;
+
+    /// Query CDRs with filters
+    async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>>;
+
+    /// Get CDR count for a query
+    async fn count_cdrs(&self, query: CdrQuery) -> Result<usize>;
+}
+
+/// Serde helper for Optional<SystemTime>
+mod optional_system_time_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    pub fn serialize<S>(time: &Option<SystemTime>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match time {
+            Some(t) => {
+                let duration = t
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(serde::ser::Error::custom)?;
+                Some(duration.as_secs()).serialize(serializer)
+            }
+            None => None::<u64>.serialize(serializer),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SystemTime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secs = Option::<u64>::deserialize(deserializer)?;
+        Ok(secs.map(|s| UNIX_EPOCH + std::time::Duration::from_secs(s)))
+    }
+}
+
 /// In-memory storage with JSON file persistence.
 ///
 /// This is the default storage implementation that keeps data in memory
