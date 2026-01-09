@@ -146,14 +146,17 @@ fi
 # Step 7: Start recording
 echo
 echo "Step 7: Starting recording..."
-RECORDING_PATH="/tmp/fcp_test_recording_$(date +%s).wav"
+# Recording path must be relative; files are saved under ./recordings
+RECORDING_FILE="fcp_test_recording_$(date +%s).wav"
+RECORDING_PATH="$RECORDING_FILE"
+RECORDING_FULL_PATH="recordings/$RECORDING_FILE"
 
 RESPONSE=$(curl -s -X POST "$API_BASE/calls/$CALL_ID/recording/start" \
     -H "Content-Type: application/json" \
     -d "{\"path\": \"$RECORDING_PATH\"}")
 
 if echo "$RESPONSE" | grep -q "Recording started"; then
-    print_success "Recording started to: $RECORDING_PATH"
+    print_success "Recording started to: $RECORDING_FULL_PATH"
 else
     print_error "Failed to start recording"
     echo "Response: $RESPONSE"
@@ -187,10 +190,10 @@ fi
 echo
 echo "Step 10: Verifying recording..."
 
-if [ -f "$RECORDING_PATH" ]; then
-    FILE_SIZE=$(stat -f%z "$RECORDING_PATH" 2>/dev/null || stat -c%s "$RECORDING_PATH" 2>/dev/null)
+if [ -f "$RECORDING_FULL_PATH" ]; then
+    FILE_SIZE=$(stat -f%z "$RECORDING_FULL_PATH" 2>/dev/null || stat -c%s "$RECORDING_FULL_PATH" 2>/dev/null)
     if [ "$FILE_SIZE" -gt 44 ]; then
-        print_success "Recording file created: $RECORDING_PATH"
+        print_success "Recording file created: $RECORDING_FULL_PATH"
         print_success "File size: $FILE_SIZE bytes"
         echo
         echo "======================================"
@@ -198,19 +201,19 @@ if [ -f "$RECORDING_PATH" ]; then
         echo "======================================"
         echo
         echo "To play the recording:"
-        echo "  aplay $RECORDING_PATH"
+        echo "  aplay $RECORDING_FULL_PATH"
         echo "  # or"
-        echo "  ffplay $RECORDING_PATH"
+        echo "  ffplay $RECORDING_FULL_PATH"
         echo
         echo "To convert to MP3:"
-        echo "  ffmpeg -i $RECORDING_PATH ${RECORDING_PATH%.wav}.mp3"
+        echo "  ffmpeg -i $RECORDING_FULL_PATH ${RECORDING_FULL_PATH%.wav}.mp3"
         echo
     else
         print_error "Recording file is too small (only $FILE_SIZE bytes)"
         print_info "The recording may be empty or corrupted"
     fi
 else
-    print_error "Recording file not found at: $RECORDING_PATH"
+    print_error "Recording file not found at: $RECORDING_FULL_PATH"
 fi
 
 echo
