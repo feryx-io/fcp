@@ -899,13 +899,17 @@ impl SipMessageHandler {
             "INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS";
         const SUPPORTED: &str = "100rel, timer";
 
-        // Ensure To-tag present
-        if let Some(to) = response.headers().get("To") {
-            if !to.contains(";tag=") {
-                let tag = Uuid::new_v4().simple().to_string();
-                let new_to = SmolStr::new(format!("{};tag={}", to, tag));
-                response.headers_mut().remove("To");
-                response.headers_mut().push(SmolStr::new("To"), new_to);
+        // Ensure To-tag present for dialog-establishing responses
+        // RFC 3261 §12.1.2: Only responses >= 101 establish dialogs (100 Trying does not)
+        let status_code = response.start_line().code();
+        if status_code >= 101 {
+            if let Some(to) = response.headers().get("To") {
+                if !to.contains(";tag=") {
+                    let tag = Uuid::new_v4().simple().to_string();
+                    let new_to = SmolStr::new(format!("{};tag={}", to, tag));
+                    response.headers_mut().remove("To");
+                    response.headers_mut().push(SmolStr::new("To"), new_to);
+                }
             }
         }
 
