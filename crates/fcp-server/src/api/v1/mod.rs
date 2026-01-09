@@ -2,6 +2,7 @@
 
 pub mod debug;
 pub mod media;
+pub mod metrics;
 pub mod registrations;
 pub mod system;
 pub mod users;
@@ -42,8 +43,13 @@ pub fn router() -> Router<ApiState> {
             "/registrations/:aor/:contact",
             delete(registrations::delete_registration),
         )
-        // Media and recording endpoints
-        .route("/calls", get(media::list_calls))
+        // Call management endpoints
+        .route("/calls", get(media::list_calls).post(media::originate_call))
+        .route(
+            "/calls/:call_id",
+            get(media::get_call).delete(media::hangup_call),
+        )
+        // Recording endpoints
         .route(
             "/calls/:call_id/recording/start",
             post(media::start_recording),

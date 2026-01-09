@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::CallId;
+use fcp_sip::call::CallId;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -31,9 +31,12 @@ pub async fn start_recording(
     Path(call_id_str): Path<String>,
     Json(req): Json<StartRecordingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Parse call ID
-    let call_id = CallId::from_str(&call_id_str)
+    // Parse call ID (sip-specific)
+    let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    // Convert to fcp_core::CallId for media manager
+    let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
 
     // Get media manager
     let media_manager = state
@@ -43,7 +46,7 @@ pub async fn start_recording(
 
     // Start recording
     let result: Result<(), fcp_media::Error> = media_manager
-        .start_recording(&call_id, req.path.clone())
+        .start_recording(&core_call_id, req.path.clone())
         .await;
 
     result.map_err(|e| ApiError::NotFound(format!("Failed to start recording: {}", e)))?;
@@ -63,9 +66,12 @@ pub async fn stop_recording(
     State(state): State<ApiState>,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Parse call ID
-    let call_id = CallId::from_str(&call_id_str)
+    // Parse call ID (sip-specific)
+    let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    // Convert to fcp_core::CallId for media manager
+    let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
 
     // Get media manager
     let media_manager = state
@@ -74,7 +80,7 @@ pub async fn stop_recording(
         .ok_or_else(|| ApiError::NotFound("Media manager not available".into()))?;
 
     // Stop recording
-    let result: Result<(), fcp_media::Error> = media_manager.stop_recording(&call_id).await;
+    let result: Result<(), fcp_media::Error> = media_manager.stop_recording(&core_call_id).await;
 
     result.map_err(|e| ApiError::NotFound(format!("Failed to stop recording: {}", e)))?;
 
@@ -88,20 +94,121 @@ pub async fn stop_recording(
 }
 
 #[derive(Debug, Serialize)]
-pub struct CallSessionInfo {
-    pub call_id: String,
-    pub dialog_id: String,
+pub struct CallInfo {
+    pub id: String,
     pub state: String,
-    pub rtp_port: u16,
-    pub rtcp_port: u16,
+    pub from_uri: String,
+    pub to_uri: String,
+    pub from_display_name: Option<String>,
+    pub to_display_name: Option<String>,
+    pub created_at: String,
+    pub established_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub duration_seconds: Option<u64>,
+    pub media_anchored: bool,
+    pub failure_reason: Option<String>,
+}
+
+impl CallInfo {
+    fn from_call(call: &fcp_sip::call::Call) -> Self {
+        Self {
+            id: call.id.to_string(),
+            state: format!("{:?}", call.state),
+            from_uri: call.a_leg.remote_uri.clone(),
+            to_uri: call.b_leg.as_ref()
+                .map(|leg| leg.remote_uri.clone())
+                .unwrap_or_else(|| call.callee().unwrap_or("").to_string()),
+            from_display_name: call.a_leg.remote_display_name.clone(),
+            to_display_name: call.b_leg.as_ref()
+                .and_then(|leg| leg.remote_display_name.clone()),
+            created_at: format!("{:?}", call.created_at),
+            established_at: call.established_at.map(|t| format!("{:?}", t)),
+            ended_at: call.ended_at.map(|t| format!("{:?}", t)),
+            duration_seconds: call.duration().map(|d| d.as_secs()),
+            media_anchored: call.media_anchored,
+            failure_reason: call.failure_reason.clone(),
+        }
+    }
 }
 
 /// GET /v1/calls
 /// List active calls
-pub async fn list_calls(State(_state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
-    // For now, return empty list - this would need to track active calls
-    // In a real implementation, we'd query the media manager for active sessions
-    let calls: Vec<CallSessionInfo> = vec![];
+pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+    let calls = state.call_manager.active_calls();
 
-    Ok(Json(calls))
+    let call_infos: Vec<CallInfo> = calls
+        .iter()
+        .map(CallInfo::from_call)
+        .collect();
+
+    Ok(Json(call_infos))
+}
+
+/// GET /v1/calls/:call_id
+/// Get details of a specific call
+pub async fn get_call(
+    State(state): State<ApiState>,
+    Path(call_id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let call_id = CallId::from_str(&call_id_str)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    let call = state
+        .call_manager
+        .get_call(&call_id)
+        .ok_or_else(|| ApiError::NotFound(format!("Call not found: {}", call_id_str)))?;
+
+    Ok(Json(CallInfo::from_call(&call)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OriginateCallRequest {
+    pub from: String,
+    pub to: String,
+    pub from_display_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OriginateCallResponse {
+    pub call_id: String,
+    pub status: String,
+}
+
+/// POST /v1/calls
+/// Originate a new call
+pub async fn originate_call(
+    State(_state): State<ApiState>,
+    Json(_req): Json<OriginateCallRequest>,
+) -> Result<Json<OriginateCallResponse>, ApiError> {
+    // TODO: Implement call origination
+    // This requires the SIP handler to expose a method to initiate outbound calls
+    // For now, return "not implemented"
+    Err(ApiError::NotFound("Call origination not yet implemented - requires handler enhancement".into()))
+}
+
+/// DELETE /v1/calls/:call_id
+/// Hangup an active call
+pub async fn hangup_call(
+    State(state): State<ApiState>,
+    Path(call_id_str): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let call_id = CallId::from_str(&call_id_str)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    // Terminate the call
+    state
+        .call_manager
+        .terminate_call(&call_id, Some("Hungup via API".to_string()))
+        .map_err(|e| ApiError::NotFound(format!("Failed to hangup call: {}", e)))?;
+
+    // TODO: Send BYE requests on both legs
+    // This requires access to the SIP handler to send BYE
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "call_id": call_id_str,
+            "status": "terminated"
+        })),
+    ))
 }

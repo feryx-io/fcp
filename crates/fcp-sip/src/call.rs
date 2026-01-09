@@ -44,6 +44,14 @@ impl std::fmt::Display for CallId {
     }
 }
 
+impl std::str::FromStr for CallId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
+    }
+}
+
 /// State of a call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallState {

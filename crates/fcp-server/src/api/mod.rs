@@ -25,8 +25,10 @@ pub fn create_router(state: ApiState, api_config: &ApiConfig) -> Router {
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
-    // Build the API router
-    let mut router = Router::new().nest("/api/v1", v1::router());
+    // Build the API router with metrics at root level (no auth required for metrics)
+    let mut router = Router::new()
+        .route("/metrics", axum::routing::get(v1::metrics::prometheus_metrics))
+        .nest("/api/v1", v1::router());
 
     // Conditionally apply authentication middleware
     if api_config.auth_enabled {
