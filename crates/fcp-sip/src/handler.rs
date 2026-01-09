@@ -1495,9 +1495,21 @@ impl SipMessageHandler {
                 }
             }
 
-            // Create confirmed B-leg dialog from the 200 OK response
-            // CRITICAL: The CallHandle's dialog field has "pending" as remote tag (bug in siphon-rs)
-            // We must create a new confirmed dialog from the 200 OK response to get the correct To tag
+            // ┌─────────────────────────────────────────────────────────────────────────┐
+            // │ WORKAROUND: Create confirmed B-leg dialog from 200 OK response         │
+            // ├─────────────────────────────────────────────────────────────────────────┤
+            // │ BUG: siphon-rs CallHandle.dialog uses a placeholder with "pending" tag  │
+            // │      The dialog field is never updated when the 200 OK arrives.         │
+            // │                                                                          │
+            // │ IMPACT: When Alice hangs up, BYE to Bob has tag=pending causing 481     │
+            // │         (Call/Transaction Does Not Exist). Bob's leg stays connected.   │
+            // │                                                                          │
+            // │ SOLUTION: Reconstruct confirmed dialog from 200 OK using Dialog::new_uac│
+            // │           This extracts the correct To tag from the response headers.   │
+            // │                                                                          │
+            // │ TODO: Remove this workaround when siphon-rs CallHandle properly updates │
+            // │       its dialog field upon receiving 200 OK responses.                 │
+            // └─────────────────────────────────────────────────────────────────────────┘
 
             // Extract local URI (B2BUA's URI) from the From header in 200 OK response
             // The From header in the response is the same as the request, so it's the B2BUA's URI
@@ -1511,15 +1523,7 @@ impl SipMessageHandler {
                 }
             };
 
-            let from_uri_str = from_header
-                .split('<')
-                .nth(1)
-                .and_then(|s| s.split('>').next())
-                .or_else(|| {
-                    // No angle brackets, extract URI before ;tag=
-                    from_header.split(';').next()
-                })
-                .unwrap_or(&*from_header);
+            let from_uri_str = extract_uri_from_header(from_header);
 
             let local_uri = match sip_core::SipUri::parse(from_uri_str) {
                 Ok(uri) => uri,
@@ -1546,12 +1550,7 @@ impl SipMessageHandler {
                 }
             };
 
-            let to_uri_str = to_header
-                .split('<')
-                .nth(1)
-                .and_then(|s| s.split('>').next())
-                .or_else(|| to_header.split(';').next())
-                .unwrap_or(&*to_header);
+            let to_uri_str = extract_uri_from_header(to_header);
 
             let remote_uri = match sip_core::SipUri::parse(to_uri_str) {
                 Ok(uri) => uri,
@@ -1582,7 +1581,10 @@ impl SipMessageHandler {
             if let Some(to) = b_leg_final.headers().get("To") {
                 // Strip the tag from To header for the request reconstruction
                 let to_without_tag = to.split(';').next().unwrap_or(&*to);
-                let _ = headers.push(smol_str::SmolStr::new("To"), smol_str::SmolStr::new(to_without_tag));
+                let _ = headers.push(
+                    smol_str::SmolStr::new("To"),
+                    smol_str::SmolStr::new(to_without_tag),
+                );
             }
             // Copy CSeq from the response
             if let Some(cseq) = b_leg_final.headers().get("CSeq") {
@@ -1591,7 +1593,10 @@ impl SipMessageHandler {
             // Copy Record-Route from the response if present (for route set)
             for hdr in b_leg_final.headers().iter() {
                 if hdr.name().eq_ignore_ascii_case("Record-Route") {
-                    let _ = headers.push(smol_str::SmolStr::new("Record-Route"), hdr.value_smol().clone());
+                    let _ = headers.push(
+                        smol_str::SmolStr::new("Record-Route"),
+                        hdr.value_smol().clone(),
+                    );
                 }
             }
 
@@ -1599,26 +1604,24 @@ impl SipMessageHandler {
                 sip_core::RequestLine::new(sip_core::Method::Invite, remote_uri.clone()),
                 headers,
                 bytes::Bytes::new(),
-            ).expect("Failed to create minimal INVITE request");
+            )
+            .expect("Failed to create minimal INVITE request");
 
             // Create confirmed dialog from reconstructed INVITE and 200 OK response
-            let b_leg_dialog = match sip_dialog::Dialog::new_uac(
-                &invite_req,
-                &b_leg_final,
-                local_uri,
-                remote_uri,
-            ) {
-                Some(dialog) => dialog,
-                None => {
-                    error!(
-                        call_id = %call_id,
-                        "Failed to create confirmed dialog from 200 OK response"
-                    );
-                    let response = self.create_simple_response(&request, 500, "Internal Error");
-                    a_leg_handle.send_final(response).await;
-                    return Ok(());
-                }
-            };
+            let b_leg_dialog =
+                match sip_dialog::Dialog::new_uac(&invite_req, &b_leg_final, local_uri, remote_uri)
+                {
+                    Some(dialog) => dialog,
+                    None => {
+                        error!(
+                            call_id = %call_id,
+                            "Failed to create confirmed dialog from 200 OK response"
+                        );
+                        let response = self.create_simple_response(&request, 500, "Internal Error");
+                        a_leg_handle.send_final(response).await;
+                        return Ok(());
+                    }
+                };
 
             debug!(
                 call_id = %call_id,
@@ -4585,6 +4588,31 @@ fn extract_from_display_name(request: &sip_core::Request) -> Option<String> {
     }
 
     None
+}
+
+/// Extracts the bare URI string from a SIP header value.
+///
+/// This helper handles both formats:
+/// - Name-addr format: `"Display Name" <sip:user@host>;tag=xyz` → `sip:user@host`
+/// - Addr-spec format: `sip:user@host;tag=xyz` → `sip:user@host`
+///
+/// The function strips angle brackets, display names, and parameters (like ;tag=).
+///
+/// # Arguments
+/// * `header_value` - The raw header value (From, To, Contact, etc.)
+///
+/// # Returns
+/// The bare URI string without brackets or parameters
+fn extract_uri_from_header(header_value: &str) -> &str {
+    header_value
+        .split('<')
+        .nth(1)
+        .and_then(|s| s.split('>').next())
+        .or_else(|| {
+            // No angle brackets, extract URI before parameters
+            header_value.split(';').next()
+        })
+        .unwrap_or(header_value)
 }
 
 #[cfg(test)]
