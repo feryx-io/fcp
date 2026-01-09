@@ -40,14 +40,63 @@ bind_addr = "0.0.0.0:5063"
 # cert_path = "/path/to/cert.pem"
 # key_path = "/path/to/key.pem"
 
+# Storage Backend Configuration
+# Supports: sqlite (default), postgres, mysql, mongodb
+# Note: Build fcp-server with appropriate features to enable backends
+#   - SQLite: enabled by default
+#   - PostgreSQL: --features storage-postgres
+#   - MySQL: --features storage-mysql
+#   - MongoDB: --features storage-mongodb
+#   - All backends: --features storage-all
+
 [storage]
+# SQLite (default) - File-based, great for development and single-node
 backend = "sqlite"
+connection_string = "sqlite://./data/fcp.db"
+max_connections = 10
+connection_timeout = "30s"
 
-[storage.sqlite]
-path = "./fcp.db"
+# PostgreSQL - Production-ready with ACID guarantees
+# Requires: cargo build --features storage-postgres
+# Setup: createdb fcp && psql fcp < crates/fcp-storage-postgres/migrations/001_initial_schema.sql
+# [storage]
+# backend = "postgres"
+# connection_string = "postgresql://username:password@localhost:5432/fcp"
+# max_connections = 20
+# connection_timeout = "30s"
 
-# [storage.postgres]
-# connection_string = "postgresql://user:password@localhost/fcp"
+# MySQL - Compatible with existing MySQL infrastructure
+# Requires: cargo build --features storage-mysql
+# Setup: mysql -u root -p -e "CREATE DATABASE fcp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+#        mysql -u root -p fcp < crates/fcp-storage-mysql/migrations/001_initial_schema.sql
+# [storage]
+# backend = "mysql"
+# connection_string = "mysql://username:password@localhost:3306/fcp"
+# max_connections = 20
+# connection_timeout = "30s"
+
+# MongoDB - NoSQL for large-scale deployments
+# Requires: cargo build --features storage-mongodb
+# Setup: Collections and indexes are created automatically on first startup
+# [storage]
+# backend = "mongodb"
+# connection_string = "mongodb://username:password@localhost:27017/fcp"
+# max_connections = 20
+# connection_timeout = "30s"
+
+# MongoDB with authentication and options
+# [storage]
+# backend = "mongodb"
+# connection_string = "mongodb://admin:password@localhost:27017/fcp?authSource=admin"
+# max_connections = 20
+# connection_timeout = "30s"
+
+# MongoDB Atlas (cloud)
+# [storage]
+# backend = "mongodb"
+# connection_string = "mongodb+srv://username:password@cluster0.mongodb.net/fcp"
+# max_connections = 20
+# connection_timeout = "30s"
 
 [api]
 enabled = true
