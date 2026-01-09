@@ -8,8 +8,13 @@ repository.workspace = true
 description = "FCP server binary - main entry point for the FCP platform"
 
 [features]
-default = ["tls"]
+default = ["tls", "storage-sqlite"]
 tls = ["fcp-runtime/tls"]
+storage-sqlite = ["fcp-storage-sqlite"]
+storage-postgres = ["fcp-storage-postgres"]
+storage-mysql = ["fcp-storage-mysql"]
+storage-mongodb = ["fcp-storage-mongodb"]
+storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
 
 [[bin]]
 name = "fcp-server"
@@ -21,6 +26,12 @@ fcp-core = { path = "../fcp-core" }
 fcp-runtime = { path = "../fcp-runtime" }
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
+
+# Storage backends (optional)
+fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
+fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
+fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
+fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

@@ -13,6 +13,7 @@ use tracing::info;
 mod api;
 mod cli;
 mod config;
+mod storage;
 
 use cli::Cli;
 use config::load_config;
@@ -30,9 +31,29 @@ async fn main() -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "Starting FCP server");
 
-    // Build runtime
-    let mut runtime = Runtime::builder()
-        .with_config(config)
+    // Initialize storage backend if registrar is enabled
+    let storage = if config.registrar.enabled {
+        Some(
+            storage::initialize_storage(&config.storage)
+                .await
+                .context("Failed to initialize storage backend")?,
+        )
+    } else {
+        None
+    };
+
+    // Build runtime with storage
+    let runtime = Runtime::builder()
+        .with_config(config);
+
+    // Add storage if available
+    let runtime = if let Some(storage) = storage {
+        runtime.with_storage(storage)
+    } else {
+        runtime
+    };
+
+    let mut runtime = runtime
         .build()
         .await
         .context("Failed to build runtime")?;

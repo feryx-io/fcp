@@ -735,6 +735,31 @@ impl RegistrationStore for FileBackedStorage {
     }
 }
 
+#[async_trait]
+impl CdrStore for FileBackedStorage {
+    async fn insert_cdr(&self, _cdr: CallDetailRecord) -> Result<()> {
+        // FileBackedStorage doesn't persist CDRs - this is a no-op
+        // For production use cases, use a proper database backend (PostgreSQL, MySQL, MongoDB)
+        warn!("FileBackedStorage does not persist CDRs - use a database backend for production");
+        Ok(())
+    }
+
+    async fn get_cdr(&self, _call_id: &crate::CallId) -> Result<Option<CallDetailRecord>> {
+        // FileBackedStorage doesn't store CDRs
+        Ok(None)
+    }
+
+    async fn query_cdrs(&self, _query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
+        // FileBackedStorage doesn't store CDRs
+        Ok(Vec::new())
+    }
+
+    async fn count_cdrs(&self, _query: CdrQuery) -> Result<usize> {
+        // FileBackedStorage doesn't store CDRs
+        Ok(0)
+    }
+}
+
 /// Serde helper for SystemTime
 mod system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -756,6 +781,112 @@ mod system_time_serde {
     {
         let secs = u64::deserialize(deserializer)?;
         Ok(UNIX_EPOCH + std::time::Duration::from_secs(secs))
+    }
+}
+
+/// Dynamic storage wrapper that can hold any storage backend implementing the required traits.
+///
+/// This allows the runtime to work with different storage backends (SQLite, PostgreSQL, MySQL, MongoDB)
+/// without being tied to a specific implementation at compile time.
+#[derive(Clone)]
+pub struct DynStorage {
+    credential_store: Arc<dyn CredentialStore>,
+    registration_store: Arc<dyn RegistrationStore>,
+    cdr_store: Arc<dyn CdrStore>,
+}
+
+impl DynStorage {
+    /// Create a new DynStorage from individual trait objects.
+    pub fn new(
+        credential_store: Arc<dyn CredentialStore>,
+        registration_store: Arc<dyn RegistrationStore>,
+        cdr_store: Arc<dyn CdrStore>,
+    ) -> Self {
+        Self {
+            credential_store,
+            registration_store,
+            cdr_store,
+        }
+    }
+
+    /// Create a new DynStorage from a storage backend that implements all three traits.
+    ///
+    /// This is a convenience method for backends like FileBackedStorage that implement
+    /// all storage traits.
+    pub fn from_all_in_one<T>(storage: Arc<T>) -> Self
+    where
+        T: CredentialStore + RegistrationStore + CdrStore + 'static,
+    {
+        Self {
+            credential_store: storage.clone(),
+            registration_store: storage.clone(),
+            cdr_store: storage,
+        }
+    }
+}
+
+#[async_trait]
+impl CredentialStore for DynStorage {
+    async fn get_user(&self, username: &str) -> Result<Option<User>> {
+        self.credential_store.get_user(username).await
+    }
+
+    async fn put_user(&self, user: User) -> Result<()> {
+        self.credential_store.put_user(user).await
+    }
+
+    async fn delete_user(&self, username: &str) -> Result<()> {
+        self.credential_store.delete_user(username).await
+    }
+
+    async fn list_users(&self) -> Result<Vec<User>> {
+        self.credential_store.list_users().await
+    }
+}
+
+#[async_trait]
+impl RegistrationStore for DynStorage {
+    async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
+        self.registration_store.get_registrations(aor).await
+    }
+
+    async fn put_registration(&self, registration: Registration) -> Result<()> {
+        self.registration_store.put_registration(registration).await
+    }
+
+    async fn delete_registration(&self, aor: &str, contact: &str) -> Result<()> {
+        self.registration_store
+            .delete_registration(aor, contact)
+            .await
+    }
+
+    async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
+        self.registration_store
+            .delete_all_registrations(aor)
+            .await
+    }
+
+    async fn cleanup_expired(&self) -> Result<usize> {
+        self.registration_store.cleanup_expired().await
+    }
+}
+
+#[async_trait]
+impl CdrStore for DynStorage {
+    async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
+        self.cdr_store.insert_cdr(cdr).await
+    }
+
+    async fn get_cdr(&self, call_id: &crate::CallId) -> Result<Option<CallDetailRecord>> {
+        self.cdr_store.get_cdr(call_id).await
+    }
+
+    async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
+        self.cdr_store.query_cdrs(query).await
+    }
+
+    async fn count_cdrs(&self, query: CdrQuery) -> Result<usize> {
+        self.cdr_store.count_cdrs(query).await
     }
 }
 

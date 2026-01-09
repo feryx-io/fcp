@@ -98,6 +98,151 @@ export FCP_NODE_NAME=my-node
 export FCP_BIND_ADDR=0.0.0.0:5060
 ```
 
+## Storage Backends
+
+FCP Server supports multiple storage backends for user credentials, SIP registrations, and call detail records (CDRs). The storage backend is configured via the `[storage]` section in the configuration file.
+
+### Available Backends
+
+- **SQLite** (default): File-based database, great for development and single-node deployments
+- **PostgreSQL**: Production-ready relational database with ACID guarantees
+- **MySQL**: Popular relational database, compatible with MariaDB
+- **MongoDB**: NoSQL document database for large-scale deployments
+
+### Configuration
+
+Storage backends are configured in the `[storage]` section of `fcp.toml`:
+
+```toml
+[storage]
+backend = "sqlite"  # Options: "sqlite", "postgres", "mysql", "mongodb"
+connection_string = "sqlite://./data/fcp.db"
+max_connections = 10
+connection_timeout = "30s"
+```
+
+### SQLite Configuration
+
+Default backend, requires no additional setup:
+
+```toml
+[storage]
+backend = "sqlite"
+connection_string = "sqlite://./data/fcp.db"
+max_connections = 10
+connection_timeout = "30s"
+```
+
+**Build with SQLite** (enabled by default):
+```bash
+cargo build --release -p fcp-server
+```
+
+### PostgreSQL Configuration
+
+Requires a running PostgreSQL instance:
+
+```toml
+[storage]
+backend = "postgres"
+connection_string = "postgresql://username:password@localhost:5432/fcp"
+max_connections = 20
+connection_timeout = "30s"
+```
+
+**Build with PostgreSQL**:
+```bash
+cargo build --release -p fcp-server --features storage-postgres
+```
+
+**Setup PostgreSQL**:
+```bash
+# Create database
+createdb fcp
+
+# Run migrations
+psql fcp < crates/fcp-storage-postgres/migrations/001_initial_schema.sql
+```
+
+### MySQL Configuration
+
+Requires a running MySQL or MariaDB instance:
+
+```toml
+[storage]
+backend = "mysql"
+connection_string = "mysql://username:password@localhost:3306/fcp"
+max_connections = 20
+connection_timeout = "30s"
+```
+
+**Build with MySQL**:
+```bash
+cargo build --release -p fcp-server --features storage-mysql
+```
+
+**Setup MySQL**:
+```bash
+# Create database
+mysql -u root -p -e "CREATE DATABASE fcp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# Run migrations
+mysql -u root -p fcp < crates/fcp-storage-mysql/migrations/001_initial_schema.sql
+```
+
+### MongoDB Configuration
+
+Requires a running MongoDB instance:
+
+```toml
+[storage]
+backend = "mongodb"
+connection_string = "mongodb://username:password@localhost:27017/fcp"
+max_connections = 20
+connection_timeout = "30s"
+```
+
+**Build with MongoDB**:
+```bash
+cargo build --release -p fcp-server --features storage-mongodb
+```
+
+MongoDB doesn't require explicit migrations - collections and indexes are created automatically on first startup.
+
+### Building with Multiple Backends
+
+You can build with support for all storage backends:
+
+```bash
+cargo build --release -p fcp-server --features storage-all
+```
+
+This allows you to switch backends at runtime by changing the configuration file.
+
+### Storage Backend Features
+
+| Feature | SQLite | PostgreSQL | MySQL | MongoDB |
+|---------|--------|------------|-------|---------|
+| **User Management** | ✓ | ✓ | ✓ | ✓ |
+| **SIP Registrations** | ✓ | ✓ | ✓ | ✓ |
+| **CDRs** | ✗ | ✓ | ✓ | ✓ |
+| **Connection Pooling** | ✓ | ✓ | ✓ | ✓ |
+| **Transactions** | ✓ | ✓ | ✓ | ✓ |
+| **High Availability** | ✗ | ✓ | ✓ | ✓ |
+| **Horizontal Scaling** | ✗ | ✗ | ✗ | ✓ |
+
+**Note**: SQLite's FileBackedStorage doesn't persist CDRs to optimize for simple deployments. For production CDR storage, use PostgreSQL, MySQL, or MongoDB.
+
+### Choosing a Storage Backend
+
+**Development**: Use SQLite (default) for quick setup with no external dependencies.
+
+**Production - Single Node**: Use PostgreSQL or MySQL for ACID guarantees and full CDR support.
+
+**Production - High Availability**: Use PostgreSQL or MySQL with replication/clustering.
+
+**Production - Large Scale**: Use MongoDB for horizontal scalability across multiple nodes.
+
 ## Development
 
 Run in development mode with debug logging:

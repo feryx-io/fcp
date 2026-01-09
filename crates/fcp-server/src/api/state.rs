@@ -1,6 +1,6 @@
 //! Shared API state.
 
-use fcp_core::FileBackedStorage;
+use fcp_core::DynStorage;
 use fcp_media::MediaManager;
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ApiState {
     /// Storage for users and registrations (optional)
-    pub storage: Option<Arc<FileBackedStorage>>,
+    pub storage: Option<Arc<DynStorage>>,
 
     /// Dialog manager for inspecting active dialogs
     pub dialog_manager: Arc<DialogManager>,
@@ -31,7 +31,7 @@ pub struct ApiState {
 
 impl ApiState {
     pub fn new(
-        storage: Option<Arc<FileBackedStorage>>,
+        storage: Option<Arc<DynStorage>>,
         dialog_manager: Arc<DialogManager>,
         subscription_manager: Arc<SubscriptionManager>,
         call_manager: Arc<CallManager>,

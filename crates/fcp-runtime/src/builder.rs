@@ -13,6 +13,7 @@ use tracing::info;
 pub struct RuntimeBuilder {
     config: Option<FcpConfig>,
     node_id: Option<NodeId>,
+    storage: Option<Arc<fcp_core::DynStorage>>,
 }
 
 impl RuntimeBuilder {
@@ -21,6 +22,7 @@ impl RuntimeBuilder {
         Self {
             config: None,
             node_id: None,
+            storage: None,
         }
     }
 
@@ -33,6 +35,15 @@ impl RuntimeBuilder {
     /// Set a custom node ID.
     pub fn with_node_id(mut self, node_id: NodeId) -> Self {
         self.node_id = Some(node_id);
+        self
+    }
+
+    /// Set a custom storage backend.
+    ///
+    /// If not provided, the runtime will create a default FileBackedStorage
+    /// when the registrar is enabled.
+    pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
+        self.storage = Some(storage);
         self
     }
 
@@ -99,10 +110,10 @@ impl RuntimeBuilder {
 
         // Create registrar if enabled
         let (registrar, storage) = if config.registrar.enabled {
-            let (reg, store) = create_registrar(&config).await?;
+            let (reg, store) = create_registrar(&config, self.storage).await?;
             (Some(reg), Some(store))
         } else {
-            (None, None)
+            (None, self.storage)
         };
 
         // Create routing service if enabled
@@ -235,13 +246,17 @@ async fn create_transport_dispatcher(
 
 /// Create a registrar with storage and optional authentication.
 /// Returns (registrar, storage) tuple.
+///
+/// If storage is provided, it will be used. Otherwise, a default FileBackedStorage
+/// will be created from the registrar data directory.
 async fn create_registrar(
     config: &FcpConfig,
+    provided_storage: Option<Arc<fcp_core::DynStorage>>,
 ) -> Result<(
     Arc<fcp_sip::registrar::FcpRegistrar>,
-    Arc<fcp_core::FileBackedStorage>,
+    Arc<fcp_core::DynStorage>,
 )> {
-    use fcp_core::{CredentialStore, FileBackedStorage};
+    use fcp_core::{CredentialStore, DynStorage, FileBackedStorage};
     use fcp_sip::registrar::FcpRegistrar;
 
     info!(
@@ -250,12 +265,19 @@ async fn create_registrar(
         "Creating registrar"
     );
 
-    // Create storage for registrations and users
-    let storage = Arc::new(
-        FileBackedStorage::new(config.registrar.data_dir.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create storage: {}", e))?,
-    );
+    // Use provided storage or create default FileBackedStorage
+    let storage: Arc<DynStorage> = if let Some(storage) = provided_storage {
+        info!("Using provided storage backend for registrar");
+        storage
+    } else {
+        info!("Creating default SQLite-backed storage for registrar");
+        let file_storage = Arc::new(
+            FileBackedStorage::new(config.registrar.data_dir.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create storage: {}", e))?,
+        );
+        Arc::new(DynStorage::from_all_in_one(file_storage))
+    };
 
     // If authentication is enabled, ensure at least one user exists
     let credential_store: Option<Arc<dyn CredentialStore>> = if config.registrar.auth_enabled {
@@ -555,7 +577,7 @@ fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
 /// Load users from a JSON file.
 async fn load_users_from_file(
     path: &std::path::Path,
-    storage: &Arc<fcp_core::FileBackedStorage>,
+    storage: &Arc<fcp_core::DynStorage>,
 ) -> Result<usize> {
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User, UserFileEntry};
@@ -594,7 +616,7 @@ async fn load_users_from_file(
 }
 
 /// Create default test users with hashed passwords.
-async fn create_default_test_users(storage: &Arc<fcp_core::FileBackedStorage>) -> Result<()> {
+async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>) -> Result<()> {
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User};
 

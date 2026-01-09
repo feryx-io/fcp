@@ -356,7 +356,13 @@ pub enum StorageBackend {
     /// PostgreSQL (for production)
     Postgres,
 
-    /// CockroachDB (for distributed deployments)
+    /// MySQL (for existing MySQL infrastructure)
+    Mysql,
+
+    /// MongoDB (for large-scale NoSQL)
+    Mongodb,
+
+    /// CockroachDB (for distributed deployments) - FUTURE
     Cockroach,
 }
 

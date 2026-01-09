@@ -57,7 +57,7 @@ pub struct Runtime {
     shutdown_tx: Option<mpsc::Sender<()>>,
 
     /// Storage for registrations and users (if registrar enabled)
-    storage: Option<Arc<fcp_core::FileBackedStorage>>,
+    storage: Option<Arc<fcp_core::DynStorage>>,
 
     /// Background cleanup task handle
     cleanup_task: Option<tokio::task::JoinHandle<()>>,
@@ -115,7 +115,7 @@ impl Runtime {
     }
 
     /// Get the storage (if registrar is enabled).
-    pub fn storage(&self) -> Option<&Arc<fcp_core::FileBackedStorage>> {
+    pub fn storage(&self) -> Option<&Arc<fcp_core::DynStorage>> {
         self.storage.as_ref()
     }
 
