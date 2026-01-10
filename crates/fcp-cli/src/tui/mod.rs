@@ -143,6 +143,14 @@ fn render_placeholder(
 
 /// Handle an event
 async fn handle_event(app: &mut App, event: Event) -> Result<()> {
+    // Handle user modal events first - if a modal is open, it gets ALL keyboard events
+    if app.active_tab == Tab::Users && app.users_view.modal != crate::tui::views::users::UserModal::None {
+        let handled = views::users::handle_user_action(&mut app.users_view, &app.api_client, &event).await;
+        if handled {
+            return Ok(());
+        }
+    }
+
     match event {
         Event::Key(_) if event.is_quit() => {
             app.quit();
@@ -235,15 +243,7 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             }
         }
         Event::Key(_) => {
-            // Handle user management modal events first (in Users tab)
-            if app.active_tab == Tab::Users {
-                let handled = views::users::handle_user_action(&mut app.users_view, &app.api_client, &event).await;
-                if handled {
-                    return Ok(());
-                }
-            }
-
-            // Only handle these keys if no modal is open
+            // Only handle these keys if no modal is open (modal events handled at top of function)
             if app.active_tab == Tab::Users && app.users_view.modal == crate::tui::views::users::UserModal::None {
                 match event {
                     Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {

@@ -521,13 +521,13 @@ pub async fn handle_user_action(
     // Check if we're in a modal
     if state.modal != UserModal::None {
         match event {
-            crate::tui::event::Event::Key(KeyEvent { code, modifiers: KeyModifiers::NONE, .. }) => {
+            crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
                 match code {
-                    KeyCode::Esc => {
+                    KeyCode::Esc if *modifiers == KeyModifiers::NONE => {
                         state.close_modal();
                         return true;
                     }
-                    KeyCode::Tab => {
+                    KeyCode::Tab if *modifiers == KeyModifiers::NONE => {
                         if state.modal != UserModal::Delete {
                             state.next_field();
                         }
@@ -539,7 +539,7 @@ pub async fn handle_user_action(
                         }
                         return true;
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter if *modifiers == KeyModifiers::NONE => {
                         match state.modal {
                             UserModal::Add => {
                                 create_user(api_client, state).await;
@@ -556,7 +556,7 @@ pub async fn handle_user_action(
                     }
                     KeyCode::Char(_) | KeyCode::Backspace => {
                         if state.modal != UserModal::Delete {
-                            let key_event = crossterm::event::KeyEvent::new(*code, KeyModifiers::NONE);
+                            let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
                             if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
                                 state.focused_input().handle(req);
                             }
