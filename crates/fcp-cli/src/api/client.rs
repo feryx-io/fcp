@@ -194,17 +194,21 @@ impl ApiClient {
 
     /// List registrations for an AOR
     pub async fn list_registrations(&self, aor: &str) -> Result<Vec<RegistrationResponse>> {
-        self.request(Method::GET, &format!("/registrations/{}", aor)).await
+        let encoded_aor = urlencoding::encode(aor);
+        self.request(Method::GET, &format!("/registrations/{}", encoded_aor)).await
     }
 
     /// Delete all registrations for an AOR
     pub async fn delete_registrations(&self, aor: &str) -> Result<()> {
-        self.request_no_content(Method::DELETE, &format!("/registrations/{}", aor)).await
+        let encoded_aor = urlencoding::encode(aor);
+        self.request_no_content(Method::DELETE, &format!("/registrations/{}", encoded_aor)).await
     }
 
     /// Delete a specific registration
     pub async fn delete_registration(&self, aor: &str, contact: &str) -> Result<()> {
-        self.request_no_content(Method::DELETE, &format!("/registrations/{}/{}", aor, contact)).await
+        let encoded_aor = urlencoding::encode(aor);
+        let encoded_contact = urlencoding::encode(contact);
+        self.request_no_content(Method::DELETE, &format!("/registrations/{}/{}", encoded_aor, encoded_contact)).await
     }
 
     // ==================== Call Endpoints ====================

@@ -440,10 +440,23 @@ pub async fn fetch_registrations(
         }
 
         for aor in test_aors {
-            if let Ok(mut regs) = api_client.list_registrations(&aor).await {
-                all_registrations.append(&mut regs);
+            match api_client.list_registrations(&aor).await {
+                Ok(mut regs) => {
+                    all_registrations.append(&mut regs);
+                }
+                Err(e) => {
+                    // Store first error for debugging
+                    if state.error.is_none() {
+                        state.error = Some(format!("Failed to fetch registrations: {}", e));
+                    }
+                }
             }
         }
+    }
+
+    // If we found registrations, clear any error
+    if !all_registrations.is_empty() {
+        state.error = None;
     }
 
     state.set_registrations(all_registrations);
