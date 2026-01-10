@@ -185,6 +185,12 @@ mod system_time_as_string {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::time::SystemTime;
 
+    #[derive(Deserialize)]
+    struct TimeStamp {
+        secs_since_epoch: u64,
+        nanos_since_epoch: u32,
+    }
+
     pub fn serialize<S>(time: &SystemTime, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -199,7 +205,7 @@ mod system_time_as_string {
     where
         D: Deserializer<'de>,
     {
-        let secs = u64::deserialize(deserializer)?;
-        Ok(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        let ts = TimeStamp::deserialize(deserializer)?;
+        Ok(SystemTime::UNIX_EPOCH + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch))
     }
 }

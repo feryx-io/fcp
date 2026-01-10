@@ -119,6 +119,30 @@ impl Event {
         )
     }
 
+    /// Check if this is a shift+left navigation event (H or Shift+Left arrow)
+    pub fn is_shift_left(&self) -> bool {
+        matches!(
+            self,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('H') | KeyCode::Left,
+                modifiers: KeyModifiers::SHIFT,
+                ..
+            })
+        )
+    }
+
+    /// Check if this is a shift+right navigation event (L or Shift+Right arrow)
+    pub fn is_shift_right(&self) -> bool {
+        matches!(
+            self,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('L') | KeyCode::Right,
+                modifiers: KeyModifiers::SHIFT,
+                ..
+            })
+        )
+    }
+
     /// Check if this is an up navigation event (k or Up arrow)
     pub fn is_up(&self) -> bool {
         matches!(

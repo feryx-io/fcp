@@ -55,6 +55,11 @@ impl Tab {
         let current_idx = tabs.iter().position(|t| t == self).unwrap();
         tabs[(current_idx + tabs.len() - 1) % tabs.len()]
     }
+
+    /// Get tab by index (0-4)
+    pub fn from_index(index: usize) -> Option<Tab> {
+        Self::all().get(index).copied()
+    }
 }
 
 /// Main application state

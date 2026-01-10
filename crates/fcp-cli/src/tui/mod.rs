@@ -9,6 +9,7 @@ mod views;
 use anyhow::Result;
 use app::{App, Tab};
 use crossterm::{
+    event::{KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -146,15 +147,42 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         Event::Key(_) if event.is_quit() => {
             app.quit();
         }
-        Event::Key(_) if event.is_left() => {
+        Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='5') => {
+            // Number keys 1-5 jump directly to main tabs
+            if let Some(tab) = Tab::from_index((c as usize) - ('1' as usize)) {
+                app.set_tab(tab);
+                check_and_load_tab_data(app).await;
+            }
+        }
+        Event::Key(_) if event.is_shift_left() => {
+            // Shift+Left always navigates main tabs
             app.prev_tab();
-            // Load data when switching to a new tab
             check_and_load_tab_data(app).await;
         }
-        Event::Key(_) if event.is_right() => {
+        Event::Key(_) if event.is_shift_right() => {
+            // Shift+Right always navigates main tabs
             app.next_tab();
-            // Load data when switching to a new tab
             check_and_load_tab_data(app).await;
+        }
+        Event::Key(_) if event.is_left() => {
+            // Special handling for Debug tab - navigate between sub-views
+            if app.active_tab == Tab::Debug {
+                views::debug::handle_tab_navigation(&mut app.debug_view, &event);
+            } else {
+                app.prev_tab();
+                // Load data when switching to a new tab
+                check_and_load_tab_data(app).await;
+            }
+        }
+        Event::Key(_) if event.is_right() => {
+            // Special handling for Debug tab - navigate between sub-views
+            if app.active_tab == Tab::Debug {
+                views::debug::handle_tab_navigation(&mut app.debug_view, &event);
+            } else {
+                app.next_tab();
+                // Load data when switching to a new tab
+                check_and_load_tab_data(app).await;
+            }
         }
         Event::Key(_) if event.is_refresh() => {
             app.mark_update();

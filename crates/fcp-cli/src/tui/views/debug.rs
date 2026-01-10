@@ -654,6 +654,9 @@ pub fn handle_tab_navigation(state: &mut DebugViewState, event: &crate::tui::eve
         state.prev_subview();
     } else if event.is_right() {
         state.next_subview();
+    } else if event.is_tab() {
+        // Tab key also moves to next sub-view
+        state.next_subview();
     }
 }
 

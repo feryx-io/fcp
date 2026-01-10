@@ -389,6 +389,7 @@ pub async fn fetch_registrations(
     state.error = None;
 
     let mut all_registrations = Vec::new();
+    let mut attempted_aors: Vec<String> = Vec::new();
 
     // Extract server hostname from API client URL
     let server_host = extract_host_from_url(api_client.base_url());
@@ -417,6 +418,7 @@ pub async fn fetch_registrations(
 
             for domain in user_domains {
                 let aor = format!("sip:{}@{}", user.username, domain);
+                attempted_aors.push(aor.clone());
                 if let Ok(mut regs) = api_client.list_registrations(&aor).await {
                     if !regs.is_empty() {
                         all_registrations.append(&mut regs);
@@ -440,14 +442,22 @@ pub async fn fetch_registrations(
         }
 
         for aor in test_aors {
+            attempted_aors.push(aor.clone());
             match api_client.list_registrations(&aor).await {
                 Ok(mut regs) => {
-                    all_registrations.append(&mut regs);
+                    if !regs.is_empty() {
+                        all_registrations.append(&mut regs);
+                    }
                 }
                 Err(e) => {
                     // Store first error for debugging
                     if state.error.is_none() {
-                        state.error = Some(format!("Failed to fetch registrations: {}", e));
+                        state.error = Some(format!(
+                            "API: {} | Error: {} (tried {} AORs)",
+                            api_client.base_url(),
+                            e,
+                            attempted_aors.len()
+                        ));
                     }
                 }
             }
@@ -457,6 +467,14 @@ pub async fn fetch_registrations(
     // If we found registrations, clear any error
     if !all_registrations.is_empty() {
         state.error = None;
+    } else if state.error.is_none() {
+        // Show which domains were attempted
+        state.error = Some(format!(
+            "No registrations found. API: {} | Tried {} AORs across domains: {}",
+            api_client.base_url(),
+            attempted_aors.len(),
+            domains.join(", ")
+        ));
     }
 
     state.set_registrations(all_registrations);
