@@ -54,6 +54,11 @@ fn render_status_section(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render the stats section
 fn render_stats_section(f: &mut Frame, app: &App, area: Rect) {
+    // Get counts from loaded views
+    let user_count = app.users_view.users.len();
+    let call_count = app.calls_view.calls.len();
+    let registration_count = app.registrations_view.registrations.len();
+
     let stats_text = vec![
         Line::from(""),
         Line::from(vec![
@@ -61,25 +66,49 @@ fn render_stats_section(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Use ", app.theme.normal()),
-            Span::styled("h/l", app.theme.primary()),
-            Span::styled(" or ", app.theme.normal()),
-            Span::styled("←/→", app.theme.primary()),
-            Span::styled(" to switch tabs", app.theme.normal()),
+            Span::styled("  Total Users: ", app.theme.muted()),
+            Span::styled(user_count.to_string(), app.theme.info()),
         ]),
         Line::from(vec![
-            Span::styled("  Press ", app.theme.normal()),
-            Span::styled("r", app.theme.primary()),
-            Span::styled(" to refresh data", app.theme.normal()),
+            Span::styled("  Active Registrations: ", app.theme.muted()),
+            Span::styled(registration_count.to_string(), app.theme.info()),
         ]),
         Line::from(vec![
-            Span::styled("  Press ", app.theme.normal()),
-            Span::styled("q", app.theme.primary()),
-            Span::styled(" to quit", app.theme.normal()),
+            Span::styled("  Active Calls: ", app.theme.muted()),
+            Span::styled(call_count.to_string(), app.theme.info()),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Statistics will appear here once data is loaded", app.theme.muted()),
+            Span::styled("  Keyboard Shortcuts:", app.theme.title()),
+        ]),
+        Line::from(vec![
+            Span::styled("    • ", app.theme.muted()),
+            Span::styled("1-5", app.theme.primary()),
+            Span::styled(" - Jump to tab (Dashboard, Users, Calls, Registrations, Debug)", app.theme.normal()),
+        ]),
+        Line::from(vec![
+            Span::styled("    • ", app.theme.muted()),
+            Span::styled("h/l", app.theme.primary()),
+            Span::styled(" or ", app.theme.normal()),
+            Span::styled("←/→", app.theme.primary()),
+            Span::styled(" - Navigate tabs or debug sub-views", app.theme.normal()),
+        ]),
+        Line::from(vec![
+            Span::styled("    • ", app.theme.muted()),
+            Span::styled("j/k", app.theme.primary()),
+            Span::styled(" or ", app.theme.normal()),
+            Span::styled("↑/↓", app.theme.primary()),
+            Span::styled(" - Navigate table rows", app.theme.normal()),
+        ]),
+        Line::from(vec![
+            Span::styled("    • ", app.theme.muted()),
+            Span::styled("r", app.theme.primary()),
+            Span::styled(" - Refresh data", app.theme.normal()),
+        ]),
+        Line::from(vec![
+            Span::styled("    • ", app.theme.muted()),
+            Span::styled("q", app.theme.primary()),
+            Span::styled(" - Quit", app.theme.normal()),
         ]),
     ];
 
@@ -91,7 +120,7 @@ fn render_stats_section(f: &mut Frame, app: &App, area: Rect) {
                 .border_style(app.theme.border())
                 .title_style(app.theme.title()),
         )
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Left);
 
     f.render_widget(stats, area);
 }

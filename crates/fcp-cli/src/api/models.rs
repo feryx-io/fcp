@@ -25,7 +25,7 @@ pub struct StatusResponse {
 // ==================== User Models ====================
 
 /// User response (excludes password hash)
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserResponse {
     pub username: String,
     pub display_name: Option<String>,

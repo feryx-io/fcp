@@ -32,7 +32,7 @@ impl Default for Theme {
             success: Color::Green,
             warning: Color::Yellow,
             error: Color::Red,
-            info: Color::Blue,
+            info: Color::LightBlue,
             muted: Color::DarkGray,
             border: Color::Gray,
             selected_bg: Color::Cyan,

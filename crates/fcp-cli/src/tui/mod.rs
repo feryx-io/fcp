@@ -234,6 +234,31 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 views::debug::handle_tab_navigation(&mut app.debug_view, &event);
             }
         }
+        Event::Key(_) => {
+            // Handle user management modal events first (in Users tab)
+            if app.active_tab == Tab::Users {
+                let handled = views::users::handle_user_action(&mut app.users_view, &app.api_client, &event).await;
+                if handled {
+                    return Ok(());
+                }
+            }
+
+            // Only handle these keys if no modal is open
+            if app.active_tab == Tab::Users && app.users_view.modal == crate::tui::views::users::UserModal::None {
+                match event {
+                    Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
+                        app.users_view.open_add_modal();
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
+                        app.users_view.open_edit_modal();
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                        app.users_view.open_delete_modal();
+                    }
+                    _ => {}
+                }
+            }
+        }
         Event::Tick => {
             // Periodic update - auto-refresh data based on view requirements
             let time_since = app.time_since_update();
