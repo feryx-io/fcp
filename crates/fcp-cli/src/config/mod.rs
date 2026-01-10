@@ -139,7 +139,7 @@ impl Default for Config {
             current_context: "local".to_string(),
             contexts: vec![Context {
                 name: "local".to_string(),
-                url: "http://localhost:8080".to_string(),
+                url: "http://localhost:8081".to_string(),
                 token: None,
             }],
         }
