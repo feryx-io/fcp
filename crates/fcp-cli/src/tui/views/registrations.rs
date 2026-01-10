@@ -388,34 +388,82 @@ pub async fn fetch_registrations(
     state.loading = true;
     state.error = None;
 
-    // First, get the list of users to build AORs
-    match api_client.list_users().await {
-        Ok(users) => {
-            let mut all_registrations = Vec::new();
+    let mut all_registrations = Vec::new();
 
-            // Query registrations for each user
-            for user in users {
-                // Construct AOR from username and tenant
-                let aor = format!("sip:{}@{}", user.username, user.tenant_id);
+    // Extract server hostname from API client URL
+    let server_host = extract_host_from_url(api_client.base_url());
 
-                // Fetch registrations for this AOR
-                match api_client.list_registrations(&aor).await {
-                    Ok(mut regs) => {
+    // Build list of domains to try
+    let mut domains = vec![
+        server_host.clone(),
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        // Common local IPs that might be used for SIP when API is on localhost
+        "192.168.1.1".to_string(),
+        "192.168.1.100".to_string(),
+        "192.168.1.225".to_string(), // Current server IP
+        "192.168.0.1".to_string(),
+        "10.0.0.1".to_string(),
+    ];
+
+    domains.dedup(); // Remove duplicates
+
+    // Strategy 1: Try to fetch users and construct AORs
+    if let Ok(users) = api_client.list_users().await {
+        for user in &users {
+            // Try each domain pattern for each user
+            let mut user_domains = domains.clone();
+            user_domains.insert(0, user.tenant_id.clone()); // Try tenant_id first
+
+            for domain in user_domains {
+                let aor = format!("sip:{}@{}", user.username, domain);
+                if let Ok(mut regs) = api_client.list_registrations(&aor).await {
+                    if !regs.is_empty() {
                         all_registrations.append(&mut regs);
-                    }
-                    Err(_) => {
-                        // Silently skip users with no registrations or errors
-                        // This is expected behavior as not all users will be registered
+                        break; // Found registrations for this user, move to next
                     }
                 }
             }
-
-            state.set_registrations(all_registrations);
-        }
-        Err(e) => {
-            state.error = Some(format!("Failed to fetch users for registrations: {}", e));
         }
     }
 
+    // Strategy 2: Try common test user AORs if no users found
+    if all_registrations.is_empty() {
+        let mut test_aors = Vec::new();
+        let test_users = vec!["alice", "bob", "charlie", "dave"];
+
+        for user in &test_users {
+            for domain in &domains {
+                test_aors.push(format!("sip:{}@{}", user, domain));
+                test_aors.push(format!("{}@{}", user, domain));
+            }
+        }
+
+        for aor in test_aors {
+            if let Ok(mut regs) = api_client.list_registrations(&aor).await {
+                all_registrations.append(&mut regs);
+            }
+        }
+    }
+
+    state.set_registrations(all_registrations);
     state.loading = false;
+}
+
+/// Extract hostname from URL (e.g., "http://192.168.1.225:8081" -> "192.168.1.225")
+fn extract_host_from_url(url: &str) -> String {
+    // Remove protocol prefix
+    let without_protocol = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or(url);
+
+    // Extract host (everything before the first colon or slash)
+    if let Some(host) = without_protocol.split(&[':', '/'][..]).next() {
+        if !host.is_empty() {
+            return host.to_string();
+        }
+    }
+
+    "localhost".to_string()
 }

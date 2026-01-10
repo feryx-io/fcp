@@ -38,6 +38,11 @@ impl ApiClient {
         })
     }
 
+    /// Get the base URL of the API
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Make an HTTP request to the API
     async fn request<T>(&self, method: Method, path: &str) -> Result<T>
     where
