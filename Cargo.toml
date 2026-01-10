@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb",
+    "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-cli", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb",
 ]
 exclude = [
     "external/siphon-rs",
