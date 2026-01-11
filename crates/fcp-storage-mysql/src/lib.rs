@@ -31,8 +31,9 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
-    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
-    HangupParty, MediaPreferences, Registration, RegistrationStore, TenantId, User,
+    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
+    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration,
+    RegistrationStore, TenantId, User,
 };
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{MySql, Pool, Row};
@@ -544,6 +545,23 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
     let created_at: DateTime<Utc> = row.get("created_at");
     let updated_at: DateTime<Utc> = row.get("updated_at");
 
+    // Parse optional timestamp fields
+    let password_last_reset: Option<DateTime<Utc>> = row.try_get("password_last_reset").ok();
+    let password_last_reset = password_last_reset.map(datetime_to_system_time);
+
+    let last_login: Option<DateTime<Utc>> = row.try_get("last_login").ok();
+    let last_login = last_login.map(datetime_to_system_time);
+
+    // Parse account status
+    let account_status_str: String = row.try_get("account_status").unwrap_or_else(|_| "active".to_string());
+    let account_status = AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
+
+    // Parse emergency contact
+    let emergency_contact = EmergencyContact {
+        name: row.try_get("emergency_contact_name").ok(),
+        phone: row.try_get("emergency_contact_phone").ok(),
+    };
+
     Ok(User {
         username: row.get("username"),
         password: row.get("password_hash"),
@@ -554,6 +572,20 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
         media_preferences,
+        email: row.try_get("email").ok(),
+        password_last_reset,
+        phone_number: row.try_get("phone_number").ok(),
+        mobile_number: row.try_get("mobile_number").ok(),
+        pin: row.try_get("pin").ok(),
+        extension: row.try_get("extension").ok(),
+        department: row.try_get("department").ok(),
+        job_title: row.try_get("job_title").ok(),
+        location: row.try_get("location").ok(),
+        language: row.try_get("language").unwrap_or_else(|_| "en-US".to_string()),
+        timezone: row.try_get("timezone").unwrap_or_else(|_| "UTC".to_string()),
+        account_status,
+        last_login,
+        emergency_contact,
     })
 }
 

@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use fcp_core::{CredentialStore, Registration, RegistrationStore};
+use fcp_core::{AccountStatus, CredentialStore, EmergencyContact, Registration, RegistrationStore};
 use sip_auth::DigestAuthenticator;
 use sip_core::{Request, Response, StatusLine};
 use sip_registrar::{AsyncLocationStore, BasicRegistrar, Binding};
@@ -353,6 +353,20 @@ mod tests {
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
             media_preferences: fcp_core::MediaPreferences::default(),
+            email: None,
+            password_last_reset: None,
+            phone_number: None,
+            mobile_number: None,
+            pin: None,
+            extension: None,
+            department: None,
+            job_title: None,
+            location: None,
+            language: "en-US".to_string(),
+            timezone: "UTC".to_string(),
+            account_status: AccountStatus::Active,
+            last_login: None,
+            emergency_contact: EmergencyContact::default(),
         };
         storage.put_user(user).await.unwrap();
 

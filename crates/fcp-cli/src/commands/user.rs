@@ -81,6 +81,19 @@ pub async fn handle(
             display_name,
             tenant_id,
             enabled,
+            email,
+            phone_number,
+            mobile_number,
+            pin,
+            extension,
+            department,
+            job_title,
+            location,
+            language,
+            timezone,
+            account_status,
+            emergency_contact_name,
+            emergency_contact_phone,
         } => {
             // Get password (prompt if not provided)
             let password = if let Some(pwd) = password {
@@ -95,6 +108,20 @@ pub async fn handle(
                 display_name,
                 tenant_id,
                 enabled: Some(enabled),
+                // Enterprise fields - now supported via CLI
+                email,
+                phone_number,
+                mobile_number,
+                pin,
+                extension,
+                department,
+                job_title,
+                location,
+                language,
+                timezone,
+                account_status,
+                emergency_contact_name,
+                emergency_contact_phone,
             };
 
             let user = client
@@ -119,17 +146,59 @@ pub async fn handle(
             username,
             display_name,
             enabled,
+            email,
+            phone_number,
+            mobile_number,
+            pin,
+            extension,
+            department,
+            job_title,
+            location,
+            language,
+            timezone,
+            account_status,
+            emergency_contact_name,
+            emergency_contact_phone,
         } => {
             // Check if any fields are being updated
-            if display_name.is_none() && enabled.is_none() {
+            if display_name.is_none()
+                && enabled.is_none()
+                && email.is_none()
+                && phone_number.is_none()
+                && mobile_number.is_none()
+                && pin.is_none()
+                && extension.is_none()
+                && department.is_none()
+                && job_title.is_none()
+                && location.is_none()
+                && language.is_none()
+                && timezone.is_none()
+                && account_status.is_none()
+                && emergency_contact_name.is_none()
+                && emergency_contact_phone.is_none()
+            {
                 return Err(anyhow::anyhow!(
-                    "No fields to update. Use --display-name or --enabled"
+                    "No fields to update. Specify at least one field to modify."
                 ));
             }
 
             let req = UpdateUserRequest {
                 display_name,
                 enabled,
+                // Enterprise fields - now supported via CLI
+                email,
+                phone_number,
+                mobile_number,
+                pin,
+                extension,
+                department,
+                job_title,
+                location,
+                language,
+                timezone,
+                account_status,
+                emergency_contact_name,
+                emergency_contact_phone,
             };
 
             let user = client

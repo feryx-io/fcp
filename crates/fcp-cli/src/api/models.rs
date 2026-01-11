@@ -35,6 +35,24 @@ pub struct UserResponse {
     pub created_at: std::time::SystemTime,
     #[serde(with = "system_time_as_string")]
     pub updated_at: std::time::SystemTime,
+
+    // Enterprise fields
+    pub email: Option<String>,
+    #[serde(with = "optional_system_time_as_string", default)]
+    pub password_last_reset: Option<std::time::SystemTime>,
+    pub phone_number: Option<String>,
+    pub mobile_number: Option<String>,
+    pub extension: Option<String>,
+    pub department: Option<String>,
+    pub job_title: Option<String>,
+    pub location: Option<String>,
+    pub language: String,
+    pub timezone: String,
+    pub account_status: String,
+    #[serde(with = "optional_system_time_as_string", default)]
+    pub last_login: Option<std::time::SystemTime>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
 }
 
 /// Create user request
@@ -48,6 +66,34 @@ pub struct CreateUserRequest {
     pub tenant_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+
+    // Enterprise fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mobile_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emergency_contact_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emergency_contact_phone: Option<String>,
 }
 
 /// Update user request
@@ -57,6 +103,34 @@ pub struct UpdateUserRequest {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+
+    // Enterprise fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mobile_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extension: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emergency_contact_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emergency_contact_phone: Option<String>,
 }
 
 /// Update password request
@@ -207,5 +281,40 @@ mod system_time_as_string {
     {
         let ts = TimeStamp::deserialize(deserializer)?;
         Ok(SystemTime::UNIX_EPOCH + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch))
+    }
+}
+
+/// Serialize/deserialize Option<SystemTime> as string for display
+mod optional_system_time_as_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::SystemTime;
+
+    #[derive(Deserialize)]
+    struct TimeStamp {
+        secs_since_epoch: u64,
+        nanos_since_epoch: u32,
+    }
+
+    pub fn serialize<S>(time: &Option<SystemTime>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match time {
+            Some(t) => {
+                let duration = t
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_err(serde::ser::Error::custom)?;
+                serializer.serialize_some(&duration.as_secs())
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SystemTime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let ts_opt = Option::<TimeStamp>::deserialize(deserializer)?;
+        Ok(ts_opt.map(|ts| SystemTime::UNIX_EPOCH + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch)))
     }
 }

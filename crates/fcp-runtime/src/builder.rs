@@ -605,6 +605,20 @@ async fn load_users_from_file(
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
             media_preferences: entry.media_preferences.clone(),
+            email: None,
+            password_last_reset: None,
+            phone_number: None,
+            mobile_number: None,
+            pin: None,
+            extension: None,
+            department: None,
+            job_title: None,
+            location: None,
+            language: "en-US".to_string(),
+            timezone: "UTC".to_string(),
+            account_status: fcp_core::AccountStatus::Active,
+            last_login: None,
+            emergency_contact: fcp_core::EmergencyContact::default(),
         };
 
         storage.put_user(user).await?;
@@ -635,6 +649,20 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>) -> Resul
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
             media_preferences: fcp_core::MediaPreferences::default(),
+            email: None,
+            password_last_reset: None,
+            phone_number: None,
+            mobile_number: None,
+            pin: None,
+            extension: None,
+            department: None,
+            job_title: None,
+            location: None,
+            language: "en-US".to_string(),
+            timezone: "UTC".to_string(),
+            account_status: fcp_core::AccountStatus::Active,
+            last_login: None,
+            emergency_contact: fcp_core::EmergencyContact::default(),
         };
 
         storage.put_user(user.clone()).await?;

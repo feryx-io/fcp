@@ -17,8 +17,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::{storage::password, CredentialStore, User};
+use fcp_core::{storage::password, AccountStatus, CredentialStore, EmergencyContact, User};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// User response (excludes password hash).
 #[derive(Debug, Serialize)]
@@ -29,6 +30,22 @@ pub struct UserResponse {
     pub enabled: bool,
     pub created_at: std::time::SystemTime,
     pub updated_at: std::time::SystemTime,
+
+    // Enterprise fields
+    pub email: Option<String>,
+    pub password_last_reset: Option<std::time::SystemTime>,
+    pub phone_number: Option<String>,
+    pub mobile_number: Option<String>,
+    pub extension: Option<String>,
+    pub department: Option<String>,
+    pub job_title: Option<String>,
+    pub location: Option<String>,
+    pub language: String,
+    pub timezone: String,
+    pub account_status: String,
+    pub last_login: Option<std::time::SystemTime>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
 }
 
 impl From<User> for UserResponse {
@@ -40,6 +57,21 @@ impl From<User> for UserResponse {
             enabled: user.enabled,
             created_at: user.created_at,
             updated_at: user.updated_at,
+            // Enterprise fields
+            email: user.email,
+            password_last_reset: user.password_last_reset,
+            phone_number: user.phone_number,
+            mobile_number: user.mobile_number,
+            extension: user.extension,
+            department: user.department,
+            job_title: user.job_title,
+            location: user.location,
+            language: user.language,
+            timezone: user.timezone,
+            account_status: user.account_status.to_string(),
+            last_login: user.last_login,
+            emergency_contact_name: user.emergency_contact.name,
+            emergency_contact_phone: user.emergency_contact.phone,
         }
     }
 }
@@ -56,6 +88,21 @@ pub struct CreateUserRequest {
     pub enabled: bool,
     #[serde(default)]
     pub media_preferences: fcp_core::MediaPreferences,
+
+    // Enterprise fields
+    pub email: Option<String>,
+    pub phone_number: Option<String>,
+    pub mobile_number: Option<String>,
+    pub pin: Option<String>,
+    pub extension: Option<String>,
+    pub department: Option<String>,
+    pub job_title: Option<String>,
+    pub location: Option<String>,
+    pub language: Option<String>,
+    pub timezone: Option<String>,
+    pub account_status: Option<String>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
 }
 
 fn default_tenant_id() -> fcp_core::TenantId {
@@ -71,6 +118,21 @@ fn default_true() -> bool {
 pub struct UpdateUserRequest {
     pub display_name: Option<String>,
     pub enabled: Option<bool>,
+
+    // Enterprise fields
+    pub email: Option<String>,
+    pub phone_number: Option<String>,
+    pub mobile_number: Option<String>,
+    pub pin: Option<String>,
+    pub extension: Option<String>,
+    pub department: Option<String>,
+    pub job_title: Option<String>,
+    pub location: Option<String>,
+    pub language: Option<String>,
+    pub timezone: Option<String>,
+    pub account_status: Option<String>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
 }
 
 /// Update password request.
@@ -139,6 +201,29 @@ pub async fn create_user(
         ));
     }
 
+    // Hash PIN if provided
+    let pin_hash = if let Some(ref pin) = req.pin {
+        Some(
+            password::hash_password(pin)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid PIN: {}", e)))?,
+        )
+    } else {
+        None
+    };
+
+    // Parse account status
+    let account_status = if let Some(status_str) = &req.account_status {
+        AccountStatus::from_str(status_str).unwrap_or(AccountStatus::Active)
+    } else {
+        AccountStatus::Active
+    };
+
+    // Create emergency contact
+    let emergency_contact = EmergencyContact {
+        name: req.emergency_contact_name,
+        phone: req.emergency_contact_phone,
+    };
+
     // Create user
     let user = User {
         username: req.username.clone(),
@@ -149,6 +234,20 @@ pub async fn create_user(
         created_at: std::time::SystemTime::now(),
         updated_at: std::time::SystemTime::now(),
         media_preferences: req.media_preferences,
+        email: req.email,
+        password_last_reset: None,
+        phone_number: req.phone_number,
+        mobile_number: req.mobile_number,
+        pin: pin_hash,
+        extension: req.extension,
+        department: req.department,
+        job_title: req.job_title,
+        location: req.location,
+        language: req.language.unwrap_or_else(|| "en-US".to_string()),
+        timezone: req.timezone.unwrap_or_else(|| "UTC".to_string()),
+        account_status,
+        last_login: None,
+        emergency_contact,
     };
 
     storage.put_user(user.clone()).await?;
@@ -190,6 +289,52 @@ pub async fn update_user(
     if let Some(enabled) = req.enabled {
         user.enabled = enabled;
     }
+
+    // Update enterprise fields
+    if let Some(email) = req.email {
+        user.email = Some(email);
+    }
+    if let Some(phone_number) = req.phone_number {
+        user.phone_number = Some(phone_number);
+    }
+    if let Some(mobile_number) = req.mobile_number {
+        user.mobile_number = Some(mobile_number);
+    }
+    if let Some(pin) = req.pin {
+        // Hash the PIN
+        let pin_hash = password::hash_password(&pin)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid PIN: {}", e)))?;
+        user.pin = Some(pin_hash);
+    }
+    if let Some(extension) = req.extension {
+        user.extension = Some(extension);
+    }
+    if let Some(department) = req.department {
+        user.department = Some(department);
+    }
+    if let Some(job_title) = req.job_title {
+        user.job_title = Some(job_title);
+    }
+    if let Some(location) = req.location {
+        user.location = Some(location);
+    }
+    if let Some(language) = req.language {
+        user.language = language;
+    }
+    if let Some(timezone) = req.timezone {
+        user.timezone = timezone;
+    }
+    if let Some(account_status_str) = req.account_status {
+        user.account_status = AccountStatus::from_str(&account_status_str)
+            .unwrap_or(AccountStatus::Active);
+    }
+    if let Some(emergency_name) = req.emergency_contact_name {
+        user.emergency_contact.name = Some(emergency_name);
+    }
+    if let Some(emergency_phone) = req.emergency_contact_phone {
+        user.emergency_contact.phone = Some(emergency_phone);
+    }
+
     user.updated_at = std::time::SystemTime::now();
 
     // Save user

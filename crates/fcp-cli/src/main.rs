@@ -108,6 +108,59 @@ enum UserCommands {
         /// Enable the user (default: true)
         #[arg(long, default_value = "true")]
         enabled: bool,
+
+        // ===== Enterprise fields =====
+        /// Email address
+        #[arg(long)]
+        email: Option<String>,
+
+        /// Phone number
+        #[arg(long)]
+        phone_number: Option<String>,
+
+        /// Mobile number
+        #[arg(long)]
+        mobile_number: Option<String>,
+
+        /// PIN (for voicemail)
+        #[arg(long)]
+        pin: Option<String>,
+
+        /// Extension number
+        #[arg(long)]
+        extension: Option<String>,
+
+        /// Department
+        #[arg(long)]
+        department: Option<String>,
+
+        /// Job title
+        #[arg(long)]
+        job_title: Option<String>,
+
+        /// Location/Office
+        #[arg(long)]
+        location: Option<String>,
+
+        /// Language code (default: en-US)
+        #[arg(long)]
+        language: Option<String>,
+
+        /// Timezone (default: UTC)
+        #[arg(long)]
+        timezone: Option<String>,
+
+        /// Account status (default: active)
+        #[arg(long)]
+        account_status: Option<String>,
+
+        /// Emergency contact name
+        #[arg(long)]
+        emergency_contact_name: Option<String>,
+
+        /// Emergency contact phone
+        #[arg(long)]
+        emergency_contact_phone: Option<String>,
     },
 
     /// Modify an existing user
@@ -122,6 +175,59 @@ enum UserCommands {
         /// Enable or disable the user
         #[arg(long)]
         enabled: Option<bool>,
+
+        // ===== Enterprise fields =====
+        /// Email address
+        #[arg(long)]
+        email: Option<String>,
+
+        /// Phone number
+        #[arg(long)]
+        phone_number: Option<String>,
+
+        /// Mobile number
+        #[arg(long)]
+        mobile_number: Option<String>,
+
+        /// PIN (for voicemail)
+        #[arg(long)]
+        pin: Option<String>,
+
+        /// Extension number
+        #[arg(long)]
+        extension: Option<String>,
+
+        /// Department
+        #[arg(long)]
+        department: Option<String>,
+
+        /// Job title
+        #[arg(long)]
+        job_title: Option<String>,
+
+        /// Location/Office
+        #[arg(long)]
+        location: Option<String>,
+
+        /// Language code
+        #[arg(long)]
+        language: Option<String>,
+
+        /// Timezone
+        #[arg(long)]
+        timezone: Option<String>,
+
+        /// Account status
+        #[arg(long)]
+        account_status: Option<String>,
+
+        /// Emergency contact name
+        #[arg(long)]
+        emergency_contact_name: Option<String>,
+
+        /// Emergency contact phone
+        #[arg(long)]
+        emergency_contact_phone: Option<String>,
     },
 
     /// Change user password

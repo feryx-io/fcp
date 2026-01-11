@@ -28,8 +28,9 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use fcp_core::{
-    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
-    HangupParty, MediaPreferences, Registration, RegistrationStore, TenantId, User,
+    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
+    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration,
+    RegistrationStore, TenantId, User,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
@@ -136,8 +137,20 @@ impl SqliteStorage {
     async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         info!("Running SQLite migrations");
 
-        let migration_sql = include_str!("../migrations/001_initial_schema.sql");
+        // Migration 001: Initial schema
+        let migration_001 = include_str!("../migrations/001_initial_schema.sql");
+        Self::execute_migration(pool, migration_001, "001").await?;
 
+        // Migration 002: Enterprise user fields
+        let migration_002 = include_str!("../migrations/002_add_enterprise_user_fields.sql");
+        Self::execute_migration(pool, migration_002, "002").await?;
+
+        info!("SQLite migrations completed successfully");
+        Ok(())
+    }
+
+    /// Execute a single migration file.
+    async fn execute_migration(pool: &SqlitePool, migration_sql: &str, version: &str) -> Result<()> {
         // Split by semicolon and filter out comments and empty lines
         let statements: Vec<String> = migration_sql
             .split(';')
@@ -154,14 +167,13 @@ impl SqliteStorage {
             .collect();
 
         for statement in statements {
-            debug!(statement = %statement, "Executing migration statement");
+            debug!(version = %version, statement = %statement, "Executing migration statement");
             sqlx::query(&statement)
                 .execute(pool)
                 .await
-                .context(format!("Failed to execute migration: {}", statement))?;
+                .context(format!("Failed to execute migration {} statement: {}", version, statement))?;
         }
 
-        info!("SQLite migrations completed successfully");
         Ok(())
     }
 
@@ -185,7 +197,10 @@ impl CredentialStore for SqliteStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let row = sqlx::query(
             "SELECT username, password_hash, display_name, tenant_id, enabled,
-                    created_at, updated_at, media_preferences
+                    created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, language, timezone,
+                    account_status, last_login, emergency_contact_name, emergency_contact_phone
              FROM users
              WHERE username = ?",
         )
@@ -214,16 +229,44 @@ impl CredentialStore for SqliteStorage {
             .as_secs() as i64;
         let media_prefs = serde_json::to_string(&user.media_preferences)?;
 
+        let password_last_reset = user.password_last_reset.map(|t| {
+            t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+        });
+        let last_login = user.last_login.map(|t| {
+            t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
+        });
+        let account_status = user.account_status.to_string();
+
         sqlx::query(
-            "INSERT INTO users (username, password_hash, display_name, tenant_id, enabled,
-                               created_at, updated_at, media_preferences)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO users (
+                username, password_hash, display_name, tenant_id, enabled,
+                created_at, updated_at, media_preferences,
+                email, password_last_reset, phone_number, mobile_number, pin,
+                extension, department, job_title, location, language, timezone,
+                account_status, last_login, emergency_contact_name, emergency_contact_phone
+             )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tenant_id, username) DO UPDATE SET
                  password_hash = excluded.password_hash,
                  display_name = excluded.display_name,
                  enabled = excluded.enabled,
                  updated_at = excluded.updated_at,
-                 media_preferences = excluded.media_preferences",
+                 media_preferences = excluded.media_preferences,
+                 email = excluded.email,
+                 password_last_reset = excluded.password_last_reset,
+                 phone_number = excluded.phone_number,
+                 mobile_number = excluded.mobile_number,
+                 pin = excluded.pin,
+                 extension = excluded.extension,
+                 department = excluded.department,
+                 job_title = excluded.job_title,
+                 location = excluded.location,
+                 language = excluded.language,
+                 timezone = excluded.timezone,
+                 account_status = excluded.account_status,
+                 last_login = excluded.last_login,
+                 emergency_contact_name = excluded.emergency_contact_name,
+                 emergency_contact_phone = excluded.emergency_contact_phone",
         )
         .bind(&user.username)
         .bind(&user.password)
@@ -233,6 +276,21 @@ impl CredentialStore for SqliteStorage {
         .bind(created_at)
         .bind(updated_at)
         .bind(&media_prefs)
+        .bind(&user.email)
+        .bind(password_last_reset)
+        .bind(&user.phone_number)
+        .bind(&user.mobile_number)
+        .bind(&user.pin)
+        .bind(&user.extension)
+        .bind(&user.department)
+        .bind(&user.job_title)
+        .bind(&user.location)
+        .bind(&user.language)
+        .bind(&user.timezone)
+        .bind(&account_status)
+        .bind(last_login)
+        .bind(&user.emergency_contact.name)
+        .bind(&user.emergency_contact.phone)
         .execute(&self.pool)
         .await?;
 
@@ -253,7 +311,10 @@ impl CredentialStore for SqliteStorage {
     async fn list_users(&self) -> Result<Vec<User>> {
         let rows = sqlx::query(
             "SELECT username, password_hash, display_name, tenant_id, enabled,
-                    created_at, updated_at, media_preferences
+                    created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, language, timezone,
+                    account_status, last_login, emergency_contact_name, emergency_contact_phone
              FROM users
              ORDER BY username",
         )
@@ -612,11 +673,29 @@ impl CdrStore for SqliteStorage {
 
 /// Convert SQLite row to User
 fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
+    use fcp_core::{AccountStatus, EmergencyContact};
+
     let media_prefs: Option<String> = row.get("media_preferences");
     let media_preferences = if let Some(json) = media_prefs {
         serde_json::from_str(&json).unwrap_or_default()
     } else {
         MediaPreferences::default()
+    };
+
+    let password_last_reset = row
+        .get::<Option<i64>, _>("password_last_reset")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+
+    let last_login = row
+        .get::<Option<i64>, _>("last_login")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+
+    let account_status_str: String = row.get("account_status");
+    let account_status = AccountStatus::from_str(&account_status_str).unwrap_or_default();
+
+    let emergency_contact = EmergencyContact {
+        name: row.get("emergency_contact_name"),
+        phone: row.get("emergency_contact_phone"),
     };
 
     Ok(User {
@@ -629,6 +708,20 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
         created_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("created_at") as u64),
         updated_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("updated_at") as u64),
         media_preferences,
+        email: row.get("email"),
+        password_last_reset,
+        phone_number: row.get("phone_number"),
+        mobile_number: row.get("mobile_number"),
+        pin: row.get("pin"),
+        extension: row.get("extension"),
+        department: row.get("department"),
+        job_title: row.get("job_title"),
+        location: row.get("location"),
+        language: row.get("language"),
+        timezone: row.get("timezone"),
+        account_status,
+        last_login,
+        emergency_contact,
     })
 }
 
@@ -762,6 +855,20 @@ mod tests {
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             media_preferences: MediaPreferences::default(),
+            email: None,
+            password_last_reset: None,
+            phone_number: None,
+            mobile_number: None,
+            pin: None,
+            extension: None,
+            department: None,
+            job_title: None,
+            location: None,
+            language: "en-US".to_string(),
+            timezone: "UTC".to_string(),
+            account_status: AccountStatus::Active,
+            last_login: None,
+            emergency_contact: EmergencyContact::default(),
         };
 
         storage.put_user(user.clone()).await.unwrap();

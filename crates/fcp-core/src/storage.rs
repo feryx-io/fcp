@@ -162,10 +162,118 @@ pub struct User {
     /// Media preferences for this user
     #[serde(default)]
     pub media_preferences: MediaPreferences,
+
+    // ===== Enterprise-grade fields =====
+
+    /// Email address
+    pub email: Option<String>,
+
+    /// Password last reset timestamp
+    #[serde(with = "optional_system_time_serde", default)]
+    pub password_last_reset: Option<SystemTime>,
+
+    /// Primary phone number
+    pub phone_number: Option<String>,
+
+    /// Mobile phone number
+    pub mobile_number: Option<String>,
+
+    /// PIN for voicemail access (hashed)
+    pub pin: Option<String>,
+
+    /// Extension number
+    pub extension: Option<String>,
+
+    /// Department
+    pub department: Option<String>,
+
+    /// Job title
+    pub job_title: Option<String>,
+
+    /// Location/Office
+    pub location: Option<String>,
+
+    /// Language/Locale (e.g., "en-US", "es-ES")
+    #[serde(default = "default_language")]
+    pub language: String,
+
+    /// Timezone (e.g., "America/New_York", "UTC")
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+
+    /// Account status
+    #[serde(default)]
+    pub account_status: AccountStatus,
+
+    /// Last login timestamp
+    #[serde(with = "optional_system_time_serde", default)]
+    pub last_login: Option<SystemTime>,
+
+    /// Emergency contact information
+    #[serde(default)]
+    pub emergency_contact: EmergencyContact,
+}
+
+fn default_language() -> String {
+    "en-US".to_string()
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
 }
 
 fn default_tenant_id() -> crate::TenantId {
     crate::TenantId::nil()
+}
+
+/// Account status for user accounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountStatus {
+    /// Account is active and can authenticate
+    Active,
+    /// Account is temporarily suspended
+    Suspended,
+    /// Account is locked (e.g., after too many failed login attempts)
+    Locked,
+}
+
+impl Default for AccountStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+impl std::fmt::Display for AccountStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Suspended => write!(f, "suspended"),
+            Self::Locked => write!(f, "locked"),
+        }
+    }
+}
+
+impl std::str::FromStr for AccountStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(Self::Active),
+            "suspended" => Ok(Self::Suspended),
+            "locked" => Ok(Self::Locked),
+            _ => anyhow::bail!("Invalid account status: {}", s),
+        }
+    }
+}
+
+/// Emergency contact information.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EmergencyContact {
+    /// Emergency contact name
+    pub name: Option<String>,
+    /// Emergency contact phone number
+    pub phone: Option<String>,
 }
 
 /// Media preferences for a user account.
@@ -227,6 +335,48 @@ pub struct UserFileEntry {
     /// Media preferences for this user
     #[serde(default)]
     pub media_preferences: MediaPreferences,
+
+    // ===== Enterprise-grade fields =====
+
+    /// Email address
+    pub email: Option<String>,
+
+    /// Primary phone number
+    pub phone_number: Option<String>,
+
+    /// Mobile phone number
+    pub mobile_number: Option<String>,
+
+    /// PIN for voicemail access (plaintext, will be hashed on load)
+    pub pin: Option<String>,
+
+    /// Extension number
+    pub extension: Option<String>,
+
+    /// Department
+    pub department: Option<String>,
+
+    /// Job title
+    pub job_title: Option<String>,
+
+    /// Location/Office
+    pub location: Option<String>,
+
+    /// Language/Locale (e.g., "en-US", "es-ES")
+    #[serde(default = "default_language")]
+    pub language: String,
+
+    /// Timezone (e.g., "America/New_York", "UTC")
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+
+    /// Account status
+    #[serde(default)]
+    pub account_status: AccountStatus,
+
+    /// Emergency contact information
+    #[serde(default)]
+    pub emergency_contact: EmergencyContact,
 }
 
 fn default_true() -> bool {
@@ -911,6 +1061,20 @@ mod tests {
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             media_preferences: MediaPreferences::default(),
+            email: None,
+            password_last_reset: None,
+            phone_number: None,
+            mobile_number: None,
+            pin: None,
+            extension: None,
+            department: None,
+            job_title: None,
+            location: None,
+            language: "en-US".to_string(),
+            timezone: "UTC".to_string(),
+            account_status: AccountStatus::Active,
+            last_login: None,
+            emergency_contact: EmergencyContact::default(),
         };
 
         storage.put_user(user.clone()).await.unwrap();

@@ -25,8 +25,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bson::{doc, Document, DateTime as BsonDateTime};
 use fcp_core::storage::{
-    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore, HangupCause,
-    HangupParty, MediaPreferences, Registration, RegistrationStore, User,
+    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
+    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration,
+    RegistrationStore, User,
 };
 use fcp_core::{CallId, TenantId};
 use mongodb::{
@@ -793,6 +794,27 @@ fn document_to_user(doc: Document) -> Result<User> {
         .map(|dt| bson_datetime_to_system_time(*dt))
         .unwrap_or_else(SystemTime::now);
 
+    // Parse optional timestamp fields
+    let password_last_reset = doc
+        .get_datetime("password_last_reset")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    let last_login = doc
+        .get_datetime("last_login")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    // Parse account status
+    let account_status_str = doc.get_str("account_status").unwrap_or("active");
+    let account_status = AccountStatus::from_str(account_status_str).unwrap_or(AccountStatus::Active);
+
+    // Parse emergency contact
+    let emergency_contact = EmergencyContact {
+        name: doc.get_str("emergency_contact_name").ok().map(String::from),
+        phone: doc.get_str("emergency_contact_phone").ok().map(String::from),
+    };
+
     Ok(User {
         username: doc
             .get_str("username")
@@ -811,6 +833,20 @@ fn document_to_user(doc: Document) -> Result<User> {
         created_at,
         updated_at,
         media_preferences: media_prefs,
+        email: doc.get_str("email").ok().map(String::from),
+        password_last_reset,
+        phone_number: doc.get_str("phone_number").ok().map(String::from),
+        mobile_number: doc.get_str("mobile_number").ok().map(String::from),
+        pin: doc.get_str("pin").ok().map(String::from),
+        extension: doc.get_str("extension").ok().map(String::from),
+        department: doc.get_str("department").ok().map(String::from),
+        job_title: doc.get_str("job_title").ok().map(String::from),
+        location: doc.get_str("location").ok().map(String::from),
+        language: doc.get_str("language").unwrap_or("en-US").to_string(),
+        timezone: doc.get_str("timezone").unwrap_or("UTC").to_string(),
+        account_status,
+        last_login,
+        emergency_contact,
     })
 }
 

@@ -36,10 +36,41 @@ pub struct UsersViewState {
     pub input_display_name: Input,
     /// Input field: password
     pub input_password: Input,
-    /// Which input field is focused (0=username, 1=display_name, 2=password)
-    pub focused_field: usize,
     /// Whether user is enabled (for add/edit)
     pub input_enabled: bool,
+
+    // ===== Enterprise input fields =====
+    /// Input field: email
+    pub input_email: Input,
+    /// Input field: phone number
+    pub input_phone_number: Input,
+    /// Input field: mobile number
+    pub input_mobile_number: Input,
+    /// Input field: PIN (voicemail)
+    pub input_pin: Input,
+    /// Input field: extension
+    pub input_extension: Input,
+    /// Input field: department
+    pub input_department: Input,
+    /// Input field: job title
+    pub input_job_title: Input,
+    /// Input field: location
+    pub input_location: Input,
+    /// Input field: language
+    pub input_language: Input,
+    /// Input field: timezone
+    pub input_timezone: Input,
+    /// Input field: account status
+    pub input_account_status: Input,
+    /// Input field: emergency contact name
+    pub input_emergency_contact_name: Input,
+    /// Input field: emergency contact phone
+    pub input_emergency_contact_phone: Input,
+
+    /// Which input field is focused (0-15)
+    pub focused_field: usize,
+    /// Total number of input fields
+    pub total_fields: usize,
 }
 
 impl Default for UsersViewState {
@@ -56,8 +87,23 @@ impl Default for UsersViewState {
             input_username: Input::default(),
             input_display_name: Input::default(),
             input_password: Input::default(),
-            focused_field: 0,
             input_enabled: true,
+            // Enterprise fields
+            input_email: Input::default(),
+            input_phone_number: Input::default(),
+            input_mobile_number: Input::default(),
+            input_pin: Input::default(),
+            input_extension: Input::default(),
+            input_department: Input::default(),
+            input_job_title: Input::default(),
+            input_location: Input::default(),
+            input_language: Input::new("en-US".to_string()),
+            input_timezone: Input::new("UTC".to_string()),
+            input_account_status: Input::new("active".to_string()),
+            input_emergency_contact_name: Input::default(),
+            input_emergency_contact_phone: Input::default(),
+            focused_field: 0,
+            total_fields: 16, // 0-15: username, display_name, password, email, phone, mobile, pin, ext, dept, title, loc, lang, tz, status, emerg_name, emerg_phone
         }
     }
 }
@@ -118,6 +164,22 @@ impl UsersViewState {
             self.input_display_name = Input::new(user.display_name.unwrap_or_default());
             self.input_password = Input::default(); // Don't show existing password
             self.input_enabled = user.enabled;
+
+            // Enterprise fields
+            self.input_email = Input::new(user.email.unwrap_or_default());
+            self.input_phone_number = Input::new(user.phone_number.unwrap_or_default());
+            self.input_mobile_number = Input::new(user.mobile_number.unwrap_or_default());
+            self.input_pin = Input::default(); // Don't show existing PIN
+            self.input_extension = Input::new(user.extension.unwrap_or_default());
+            self.input_department = Input::new(user.department.unwrap_or_default());
+            self.input_job_title = Input::new(user.job_title.unwrap_or_default());
+            self.input_location = Input::new(user.location.unwrap_or_default());
+            self.input_language = Input::new(user.language);
+            self.input_timezone = Input::new(user.timezone);
+            self.input_account_status = Input::new(user.account_status);
+            self.input_emergency_contact_name = Input::new(user.emergency_contact_name.unwrap_or_default());
+            self.input_emergency_contact_phone = Input::new(user.emergency_contact_phone.unwrap_or_default());
+
             self.focused_field = 1; // Focus on display name for edit
         }
     }
@@ -141,16 +203,34 @@ impl UsersViewState {
         self.input_display_name = Input::default();
         self.input_password = Input::default();
         self.input_enabled = true;
+        // Enterprise fields
+        self.input_email = Input::default();
+        self.input_phone_number = Input::default();
+        self.input_mobile_number = Input::default();
+        self.input_pin = Input::default();
+        self.input_extension = Input::default();
+        self.input_department = Input::default();
+        self.input_job_title = Input::default();
+        self.input_location = Input::default();
+        self.input_language = Input::new("en-US".to_string());
+        self.input_timezone = Input::new("UTC".to_string());
+        self.input_account_status = Input::new("active".to_string());
+        self.input_emergency_contact_name = Input::default();
+        self.input_emergency_contact_phone = Input::default();
     }
 
     /// Move focus to next field
     pub fn next_field(&mut self) {
-        self.focused_field = (self.focused_field + 1) % 3;
+        self.focused_field = (self.focused_field + 1) % self.total_fields;
     }
 
     /// Move focus to previous field
     pub fn prev_field(&mut self) {
-        self.focused_field = if self.focused_field == 0 { 2 } else { self.focused_field - 1 };
+        self.focused_field = if self.focused_field == 0 {
+            self.total_fields - 1
+        } else {
+            self.focused_field - 1
+        };
     }
 
     /// Get currently focused input
@@ -159,6 +239,19 @@ impl UsersViewState {
             0 => &mut self.input_username,
             1 => &mut self.input_display_name,
             2 => &mut self.input_password,
+            3 => &mut self.input_email,
+            4 => &mut self.input_phone_number,
+            5 => &mut self.input_mobile_number,
+            6 => &mut self.input_pin,
+            7 => &mut self.input_extension,
+            8 => &mut self.input_department,
+            9 => &mut self.input_job_title,
+            10 => &mut self.input_location,
+            11 => &mut self.input_language,
+            12 => &mut self.input_timezone,
+            13 => &mut self.input_account_status,
+            14 => &mut self.input_emergency_contact_name,
+            15 => &mut self.input_emergency_contact_phone,
             _ => &mut self.input_username,
         }
     }
@@ -258,7 +351,7 @@ fn render_users_table(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &m
 /// Render the details panel for selected user
 fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
     let details_text = if let Some(user) = state.selected_user() {
-        vec![
+        let mut lines = vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled("Username: ", theme.muted()),
@@ -274,11 +367,6 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Tenant ID: ", theme.muted()),
-                Span::styled(&user.tenant_id, theme.normal()),
-            ]),
-            Line::from(""),
-            Line::from(vec![
                 Span::styled("Enabled: ", theme.muted()),
                 Span::styled(
                     if user.enabled { "Yes" } else { "No" },
@@ -291,27 +379,112 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Created: ", theme.muted()),
-                Span::styled(format!("{:?}", user.created_at), theme.normal()),
+                Span::styled("Status: ", theme.muted()),
+                Span::styled(&user.account_status, theme.info()),
             ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("Updated: ", theme.muted()),
-                Span::styled(format!("{:?}", user.updated_at), theme.normal()),
-            ]),
-            Line::from(""),
-            Line::from(""),
-            Line::from(vec![Span::styled("Actions:", theme.title())]),
-            Line::from(vec![
-                Span::styled("  ", theme.muted()),
-                Span::styled("a", theme.primary()),
-                Span::styled(" - Add  ", theme.normal()),
-                Span::styled("e", theme.primary()),
-                Span::styled(" - Edit  ", theme.normal()),
-                Span::styled("d", theme.primary()),
-                Span::styled(" - Delete", theme.normal()),
-            ]),
-        ]
+        ];
+
+        // Enterprise fields section
+        if user.email.is_some() || user.extension.is_some() || user.department.is_some() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled("── Contact Info ──", theme.title())]));
+
+            if let Some(email) = &user.email {
+                lines.push(Line::from(vec![
+                    Span::styled("Email: ", theme.muted()),
+                    Span::styled(email, theme.normal()),
+                ]));
+            }
+            if let Some(phone) = &user.phone_number {
+                lines.push(Line::from(vec![
+                    Span::styled("Phone: ", theme.muted()),
+                    Span::styled(phone, theme.normal()),
+                ]));
+            }
+            if let Some(mobile) = &user.mobile_number {
+                lines.push(Line::from(vec![
+                    Span::styled("Mobile: ", theme.muted()),
+                    Span::styled(mobile, theme.normal()),
+                ]));
+            }
+            if let Some(ext) = &user.extension {
+                lines.push(Line::from(vec![
+                    Span::styled("Extension: ", theme.muted()),
+                    Span::styled(ext, theme.normal()),
+                ]));
+            }
+        }
+
+        // Job info section
+        if user.department.is_some() || user.job_title.is_some() || user.location.is_some() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled("── Job Info ──", theme.title())]));
+
+            if let Some(dept) = &user.department {
+                lines.push(Line::from(vec![
+                    Span::styled("Department: ", theme.muted()),
+                    Span::styled(dept, theme.normal()),
+                ]));
+            }
+            if let Some(title) = &user.job_title {
+                lines.push(Line::from(vec![
+                    Span::styled("Title: ", theme.muted()),
+                    Span::styled(title, theme.normal()),
+                ]));
+            }
+            if let Some(loc) = &user.location {
+                lines.push(Line::from(vec![
+                    Span::styled("Location: ", theme.muted()),
+                    Span::styled(loc, theme.normal()),
+                ]));
+            }
+        }
+
+        // Preferences section
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled("── Preferences ──", theme.title())]));
+        lines.push(Line::from(vec![
+            Span::styled("Language: ", theme.muted()),
+            Span::styled(&user.language, theme.normal()),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Timezone: ", theme.muted()),
+            Span::styled(&user.timezone, theme.normal()),
+        ]));
+
+        // Emergency contact section
+        if user.emergency_contact_name.is_some() || user.emergency_contact_phone.is_some() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled("── Emergency Contact ──", theme.title())]));
+
+            if let Some(name) = &user.emergency_contact_name {
+                lines.push(Line::from(vec![
+                    Span::styled("Name: ", theme.muted()),
+                    Span::styled(name, theme.normal()),
+                ]));
+            }
+            if let Some(phone) = &user.emergency_contact_phone {
+                lines.push(Line::from(vec![
+                    Span::styled("Phone: ", theme.muted()),
+                    Span::styled(phone, theme.normal()),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled("Actions:", theme.title())]));
+        lines.push(Line::from(vec![
+            Span::styled("  ", theme.muted()),
+            Span::styled("a", theme.primary()),
+            Span::styled(" - Add  ", theme.normal()),
+            Span::styled("e", theme.primary()),
+            Span::styled(" - Edit  ", theme.normal()),
+            Span::styled("d", theme.primary()),
+            Span::styled(" - Delete", theme.normal()),
+        ]));
+
+        lines
     } else if state.users.is_empty() {
         vec![
             Line::from(""),
@@ -399,14 +572,31 @@ pub async fn fetch_users(
 
 /// Render add user modal
 fn render_add_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
-    let popup_area = centered_rect(60, 50, area);
+    let popup_area = centered_rect(70, 80, area);
 
-    let title_text = " Add New User (Tab: next field, Enter: save, Esc: cancel) ";
+    let title_text = " Add New User (Tab/Shift+Tab: navigate, Enter: save, Esc: cancel) ";
     let password_masked = "*".repeat(state.input_password.value().len());
+    let pin_masked = "*".repeat(state.input_pin.value().len());
+
     let fields = vec![
+        // Core fields
         ("Username:", state.input_username.value(), state.focused_field == 0),
         ("Display Name:", state.input_display_name.value(), state.focused_field == 1),
         ("Password:", password_masked.as_str(), state.focused_field == 2),
+        // Enterprise fields
+        ("Email:", state.input_email.value(), state.focused_field == 3),
+        ("Phone Number:", state.input_phone_number.value(), state.focused_field == 4),
+        ("Mobile Number:", state.input_mobile_number.value(), state.focused_field == 5),
+        ("PIN (Voicemail):", pin_masked.as_str(), state.focused_field == 6),
+        ("Extension:", state.input_extension.value(), state.focused_field == 7),
+        ("Department:", state.input_department.value(), state.focused_field == 8),
+        ("Job Title:", state.input_job_title.value(), state.focused_field == 9),
+        ("Location:", state.input_location.value(), state.focused_field == 10),
+        ("Language:", state.input_language.value(), state.focused_field == 11),
+        ("Timezone:", state.input_timezone.value(), state.focused_field == 12),
+        ("Account Status:", state.input_account_status.value(), state.focused_field == 13),
+        ("Emergency Name:", state.input_emergency_contact_name.value(), state.focused_field == 14),
+        ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
     ];
 
     render_form_modal(f, theme, popup_area, title_text, &fields);
@@ -414,14 +604,31 @@ fn render_add_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Use
 
 /// Render edit user modal
 fn render_edit_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
-    let popup_area = centered_rect(60, 50, area);
+    let popup_area = centered_rect(70, 80, area);
 
-    let title_text = " Edit User (Tab: next field, Enter: save, Esc: cancel) ";
+    let title_text = " Edit User (Tab/Shift+Tab: navigate, Enter: save, Esc: cancel) ";
     let password_masked = "*".repeat(state.input_password.value().len());
+    let pin_masked = "*".repeat(state.input_pin.value().len());
+
     let fields = vec![
+        // Core fields
         ("Username:", state.input_username.value(), false), // Username not editable
         ("Display Name:", state.input_display_name.value(), state.focused_field == 1),
         ("New Password:", password_masked.as_str(), state.focused_field == 2),
+        // Enterprise fields
+        ("Email:", state.input_email.value(), state.focused_field == 3),
+        ("Phone Number:", state.input_phone_number.value(), state.focused_field == 4),
+        ("Mobile Number:", state.input_mobile_number.value(), state.focused_field == 5),
+        ("New PIN:", pin_masked.as_str(), state.focused_field == 6),
+        ("Extension:", state.input_extension.value(), state.focused_field == 7),
+        ("Department:", state.input_department.value(), state.focused_field == 8),
+        ("Job Title:", state.input_job_title.value(), state.focused_field == 9),
+        ("Location:", state.input_location.value(), state.focused_field == 10),
+        ("Language:", state.input_language.value(), state.focused_field == 11),
+        ("Timezone:", state.input_timezone.value(), state.focused_field == 12),
+        ("Account Status:", state.input_account_status.value(), state.focused_field == 13),
+        ("Emergency Name:", state.input_emergency_contact_name.value(), state.focused_field == 14),
+        ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
     ];
 
     render_form_modal(f, theme, popup_area, title_text, &fields);
@@ -578,20 +785,37 @@ async fn create_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
     let username = state.input_username.value().to_string();
     let password = state.input_password.value().to_string();
     let display_name = state.input_display_name.value().to_string();
-    
+
     if username.is_empty() || password.is_empty() {
         state.error = Some("Username and password are required".to_string());
         return;
     }
-    
+
+    // Helper function to convert empty strings to None
+    let optional = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+
     let request = CreateUserRequest {
         username,
         password,
-        display_name: if display_name.is_empty() { None } else { Some(display_name) },
+        display_name: optional(&display_name),
         tenant_id: None,
         enabled: Some(state.input_enabled),
+        // Enterprise fields
+        email: optional(state.input_email.value()),
+        phone_number: optional(state.input_phone_number.value()),
+        mobile_number: optional(state.input_mobile_number.value()),
+        pin: optional(state.input_pin.value()),
+        extension: optional(state.input_extension.value()),
+        department: optional(state.input_department.value()),
+        job_title: optional(state.input_job_title.value()),
+        location: optional(state.input_location.value()),
+        language: optional(state.input_language.value()),
+        timezone: optional(state.input_timezone.value()),
+        account_status: optional(state.input_account_status.value()),
+        emergency_contact_name: optional(state.input_emergency_contact_name.value()),
+        emergency_contact_phone: optional(state.input_emergency_contact_phone.value()),
     };
-    
+
     match api_client.create_user(&request).await {
         Ok(_) => {
             state.close_modal();
@@ -609,10 +833,28 @@ async fn update_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
     let username = state.input_username.value().to_string();
     let display_name = state.input_display_name.value().to_string();
     let password = state.input_password.value().to_string();
-    
+    let pin = state.input_pin.value().to_string();
+
+    // Helper function to convert empty strings to None
+    let optional = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+
     let request = UpdateUserRequest {
-        display_name: if display_name.is_empty() { None } else { Some(display_name) },
+        display_name: optional(&display_name),
         enabled: Some(state.input_enabled),
+        // Enterprise fields
+        email: optional(state.input_email.value()),
+        phone_number: optional(state.input_phone_number.value()),
+        mobile_number: optional(state.input_mobile_number.value()),
+        pin: optional(&pin),
+        extension: optional(state.input_extension.value()),
+        department: optional(state.input_department.value()),
+        job_title: optional(state.input_job_title.value()),
+        location: optional(state.input_location.value()),
+        language: optional(state.input_language.value()),
+        timezone: optional(state.input_timezone.value()),
+        account_status: optional(state.input_account_status.value()),
+        emergency_contact_name: optional(state.input_emergency_contact_name.value()),
+        emergency_contact_phone: optional(state.input_emergency_contact_phone.value()),
     };
     
     match api_client.update_user(&username, &request).await {
