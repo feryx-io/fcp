@@ -27,6 +27,9 @@ pub struct ApiState {
 
     /// Media manager for recording control (optional)
     pub media_manager: Option<Arc<MediaManager>>,
+
+    /// SIP realm for authentication
+    pub realm: String,
 }
 
 impl ApiState {
@@ -37,6 +40,7 @@ impl ApiState {
         call_manager: Arc<CallManager>,
         handler: Arc<SipMessageHandler>,
         media_manager: Option<Arc<MediaManager>>,
+        realm: String,
     ) -> Self {
         Self {
             storage,
@@ -45,6 +49,7 @@ impl ApiState {
             call_manager,
             handler,
             media_manager,
+            realm,
         }
     }
 }

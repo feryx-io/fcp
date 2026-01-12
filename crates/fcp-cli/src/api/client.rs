@@ -185,6 +185,19 @@ impl ApiClient {
         self.request_with_body_no_content(Method::PUT, &format!("/users/{}/password", username), req).await
     }
 
+    /// Set digest password (Cisco-style separate SIP credentials)
+    pub async fn set_digest_password(&self, username: &str, digest_password: &str) -> Result<()> {
+        let req = serde_json::json!({
+            "digest_password": digest_password
+        });
+        self.request_with_body_no_content(Method::PUT, &format!("/users/{}/digest-password", username), &req).await
+    }
+
+    /// Remove digest password (revert to using main password for SIP)
+    pub async fn remove_digest_password(&self, username: &str) -> Result<()> {
+        self.request_no_content(Method::DELETE, &format!("/users/{}/digest-password", username)).await
+    }
+
     /// Delete a user
     pub async fn delete_user(&self, username: &str) -> Result<()> {
         self.request_no_content(Method::DELETE, &format!("/users/{}", username)).await

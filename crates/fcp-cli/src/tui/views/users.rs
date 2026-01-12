@@ -16,6 +16,8 @@ pub enum UserModal {
     Add,
     Edit,
     Delete,
+    SetDigestPassword,
+    RemoveDigestPassword,
 }
 
 /// State for the users view
@@ -67,10 +69,15 @@ pub struct UsersViewState {
     /// Input field: emergency contact phone
     pub input_emergency_contact_phone: Input,
 
+    /// Input field: digest password (for Cisco-style separate SIP credentials)
+    pub input_digest_password: Input,
+
     /// Which input field is focused (0-15)
     pub focused_field: usize,
     /// Total number of input fields
     pub total_fields: usize,
+    /// Scroll offset for form modal (which field is at the top)
+    pub scroll_offset: usize,
 }
 
 impl Default for UsersViewState {
@@ -102,8 +109,10 @@ impl Default for UsersViewState {
             input_account_status: Input::new("active".to_string()),
             input_emergency_contact_name: Input::default(),
             input_emergency_contact_phone: Input::default(),
+            input_digest_password: Input::default(),
             focused_field: 0,
             total_fields: 16, // 0-15: username, display_name, password, email, phone, mobile, pin, ext, dept, title, loc, lang, tz, status, emerg_name, emerg_phone
+            scroll_offset: 0,
         }
     }
 }
@@ -153,6 +162,8 @@ impl UsersViewState {
         self.modal = UserModal::Add;
         self.clear_inputs();
         self.focused_field = 0;
+        self.scroll_offset = 0;
+        self.error = None;
     }
 
     /// Open edit user modal
@@ -181,6 +192,8 @@ impl UsersViewState {
             self.input_emergency_contact_phone = Input::new(user.emergency_contact_phone.unwrap_or_default());
 
             self.focused_field = 1; // Focus on display name for edit
+            self.scroll_offset = 0;
+            self.error = None;
         }
     }
 
@@ -191,10 +204,28 @@ impl UsersViewState {
         }
     }
 
+    /// Open set digest password modal
+    pub fn open_set_digest_password_modal(&mut self) {
+        if self.selected_user().is_some() {
+            self.modal = UserModal::SetDigestPassword;
+            self.input_digest_password = Input::default();
+            self.error = None;
+        }
+    }
+
+    /// Open remove digest password confirmation modal
+    pub fn open_remove_digest_password_modal(&mut self) {
+        if self.selected_user().is_some() {
+            self.modal = UserModal::RemoveDigestPassword;
+            self.error = None;
+        }
+    }
+
     /// Close modal
     pub fn close_modal(&mut self) {
         self.modal = UserModal::None;
         self.clear_inputs();
+        self.error = None;
     }
 
     /// Clear input fields
@@ -217,6 +248,7 @@ impl UsersViewState {
         self.input_account_status = Input::new("active".to_string());
         self.input_emergency_contact_name = Input::default();
         self.input_emergency_contact_phone = Input::default();
+        self.scroll_offset = 0;
     }
 
     /// Move focus to next field
@@ -231,6 +263,19 @@ impl UsersViewState {
         } else {
             self.focused_field - 1
         };
+    }
+
+    /// Ensure the focused field is visible by adjusting scroll offset
+    /// visible_fields is the number of fields that can fit in the visible area
+    pub fn ensure_focused_visible(&mut self, visible_fields: usize) {
+        // If focused field is above the visible area, scroll up
+        if self.focused_field < self.scroll_offset {
+            self.scroll_offset = self.focused_field;
+        }
+        // If focused field is below the visible area, scroll down
+        else if self.focused_field >= self.scroll_offset + visible_fields {
+            self.scroll_offset = self.focused_field.saturating_sub(visible_fields - 1);
+        }
     }
 
     /// Get currently focused input
@@ -276,6 +321,8 @@ pub fn render(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut Users
         UserModal::Add => render_add_modal(f, theme, state, area),
         UserModal::Edit => render_edit_modal(f, theme, state, area),
         UserModal::Delete => render_delete_modal(f, theme, state, area),
+        UserModal::SetDigestPassword => render_set_digest_password_modal(f, theme, state, area),
+        UserModal::RemoveDigestPassword => render_remove_digest_password_modal(f, theme, state, area),
         UserModal::None => {}
     }
 }
@@ -334,14 +381,16 @@ fn render_users_table(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &m
         ])];
 
         let error_para = Paragraph::new(error_text)
-            .block(Block::default().borders(Borders::ALL).border_style(theme.error()));
+            .block(Block::default().borders(Borders::ALL).border_style(theme.error()))
+            .wrap(ratatui::widgets::Wrap { trim: true });
 
-        // Show error in a small area at the bottom
+        // Show error in a larger area at the bottom with word wrapping
+        let error_height = 6u16; // Allow more space for wrapped error messages
         let error_area = Rect {
             x: area.x,
-            y: area.y + area.height.saturating_sub(4),
+            y: area.y + area.height.saturating_sub(error_height + 1),
             width: area.width,
-            height: 3,
+            height: error_height,
         };
 
         f.render_widget(error_para, error_area);
@@ -599,7 +648,7 @@ fn render_add_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Use
         ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
     ];
 
-    render_form_modal(f, theme, popup_area, title_text, &fields);
+    render_form_modal(f, theme, popup_area, title_text, &fields, state.scroll_offset, state.error.as_deref());
 }
 
 /// Render edit user modal
@@ -631,7 +680,7 @@ fn render_edit_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Us
         ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
     ];
 
-    render_form_modal(f, theme, popup_area, title_text, &fields);
+    render_form_modal(f, theme, popup_area, title_text, &fields, state.scroll_offset, state.error.as_deref());
 }
 
 /// Render delete confirmation modal
@@ -666,33 +715,180 @@ fn render_delete_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &
     f.render_widget(paragraph, popup_area);
 }
 
-/// Helper to render a form modal
-fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect, title: &str, fields: &[(&str, &str, bool)]) {
+/// Render set digest password modal
+fn render_set_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+    let popup_area = centered_rect(60, 30, area);
+
+    let username = state.selected_user().map(|u| u.username.as_str()).unwrap_or("unknown");
+
+    let mut text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Set Separate SIP Password for ", theme.normal()),
+            Span::styled(username, theme.primary()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Cisco-style security: Different passwords for API and SIP", theme.normal())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Digest Password: ", theme.normal()),
+            Span::styled(
+                if state.input_digest_password.value().is_empty() {
+                    "(enter password)"
+                } else {
+                    "••••••••"
+                },
+                theme.primary(),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ", theme.normal()),
+            Span::styled("Enter", theme.primary()),
+            Span::styled(" to save, ", theme.normal()),
+            Span::styled("Esc", theme.normal()),
+            Span::styled(" to cancel", theme.normal()),
+        ]),
+    ];
+
+    if let Some(error) = &state.error {
+        text.push(Line::from(""));
+        text.push(Line::from(Span::styled(format!("Error: {}", error), theme.error())));
+    }
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .title(" Set Digest Password ")
+        .borders(Borders::ALL)
+        .border_style(theme.primary());
+    let paragraph = Paragraph::new(text).block(block);
+    f.render_widget(paragraph, popup_area);
+}
+
+/// Render remove digest password confirmation modal
+fn render_remove_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+    let popup_area = centered_rect(60, 25, area);
+
+    let username = state.selected_user().map(|u| u.username.as_str()).unwrap_or("unknown");
+
+    let text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Remove digest password for ", theme.normal()),
+            Span::styled(username, theme.primary()),
+            Span::styled("?", theme.normal()),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("This will:", theme.normal())),
+        Line::from(Span::styled("  • Remove separate SIP password", theme.normal())),
+        Line::from(Span::styled("  • Clear HA1 hash", theme.normal())),
+        Line::from(Span::styled("  • Revert to using main password for SIP", theme.normal())),
+        Line::from(""),
+        Line::from(Span::styled("⚠ Phone must re-register with main password", theme.warning())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ", theme.normal()),
+            Span::styled("Enter", theme.warning()),
+            Span::styled(" to confirm, ", theme.normal()),
+            Span::styled("Esc", theme.primary()),
+            Span::styled(" to cancel", theme.normal()),
+        ]),
+    ];
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .title(" Remove Digest Password ")
+        .borders(Borders::ALL)
+        .border_style(theme.warning());
+    let paragraph = Paragraph::new(text).block(block);
+    f.render_widget(paragraph, popup_area);
+}
+
+/// Helper to render a form modal with scrolling support
+fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect, title: &str, fields: &[(&str, &str, bool)], scroll_offset: usize, error: Option<&str>) {
     f.render_widget(Clear, area);
-    
+
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(theme.border());
-    
+
     let inner = block.inner(area);
     f.render_widget(block, area);
-    
-    // Render form fields
-    let mut y = inner.y + 1;
-    for (label, value, focused) in fields {
-        let label_line = Line::from(vec![
-            Span::styled(*label, theme.muted()),
+
+    // Reserve space for error message at bottom if there is one
+    let error_lines = if error.is_some() { 4 } else { 0 };
+
+    // Calculate how many fields can fit in the visible area
+    // Each field takes 3 lines: label (1) + value (1) + spacing (1)
+    let lines_per_field = 3;
+    let available_height = inner.height.saturating_sub(2 + error_lines) as usize; // Leave room for scroll indicators and error
+    let visible_fields = (available_height / lines_per_field).max(1);
+
+    // Calculate which fields to render
+    let start_field = scroll_offset;
+    let end_field = (scroll_offset + visible_fields).min(fields.len());
+
+    // Show scroll indicator at top if we're scrolled down
+    let mut y = inner.y;
+    if scroll_offset > 0 {
+        let scroll_indicator = Line::from(vec![
+            Span::styled(format!("  ▲ {} more above  ", scroll_offset), theme.muted()),
         ]);
-        f.render_widget(Paragraph::new(label_line), Rect::new(inner.x + 2, y, inner.width - 4, 1));
+        f.render_widget(Paragraph::new(scroll_indicator).alignment(ratatui::layout::Alignment::Center),
+                       Rect::new(inner.x, y, inner.width, 1));
         y += 1;
-        
-        let value_style = if *focused { theme.selected() } else { theme.normal() };
-        let value_line = Line::from(vec![
-            Span::styled(format!(" {} ", value), value_style),
+    } else {
+        y += 1;
+    }
+
+    // Render visible form fields
+    for i in start_field..end_field {
+        if let Some((label, value, focused)) = fields.get(i) {
+            // Render label
+            let label_line = Line::from(vec![
+                Span::styled(*label, theme.muted()),
+            ]);
+            f.render_widget(Paragraph::new(label_line), Rect::new(inner.x + 2, y, inner.width - 4, 1));
+            y += 1;
+
+            // Render value
+            let value_style = if *focused { theme.selected() } else { theme.normal() };
+            let value_line = Line::from(vec![
+                Span::styled(format!(" {} ", value), value_style),
+            ]);
+            f.render_widget(Paragraph::new(value_line), Rect::new(inner.x + 2, y, inner.width - 4, 1));
+            y += 1;
+
+            // Add spacing
+            y += 1;
+        }
+    }
+
+    // Show error message at bottom if present
+    if let Some(error_msg) = error {
+        let error_y = inner.y + inner.height.saturating_sub(error_lines as u16);
+        let error_text = vec![Line::from(vec![
+            Span::styled("Error: ", theme.error()),
+            Span::raw(error_msg),
+        ])];
+
+        let error_para = Paragraph::new(error_text)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(theme.normal());
+
+        f.render_widget(error_para, Rect::new(inner.x + 2, error_y, inner.width - 4, error_lines as u16));
+    }
+
+    // Show scroll indicator at bottom if there are more fields below
+    let remaining_below = fields.len().saturating_sub(end_field);
+    if remaining_below > 0 && error.is_none() {
+        // Only show scroll indicator if no error (error takes priority for bottom space)
+        let scroll_indicator = Line::from(vec![
+            Span::styled(format!("  ▼ {} more below  ", remaining_below), theme.muted()),
         ]);
-        f.render_widget(Paragraph::new(value_line), Rect::new(inner.x + 2, y, inner.width - 4, 1));
-        y += 3;
+        f.render_widget(Paragraph::new(scroll_indicator).alignment(ratatui::layout::Alignment::Center),
+                       Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
     }
 }
 
@@ -737,12 +933,16 @@ pub async fn handle_user_action(
                     KeyCode::Tab if *modifiers == KeyModifiers::NONE => {
                         if state.modal != UserModal::Delete {
                             state.next_field();
+                            // Ensure focused field is visible (assume 5 visible fields as conservative estimate)
+                            state.ensure_focused_visible(5);
                         }
                         return true;
                     }
                     KeyCode::BackTab => {
                         if state.modal != UserModal::Delete {
                             state.prev_field();
+                            // Ensure focused field is visible (assume 5 visible fields as conservative estimate)
+                            state.ensure_focused_visible(5);
                         }
                         return true;
                     }
@@ -757,15 +957,34 @@ pub async fn handle_user_action(
                             UserModal::Delete => {
                                 delete_user(api_client, state).await;
                             }
+                            UserModal::SetDigestPassword => {
+                                set_digest_password(api_client, state).await;
+                            }
+                            UserModal::RemoveDigestPassword => {
+                                remove_digest_password(api_client, state).await;
+                            }
                             UserModal::None => {}
                         }
                         return true;
                     }
                     KeyCode::Char(_) | KeyCode::Backspace => {
-                        if state.modal != UserModal::Delete {
-                            let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
-                            if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
-                                state.focused_input().handle(req);
+                        match state.modal {
+                            UserModal::Delete | UserModal::RemoveDigestPassword => {
+                                // No input for confirmation modals
+                            }
+                            UserModal::SetDigestPassword => {
+                                // Handle digest password input
+                                let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
+                                if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
+                                    state.input_digest_password.handle(req);
+                                }
+                            }
+                            _ => {
+                                // Handle regular form input
+                                let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
+                                if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
+                                    state.focused_input().handle(req);
+                                }
                             }
                         }
                         return true;
@@ -889,6 +1108,48 @@ async fn delete_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
             }
             Err(e) => {
                 state.error = Some(format!("Failed to delete user: {}", e));
+            }
+        }
+    }
+}
+
+/// Set digest password for user (Cisco-style separate SIP credentials)
+async fn set_digest_password(api_client: &crate::api::ApiClient, state: &mut UsersViewState) {
+    if let Some(user) = state.selected_user() {
+        let username = user.username.clone();
+        let digest_password = state.input_digest_password.value().to_string();
+
+        if digest_password.is_empty() {
+            state.error = Some("Digest password is required".to_string());
+            return;
+        }
+
+        match api_client.set_digest_password(&username, &digest_password).await {
+            Ok(_) => {
+                state.close_modal();
+                // Refresh user list
+                fetch_users(api_client, state).await;
+            }
+            Err(e) => {
+                state.error = Some(format!("Failed to set digest password: {}", e));
+            }
+        }
+    }
+}
+
+/// Remove digest password for user (revert to using main password for SIP)
+async fn remove_digest_password(api_client: &crate::api::ApiClient, state: &mut UsersViewState) {
+    if let Some(user) = state.selected_user() {
+        let username = user.username.clone();
+
+        match api_client.remove_digest_password(&username).await {
+            Ok(_) => {
+                state.close_modal();
+                // Refresh user list
+                fetch_users(api_client, state).await;
+            }
+            Err(e) => {
+                state.error = Some(format!("Failed to remove digest password: {}", e));
             }
         }
     }

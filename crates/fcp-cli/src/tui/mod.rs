@@ -255,6 +255,12 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                     Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
                         app.users_view.open_delete_modal();
                     }
+                    Event::Key(KeyEvent { code: KeyCode::Char('s'), modifiers: KeyModifiers::NONE, .. }) => {
+                        app.users_view.open_set_digest_password_modal();
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers: KeyModifiers::NONE, .. }) => {
+                        app.users_view.open_remove_digest_password_modal();
+                    }
                     _ => {}
                 }
             }

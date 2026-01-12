@@ -40,8 +40,8 @@ impl RuntimeBuilder {
 
     /// Set a custom storage backend.
     ///
-    /// If not provided, the runtime will create a default FileBackedStorage
-    /// when the registrar is enabled.
+    /// If not provided, the runtime will initialize a default SQLite storage
+    /// based on the storage configuration when the registrar is enabled.
     pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
         self.storage = Some(storage);
         self
@@ -247,8 +247,8 @@ async fn create_transport_dispatcher(
 /// Create a registrar with storage and optional authentication.
 /// Returns (registrar, storage) tuple.
 ///
-/// If storage is provided, it will be used. Otherwise, a default FileBackedStorage
-/// will be created from the registrar data directory.
+/// If storage is provided, it will be used. Otherwise, a default SQLite storage
+/// will be created using the storage configuration from the config.
 async fn create_registrar(
     config: &FcpConfig,
     provided_storage: Option<Arc<fcp_core::DynStorage>>,
@@ -256,7 +256,7 @@ async fn create_registrar(
     Arc<fcp_sip::registrar::FcpRegistrar>,
     Arc<fcp_core::DynStorage>,
 )> {
-    use fcp_core::{CredentialStore, DynStorage, FileBackedStorage};
+    use fcp_core::{CredentialStore, DynStorage};
     use fcp_sip::registrar::FcpRegistrar;
 
     info!(
@@ -265,18 +265,61 @@ async fn create_registrar(
         "Creating registrar"
     );
 
-    // Use provided storage or create default FileBackedStorage
+    // Use provided storage or initialize from config
     let storage: Arc<DynStorage> = if let Some(storage) = provided_storage {
         info!("Using provided storage backend for registrar");
         storage
     } else {
-        info!("Creating default SQLite-backed storage for registrar");
-        let file_storage = Arc::new(
-            FileBackedStorage::new(config.registrar.data_dir.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create storage: {}", e))?,
+        info!(
+            backend = ?config.storage.backend,
+            connection_string = mask_connection_string(&config.storage.connection_string),
+            "Initializing default storage backend for registrar"
         );
-        Arc::new(DynStorage::from_all_in_one(file_storage))
+
+        // Initialize storage based on configuration
+        match config.storage.backend {
+            fcp_core::StorageBackend::Sqlite => {
+                #[cfg(feature = "storage-sqlite")]
+                {
+                    use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
+                    use std::path::PathBuf;
+
+                    // Parse connection string (format: sqlite://path/to/db.sqlite)
+                    let db_path = if let Some(path) = config.storage.connection_string.strip_prefix("sqlite://") {
+                        PathBuf::from(path)
+                    } else {
+                        anyhow::bail!("Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite");
+                    };
+
+                    let sqlite_config = SqliteConfig {
+                        database_path: db_path,
+                        max_connections: config.storage.max_connections,
+                        connection_timeout: config.storage.connection_timeout,
+                        enable_wal: true,
+                        create_if_missing: true,
+                    };
+
+                    let storage = SqliteStorage::new(sqlite_config)
+                        .await
+                        .context("Failed to initialize SQLite storage for registrar")?;
+
+                    Arc::new(DynStorage::from_all_in_one(Arc::new(storage)))
+                }
+
+                #[cfg(not(feature = "storage-sqlite"))]
+                {
+                    anyhow::bail!(
+                        "SQLite storage backend not available. Compile with --features storage-sqlite"
+                    )
+                }
+            }
+            _ => {
+                anyhow::bail!(
+                    "Storage backend {:?} not yet supported for automatic initialization in registrar. Please provide storage via RuntimeBuilder::with_storage()",
+                    config.storage.backend
+                )
+            }
+        }
     };
 
     // If authentication is enabled, ensure at least one user exists
@@ -288,7 +331,7 @@ async fn create_registrar(
             if let Some(users_file) = &config.registrar.users_file {
                 info!(path = %users_file.display(), "Loading users from file");
 
-                match load_users_from_file(users_file, &storage).await {
+                match load_users_from_file(users_file, &storage, &config.registrar.realm).await {
                     Ok(count) => {
                         info!(count, "Loaded users from file");
                     }
@@ -297,12 +340,12 @@ async fn create_registrar(
                             error = %e,
                             "Failed to load users from file, creating default test users"
                         );
-                        create_default_test_users(&storage).await?;
+                        create_default_test_users(&storage, &config.registrar.realm).await?;
                     }
                 }
             } else {
                 info!("No users file specified, creating default test users");
-                create_default_test_users(&storage).await?;
+                create_default_test_users(&storage, &config.registrar.realm).await?;
             }
         } else {
             info!(
@@ -578,6 +621,7 @@ fn create_local_uri(config: &FcpConfig) -> Result<SipUri> {
 async fn load_users_from_file(
     path: &std::path::Path,
     storage: &Arc<fcp_core::DynStorage>,
+    realm: &str,
 ) -> Result<usize> {
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User, UserFileEntry};
@@ -593,12 +637,25 @@ async fn load_users_from_file(
 
     let mut count = 0;
     for entry in entries {
-        // Hash the plaintext password
+        // Hash the plaintext password for API/web authentication
         let password_hash = password::hash_password(&entry.password)?;
+
+        // Hash the digest password if provided (Cisco-style separate credentials)
+        let digest_password_hash = if let Some(ref digest_pw) = entry.digest_password {
+            Some(password::hash_password(digest_pw)?)
+        } else {
+            None
+        };
+
+        // Compute SIP HA1 hash from digest_password (if set) or password (fallback)
+        let password_for_ha1 = entry.digest_password.as_deref().unwrap_or(&entry.password);
+        let sip_ha1 = fcp_core::storage::password::compute_ha1(&entry.username, realm, password_for_ha1);
 
         let user = User {
             username: entry.username.clone(),
             password: password_hash,
+            digest_password: digest_password_hash,
+            sip_ha1_hash: Some(sip_ha1),
             display_name: entry.display_name.clone(),
             tenant_id: entry.tenant_id,
             enabled: entry.enabled,
@@ -630,7 +687,7 @@ async fn load_users_from_file(
 }
 
 /// Create default test users with hashed passwords.
-async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>) -> Result<()> {
+async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>, realm: &str) -> Result<()> {
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User};
 
@@ -640,9 +697,15 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>) -> Resul
         // Hash the password using bcrypt
         let password_hash = password::hash_password(plaintext_password)?;
 
+        // For test users, we use the same password for both API and SIP (no separate digest credential)
+        // Compute SIP HA1 hash for digest authentication
+        let sip_ha1 = password::compute_ha1(username, realm, plaintext_password);
+
         let user = User {
             username: username.to_string(),
             password: password_hash,
+            digest_password: None, // Test users use same password for API and SIP
+            sip_ha1_hash: Some(sip_ha1),
             display_name: Some(display_name.to_string()),
             tenant_id: fcp_core::TenantId::nil(), // Default tenant for test users
             enabled: true,
@@ -674,6 +737,63 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>) -> Resul
     }
 
     Ok(())
+}
+
+/// Mask sensitive information in connection strings for logging.
+///
+/// This function replaces passwords in connection strings with asterisks to prevent
+/// leaking credentials in logs.
+fn mask_connection_string(conn_str: &str) -> String {
+    if conn_str.starts_with("sqlite:") {
+        // SQLite connection strings don't contain credentials
+        return conn_str.to_string();
+    }
+
+    // For database URLs like: postgres://user:password@host/db
+    if let Some(at_pos) = conn_str.rfind('@') {
+        if let Some(scheme_end) = conn_str.find("://") {
+            let scheme = &conn_str[..scheme_end + 3];
+            let after_at = &conn_str[at_pos..];
+
+            // Check if there's a colon (indicating user:password format)
+            let middle_part = &conn_str[scheme_end + 3..at_pos];
+            if middle_part.contains(':') {
+                // Split on the first colon to get username
+                if let Some(colon_pos) = middle_part.find(':') {
+                    let username = &middle_part[..colon_pos];
+                    return format!("{}{}:***{}", scheme, username, after_at);
+                }
+            }
+        }
+    }
+
+    // For MongoDB URIs like: mongodb://user:password@host/db
+    if conn_str.starts_with("mongodb://") || conn_str.starts_with("mongodb+srv://") {
+        let scheme = if conn_str.starts_with("mongodb+srv://") {
+            "mongodb+srv://"
+        } else {
+            "mongodb://"
+        };
+
+        if let Some(at_pos) = conn_str.rfind('@') {
+            let after_scheme = &conn_str[scheme.len()..at_pos];
+            let after_at = &conn_str[at_pos..];
+
+            if after_scheme.contains(':') {
+                if let Some(colon_pos) = after_scheme.find(':') {
+                    let username = &after_scheme[..colon_pos];
+                    return format!("{}{}:***{}", scheme, username, after_at);
+                }
+            }
+        }
+    }
+
+    // If we can't parse it, mask the entire string after the scheme
+    if let Some(scheme_end) = conn_str.find("://") {
+        format!("{}://***", &conn_str[..scheme_end])
+    } else {
+        "***".to_string()
+    }
 }
 
 #[cfg(test)]

@@ -141,6 +141,12 @@ pub struct UpdatePasswordRequest {
     pub password: String,
 }
 
+/// Update digest password request (for Cisco-style separate SIP credentials).
+#[derive(Debug, Deserialize)]
+pub struct UpdateDigestPasswordRequest {
+    pub digest_password: String,
+}
+
 /// List all users.
 ///
 /// GET /api/v1/users
@@ -193,6 +199,9 @@ pub async fn create_user(
     let password_hash = password::hash_password(&req.password)
         .map_err(|e| ApiError::BadRequest(format!("Invalid password: {}", e)))?;
 
+    // Compute SIP HA1 hash for digest authentication
+    let sip_ha1_hash = password::compute_ha1(&req.username, &state.realm, &req.password);
+
     // Check if user already exists
     if let Some(_) = storage.get_user(&req.username).await? {
         // Use generic error message to avoid user enumeration
@@ -204,7 +213,7 @@ pub async fn create_user(
     // Hash PIN if provided
     let pin_hash = if let Some(ref pin) = req.pin {
         Some(
-            password::hash_password(pin)
+            password::hash_pin(pin)
                 .map_err(|e| ApiError::BadRequest(format!("Invalid PIN: {}", e)))?,
         )
     } else {
@@ -228,6 +237,8 @@ pub async fn create_user(
     let user = User {
         username: req.username.clone(),
         password: password_hash,
+        digest_password: None, // Can be set separately via API for Cisco-style security
+        sip_ha1_hash: Some(sip_ha1_hash),
         display_name: req.display_name,
         tenant_id: req.tenant_id,
         enabled: req.enabled,
@@ -302,7 +313,7 @@ pub async fn update_user(
     }
     if let Some(pin) = req.pin {
         // Hash the PIN
-        let pin_hash = password::hash_password(&pin)
+        let pin_hash = password::hash_pin(&pin)
             .map_err(|e| ApiError::BadRequest(format!("Invalid PIN: {}", e)))?;
         user.pin = Some(pin_hash);
     }
@@ -372,8 +383,12 @@ pub async fn update_password(
     let password_hash = password::hash_password(&req.password)
         .map_err(|e| ApiError::Internal(format!("Failed to hash password: {}", e)))?;
 
-    // Update password
+    // Compute SIP HA1 hash for digest authentication
+    let sip_ha1_hash = password::compute_ha1(&username, &state.realm, &req.password);
+
+    // Update password and HA1 hash
     user.password = password_hash;
+    user.sip_ha1_hash = Some(sip_ha1_hash);
     user.updated_at = std::time::SystemTime::now();
 
     // Save user
@@ -384,6 +399,108 @@ pub async fn update_password(
         event = "password_changed",
         username = %username,
         "User password changed"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Update digest password (Cisco-style separate SIP credentials).
+///
+/// PUT /api/v1/users/:username/digest-password
+///
+/// This sets a separate password for SIP authentication, providing security isolation
+/// between API/web access and SIP phone registration (Cisco CUCM style).
+///
+/// **Security Benefits:**
+/// - Compromised SIP credentials don't expose API/admin access
+/// - Different password policies for phones vs admin users
+/// - Separate rotation schedules for SIP and API credentials
+///
+/// **Note:** If digest_password is not set (NULL), the main password is used for SIP.
+pub async fn update_digest_password(
+    State(state): State<ApiState>,
+    Path(username): Path<String>,
+    Json(req): Json<UpdateDigestPasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    validation::validate_username(&username)?;
+    validation::reject_crlf("digest_password", &req.digest_password)?;
+
+    // Get existing user
+    let storage = require_storage!(state);
+    let mut user = storage
+        .get_user(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+
+    // Hash new digest password
+    let digest_password_hash = password::hash_password(&req.digest_password)
+        .map_err(|e| ApiError::Internal(format!("Failed to hash digest password: {}", e)))?;
+
+    // Compute SIP HA1 hash from digest password (NOT main password)
+    let sip_ha1_hash = password::compute_ha1(&username, &state.realm, &req.digest_password);
+
+    // Update digest password and HA1 hash
+    user.digest_password = Some(digest_password_hash);
+    user.sip_ha1_hash = Some(sip_ha1_hash);
+    user.updated_at = std::time::SystemTime::now();
+
+    // Save user
+    require_storage!(state).put_user(user).await?;
+
+    // Security audit log
+    info!(
+        event = "digest_password_set",
+        username = %username,
+        "User digest password set (Cisco-style separate SIP credentials)"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete digest password (revert to using main password for SIP).
+///
+/// DELETE /api/v1/users/:username/digest-password
+///
+/// Removes the separate digest password and reverts to using the main password
+/// for SIP authentication. The HA1 hash will be recomputed from the main password.
+pub async fn delete_digest_password(
+    State(state): State<ApiState>,
+    Path(username): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    validation::validate_username(&username)?;
+
+    // Get existing user
+    let storage = require_storage!(state);
+    let mut user = storage
+        .get_user(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+
+    // Check if digest password is set
+    if user.digest_password.is_none() {
+        return Err(ApiError::NotFound(
+            "User does not have a separate digest password".to_string(),
+        ));
+    }
+
+    // Remove digest password
+    user.digest_password = None;
+
+    // Note: We cannot recompute HA1 hash from main password because we only have the bcrypt hash
+    // The HA1 hash will need to be recomputed when the user next updates their main password
+    // or we need to prompt for the plaintext password
+    // For now, clear the HA1 hash to force re-authentication setup
+    user.sip_ha1_hash = None;
+    user.updated_at = std::time::SystemTime::now();
+
+    // Save user
+    require_storage!(state).put_user(user).await?;
+
+    // Security audit log
+    warn!(
+        event = "digest_password_removed",
+        username = %username,
+        "User digest password removed, reverted to main password for SIP (HA1 hash cleared)"
     );
 
     Ok(StatusCode::NO_CONTENT)

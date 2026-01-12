@@ -1,6 +1,6 @@
 //! Footer component showing keybindings
 
-use crate::tui::app::App;
+use crate::tui::app::{App, Tab};
 use ratatui::{
     layout::{Alignment, Rect},
     text::{Line, Span},
@@ -10,14 +10,27 @@ use ratatui::{
 
 /// Render the footer component
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    let keybindings = vec![
-        ("h/l", "Tabs"),
-        ("j/k", "Navigate"),
-        ("Enter", "Select"),
-        ("r", "Refresh"),
-        ("?", "Help"),
-        ("q", "Quit"),
-    ];
+    let keybindings = match app.active_tab {
+        Tab::Users => vec![
+            ("h/l", "Tabs"),
+            ("j/k", "Navigate"),
+            ("a", "Add"),
+            ("e", "Edit"),
+            ("d", "Delete"),
+            ("s", "Set Digest"),
+            ("c", "Clear Digest"),
+            ("r", "Refresh"),
+            ("q", "Quit"),
+        ],
+        _ => vec![
+            ("h/l", "Tabs"),
+            ("j/k", "Navigate"),
+            ("Enter", "Select"),
+            ("r", "Refresh"),
+            ("?", "Help"),
+            ("q", "Quit"),
+        ],
+    };
 
     let spans: Vec<_> = keybindings
         .iter()

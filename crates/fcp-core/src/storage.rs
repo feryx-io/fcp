@@ -5,7 +5,17 @@
 //! - SIP registrations (location bindings)
 //! - Call detail records (CDRs)
 //!
-//! The default implementation uses in-memory storage with JSON file persistence.
+//! ## Storage Backends
+//!
+//! FCP supports multiple storage backends:
+//! - **SQLite** (default): Production-ready, ACID-compliant storage for single-node and small deployments
+//! - **PostgreSQL**: For larger multi-node deployments requiring advanced features
+//! - **MySQL**: For existing MySQL infrastructure
+//! - **MongoDB**: For large-scale NoSQL deployments
+//!
+//! The default backend is SQLite, which provides excellent performance for most use cases
+//! while requiring no external database server. For development and testing only, a
+//! FileBackedStorage implementation is also available that uses in-memory storage with JSON file persistence.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -88,6 +98,73 @@ pub mod password {
             .map_err(|e| anyhow::anyhow!("Failed to verify password: {}", e))
     }
 
+    /// PIN validation constants
+    const MIN_PIN_LENGTH: usize = 4;
+    const MAX_PIN_LENGTH: usize = 8;
+
+    /// Validate PIN requirements.
+    ///
+    /// Requirements:
+    /// - Minimum 4 digits
+    /// - Maximum 8 digits
+    /// - Only numeric characters (0-9)
+    pub fn validate_pin(pin: &str) -> Result<()> {
+        if pin.len() < MIN_PIN_LENGTH {
+            bail!(
+                "PIN must be at least {} digits long",
+                MIN_PIN_LENGTH
+            );
+        }
+
+        if pin.len() > MAX_PIN_LENGTH {
+            bail!(
+                "PIN must not exceed {} digits",
+                MAX_PIN_LENGTH
+            );
+        }
+
+        // Ensure PIN contains only digits
+        if !pin.chars().all(|c| c.is_ascii_digit()) {
+            bail!("PIN must contain only numeric digits (0-9)");
+        }
+
+        Ok(())
+    }
+
+    /// Hash a PIN using bcrypt.
+    ///
+    /// This function validates PIN requirements before hashing.
+    /// PINs are typically 4-8 digit numeric codes used for voicemail access.
+    pub fn hash_pin(pin: &str) -> Result<String> {
+        validate_pin(pin)?;
+        bcrypt::hash(pin, BCRYPT_COST)
+            .map_err(|e| anyhow::anyhow!("Failed to hash PIN: {}", e))
+    }
+
+    /// Verify a plaintext PIN against a bcrypt hash.
+    pub fn verify_pin(pin: &str, hash: &str) -> Result<bool> {
+        bcrypt::verify(pin, hash)
+            .map_err(|e| anyhow::anyhow!("Failed to verify PIN: {}", e))
+    }
+
+    /// Compute SIP Digest HA1 hash for authentication.
+    ///
+    /// The HA1 hash is: MD5(username:realm:password)
+    /// This is used by SIP Digest authentication (RFC 2617/7616).
+    ///
+    /// # Arguments
+    /// * `username` - The SIP username
+    /// * `realm` - The authentication realm (e.g., "fcp.local")
+    /// * `password` - The plaintext password
+    ///
+    /// # Returns
+    /// Lowercase hex-encoded MD5 hash
+    pub fn compute_ha1(username: &str, realm: &str, password: &str) -> String {
+        let input = format!("{}:{}:{}", username, realm, password);
+        let digest = md5::compute(input.as_bytes());
+        format!("{:x}", digest)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -127,6 +204,36 @@ pub mod password {
             // Strong password should be accepted
             assert!(hash_password("Str0ng!Pass").is_ok());
         }
+
+        #[test]
+        fn test_pin_validation() {
+            // Valid PINs
+            assert!(validate_pin("1234").is_ok());
+            assert!(validate_pin("123456").is_ok());
+            assert!(validate_pin("12345678").is_ok());
+
+            // Too short
+            assert!(validate_pin("123").is_err());
+
+            // Too long
+            assert!(validate_pin("123456789").is_err());
+
+            // Contains non-numeric characters
+            assert!(validate_pin("12a4").is_err());
+            assert!(validate_pin("12-4").is_err());
+            assert!(validate_pin("PIN1").is_err());
+        }
+
+        #[test]
+        fn test_hash_pin_validates() {
+            // Valid PIN should be accepted
+            assert!(hash_pin("1234").is_ok());
+            assert!(hash_pin("567890").is_ok());
+
+            // Invalid PIN should be rejected
+            assert!(hash_pin("123").is_err()); // Too short
+            assert!(hash_pin("abcd").is_err()); // Not numeric
+        }
     }
 }
 
@@ -136,10 +243,23 @@ pub struct User {
     /// Username (SIP user part)
     pub username: String,
 
-    /// Password hash (bcrypt)
+    /// Password hash (bcrypt) for API/web authentication
     /// This should contain a bcrypt hash, not plaintext.
     /// Use `storage::password::hash_password()` to hash passwords before storing.
     pub password: String,
+
+    /// Separate digest password hash (bcrypt) for SIP authentication
+    /// If None, the main password is used for SIP authentication.
+    /// This provides Cisco-style security isolation between API and SIP credentials.
+    /// Use `storage::password::hash_password()` to hash passwords before storing.
+    pub digest_password: Option<String>,
+
+    /// SIP HA1 hash for Digest authentication
+    /// Format: MD5(username:realm:password)
+    /// Computed from digest_password (if set) or password (if digest_password is None).
+    /// This is required for SIP REGISTER authentication.
+    /// Use `storage::password::compute_ha1()` to generate this hash.
+    pub sip_ha1_hash: Option<String>,
 
     /// Display name (optional)
     pub display_name: Option<String>,
@@ -318,8 +438,13 @@ pub struct UserFileEntry {
     /// Username
     pub username: String,
 
-    /// Password (plaintext, will be hashed on load)
+    /// Password (plaintext, will be hashed on load) for API/web authentication
     pub password: String,
+
+    /// Separate digest password (plaintext, will be hashed on load) for SIP authentication
+    /// If None, the main password will be used for SIP authentication.
+    /// This provides Cisco-style security isolation.
+    pub digest_password: Option<String>,
 
     /// Display name (optional)
     pub display_name: Option<String>,
@@ -692,8 +817,12 @@ mod optional_system_time_serde {
 
 /// In-memory storage with JSON file persistence.
 ///
-/// This is the default storage implementation that keeps data in memory
-/// and periodically saves to JSON files.
+/// **Note:** This implementation is intended for development and testing only.
+/// For production deployments, use SQLite or another database backend.
+///
+/// This implementation keeps data in memory and saves to JSON files. It does not
+/// persist CDRs (Call Detail Records) - they are discarded. For full CDR support
+/// and ACID compliance, use the SQLite backend (fcp-storage-sqlite).
 pub struct FileBackedStorage {
     /// In-memory user store
     users: Arc<RwLock<HashMap<String, User>>>,

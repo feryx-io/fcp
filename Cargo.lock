@@ -1294,7 +1294,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-cli"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1327,12 +1327,13 @@ dependencies = [
 
 [[package]]
 name = "fcp-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "bcrypt",
  "bytes",
+ "md5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1397,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1407,6 +1408,7 @@ dependencies = [
  "fcp-media",
  "fcp-routing",
  "fcp-sip",
+ "fcp-storage-sqlite",
  "serde_json",
  "socket2 0.5.10",
  "thiserror 1.0.69",
@@ -1418,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-server"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1482,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1501,7 +1503,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1519,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1537,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",

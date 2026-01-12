@@ -137,6 +137,9 @@ impl SqliteStorage {
     async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         info!("Running SQLite migrations");
 
+        // Create migration tracking table if it doesn't exist
+        Self::create_migration_table(pool).await?;
+
         // Migration 001: Initial schema
         let migration_001 = include_str!("../migrations/001_initial_schema.sql");
         Self::execute_migration(pool, migration_001, "001").await?;
@@ -145,12 +148,70 @@ impl SqliteStorage {
         let migration_002 = include_str!("../migrations/002_add_enterprise_user_fields.sql");
         Self::execute_migration(pool, migration_002, "002").await?;
 
+        // Migration 003: Digest credentials (Cisco-style separate SIP password)
+        let migration_003 = include_str!("../migrations/003_add_sip_ha1_hash.sql");
+        Self::execute_migration(pool, migration_003, "003").await?;
+
         info!("SQLite migrations completed successfully");
+        Ok(())
+    }
+
+    /// Create the schema_migrations table to track applied migrations.
+    async fn create_migration_table(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            )"
+        )
+        .execute(pool)
+        .await
+        .context("Failed to create schema_migrations table")?;
+
+        Ok(())
+    }
+
+    /// Check if a migration has already been applied.
+    async fn is_migration_applied(pool: &SqlitePool, version: &str) -> Result<bool> {
+        let result = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?"
+        )
+        .bind(version)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result > 0)
+    }
+
+    /// Record a successfully applied migration.
+    async fn record_migration(pool: &SqlitePool, version: &str) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        sqlx::query(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)"
+        )
+        .bind(version)
+        .bind(now)
+        .execute(pool)
+        .await
+        .context(format!("Failed to record migration {}", version))?;
+
         Ok(())
     }
 
     /// Execute a single migration file.
     async fn execute_migration(pool: &SqlitePool, migration_sql: &str, version: &str) -> Result<()> {
+        // Check if migration has already been applied
+        if Self::is_migration_applied(pool, version).await? {
+            debug!(version = %version, "Migration already applied, skipping");
+            return Ok(());
+        }
+
+        info!(version = %version, "Applying migration");
+
         // Split by semicolon and filter out comments and empty lines
         let statements: Vec<String> = migration_sql
             .split(';')
@@ -174,6 +235,10 @@ impl SqliteStorage {
                 .context(format!("Failed to execute migration {} statement: {}", version, statement))?;
         }
 
+        // Record successful migration
+        Self::record_migration(pool, version).await?;
+        info!(version = %version, "Migration applied successfully");
+
         Ok(())
     }
 
@@ -196,7 +261,7 @@ impl SqliteStorage {
 impl CredentialStore for SqliteStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let row = sqlx::query(
-            "SELECT username, password_hash, display_name, tenant_id, enabled,
+            "SELECT username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
                     created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
@@ -239,15 +304,17 @@ impl CredentialStore for SqliteStorage {
 
         sqlx::query(
             "INSERT INTO users (
-                username, password_hash, display_name, tenant_id, enabled,
+                username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
                 created_at, updated_at, media_preferences,
                 email, password_last_reset, phone_number, mobile_number, pin,
                 extension, department, job_title, location, language, timezone,
                 account_status, last_login, emergency_contact_name, emergency_contact_phone
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tenant_id, username) DO UPDATE SET
                  password_hash = excluded.password_hash,
+                 digest_password = excluded.digest_password,
+                 sip_ha1_hash = excluded.sip_ha1_hash,
                  display_name = excluded.display_name,
                  enabled = excluded.enabled,
                  updated_at = excluded.updated_at,
@@ -270,6 +337,8 @@ impl CredentialStore for SqliteStorage {
         )
         .bind(&user.username)
         .bind(&user.password)
+        .bind(&user.digest_password)
+        .bind(&user.sip_ha1_hash)
         .bind(&user.display_name)
         .bind(&tenant_id)
         .bind(enabled)
@@ -310,7 +379,7 @@ impl CredentialStore for SqliteStorage {
 
     async fn list_users(&self) -> Result<Vec<User>> {
         let rows = sqlx::query(
-            "SELECT username, password_hash, display_name, tenant_id, enabled,
+            "SELECT username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
                     created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
@@ -701,6 +770,8 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
     Ok(User {
         username: row.get("username"),
         password: row.get("password_hash"),
+        digest_password: row.try_get("digest_password").ok(),
+        sip_ha1_hash: row.try_get("sip_ha1_hash").ok(),
         display_name: row.get("display_name"),
         tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
             .unwrap_or_else(|_| TenantId::nil()),
@@ -849,6 +920,8 @@ mod tests {
         let user = User {
             username: "alice".to_string(),
             password: "hashed_password".to_string(),
+            digest_password: None,
+            sip_ha1_hash: None,
             display_name: Some("Alice".to_string()),
             tenant_id: TenantId::nil(),
             enabled: true,

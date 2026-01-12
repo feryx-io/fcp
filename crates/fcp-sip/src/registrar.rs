@@ -105,11 +105,16 @@ impl sip_auth::AsyncCredentialStore for CredentialStoreAdapter {
     async fn fetch(&self, username: &str, _realm: &str) -> Option<sip_auth::Credentials> {
         if let Ok(Some(user)) = self.store.get_user(username).await {
             if user.enabled {
-                return Some(sip_auth::Credentials::new(
-                    username,
-                    user.password,
-                    self.realm.clone(),
-                ));
+                // Use sip_ha1_hash for SIP Digest authentication
+                // The HA1 hash is MD5(username:realm:password) which is what the authenticator needs
+                // We pass it as the "password" field since the authenticator expects HA1
+                if let Some(ha1_hash) = user.sip_ha1_hash {
+                    return Some(sip_auth::Credentials::new(
+                        username,
+                        ha1_hash,  // This is the pre-computed HA1 hash
+                        self.realm.clone(),
+                    ));
+                }
             }
         }
         None

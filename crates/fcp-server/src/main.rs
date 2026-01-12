@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
 
     // Get configuration reference and runtime components for API
     let api_config = runtime.config().api.clone();
+    let realm = runtime.config().registrar.realm.clone();
     let storage = runtime.storage().cloned();
     let dialog_manager = Arc::clone(runtime.dialog_manager());
     let subscription_manager = Arc::clone(runtime.subscription_manager());
@@ -87,6 +88,7 @@ async fn main() -> Result<()> {
             call_manager,
             handler,
             media_manager,
+            realm,
         );
         let bind_addr = api_config.bind;
         let api_config_clone = api_config.clone();

@@ -565,6 +565,8 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
     Ok(User {
         username: row.get("username"),
         password: row.get("password_hash"),
+        digest_password: row.try_get("digest_password").ok(),
+        sip_ha1_hash: row.try_get("sip_ha1_hash").ok(),
         display_name: row.get("display_name"),
         tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
             .unwrap_or_else(|_| TenantId::nil()),

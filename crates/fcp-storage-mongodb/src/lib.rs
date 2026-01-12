@@ -824,6 +824,8 @@ fn document_to_user(doc: Document) -> Result<User> {
             .get_str("password_hash")
             .map_err(|_| anyhow::anyhow!("Missing password_hash field"))?
             .to_string(),
+        digest_password: doc.get_str("digest_password").ok().map(String::from),
+        sip_ha1_hash: doc.get_str("sip_ha1_hash").ok().map(String::from),
         display_name: doc.get_str("display_name").ok().map(String::from),
         tenant_id: TenantId::from_str(doc.get_str("tenant_id").map_err(|_| {
             anyhow::anyhow!("Missing tenant_id field")
