@@ -2,16 +2,17 @@
 //!
 //! This module provides integration between FCP storage and siphon-rs registrar.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use fcp_core::{AccountStatus, CredentialStore, EmergencyContact, Registration, RegistrationStore};
-use sip_auth::DigestAuthenticator;
-use sip_core::{Request, Response, StatusLine};
-use sip_registrar::{AsyncLocationStore, BasicRegistrar, Binding};
+use fcp_core::{CredentialStore, Registration, RegistrationStore};
+use sip_core::{Request, Response};
+use sip_registrar::{AsyncLocationStore, Binding};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
+
+use crate::auth::Ha1Authenticator;
 
 /// Adapter that implements siphon-rs LocationStore using FCP RegistrationStore.
 pub struct LocationStoreAdapter {
@@ -30,15 +31,32 @@ impl LocationStoreAdapter {
             .duration_since(SystemTime::now())
             .unwrap_or_default();
 
-        Binding::new(
+        // Clamp to minimum expiry (60 seconds) to avoid validation errors on lookup.
+        // The binding was already validated on insertion, and the actual expiration
+        // is tracked via expires_at. This ensures conversions don't fail due to
+        // time passing between storage and lookup.
+        const MIN_EXPIRES_SECS: u64 = 60;
+        let clamped_duration = if expires_duration.as_secs() < MIN_EXPIRES_SECS {
+            std::time::Duration::from_secs(MIN_EXPIRES_SECS)
+        } else {
+            expires_duration
+        };
+
+        let mut binding = Binding::new(
             reg.aor.clone().into(),
             reg.contact.clone().into(),
-            expires_duration,
-        )
-        .and_then(|b| b.with_call_id(reg.call_id.clone().into()))
-        .and_then(|b| b.with_cseq(reg.cseq))
-        .and_then(|b| b.with_q_value(reg.q.unwrap_or(1.0)))
-        .map_err(|e| anyhow::anyhow!("Failed to create binding: {}", e))
+            clamped_duration,
+        )?
+        .with_call_id(reg.call_id.clone().into())?
+        .with_cseq(reg.cseq)?
+        .with_q_value(reg.q.unwrap_or(1.0))?;
+
+        // Add user_agent if present
+        if let Some(ref ua) = reg.user_agent {
+            binding = binding.with_user_agent(SmolStr::new(ua))?;
+        }
+
+        Ok(binding)
     }
 
     /// Convert siphon-rs Binding to FCP Registration.
@@ -49,7 +67,7 @@ impl LocationStoreAdapter {
             expires_at: SystemTime::now() + binding.expires(),
             call_id: binding.call_id().to_string(),
             cseq: binding.cseq(),
-            user_agent: None,
+            user_agent: binding.user_agent().map(|s| s.to_string()),
             q: Some(binding.q_value()),
             registered_at: SystemTime::now(),
         }
@@ -105,13 +123,13 @@ impl sip_auth::AsyncCredentialStore for CredentialStoreAdapter {
     async fn fetch(&self, username: &str, _realm: &str) -> Option<sip_auth::Credentials> {
         if let Ok(Some(user)) = self.store.get_user(username).await {
             if user.enabled {
-                // Use sip_ha1_hash for SIP Digest authentication
-                // The HA1 hash is MD5(username:realm:password) which is what the authenticator needs
-                // We pass it as the "password" field since the authenticator expects HA1
-                if let Some(ha1_hash) = user.sip_ha1_hash {
+                // Use pre-computed HA1 hash for SIP Digest authentication
+                // We pass the HA1 hash as the "password" - it will be used directly without re-hashing
+                // This is secure because we never store plaintext passwords
+                if let Some(ref ha1_hash) = user.sip_ha1_hash {
                     return Some(sip_auth::Credentials::new(
                         username,
-                        ha1_hash,  // This is the pre-computed HA1 hash
+                        ha1_hash.as_str(),
                         self.realm.clone(),
                     ));
                 }
@@ -123,19 +141,25 @@ impl sip_auth::AsyncCredentialStore for CredentialStoreAdapter {
 
 /// FCP Registrar service that handles REGISTER requests.
 ///
-/// This wraps siphon-rs BasicRegistrar with FCP storage adapters.
+/// This implements registration handling with custom HA1 authentication.
 pub struct FcpRegistrar {
-    /// Siphon-rs registrar with async location store
-    registrar: BasicRegistrar<
-        LocationStoreAdapter,
-        DigestAuthenticator<sip_auth::AsyncToSyncCredentialAdapter<CredentialStoreAdapter>>,
-    >,
+    /// Location store for managing registrations
+    location_store: LocationStoreAdapter,
 
-    /// Enable authentication
-    auth_enabled: bool,
+    /// Custom authenticator that uses pre-computed HA1 hashes
+    authenticator: Option<Ha1Authenticator<CredentialStoreAdapter>>,
 
     /// Credential store for looking up user preferences
     credential_store: Option<Arc<dyn CredentialStore>>,
+
+    /// Default registration expiry in seconds
+    default_expires: u32,
+
+    /// Minimum registration expiry in seconds
+    min_expires: u32,
+
+    /// Maximum registration expiry in seconds
+    max_expires: u32,
 }
 
 impl FcpRegistrar {
@@ -153,27 +177,22 @@ impl FcpRegistrar {
         let location_store = LocationStoreAdapter::new(registration_store);
         let realm_str = realm.unwrap_or_else(|| "fcp.local".to_string());
 
-        let (registrar, auth_enabled) = if let Some(ref cred_store) = credential_store {
-            // Create authenticator with async credential store adapter
+        // Create our custom Ha1Authenticator if credentials are provided
+        let authenticator = if let Some(ref cred_store) = credential_store {
             let cred_adapter =
                 CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
-            let sync_adapter = sip_auth::AsyncToSyncCredentialAdapter::new(cred_adapter);
-            let authenticator = DigestAuthenticator::new(&realm_str, sync_adapter);
-
-            let registrar = BasicRegistrar::new(location_store, Some(authenticator));
-
-            (registrar, true)
+            Some(Ha1Authenticator::new(realm_str, cred_adapter))
         } else {
-            // No authentication
-            let registrar = BasicRegistrar::new(location_store, None);
-
-            (registrar, false)
+            None
         };
 
         Self {
-            registrar,
-            auth_enabled,
+            location_store,
+            authenticator,
             credential_store,
+            default_expires: 3600,
+            min_expires: 60,
+            max_expires: 86400,
         }
     }
 
@@ -185,55 +204,296 @@ impl FcpRegistrar {
     /// # Returns
     /// The response to send (200 OK, 401 Unauthorized, etc.)
     pub async fn handle_register(&self, request: &Request) -> Response {
-        if self.auth_enabled {
+        // Handle authentication manually if enabled
+        if let Some(ref authenticator) = self.authenticator {
             debug!("Handling REGISTER with authentication");
+
+            // Check if request has Authorization header
+            let has_auth = request
+                .headers()
+                .get_smol("Authorization")
+                .or_else(|| request.headers().get_smol("Proxy-Authorization"))
+                .is_some();
+
+            if !has_auth {
+                // No auth header - send challenge
+                debug!("No Authorization header, sending 401 challenge");
+                return match authenticator.challenge(request) {
+                    Ok(response) => response,
+                    Err(e) => {
+                        tracing::error!("Failed to create auth challenge: {}", e);
+                        return self.create_error_response(request, 500, "Internal Server Error");
+                    }
+                };
+            }
+
+            // Verify authentication
+            match authenticator.verify(request).await {
+                Ok(true) => {
+                    debug!("Authentication successful");
+                    // Continue to registration handling
+                }
+                Ok(false) => {
+                    debug!("Authentication failed, sending 401 challenge");
+                    return match authenticator.challenge(request) {
+                        Ok(response) => response,
+                        Err(e) => {
+                            tracing::error!("Failed to create auth challenge: {}", e);
+                            return self
+                                .create_error_response(request, 500, "Internal Server Error");
+                        }
+                    };
+                }
+                Err(e) => {
+                    tracing::error!("Authentication error: {}", e);
+                    return self.create_error_response(request, 500, "Internal Server Error");
+                }
+            }
         } else {
             debug!("Handling REGISTER without authentication");
         }
 
-        // Use siphon-rs registrar to handle the request
-        match self.registrar.handle_register_async(request).await {
-            Ok(response) => {
-                if response.start_line().code() == 200 {
-                    info!(
-                        aor = %sip_parse::header(request.headers(), "To").map(|s| s.as_str()).unwrap_or(""),
-                        "Registration successful"
-                    );
-                } else if response.start_line().code() == 401 {
-                    debug!("Sent 401 Unauthorized challenge");
-                }
-                response
-            }
-            Err(e) => {
-                tracing::error!("Failed to handle REGISTER: {}", e);
-                // Return 500 Internal Server Error
-                let mut headers = sip_core::Headers::new();
-                if let Some(via) = request.headers().get("Via") {
-                    headers.push(SmolStr::new("Via"), via.clone());
-                }
-                if let Some(from) = request.headers().get("From") {
-                    headers.push(SmolStr::new("From"), from.clone());
-                }
-                if let Some(to) = request.headers().get("To") {
-                    headers.push(SmolStr::new("To"), to.clone());
-                }
-                if let Some(call_id) = request.headers().get("Call-ID") {
-                    headers.push(SmolStr::new("Call-ID"), call_id.clone());
-                }
-                if let Some(cseq) = request.headers().get("CSeq") {
-                    headers.push(SmolStr::new("CSeq"), cseq.clone());
-                }
-                headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        // Authentication passed or not required - handle registration
+        self.process_registration(request).await
+    }
 
-                Response::new(
-                    sip_core::StatusLine::new(500, "Internal Server Error")
-                        .expect("Failed to create status line"),
-                    headers,
-                    bytes::Bytes::new(),
-                )
-                .expect("Failed to create response")
+    /// Process the actual registration logic
+    async fn process_registration(&self, request: &Request) -> Response {
+        // Extract To header for AOR
+        let to_header = match request.headers().get_smol("To") {
+            Some(to) => to,
+            None => {
+                return self.create_error_response(request, 400, "Bad Request - Missing To header");
+            }
+        };
+
+        let to = match sip_parse::parse_to_header(to_header) {
+            Some(t) => t,
+            None => {
+                return self
+                    .create_error_response(request, 400, "Bad Request - Invalid To header");
+            }
+        };
+
+        let aor = sip_registrar::normalize_aor(to.inner().uri())
+            .unwrap_or_else(|_| to.inner().uri().to_string());
+
+        // Extract Contact header
+        let contact_header = request.headers().get_smol("Contact");
+
+        // Handle deregistration (Contact: *)
+        if let Some(contact) = contact_header {
+            if contact.trim() == "*" {
+                // Delete all bindings
+                match self.location_store.remove_all(&aor).await {
+                    Ok(_) => {
+                        info!(aor = %aor, "Deregistered all contacts");
+                        return self.create_ok_response(request, vec![]);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to deregister: {}", e);
+                        return self
+                            .create_error_response(request, 500, "Internal Server Error");
+                    }
+                }
             }
         }
+
+        // Extract expiry
+        let expires = self.extract_expires(request);
+
+        // Handle query (Expires: 0 means deregistration)
+        if expires == 0 {
+            if let Some(contact_str) = contact_header {
+                match self.location_store.remove(&aor, contact_str.as_str()).await {
+                    Ok(_) => {
+                        info!(aor = %aor, contact = %contact_str, "Deregistered contact");
+                        return self.create_ok_response(request, vec![]);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to deregister contact: {}", e);
+                        return self
+                            .create_error_response(request, 500, "Internal Server Error");
+                    }
+                }
+            }
+        }
+
+        // Handle registration (Expires > 0)
+        if let Some(contact_str) = contact_header {
+            let binding = match Self::create_binding(&aor, contact_str.as_str(), expires, request) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to create binding: {}", e);
+                    return self.create_error_response(request, 400, "Bad Request");
+                }
+            };
+
+            match self.location_store.upsert(binding).await {
+                Ok(_) => {
+                    info!(aor = %aor, contact = %contact_str, expires = expires, "Registration successful");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to store registration: {}", e);
+                    return self.create_error_response(request, 500, "Internal Server Error");
+                }
+            }
+        }
+
+        // Retrieve all current bindings and return in response
+        match self.location_store.lookup(&aor).await {
+            Ok(bindings) => self.create_ok_response(request, bindings),
+            Err(e) => {
+                tracing::error!("Failed to lookup registrations: {}", e);
+                self.create_error_response(request, 500, "Internal Server Error")
+            }
+        }
+    }
+
+    /// Extract expires value from request
+    fn extract_expires(&self, request: &Request) -> u32 {
+        // Check Contact header params first
+        if let Some(contact) = request.headers().get("Contact") {
+            if let Some(expires_str) = contact
+                .split(';')
+                .find(|p| p.trim().starts_with("expires="))
+            {
+                if let Some(val) = expires_str.trim().strip_prefix("expires=") {
+                    if let Ok(exp) = val.parse::<u32>() {
+                        return exp.clamp(self.min_expires, self.max_expires);
+                    }
+                }
+            }
+        }
+
+        // Check Expires header
+        if let Some(expires_str) = request.headers().get("Expires") {
+            if let Ok(exp) = expires_str.parse::<u32>() {
+                return exp.clamp(self.min_expires, self.max_expires);
+            }
+        }
+
+        // Default
+        self.default_expires
+    }
+
+    /// Create a binding from request parameters
+    fn create_binding(
+        aor: &str,
+        contact: &str,
+        expires: u32,
+        request: &Request,
+    ) -> Result<Binding> {
+        let call_id = request
+            .headers()
+            .get("Call-ID")
+            .ok_or_else(|| anyhow!("Missing Call-ID"))?;
+
+        let cseq_str = request
+            .headers()
+            .get("CSeq")
+            .ok_or_else(|| anyhow!("Missing CSeq"))?;
+        let cseq = cseq_str
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or_else(|| anyhow!("Invalid CSeq"))?;
+
+        Ok(Binding::new(
+            SmolStr::new(aor),
+            SmolStr::new(contact),
+            std::time::Duration::from_secs(expires as u64),
+        )
+        .map_err(|e| anyhow!("Binding creation failed: {}", e))?
+        .with_call_id(SmolStr::new(call_id))
+        .map_err(|e| anyhow!("Failed to set call_id: {}", e))?
+        .with_cseq(cseq)
+        .map_err(|e| anyhow!("Failed to set cseq: {}", e))?
+        .with_q_value(1.0)
+        .map_err(|e| anyhow!("Failed to set q_value: {}", e))?)
+    }
+
+    /// Create a 200 OK response with Contact headers for all bindings
+    fn create_ok_response(&self, request: &Request, bindings: Vec<Binding>) -> Response {
+        let mut headers = sip_core::Headers::new();
+
+        // Copy required headers from request
+        if let Some(via) = request.headers().get_smol("Via") {
+            let _ = headers.push(SmolStr::new("Via"), via.clone());
+        }
+        if let Some(from) = request.headers().get_smol("From") {
+            let _ = headers.push(SmolStr::new("From"), from.clone());
+        }
+        if let Some(to) = request.headers().get_smol("To") {
+            let to_with_tag = if !to.contains(";tag=") {
+                SmolStr::new(format!("{};tag={}", to, self.generate_tag()))
+            } else {
+                to.clone()
+            };
+            let _ = headers.push(SmolStr::new("To"), to_with_tag);
+        }
+        if let Some(call_id) = request.headers().get_smol("Call-ID") {
+            let _ = headers.push(SmolStr::new("Call-ID"), call_id.clone());
+        }
+        if let Some(cseq) = request.headers().get_smol("CSeq") {
+            let _ = headers.push(SmolStr::new("CSeq"), cseq.clone());
+        }
+
+        // Add Contact headers for each binding
+        for binding in bindings {
+            let contact = format!(
+                "<{}>;expires={}",
+                binding.contact(),
+                binding.expires().as_secs()
+            );
+            let _ = headers.push(SmolStr::new("Contact"), SmolStr::new(contact));
+        }
+
+        let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        Response::new(
+            sip_core::StatusLine::new(200, "OK").expect("Failed to create status line"),
+            headers,
+            bytes::Bytes::new(),
+        )
+        .expect("Failed to create response")
+    }
+
+    fn generate_tag(&self) -> String {
+        use rand::{distributions::Alphanumeric, thread_rng, Rng};
+        thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect()
+    }
+
+    /// Create an error response with proper headers copied from request
+    fn create_error_response(&self, request: &Request, code: u16, reason: &str) -> Response {
+        let mut headers = sip_core::Headers::new();
+        if let Some(via) = request.headers().get_smol("Via") {
+            let _ = headers.push(SmolStr::new("Via"), via.clone());
+        }
+        if let Some(from) = request.headers().get_smol("From") {
+            let _ = headers.push(SmolStr::new("From"), from.clone());
+        }
+        if let Some(to) = request.headers().get_smol("To") {
+            let _ = headers.push(SmolStr::new("To"), to.clone());
+        }
+        if let Some(call_id) = request.headers().get_smol("Call-ID") {
+            let _ = headers.push(SmolStr::new("Call-ID"), call_id.clone());
+        }
+        if let Some(cseq) = request.headers().get_smol("CSeq") {
+            let _ = headers.push(SmolStr::new("CSeq"), cseq.clone());
+        }
+        let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        Response::new(
+            sip_core::StatusLine::new(code, reason).expect("Failed to create status line"),
+            headers,
+            bytes::Bytes::new(),
+        )
+        .expect("Failed to create response")
     }
 
     /// Get all registrations for an Address-of-Record.
@@ -246,7 +506,7 @@ impl FcpRegistrar {
             Err(_) => aor.split(';').next().unwrap_or(aor).to_string(),
         };
 
-        self.registrar.location_store().lookup(&normalized).await
+        self.location_store.lookup(&normalized).await
     }
 
     /// Get media preferences for a user.
@@ -369,9 +629,11 @@ mod tests {
             location: None,
             language: "en-US".to_string(),
             timezone: "UTC".to_string(),
-            account_status: AccountStatus::Active,
+            account_status: fcp_core::AccountStatus::Active,
             last_login: None,
-            emergency_contact: EmergencyContact::default(),
+            emergency_contact: fcp_core::EmergencyContact::default(),
+            digest_password: None,
+            sip_ha1_hash: None,
         };
         storage.put_user(user).await.unwrap();
 
