@@ -399,7 +399,9 @@ impl FcpRegistrar {
             .and_then(|s| s.parse::<u32>().ok())
             .ok_or_else(|| anyhow!("Invalid CSeq"))?;
 
-        Ok(Binding::new(
+        let user_agent = request.headers().get("User-Agent");
+
+        let mut binding = Binding::new(
             SmolStr::new(aor),
             SmolStr::new(contact),
             std::time::Duration::from_secs(expires as u64),
@@ -410,7 +412,16 @@ impl FcpRegistrar {
         .with_cseq(cseq)
         .map_err(|e| anyhow!("Failed to set cseq: {}", e))?
         .with_q_value(1.0)
-        .map_err(|e| anyhow!("Failed to set q_value: {}", e))?)
+        .map_err(|e| anyhow!("Failed to set q_value: {}", e))?;
+
+        // Add User-Agent if present
+        if let Some(ua) = user_agent {
+            binding = binding
+                .with_user_agent(SmolStr::new(ua))
+                .map_err(|e| anyhow!("Failed to set user_agent: {}", e))?;
+        }
+
+        Ok(binding)
     }
 
     /// Create a 200 OK response with Contact headers for all bindings
