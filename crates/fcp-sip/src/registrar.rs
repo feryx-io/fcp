@@ -510,9 +510,17 @@ impl FcpRegistrar {
                     if let Ok(exp) = val.parse::<u32>() {
                         // Don't clamp expires=0 (unregister requests)
                         if exp == 0 {
+                            debug!("Client requested expires=0 (deregistration)");
                             return 0;
                         }
-                        return exp.clamp(self.min_expires, self.max_expires);
+                        let clamped = exp.clamp(self.min_expires, self.max_expires);
+                        debug!(
+                            requested = exp,
+                            accepted = clamped,
+                            source = "Contact header",
+                            "Client requested expires value"
+                        );
+                        return clamped;
                     }
                 }
             }
@@ -523,13 +531,25 @@ impl FcpRegistrar {
             if let Ok(exp) = expires_str.parse::<u32>() {
                 // Don't clamp expires=0 (unregister requests)
                 if exp == 0 {
+                    debug!("Client requested expires=0 (deregistration)");
                     return 0;
                 }
-                return exp.clamp(self.min_expires, self.max_expires);
+                let clamped = exp.clamp(self.min_expires, self.max_expires);
+                debug!(
+                    requested = exp,
+                    accepted = clamped,
+                    source = "Expires header",
+                    "Client requested expires value"
+                );
+                return clamped;
             }
         }
 
         // Default
+        debug!(
+            default = self.default_expires,
+            "No expires specified by client, using default"
+        );
         self.default_expires
     }
 
