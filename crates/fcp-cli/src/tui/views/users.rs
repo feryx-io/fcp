@@ -4,10 +4,87 @@ use crate::api::{CreateUserRequest, UpdateUserRequest, UserResponse};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState},
     Frame,
 };
 use tui_input::Input;
+
+/// Common language codes (BCP 47 format)
+const LANGUAGES: &[(&str, &str)] = &[
+    ("en-US", "English (United States)"),
+    ("en-GB", "English (United Kingdom)"),
+    ("en-CA", "English (Canada)"),
+    ("en-AU", "English (Australia)"),
+    ("es-ES", "Spanish (Spain)"),
+    ("es-MX", "Spanish (Mexico)"),
+    ("fr-FR", "French (France)"),
+    ("fr-CA", "French (Canada)"),
+    ("de-DE", "German (Germany)"),
+    ("it-IT", "Italian (Italy)"),
+    ("pt-BR", "Portuguese (Brazil)"),
+    ("pt-PT", "Portuguese (Portugal)"),
+    ("nl-NL", "Dutch (Netherlands)"),
+    ("pl-PL", "Polish (Poland)"),
+    ("ru-RU", "Russian (Russia)"),
+    ("ja-JP", "Japanese (Japan)"),
+    ("ko-KR", "Korean (Korea)"),
+    ("zh-CN", "Chinese (Simplified)"),
+    ("zh-TW", "Chinese (Traditional)"),
+    ("ar-SA", "Arabic (Saudi Arabia)"),
+    ("hi-IN", "Hindi (India)"),
+    ("sv-SE", "Swedish (Sweden)"),
+    ("da-DK", "Danish (Denmark)"),
+    ("no-NO", "Norwegian (Norway)"),
+    ("fi-FI", "Finnish (Finland)"),
+];
+
+/// Common IANA timezone identifiers
+const TIMEZONES: &[&str] = &[
+    "UTC",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Phoenix",
+    "America/Anchorage",
+    "America/Honolulu",
+    "America/Toronto",
+    "America/Vancouver",
+    "America/Mexico_City",
+    "America/Sao_Paulo",
+    "America/Buenos_Aires",
+    "Europe/London",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Europe/Rome",
+    "Europe/Madrid",
+    "Europe/Amsterdam",
+    "Europe/Brussels",
+    "Europe/Vienna",
+    "Europe/Stockholm",
+    "Europe/Oslo",
+    "Europe/Copenhagen",
+    "Europe/Helsinki",
+    "Europe/Warsaw",
+    "Europe/Prague",
+    "Europe/Athens",
+    "Europe/Istanbul",
+    "Europe/Moscow",
+    "Asia/Dubai",
+    "Asia/Kolkata",
+    "Asia/Bangkok",
+    "Asia/Singapore",
+    "Asia/Hong_Kong",
+    "Asia/Shanghai",
+    "Asia/Tokyo",
+    "Asia/Seoul",
+    "Australia/Sydney",
+    "Australia/Melbourne",
+    "Australia/Brisbane",
+    "Australia/Perth",
+    "Pacific/Auckland",
+    "Pacific/Fiji",
+];
 
 /// Modal type for user operations
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +155,13 @@ pub struct UsersViewState {
     pub total_fields: usize,
     /// Scroll offset for form modal (which field is at the top)
     pub scroll_offset: usize,
+
+    /// Selection mode: true when user is selecting from language/timezone dropdown
+    pub in_selection_mode: bool,
+    /// Language selection state
+    pub language_list_state: ListState,
+    /// Timezone selection state
+    pub timezone_list_state: ListState,
 }
 
 impl Default for UsersViewState {
@@ -113,6 +197,9 @@ impl Default for UsersViewState {
             focused_field: 0,
             total_fields: 16, // 0-15: username, display_name, password, email, phone, mobile, pin, ext, dept, title, loc, lang, tz, status, emerg_name, emerg_phone
             scroll_offset: 0,
+            in_selection_mode: false,
+            language_list_state: ListState::default(),
+            timezone_list_state: ListState::default(),
         }
     }
 }
@@ -193,6 +280,7 @@ impl UsersViewState {
 
             self.focused_field = 1; // Focus on display name for edit
             self.scroll_offset = 0;
+            self.in_selection_mode = false;
             self.error = None;
         }
     }
@@ -300,6 +388,105 @@ impl UsersViewState {
             _ => &mut self.input_username,
         }
     }
+
+    /// Check if the currently focused field is a selection field (language or timezone)
+    pub fn is_selection_field(&self) -> bool {
+        self.focused_field == 11 || self.focused_field == 12
+    }
+
+    /// Open selection mode for the currently focused field
+    pub fn open_selection_mode(&mut self) {
+        if !self.is_selection_field() {
+            return;
+        }
+
+        self.in_selection_mode = true;
+
+        // Initialize selection state based on current value
+        if self.focused_field == 11 {
+            // Language field
+            let current_lang = self.input_language.value();
+            let index = LANGUAGES.iter().position(|(code, _)| *code == current_lang).unwrap_or(0);
+            self.language_list_state.select(Some(index));
+        } else if self.focused_field == 12 {
+            // Timezone field
+            let current_tz = self.input_timezone.value();
+            let index = TIMEZONES.iter().position(|tz| *tz == current_tz).unwrap_or(0);
+            self.timezone_list_state.select(Some(index));
+        }
+    }
+
+    /// Close selection mode without changing the value
+    pub fn close_selection_mode(&mut self) {
+        self.in_selection_mode = false;
+    }
+
+    /// Confirm selection and update the input value
+    pub fn confirm_selection(&mut self) {
+        if !self.in_selection_mode {
+            return;
+        }
+
+        if self.focused_field == 11 {
+            // Language field
+            if let Some(selected) = self.language_list_state.selected() {
+                if let Some((code, _)) = LANGUAGES.get(selected) {
+                    self.input_language = Input::new(code.to_string());
+                }
+            }
+        } else if self.focused_field == 12 {
+            // Timezone field
+            if let Some(selected) = self.timezone_list_state.selected() {
+                if let Some(tz) = TIMEZONES.get(selected) {
+                    self.input_timezone = Input::new(tz.to_string());
+                }
+            }
+        }
+
+        self.in_selection_mode = false;
+    }
+
+    /// Navigate selection list up
+    pub fn selection_previous(&mut self) {
+        if !self.in_selection_mode {
+            return;
+        }
+
+        if self.focused_field == 11 {
+            // Language field
+            let selected = self.language_list_state.selected().unwrap_or(0);
+            if selected > 0 {
+                self.language_list_state.select(Some(selected - 1));
+            }
+        } else if self.focused_field == 12 {
+            // Timezone field
+            let selected = self.timezone_list_state.selected().unwrap_or(0);
+            if selected > 0 {
+                self.timezone_list_state.select(Some(selected - 1));
+            }
+        }
+    }
+
+    /// Navigate selection list down
+    pub fn selection_next(&mut self) {
+        if !self.in_selection_mode {
+            return;
+        }
+
+        if self.focused_field == 11 {
+            // Language field
+            let selected = self.language_list_state.selected().unwrap_or(0);
+            if selected < LANGUAGES.len() - 1 {
+                self.language_list_state.select(Some(selected + 1));
+            }
+        } else if self.focused_field == 12 {
+            // Timezone field
+            let selected = self.timezone_list_state.selected().unwrap_or(0);
+            if selected < TIMEZONES.len() - 1 {
+                self.timezone_list_state.select(Some(selected + 1));
+            }
+        }
+    }
 }
 
 /// Render the users view
@@ -324,6 +511,11 @@ pub fn render(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut Users
         UserModal::SetDigestPassword => render_set_digest_password_modal(f, theme, state, area),
         UserModal::RemoveDigestPassword => render_remove_digest_password_modal(f, theme, state, area),
         UserModal::None => {}
+    }
+
+    // Render selection modal on top if in selection mode
+    if state.in_selection_mode {
+        render_selection_modal(f, theme, state, area);
     }
 }
 
@@ -641,8 +833,8 @@ fn render_add_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Use
         ("Department:", state.input_department.value(), state.focused_field == 8),
         ("Job Title:", state.input_job_title.value(), state.focused_field == 9),
         ("Location:", state.input_location.value(), state.focused_field == 10),
-        ("Language:", state.input_language.value(), state.focused_field == 11),
-        ("Timezone:", state.input_timezone.value(), state.focused_field == 12),
+        ("Language (Space to select):", state.input_language.value(), state.focused_field == 11),
+        ("Timezone (Space to select):", state.input_timezone.value(), state.focused_field == 12),
         ("Account Status:", state.input_account_status.value(), state.focused_field == 13),
         ("Emergency Name:", state.input_emergency_contact_name.value(), state.focused_field == 14),
         ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
@@ -673,8 +865,8 @@ fn render_edit_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Us
         ("Department:", state.input_department.value(), state.focused_field == 8),
         ("Job Title:", state.input_job_title.value(), state.focused_field == 9),
         ("Location:", state.input_location.value(), state.focused_field == 10),
-        ("Language:", state.input_language.value(), state.focused_field == 11),
-        ("Timezone:", state.input_timezone.value(), state.focused_field == 12),
+        ("Language (Space to select):", state.input_language.value(), state.focused_field == 11),
+        ("Timezone (Space to select):", state.input_timezone.value(), state.focused_field == 12),
         ("Account Status:", state.input_account_status.value(), state.focused_field == 13),
         ("Emergency Name:", state.input_emergency_contact_name.value(), state.focused_field == 14),
         ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
@@ -892,6 +1084,56 @@ fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect
     }
 }
 
+/// Render selection modal for language or timezone
+fn render_selection_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut UsersViewState, area: Rect) {
+    let popup_area = centered_rect(50, 60, area);
+
+    f.render_widget(Clear, popup_area);
+
+    let title = if state.focused_field == 11 {
+        " Select Language (↑↓: navigate, Enter: select, Esc: cancel) "
+    } else {
+        " Select Timezone (↑↓: navigate, Enter: select, Esc: cancel) "
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(theme.primary());
+
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    // Render the list
+    if state.focused_field == 11 {
+        // Language selection
+        let items: Vec<ListItem> = LANGUAGES
+            .iter()
+            .map(|(code, name)| {
+                ListItem::new(format!("{} - {}", code, name))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .highlight_style(theme.selected())
+            .highlight_symbol(">> ");
+
+        f.render_stateful_widget(list, inner, &mut state.language_list_state);
+    } else if state.focused_field == 12 {
+        // Timezone selection
+        let items: Vec<ListItem> = TIMEZONES
+            .iter()
+            .map(|tz| ListItem::new(*tz))
+            .collect();
+
+        let list = List::new(items)
+            .highlight_style(theme.selected())
+            .highlight_symbol(">> ");
+
+        f.render_stateful_widget(list, inner, &mut state.timezone_list_state);
+    }
+}
+
 /// Create a centered rectangle
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
@@ -921,6 +1163,34 @@ pub async fn handle_user_action(
 ) -> bool {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     
+    // Check if we're in selection mode first (highest priority)
+    if state.in_selection_mode {
+        match event {
+            crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
+                match code {
+                    KeyCode::Up if *modifiers == KeyModifiers::NONE => {
+                        state.selection_previous();
+                        return true;
+                    }
+                    KeyCode::Down if *modifiers == KeyModifiers::NONE => {
+                        state.selection_next();
+                        return true;
+                    }
+                    KeyCode::Enter if *modifiers == KeyModifiers::NONE => {
+                        state.confirm_selection();
+                        return true;
+                    }
+                    KeyCode::Esc if *modifiers == KeyModifiers::NONE => {
+                        state.close_selection_mode();
+                        return true;
+                    }
+                    _ => return true, // Consume all other events in selection mode
+                }
+            }
+            _ => return true,
+        }
+    }
+
     // Check if we're in a modal
     if state.modal != UserModal::None {
         match event {
@@ -967,6 +1237,11 @@ pub async fn handle_user_action(
                         }
                         return true;
                     }
+                    KeyCode::Char(' ') if *modifiers == KeyModifiers::NONE && state.is_selection_field() => {
+                        // Open selection mode for language/timezone fields when Space is pressed
+                        state.open_selection_mode();
+                        return true;
+                    }
                     KeyCode::Char(_) | KeyCode::Backspace => {
                         match state.modal {
                             UserModal::Delete | UserModal::RemoveDigestPassword => {
@@ -980,10 +1255,15 @@ pub async fn handle_user_action(
                                 }
                             }
                             _ => {
-                                // Handle regular form input
-                                let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
-                                if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
-                                    state.focused_input().handle(req);
+                                // For selection fields, open selection mode on any character input
+                                if state.is_selection_field() {
+                                    state.open_selection_mode();
+                                } else {
+                                    // Handle regular form input for non-selection fields
+                                    let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
+                                    if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
+                                        state.focused_input().handle(req);
+                                    }
                                 }
                             }
                         }
