@@ -1064,7 +1064,20 @@ impl SipMessageHandler {
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .unwrap_or(&destination_contacts[0]);
-        let target_uri = destination_contact.contact().to_string();
+        let contact_str = destination_contact.contact();
+
+        // Extract URI from Contact header (strip angle brackets if present)
+        // Contact format: <sip:user@host> or sip:user@host
+        let target_uri = if let Some(start) = contact_str.find('<') {
+            if let Some(end) = contact_str.find('>') {
+                &contact_str[start + 1..end]
+            } else {
+                contact_str
+            }
+        } else {
+            // No angle brackets - use as-is, but strip any contact-params after semicolon outside URI
+            contact_str.split(';').next().unwrap_or(contact_str)
+        };
 
         info!(
             call_id = %call_id,
