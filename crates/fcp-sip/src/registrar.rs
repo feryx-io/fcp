@@ -82,7 +82,29 @@ impl AsyncLocationStore for LocationStoreAdapter {
     }
 
     async fn remove(&self, aor: &str, contact: &str) -> Result<()> {
-        self.store.delete_registration(aor, contact).await
+        // For removal, we need to normalize contacts for matching since rinstance changes
+        // Get all registrations for this AOR
+        let registrations = self.store.get_registrations(aor).await?;
+
+        // Normalize the requested contact
+        let normalized_requested = crate::registrar::FcpRegistrar::normalize_contact_for_matching(contact);
+
+        // Find and remove registrations that match when normalized
+        let mut removed_any = false;
+        for reg in registrations {
+            let normalized_stored = crate::registrar::FcpRegistrar::normalize_contact_for_matching(&reg.contact);
+            if normalized_stored == normalized_requested {
+                self.store.delete_registration(aor, &reg.contact).await?;
+                removed_any = true;
+            }
+        }
+
+        if !removed_any {
+            // No matching registration found - this is not an error per RFC 3261
+            debug!(aor = %aor, contact = %contact, "No matching registration to remove");
+        }
+
+        Ok(())
     }
 
     async fn remove_all(&self, aor: &str) -> Result<()> {
@@ -307,11 +329,10 @@ impl FcpRegistrar {
             if let Some(contact_str) = contact_header {
                 // Strip contact-params (;expires=0, etc.) for matching
                 let contact_uri = Self::extract_contact_uri(contact_str.as_str());
-                // Normalize to remove transient parameters like rinstance
-                let normalized_contact = Self::normalize_contact_for_matching(contact_uri);
-                match self.location_store.remove(&aor, &normalized_contact).await {
+                // LocationStoreAdapter.remove() handles normalization internally
+                match self.location_store.remove(&aor, contact_uri).await {
                     Ok(_) => {
-                        info!(aor = %aor, contact = %normalized_contact, "Deregistered contact");
+                        info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
                         return self.create_ok_response(request, vec![]);
                     }
                     Err(e) => {
@@ -325,11 +346,9 @@ impl FcpRegistrar {
 
         // Handle registration (Expires > 0)
         if let Some(contact_str) = contact_header {
-            // Strip contact-params for consistent storage
+            // Strip contact-params (like ;expires=0) but KEEP rinstance for routing
             let contact_uri = Self::extract_contact_uri(contact_str.as_str());
-            // Normalize to remove transient parameters like rinstance
-            let normalized_contact = Self::normalize_contact_for_matching(contact_uri);
-            let binding = match Self::create_binding(&aor, &normalized_contact, expires, request) {
+            let binding = match Self::create_binding(&aor, contact_uri, expires, request) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!("Failed to create binding: {}", e);
@@ -339,7 +358,7 @@ impl FcpRegistrar {
 
             match self.location_store.upsert(binding).await {
                 Ok(_) => {
-                    info!(aor = %aor, contact = %normalized_contact, expires = expires, "Registration successful");
+                    info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
                 }
                 Err(e) => {
                     tracing::error!("Failed to store registration: {}", e);
@@ -388,7 +407,7 @@ impl FcpRegistrar {
     /// user@host:port and stable parameters like transport.
     ///
     /// This ensures unregistration works even if rinstance changes.
-    fn normalize_contact_for_matching(contact: &str) -> String {
+    pub fn normalize_contact_for_matching(contact: &str) -> String {
         let trimmed = contact.trim();
 
         // Extract the part inside angle brackets
