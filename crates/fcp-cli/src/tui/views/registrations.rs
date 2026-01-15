@@ -397,6 +397,7 @@ pub async fn fetch_registrations(
     // Build list of domains to try
     let mut domains = vec![
         server_host.clone(),
+        "fcp.local".to_string(),    // Default realm from config
         "localhost".to_string(),
         "127.0.0.1".to_string(),
         // Common local IPs that might be used for SIP when API is on localhost

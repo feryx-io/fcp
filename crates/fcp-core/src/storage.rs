@@ -256,8 +256,9 @@ pub struct User {
 
     /// SIP HA1 hash for Digest authentication
     /// Format: MD5(username:realm:password)
+    /// This is the ONLY credential needed for SIP authentication - we never store plaintext SIP passwords.
+    /// The HA1 hash is pre-computed when setting the password and is sufficient for SIP Digest auth.
     /// Computed from digest_password (if set) or password (if digest_password is None).
-    /// This is required for SIP REGISTER authentication.
     /// Use `storage::password::compute_ha1()` to generate this hash.
     pub sip_ha1_hash: Option<String>,
 

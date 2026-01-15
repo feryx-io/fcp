@@ -432,14 +432,14 @@ pub async fn update_digest_password(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
 
-    // Hash new digest password
+    // Hash new digest password for audit/display purposes
     let digest_password_hash = password::hash_password(&req.digest_password)
         .map_err(|e| ApiError::Internal(format!("Failed to hash digest password: {}", e)))?;
 
-    // Compute SIP HA1 hash from digest password (NOT main password)
+    // Compute SIP HA1 hash from digest password (NOT main password) - legacy compatibility
     let sip_ha1_hash = password::compute_ha1(&username, &state.realm, &req.digest_password);
 
-    // Update digest password and HA1 hash
+    // Update digest password and HA1 hash (no plaintext storage for security)
     user.digest_password = Some(digest_password_hash);
     user.sip_ha1_hash = Some(sip_ha1_hash);
     user.updated_at = std::time::SystemTime::now();

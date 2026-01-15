@@ -46,6 +46,8 @@ urlencoding = "2.1"
 uuid = { workspace = true }
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+md5 = "0.7"
+rand = "0.8"
 
 # TLS support (optional) - must match sip-transport's rustls version (0.22)
 tokio-rustls = { version = "0.25", optional = true }

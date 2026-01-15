@@ -9,6 +9,7 @@
 //! - Service implementations using fcp-core::Service trait
 
 pub mod adapters;
+pub mod auth;
 pub mod call;
 pub mod call_manager;
 pub mod exports;

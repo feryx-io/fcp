@@ -14,7 +14,7 @@ enable_sdp = true
 
 [registrar]
 enabled = true
-auth_enabled = false
+auth_enabled = true
 realm = "fcp.local"
 data_dir = "./data"
 default_expires = 3600
