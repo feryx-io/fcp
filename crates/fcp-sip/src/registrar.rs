@@ -360,6 +360,10 @@ impl FcpRegistrar {
             {
                 if let Some(val) = expires_str.trim().strip_prefix("expires=") {
                     if let Ok(exp) = val.parse::<u32>() {
+                        // Don't clamp expires=0 (unregister requests)
+                        if exp == 0 {
+                            return 0;
+                        }
                         return exp.clamp(self.min_expires, self.max_expires);
                     }
                 }
@@ -369,6 +373,10 @@ impl FcpRegistrar {
         // Check Expires header
         if let Some(expires_str) = request.headers().get("Expires") {
             if let Ok(exp) = expires_str.parse::<u32>() {
+                // Don't clamp expires=0 (unregister requests)
+                if exp == 0 {
+                    return 0;
+                }
                 return exp.clamp(self.min_expires, self.max_expires);
             }
         }
