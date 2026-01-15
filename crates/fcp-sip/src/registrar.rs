@@ -608,11 +608,15 @@ impl FcpRegistrar {
 
         // Add Contact headers for each binding
         for binding in bindings {
-            let contact = format!(
-                "<{}>;expires={}",
-                binding.contact(),
-                binding.expires().as_secs()
-            );
+            let contact_str = binding.contact();
+            // Check if contact already has angle brackets
+            let contact = if contact_str.starts_with('<') {
+                // Already has angle brackets, just add expires parameter
+                format!("{};expires={}", contact_str, binding.expires().as_secs())
+            } else {
+                // No angle brackets, wrap it
+                format!("<{}>;expires={}", contact_str, binding.expires().as_secs())
+            };
             let _ = headers.push(SmolStr::new("Contact"), SmolStr::new(contact));
         }
 
