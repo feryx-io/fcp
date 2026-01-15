@@ -307,9 +307,11 @@ impl FcpRegistrar {
             if let Some(contact_str) = contact_header {
                 // Strip contact-params (;expires=0, etc.) for matching
                 let contact_uri = Self::extract_contact_uri(contact_str.as_str());
-                match self.location_store.remove(&aor, contact_uri).await {
+                // Normalize to remove transient parameters like rinstance
+                let normalized_contact = Self::normalize_contact_for_matching(contact_uri);
+                match self.location_store.remove(&aor, &normalized_contact).await {
                     Ok(_) => {
-                        info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
+                        info!(aor = %aor, contact = %normalized_contact, "Deregistered contact");
                         return self.create_ok_response(request, vec![]);
                     }
                     Err(e) => {
@@ -325,7 +327,9 @@ impl FcpRegistrar {
         if let Some(contact_str) = contact_header {
             // Strip contact-params for consistent storage
             let contact_uri = Self::extract_contact_uri(contact_str.as_str());
-            let binding = match Self::create_binding(&aor, contact_uri, expires, request) {
+            // Normalize to remove transient parameters like rinstance
+            let normalized_contact = Self::normalize_contact_for_matching(contact_uri);
+            let binding = match Self::create_binding(&aor, &normalized_contact, expires, request) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!("Failed to create binding: {}", e);
@@ -335,7 +339,7 @@ impl FcpRegistrar {
 
             match self.location_store.upsert(binding).await {
                 Ok(_) => {
-                    info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
+                    info!(aor = %aor, contact = %normalized_contact, expires = expires, "Registration successful");
                 }
                 Err(e) => {
                     tracing::error!("Failed to store registration: {}", e);
@@ -373,6 +377,75 @@ impl FcpRegistrar {
             } else {
                 // No parameters, return as-is
                 trimmed
+            }
+        }
+    }
+
+    /// Normalize Contact URI for matching by removing transient SIP URI parameters.
+    ///
+    /// RFC 5626 rinstance is a transient parameter that changes between client restarts.
+    /// For matching purposes, we should compare contacts based on stable identity:
+    /// user@host:port and stable parameters like transport.
+    ///
+    /// This ensures unregistration works even if rinstance changes.
+    fn normalize_contact_for_matching(contact: &str) -> String {
+        let trimmed = contact.trim();
+
+        // Extract the part inside angle brackets
+        if let Some(start) = trimmed.find('<') {
+            if let Some(end) = trimmed.find('>') {
+                let uri_part = &trimmed[start + 1..end];
+
+                // Split on semicolons to get URI parameters
+                let parts: Vec<&str> = uri_part.split(';').collect();
+                if parts.is_empty() {
+                    return format!("<{}>", uri_part);
+                }
+
+                // Keep the base URI and stable parameters (transport, user, etc.)
+                // Remove transient parameters (rinstance, gr)
+                let base_uri = parts[0];
+                let mut stable_params: Vec<&str> = Vec::new();
+
+                for param in &parts[1..] {
+                    let param_name = param.split('=').next().unwrap_or("");
+                    // Keep transport and other stable params, skip rinstance and gr
+                    if param_name != "rinstance" && param_name != "gr" {
+                        stable_params.push(param);
+                    }
+                }
+
+                // Rebuild the contact URI
+                if stable_params.is_empty() {
+                    format!("<{}>", base_uri)
+                } else {
+                    format!("<{};{}>", base_uri, stable_params.join(";"))
+                }
+            } else {
+                // Malformed, return as-is
+                trimmed.to_string()
+            }
+        } else {
+            // No angle brackets - still try to strip rinstance
+            let parts: Vec<&str> = trimmed.split(';').collect();
+            if parts.is_empty() {
+                return trimmed.to_string();
+            }
+
+            let base_uri = parts[0];
+            let stable_params: Vec<&str> = parts[1..]
+                .iter()
+                .filter(|param| {
+                    let param_name = param.split('=').next().unwrap_or("");
+                    param_name != "rinstance" && param_name != "gr"
+                })
+                .copied()
+                .collect();
+
+            if stable_params.is_empty() {
+                base_uri.to_string()
+            } else {
+                format!("{};{}", base_uri, stable_params.join(";"))
             }
         }
     }
@@ -776,6 +849,51 @@ mod tests {
         assert_eq!(
             FcpRegistrar::extract_contact_uri("  <sip:user@host>;expires=0  "),
             "<sip:user@host>"
+        );
+    }
+
+    #[test]
+    fn test_normalize_contact_for_matching() {
+        // Strip rinstance but keep transport
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>"),
+            "<sip:bob@192.168.1.206:60312;transport=tcp>"
+        );
+
+        // Different rinstance should normalize to same result
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("<sip:bob@192.168.1.206:60312;rinstance=5c6c24656fccfc49;transport=tcp>"),
+            "<sip:bob@192.168.1.206:60312;transport=tcp>"
+        );
+
+        // Strip gr parameter (GRUU instance ID) but keep transport
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("<sip:bob@example.com;gr=abc123;transport=tls>"),
+            "<sip:bob@example.com;transport=tls>"
+        );
+
+        // No transient parameters - return normalized
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("<sip:alice@example.com>"),
+            "<sip:alice@example.com>"
+        );
+
+        // Only stable parameters
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("<sip:alice@example.com;transport=udp>"),
+            "<sip:alice@example.com;transport=udp>"
+        );
+
+        // Without angle brackets
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("sip:bob@host;rinstance=xyz;transport=tcp"),
+            "sip:bob@host;transport=tcp"
+        );
+
+        // Multiple stable parameters
+        assert_eq!(
+            FcpRegistrar::normalize_contact_for_matching("<sip:user@host;user=phone;transport=tcp;rinstance=abc>"),
+            "<sip:user@host;user=phone;transport=tcp>"
         );
     }
 }
