@@ -305,9 +305,11 @@ impl FcpRegistrar {
         // Handle query (Expires: 0 means deregistration)
         if expires == 0 {
             if let Some(contact_str) = contact_header {
-                match self.location_store.remove(&aor, contact_str.as_str()).await {
+                // Strip contact-params (;expires=0, etc.) for matching
+                let contact_uri = Self::extract_contact_uri(contact_str.as_str());
+                match self.location_store.remove(&aor, contact_uri).await {
                     Ok(_) => {
-                        info!(aor = %aor, contact = %contact_str, "Deregistered contact");
+                        info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
                         return self.create_ok_response(request, vec![]);
                     }
                     Err(e) => {
@@ -321,7 +323,9 @@ impl FcpRegistrar {
 
         // Handle registration (Expires > 0)
         if let Some(contact_str) = contact_header {
-            let binding = match Self::create_binding(&aor, contact_str.as_str(), expires, request) {
+            // Strip contact-params for consistent storage
+            let contact_uri = Self::extract_contact_uri(contact_str.as_str());
+            let binding = match Self::create_binding(&aor, contact_uri, expires, request) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!("Failed to create binding: {}", e);
@@ -331,7 +335,7 @@ impl FcpRegistrar {
 
             match self.location_store.upsert(binding).await {
                 Ok(_) => {
-                    info!(aor = %aor, contact = %contact_str, expires = expires, "Registration successful");
+                    info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
                 }
                 Err(e) => {
                     tracing::error!("Failed to store registration: {}", e);
@@ -346,6 +350,29 @@ impl FcpRegistrar {
             Err(e) => {
                 tracing::error!("Failed to lookup registrations: {}", e);
                 self.create_error_response(request, 500, "Internal Server Error")
+            }
+        }
+    }
+
+    /// Extract the Contact URI without contact-params (strips ;expires=N, etc.)
+    ///
+    /// RFC 3261: Contact header = name-addr / addr-spec [SEMI contact-params]
+    /// We need to strip contact-params for matching registrations
+    fn extract_contact_uri(contact_str: &str) -> &str {
+        let trimmed = contact_str.trim();
+
+        // Find the end of the URI (before contact-params like ;expires=0)
+        // We need to handle angle brackets: <sip:user@host>;expires=0
+        if let Some(gt_pos) = trimmed.find('>') {
+            // Has angle brackets - return everything up to and including '>'
+            &trimmed[..=gt_pos]
+        } else {
+            // No angle brackets - find first semicolon (start of contact-params)
+            if let Some(semi_pos) = trimmed.find(';') {
+                &trimmed[..semi_pos]
+            } else {
+                // No parameters, return as-is
+                trimmed
             }
         }
     }
@@ -711,5 +738,44 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[test]
+    fn test_extract_contact_uri() {
+        // With angle brackets and expires parameter
+        assert_eq!(
+            FcpRegistrar::extract_contact_uri("<sip:bob@192.168.1.206:5060>;expires=0"),
+            "<sip:bob@192.168.1.206:5060>"
+        );
+
+        // With angle brackets, rinstance, and expires
+        assert_eq!(
+            FcpRegistrar::extract_contact_uri("<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>;expires=0"),
+            "<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>"
+        );
+
+        // Without angle brackets
+        assert_eq!(
+            FcpRegistrar::extract_contact_uri("sip:bob@192.168.1.206:5060;expires=3600"),
+            "sip:bob@192.168.1.206:5060"
+        );
+
+        // No parameters
+        assert_eq!(
+            FcpRegistrar::extract_contact_uri("<sip:alice@example.com>"),
+            "<sip:alice@example.com>"
+        );
+
+        // Multiple parameters
+        assert_eq!(
+            FcpRegistrar::extract_contact_uri("<sip:user@host:5060>;expires=3600;q=0.8"),
+            "<sip:user@host:5060>"
+        );
+
+        // With whitespace
+        assert_eq!(
+            FcpRegistrar::extract_contact_uri("  <sip:user@host>;expires=0  "),
+            "<sip:user@host>"
+        );
     }
 }
