@@ -2131,7 +2131,49 @@ impl SipMessageHandler {
             );
             return Ok(resp);
         }
-        let body = validate_sdp_body_static(request, prior_sdp)?;
+        let mut body = validate_sdp_body_static(request, prior_sdp)?;
+
+        // If media is anchored, rewrite SDP before forwarding to peer
+        if call.media_anchored {
+            if let (Some(ref body_str), Some(ref media_session_id), Some(ref media_manager)) =
+                (body.as_ref(), call.media_session_id.as_ref(), self.media_manager.as_ref())
+            {
+                debug!(
+                    call_id = %call.id,
+                    media_session_id = %media_session_id,
+                    "Media is anchored, rewriting incoming re-INVITE SDP"
+                );
+
+                match media_manager.get_session(media_session_id).await {
+                    Ok(session) => {
+                        let (rtp_port, _rtcp_port) = session.ports();
+                        let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                            body_str,
+                            &self.local_addr,
+                            rtp_port,
+                        );
+
+                        info!(
+                            call_id = %call.id,
+                            leg = if is_a_leg { "A" } else { "B" },
+                            server_ip = %self.local_addr,
+                            rtp_port = rtp_port,
+                            "Rewrote re-INVITE SDP for media anchoring"
+                        );
+
+                        body = Some(rewritten_sdp);
+                    }
+                    Err(e) => {
+                        error!(
+                            call_id = %call.id,
+                            media_session_id = %media_session_id,
+                            error = %e,
+                            "Failed to get media session for re-INVITE SDP rewriting"
+                        );
+                    }
+                }
+            }
+        }
 
         self.log_sip_message(
             "outbound",
@@ -2203,6 +2245,66 @@ impl SipMessageHandler {
                 &[("method", "REINVITE"), ("result", "481")],
             );
         }
+
+        // If media is anchored and peer sent SDP in response, rewrite it before relaying back
+        let mut peer_resp = peer_resp;
+        if call.media_anchored && peer_resp.start_line().is_success() {
+            if let (Some(ref media_session_id), Some(ref media_manager)) =
+                (call.media_session_id.as_ref(), self.media_manager.as_ref())
+            {
+                if !peer_resp.body().is_empty() {
+                    let response_sdp = String::from_utf8_lossy(peer_resp.body().as_ref());
+
+                    debug!(
+                        call_id = %call.id,
+                        media_session_id = %media_session_id,
+                        "Media is anchored, rewriting peer re-INVITE response SDP"
+                    );
+
+                    match media_manager.get_session(media_session_id).await {
+                        Ok(session) => {
+                            let (rtp_port, _rtcp_port) = session.ports();
+                            let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                                &response_sdp,
+                                &self.local_addr,
+                                rtp_port,
+                            );
+
+                            info!(
+                                call_id = %call.id,
+                                leg = if is_a_leg { "B" } else { "A" },
+                                server_ip = %self.local_addr,
+                                rtp_port = rtp_port,
+                                "Rewrote peer re-INVITE response SDP for media anchoring"
+                            );
+
+                            // Rebuild response with rewritten SDP
+                            let mut new_headers = peer_resp.headers().clone();
+                            let new_body = bytes::Bytes::from(rewritten_sdp.into_bytes());
+                            let _ = new_headers.set_or_push(
+                                SmolStr::new("Content-Length"),
+                                SmolStr::new(new_body.len().to_string()),
+                            );
+
+                            peer_resp = sip_core::Response::new(
+                                peer_resp.start_line().clone(),
+                                new_headers,
+                                new_body,
+                            )?;
+                        }
+                        Err(e) => {
+                            error!(
+                                call_id = %call.id,
+                                media_session_id = %media_session_id,
+                                error = %e,
+                                "Failed to get media session for peer response SDP rewriting"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Update stored SDP for originating leg if present
         if let Some(body) = body {
             store_leg_sdp(&self.call_manager, &call.id, is_a_leg, body);
