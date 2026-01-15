@@ -86,14 +86,41 @@ impl AsyncLocationStore for LocationStoreAdapter {
         // Get all registrations for this AOR
         let registrations = self.store.get_registrations(aor).await?;
 
+        debug!(
+            aor = %aor,
+            contact = %contact,
+            stored_count = registrations.len(),
+            "Attempting to remove registration"
+        );
+
         // Normalize the requested contact
         let normalized_requested = crate::registrar::FcpRegistrar::normalize_contact_for_matching(contact);
+        debug!(
+            aor = %aor,
+            original_contact = %contact,
+            normalized_contact = %normalized_requested,
+            "Normalized requested contact for removal"
+        );
 
         // Find and remove registrations that match when normalized
         let mut removed_any = false;
         for reg in registrations {
             let normalized_stored = crate::registrar::FcpRegistrar::normalize_contact_for_matching(&reg.contact);
+            debug!(
+                aor = %aor,
+                stored_contact = %reg.contact,
+                normalized_stored = %normalized_stored,
+                normalized_requested = %normalized_requested,
+                matches = (normalized_stored == normalized_requested),
+                "Comparing stored registration"
+            );
+
             if normalized_stored == normalized_requested {
+                info!(
+                    aor = %aor,
+                    contact = %reg.contact,
+                    "Removing matching registration"
+                );
                 self.store.delete_registration(aor, &reg.contact).await?;
                 removed_any = true;
             }
@@ -101,7 +128,9 @@ impl AsyncLocationStore for LocationStoreAdapter {
 
         if !removed_any {
             // No matching registration found - this is not an error per RFC 3261
-            debug!(aor = %aor, contact = %contact, "No matching registration to remove");
+            info!(aor = %aor, contact = %contact, normalized = %normalized_requested, "No matching registration to remove");
+        } else {
+            info!(aor = %aor, "Successfully removed matching registrations");
         }
 
         Ok(())
