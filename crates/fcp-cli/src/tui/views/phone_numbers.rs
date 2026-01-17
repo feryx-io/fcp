@@ -414,6 +414,19 @@ fn render_details_panel(
             ]));
         }
 
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled("Actions:", theme.title())]));
+        lines.push(Line::from(vec![
+            Span::styled("  ", theme.muted()),
+            Span::styled("a", theme.primary()),
+            Span::styled(" - Add  ", theme.normal()),
+            Span::styled("e", theme.primary()),
+            Span::styled(" - Edit  ", theme.normal()),
+            Span::styled("d", theme.primary()),
+            Span::styled(" - Delete", theme.normal()),
+        ]));
+
         lines
     } else {
         vec![Line::from("No phone number selected")]

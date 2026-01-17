@@ -359,6 +359,18 @@ fn render_details_panel(
             } else {
                 Line::from("")
             },
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![Span::styled("Actions:", theme.title())]),
+            Line::from(vec![
+                Span::styled("  ", theme.muted()),
+                Span::styled("a", theme.primary()),
+                Span::styled(" - Add  ", theme.normal()),
+                Span::styled("e", theme.primary()),
+                Span::styled(" - Edit  ", theme.normal()),
+                Span::styled("d", theme.primary()),
+                Span::styled(" - Delete", theme.normal()),
+            ]),
         ]
     } else {
         vec![Line::from("No device selected")]
