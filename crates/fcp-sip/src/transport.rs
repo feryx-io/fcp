@@ -167,26 +167,36 @@ impl TransportDispatcher for RealTransportDispatcher {
         );
 
         // Check if we have a stream sender (for existing TCP/TLS connection)
+        // If a stream exists, this is a response to an inbound connection and MUST use the stream.
+        // We should NOT fall back to creating a new outbound connection.
         if let Some(stream_tx) = ctx.stream() {
             debug!(
                 first_line = %first_line,
                 peer = %peer,
                 "using existing stream connection"
             );
-            if stream_tx.send(payload.clone()).await.is_ok() {
-                debug!(
-                    first_line = %first_line,
-                    peer = %peer,
-                    "stream send successful"
-                );
-                return Ok(());
+            match stream_tx.send(payload.clone()).await {
+                Ok(()) => {
+                    debug!(
+                        first_line = %first_line,
+                        peer = %peer,
+                        "stream send successful"
+                    );
+                    return Ok(());
+                }
+                Err(_) => {
+                    // Stream channel closed - connection is dead
+                    error!(
+                        first_line = %first_line,
+                        peer = %peer,
+                        "stream channel closed, connection terminated"
+                    );
+                    anyhow::bail!(
+                        "Failed to send via stream channel (connection closed) to {}",
+                        peer
+                    );
+                }
             }
-            // If send failed, fall through to create new connection
-            debug!(
-                first_line = %first_line,
-                peer = %peer,
-                "existing stream connection failed, creating new connection"
-            );
         }
 
         match transport {
