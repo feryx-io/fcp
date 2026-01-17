@@ -108,6 +108,8 @@ impl SqliteStorage {
                 display_name TEXT,
                 tenant_id TEXT NOT NULL,
                 enabled BOOLEAN NOT NULL DEFAULT 1,
+                role TEXT NOT NULL DEFAULT 'end_user',
+                department_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 data TEXT NOT NULL
@@ -116,6 +118,24 @@ impl SqliteStorage {
         )
         .execute(&self.pool)
         .await?;
+
+        // Add role column to existing tables (migration)
+        let _ = sqlx::query(
+            r#"
+            ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'end_user'
+            "#,
+        )
+        .execute(&self.pool)
+        .await; // Ignore errors if column already exists
+
+        // Add department_id column to existing tables (migration)
+        let _ = sqlx::query(
+            r#"
+            ALTER TABLE users ADD COLUMN department_id TEXT
+            "#,
+        )
+        .execute(&self.pool)
+        .await; // Ignore errors if column already exists
 
         // Registrations table
         sqlx::query(
@@ -418,10 +438,15 @@ impl CredentialStore for SqliteStorage {
         let created_at = Self::system_time_to_i64(user.created_at);
         let updated_at = Self::system_time_to_i64(user.updated_at);
 
+        // Serialize role to snake_case string using serde (e.g., "telecom_admin", not "telecomadmin")
+        let role_str = serde_json::to_string(&user.role)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "end_user".to_string());
+
         sqlx::query(
             r#"
-            INSERT INTO users (username, password, digest_password, sip_ha1_hash, display_name, tenant_id, enabled, created_at, updated_at, data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (username, password, digest_password, sip_ha1_hash, display_name, tenant_id, enabled, role, department_id, created_at, updated_at, data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(username) DO UPDATE SET
                 password = excluded.password,
                 digest_password = excluded.digest_password,
@@ -429,6 +454,8 @@ impl CredentialStore for SqliteStorage {
                 display_name = excluded.display_name,
                 tenant_id = excluded.tenant_id,
                 enabled = excluded.enabled,
+                role = excluded.role,
+                department_id = excluded.department_id,
                 updated_at = excluded.updated_at,
                 data = excluded.data
             "#,
@@ -440,6 +467,8 @@ impl CredentialStore for SqliteStorage {
         .bind(&user.display_name)
         .bind(user.tenant_id.to_string())
         .bind(user.enabled)
+        .bind(role_str)
+        .bind(&user.department_id)
         .bind(created_at)
         .bind(updated_at)
         .bind(data)

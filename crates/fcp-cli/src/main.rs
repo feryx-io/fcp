@@ -83,6 +83,10 @@ enum Commands {
     /// Device management commands
     #[command(subcommand)]
     Device(DeviceCommands),
+
+    /// Configuration management commands
+    #[command(subcommand)]
+    Config(ConfigCommands),
 }
 
 #[derive(Debug, Subcommand)]
@@ -93,6 +97,70 @@ enum UserCommands {
     /// Show detailed information for a user
     Show {
         /// Username to display
+        username: String,
+    },
+
+    /// Create a new user with role
+    Create {
+        /// Username
+        username: String,
+
+        /// User role (super_admin, telecom_admin, user_admin, department_admin, read_only, end_user)
+        #[arg(long)]
+        role: String,
+
+        /// Display name
+        #[arg(long)]
+        display_name: Option<String>,
+
+        /// Email address
+        #[arg(long)]
+        email: Option<String>,
+
+        /// Department (for department_admin role)
+        #[arg(long)]
+        department: Option<String>,
+
+        /// Tenant ID (defaults to nil tenant)
+        #[arg(long)]
+        tenant_id: Option<String>,
+    },
+
+    /// Update user role or department
+    Update {
+        /// Username
+        username: String,
+
+        /// New role
+        #[arg(long)]
+        role: Option<String>,
+
+        /// Department (for department_admin role)
+        #[arg(long)]
+        department: Option<String>,
+    },
+
+    /// Grant a specific permission to a user
+    Grant {
+        /// Username
+        username: String,
+
+        /// Permission to grant (e.g., phone_number_create, device_delete)
+        permission: String,
+    },
+
+    /// Revoke a specific permission from a user
+    Revoke {
+        /// Username
+        username: String,
+
+        /// Permission to revoke
+        permission: String,
+    },
+
+    /// List all permissions for a user
+    ListPermissions {
+        /// Username
         username: String,
     },
 
@@ -578,6 +646,27 @@ pub enum DeviceCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommands {
+    /// Show current configuration
+    Show,
+
+    /// Set a configuration value
+    Set {
+        /// Configuration key (e.g., deployment.mode)
+        key: String,
+
+        /// Configuration value
+        value: String,
+    },
+
+    /// Get a configuration value
+    Get {
+        /// Configuration key
+        key: String,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command-line arguments
@@ -692,6 +781,10 @@ async fn execute_command(
 
         Commands::Device(cmd) => {
             commands::device::handle(cmd, context, output_format).await?;
+        }
+
+        Commands::Config(cmd) => {
+            commands::config::handle(cmd, output_format).await?;
         }
     }
 

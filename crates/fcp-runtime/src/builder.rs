@@ -650,6 +650,8 @@ async fn load_users_from_file(
             display_name: entry.display_name.clone(),
             tenant_id: entry.tenant_id,
             enabled: entry.enabled,
+            role: entry.role.unwrap_or(fcp_core::UserRole::EndUser),
+            department_id: entry.department_id.clone(),
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
             media_preferences: entry.media_preferences.clone(),
@@ -702,6 +704,8 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>, realm: &
             display_name: Some(display_name.to_string()),
             tenant_id: fcp_core::TenantId::nil(), // Default tenant for test users
             enabled: true,
+            role: fcp_core::UserRole::EndUser, // Test users default to EndUser role
+            department_id: None,
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
             media_preferences: fcp_core::MediaPreferences::default(),

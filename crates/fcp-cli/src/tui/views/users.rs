@@ -1299,6 +1299,8 @@ async fn create_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
         display_name: optional(&display_name),
         tenant_id: None,
         enabled: Some(state.input_enabled),
+        role: None, // TODO: Add role input field to TUI
+        department_id: None, // TODO: Add department_id input field to TUI
         // Enterprise fields
         email: optional(state.input_email.value()),
         phone_number: optional(state.input_phone_number.value()),

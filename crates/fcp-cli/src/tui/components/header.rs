@@ -1,6 +1,6 @@
 //! Header component showing context, status, and tabs
 
-use crate::tui::app::{App, Tab};
+use crate::tui::app::App;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     render_tabs(f, app, chunks[1]);
 }
 
-/// Render the status bar showing context, URL, and clock
+/// Render the status bar showing context, URL, mode, role, and clock
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let now = chrono::Local::now();
     let time_str = now.format("%H:%M:%S").to_string();
@@ -29,9 +29,14 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("Context: ", app.theme.muted()),
         Span::styled(&app.context.name, app.theme.primary()),
         Span::raw(" | "),
-        Span::styled("URL: ", app.theme.muted()),
-        Span::styled(&app.context.url, app.theme.normal()),
+        Span::styled("Mode: ", app.theme.muted()),
+        Span::styled(app.deployment_mode.name(), app.theme.info()),
         Span::raw(" | "),
+        Span::styled("User: ", app.theme.muted()),
+        Span::styled(&app.current_user.username, app.theme.success()),
+        Span::raw(" ("),
+        Span::styled(app.current_user.role.name(), app.theme.warning()),
+        Span::raw(") | "),
         Span::styled(&time_str, app.theme.info()),
     ]);
 
@@ -44,12 +49,15 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 /// Render the tabs bar
 fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
-    let tab_titles: Vec<_> = Tab::all()
+    // Get only tabs accessible to current user
+    let accessible_tabs = app.accessible_tabs();
+
+    let tab_titles: Vec<_> = accessible_tabs
         .iter()
         .map(|t| t.title())
         .collect();
 
-    let selected_idx = Tab::all()
+    let selected_idx = accessible_tabs
         .iter()
         .position(|t| t == &app.active_tab)
         .unwrap_or(0);

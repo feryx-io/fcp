@@ -10,6 +10,24 @@ use ratatui::{
 
 /// Render the footer component
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
+    // If there's an error, show it instead of keybindings
+    if let Some(error) = &app.error {
+        let error_line = Line::from(vec![
+            Span::styled("ERROR: ", app.theme.error().add_modifier(ratatui::style::Modifier::BOLD)),
+            Span::styled(error, app.theme.error()),
+            Span::raw("  "),
+            Span::styled("(Press Esc to dismiss)", app.theme.muted()),
+        ]);
+
+        let footer = Paragraph::new(error_line)
+            .block(Block::default().borders(Borders::ALL).border_style(app.theme.error()))
+            .alignment(Alignment::Left);
+
+        f.render_widget(footer, area);
+        return;
+    }
+
+    // Otherwise show keybindings
     let keybindings = match app.active_tab {
         Tab::Users => vec![
             ("h/l", "Tabs"),

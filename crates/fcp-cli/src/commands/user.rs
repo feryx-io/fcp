@@ -5,6 +5,7 @@ use crate::config::ResolvedContext;
 use crate::{OutputFormat, UserCommands};
 use anyhow::{Context as _, Result};
 use comfy_table::{presets::UTF8_FULL, ContentArrangement, Table};
+use fcp_core::{DeploymentMode, Permission, UserRole};
 use std::io::{self, Write};
 
 /// Handle user commands
@@ -108,6 +109,8 @@ pub async fn handle(
                 display_name,
                 tenant_id,
                 enabled: Some(enabled),
+                role: None, // TODO: Add role parameter to Add command
+                department_id: None, // TODO: Add department_id parameter to Add command
                 // Enterprise fields - now supported via CLI
                 email,
                 phone_number,
@@ -267,9 +270,207 @@ pub async fn handle(
 
             println!("User '{}' deleted successfully", username);
         }
+
+        UserCommands::Create {
+            username,
+            role,
+            display_name,
+            email,
+            department,
+            tenant_id,
+        } => {
+            // Parse role from string
+            let user_role = parse_role(&role)?;
+
+            // Create user with role
+            let create_request = CreateUserRequest {
+                username: username.clone(),
+                password: "changeme".to_string(), // Default password
+                display_name: display_name.clone(),
+                tenant_id,
+                enabled: Some(true),
+                role: Some(format!("{:?}", user_role).to_lowercase()), // Convert role enum to string
+                department_id: None, // TODO: Add department_id support
+                // Set email and department
+                email,
+                department,
+                // Default other fields
+                phone_number: None,
+                mobile_number: None,
+                pin: None,
+                extension: None,
+                job_title: None,
+                location: None,
+                language: None,
+                timezone: None,
+                account_status: None,
+                emergency_contact_name: None,
+                emergency_contact_phone: None,
+            };
+
+            client
+                .create_user(&create_request)
+                .await
+                .context("Failed to create user")?;
+
+            println!("User '{}' created successfully with role: {}", username, user_role.name());
+            println!("Note: Use 'fcp user password {}' to set a password", username);
+        }
+
+        UserCommands::Update {
+            username,
+            role,
+            department,
+        } => {
+            if role.is_none() && department.is_none() {
+                anyhow::bail!("At least one of --role or --department must be provided");
+            }
+
+            if let Some(role_str) = &role {
+                let user_role = parse_role(role_str)?;
+                // TODO: Need API endpoint to update user role
+                println!("Would update user '{}' to role: {}", username, user_role.name());
+                println!("Note: Role update API not yet implemented");
+            }
+
+            if let Some(dept) = &department {
+                // Update via modify command
+                let update_request = UpdateUserRequest {
+                    display_name: None,
+                    enabled: None,
+                    email: None,
+                    phone_number: None,
+                    mobile_number: None,
+                    pin: None,
+                    extension: None,
+                    department: Some(dept.clone()),
+                    job_title: None,
+                    location: None,
+                    language: None,
+                    timezone: None,
+                    account_status: None,
+                    emergency_contact_name: None,
+                    emergency_contact_phone: None,
+                };
+
+                client
+                    .update_user(&username, &update_request)
+                    .await
+                    .context("Failed to update user")?;
+
+                println!("User '{}' department updated to: {}", username, dept);
+            }
+        }
+
+        UserCommands::Grant { username, permission } => {
+            let perm = parse_permission(&permission)?;
+            println!("Would grant permission '{}' to user '{}'", perm.name(), username);
+            println!("Note: Permission grant/revoke requires storing per-user permissions overrides");
+            println!("      This feature is not yet implemented in the storage layer");
+        }
+
+        UserCommands::Revoke { username, permission } => {
+            let perm = parse_permission(&permission)?;
+            println!("Would revoke permission '{}' from user '{}'", perm.name(), username);
+            println!("Note: Permission grant/revoke requires storing per-user permissions overrides");
+            println!("      This feature is not yet implemented in the storage layer");
+        }
+
+        UserCommands::ListPermissions { username } => {
+            // Get user to determine role
+            let _user = client
+                .get_user(&username)
+                .await
+                .context(format!("Failed to get user '{}'", username))?;
+
+            // TODO: UserResponse needs role field
+            println!("Note: User role/permissions listing requires role field in UserResponse");
+            println!("      This will be available once storage backend stores user roles");
+            println!();
+            println!("For now, showing all possible roles and their permissions:");
+            println!();
+
+            // Default to Enterprise mode for now
+            let deployment_mode = DeploymentMode::Enterprise;
+
+            for role in &[
+                UserRole::SuperAdmin,
+                UserRole::TelecomAdmin,
+                UserRole::UserAdmin,
+                UserRole::DepartmentAdmin,
+                UserRole::ReadOnly,
+                UserRole::EndUser,
+            ] {
+                println!("\n{} ({}):", role.name(), format!("{:?}", role));
+                println!("{}", "-".repeat(60));
+
+                let permissions = role.permissions(deployment_mode);
+
+                for perm in &permissions {
+                    println!("  - {} ({})", format!("{:?}", perm), perm.name());
+                }
+
+                println!("  Total: {} permissions", permissions.len());
+            }
+
+            println!("\n\nDeployment mode: {} (affects available permissions)", deployment_mode.name());
+        }
     }
 
     Ok(())
+}
+
+/// Parse a role string to UserRole enum
+fn parse_role(role_str: &str) -> Result<UserRole> {
+    match role_str.to_lowercase().as_str() {
+        "super_admin" | "superadmin" => Ok(UserRole::SuperAdmin),
+        "telecom_admin" | "telecomadmin" => Ok(UserRole::TelecomAdmin),
+        "user_admin" | "useradmin" => Ok(UserRole::UserAdmin),
+        "department_admin" | "departmentadmin" => Ok(UserRole::DepartmentAdmin),
+        "read_only" | "readonly" => Ok(UserRole::ReadOnly),
+        "end_user" | "enduser" => Ok(UserRole::EndUser),
+        _ => anyhow::bail!(
+            "Invalid role '{}'. Valid roles: super_admin, telecom_admin, user_admin, department_admin, read_only, end_user",
+            role_str
+        ),
+    }
+}
+
+/// Parse a permission string to Permission enum
+fn parse_permission(perm_str: &str) -> Result<Permission> {
+    match perm_str.to_lowercase().as_str() {
+        "system_config" => Ok(Permission::SystemConfig),
+        "system_view_logs" => Ok(Permission::SystemViewLogs),
+        "user_create" => Ok(Permission::UserCreate),
+        "user_read" => Ok(Permission::UserRead),
+        "user_update" => Ok(Permission::UserUpdate),
+        "user_delete" => Ok(Permission::UserDelete),
+        "user_set_password" => Ok(Permission::UserSetPassword),
+        "phone_number_create" => Ok(Permission::PhoneNumberCreate),
+        "phone_number_read" => Ok(Permission::PhoneNumberRead),
+        "phone_number_update" => Ok(Permission::PhoneNumberUpdate),
+        "phone_number_delete" => Ok(Permission::PhoneNumberDelete),
+        "phone_number_view_carrier_data" => Ok(Permission::PhoneNumberViewCarrierData),
+        "device_create" => Ok(Permission::DeviceCreate),
+        "device_read" => Ok(Permission::DeviceRead),
+        "device_update" => Ok(Permission::DeviceUpdate),
+        "device_delete" => Ok(Permission::DeviceDelete),
+        "call_view" => Ok(Permission::CallView),
+        "call_control" => Ok(Permission::CallControl),
+        "call_recording_access" => Ok(Permission::CallRecordingAccess),
+        "registration_view" => Ok(Permission::RegistrationView),
+        "registration_manage" => Ok(Permission::RegistrationManage),
+        "trunk_create" => Ok(Permission::TrunkCreate),
+        "trunk_read" => Ok(Permission::TrunkRead),
+        "trunk_update" => Ok(Permission::TrunkUpdate),
+        "trunk_delete" => Ok(Permission::TrunkDelete),
+        "tenant_create" => Ok(Permission::TenantCreate),
+        "tenant_read" => Ok(Permission::TenantRead),
+        "tenant_update" => Ok(Permission::TenantUpdate),
+        "tenant_delete" => Ok(Permission::TenantDelete),
+        "debug_view" => Ok(Permission::DebugView),
+        _ => anyhow::bail!("Invalid permission '{}'. See 'fcp users list-permissions <username>' for valid permissions", perm_str),
+    }
 }
 
 /// Prompt for password from stdin

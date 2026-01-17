@@ -31,6 +31,8 @@ pub struct UserResponse {
     pub display_name: Option<String>,
     pub tenant_id: String,
     pub enabled: bool,
+    pub role: String, // Role name (e.g., "super_admin", "telecom_admin")
+    pub department_id: Option<String>, // For department-scoped admins
     #[serde(with = "system_time_as_string")]
     pub created_at: std::time::SystemTime,
     #[serde(with = "system_time_as_string")]
@@ -66,6 +68,10 @@ pub struct CreateUserRequest {
     pub tenant_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>, // Role name (e.g., "super_admin", "telecom_admin")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department_id: Option<String>, // For department-scoped admins
 
     // Enterprise fields
     #[serde(skip_serializing_if = "Option::is_none")]

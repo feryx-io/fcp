@@ -98,9 +98,13 @@ fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::
     match app.active_tab {
         Tab::Dashboard => views::dashboard::render(f, app, area),
         Tab::Users => views::users::render(f, &app.theme, &mut app.users_view, area),
-        Tab::PhoneNumbers => {
-            views::phone_numbers::render(f, &app.theme, &mut app.phone_numbers_view, area)
-        }
+        Tab::PhoneNumbers => views::phone_numbers::render(
+            f,
+            &app.theme,
+            &mut app.phone_numbers_view,
+            area,
+            app.deployment_mode,
+        ),
         Tab::Devices => views::devices::render(f, &app.theme, &mut app.devices_view, area),
         Tab::Calls => views::calls::render(f, &app.theme, &mut app.calls_view, area),
         Tab::Registrations => {
@@ -155,9 +159,31 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         }
     }
 
+    // Handle phone number modal events
+    if app.active_tab == Tab::PhoneNumbers && app.phone_numbers_view.modal != crate::tui::views::phone_numbers::PhoneNumberModal::None {
+        let handled = views::phone_numbers::handle_phone_number_action(&mut app.phone_numbers_view, &app.api_client, &event).await;
+        if handled {
+            return Ok(());
+        }
+    }
+
+    // Handle device modal events
+    if app.active_tab == Tab::Devices && app.devices_view.modal != crate::tui::views::devices::DeviceModal::None {
+        let handled = views::devices::handle_device_action(&mut app.devices_view, &app.api_client, &event).await;
+        if handled {
+            return Ok(());
+        }
+    }
+
     match event {
         Event::Key(_) if event.is_quit() => {
             app.quit();
+        }
+        Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
+            // Escape dismisses errors
+            if app.error.is_some() {
+                app.clear_error();
+            }
         }
         Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='5') => {
             // Number keys 1-5 jump directly to main tabs
@@ -257,19 +283,95 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             if app.active_tab == Tab::Users && app.users_view.modal == crate::tui::views::users::UserModal::None {
                 match event {
                     Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
-                        app.users_view.open_add_modal();
+                        if app.can_create_users() {
+                            app.users_view.open_add_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot create users".to_string());
+                        }
                     }
                     Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
-                        app.users_view.open_edit_modal();
+                        if app.can_edit_users() {
+                            app.users_view.open_edit_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot edit users".to_string());
+                        }
                     }
                     Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
-                        app.users_view.open_delete_modal();
+                        if app.can_delete_users() {
+                            app.users_view.open_delete_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot delete users".to_string());
+                        }
                     }
                     Event::Key(KeyEvent { code: KeyCode::Char('s'), modifiers: KeyModifiers::NONE, .. }) => {
-                        app.users_view.open_set_digest_password_modal();
+                        if app.can_set_passwords() {
+                            app.users_view.open_set_digest_password_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot set passwords".to_string());
+                        }
                     }
                     Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers: KeyModifiers::NONE, .. }) => {
-                        app.users_view.open_remove_digest_password_modal();
+                        if app.can_set_passwords() {
+                            app.users_view.open_remove_digest_password_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot clear passwords".to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle phone numbers actions
+            if app.active_tab == Tab::PhoneNumbers && app.phone_numbers_view.modal == crate::tui::views::phone_numbers::PhoneNumberModal::None {
+                match event {
+                    Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if app.can_create_phone_numbers() {
+                            app.phone_numbers_view.open_add_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot create phone numbers".to_string());
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if app.can_edit_phone_numbers() {
+                            app.phone_numbers_view.open_edit_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot edit phone numbers".to_string());
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if app.can_delete_phone_numbers() {
+                            app.phone_numbers_view.open_delete_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot delete phone numbers".to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle devices actions
+            if app.active_tab == Tab::Devices && app.devices_view.modal == crate::tui::views::devices::DeviceModal::None {
+                match event {
+                    Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if app.can_create_devices() {
+                            app.devices_view.open_add_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot create devices".to_string());
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if app.can_edit_devices() {
+                            app.devices_view.open_edit_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot edit devices".to_string());
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if app.can_delete_devices() {
+                            app.devices_view.open_delete_modal();
+                        } else {
+                            app.set_error("Permission denied: Cannot delete devices".to_string());
+                        }
                     }
                     _ => {}
                 }
@@ -320,7 +422,6 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         Event::Resize(_, _) => {
             // Terminal was resized, will redraw automatically
         }
-        _ => {}
     }
 
     Ok(())

@@ -17,7 +17,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::{storage::password, AccountStatus, CredentialStore, EmergencyContact, User};
+use fcp_core::{storage::password, AccountStatus, CredentialStore, EmergencyContact, User, UserRole};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -28,6 +28,8 @@ pub struct UserResponse {
     pub display_name: Option<String>,
     pub tenant_id: String,
     pub enabled: bool,
+    pub role: String, // Role name (e.g., "super_admin", "telecom_admin")
+    pub department_id: Option<String>, // For department-scoped admins
     pub created_at: std::time::SystemTime,
     pub updated_at: std::time::SystemTime,
 
@@ -50,11 +52,17 @@ pub struct UserResponse {
 
 impl From<User> for UserResponse {
     fn from(user: User) -> Self {
+        // Serialize role to proper snake_case string using serde (e.g., "telecom_admin", not "telecomadmin")
+        let role_str = serde_json::to_string(&user.role)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "end_user".to_string());
         Self {
             username: user.username,
             display_name: user.display_name,
             tenant_id: user.tenant_id.to_string(),
             enabled: user.enabled,
+            role: role_str,
+            department_id: user.department_id,
             created_at: user.created_at,
             updated_at: user.updated_at,
             // Enterprise fields
@@ -87,6 +95,9 @@ pub struct CreateUserRequest {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub role: Option<String>, // Role name (e.g., "super_admin", "telecom_admin")
+    pub department_id: Option<String>, // For department-scoped admins
+    #[serde(default)]
     pub media_preferences: fcp_core::MediaPreferences,
 
     // Enterprise fields
@@ -111,6 +122,30 @@ fn default_tenant_id() -> fcp_core::TenantId {
 
 fn default_true() -> bool {
     true
+}
+
+/// Parse role string to UserRole enum.
+fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
+    match role_str {
+        Some(s) => {
+            // Try deserializing with serde first (handles snake_case like "telecom_admin")
+            if let Ok(role) = serde_json::from_str::<UserRole>(&format!("\"{}\"", s)) {
+                return Ok(role);
+            }
+
+            // Fallback to manual matching for backward compatibility
+            match s.to_lowercase().as_str() {
+                "superadmin" | "super_admin" => Ok(UserRole::SuperAdmin),
+                "telecomadmin" | "telecom_admin" => Ok(UserRole::TelecomAdmin),
+                "useradmin" | "user_admin" => Ok(UserRole::UserAdmin),
+                "departmentadmin" | "department_admin" => Ok(UserRole::DepartmentAdmin),
+                "readonly" | "read_only" => Ok(UserRole::ReadOnly),
+                "enduser" | "end_user" => Ok(UserRole::EndUser),
+                _ => Err(ApiError::BadRequest(format!("Invalid role: {}", s))),
+            }
+        }
+        None => Ok(UserRole::EndUser), // Default to EndUser if not specified
+    }
 }
 
 /// Update user request.
@@ -233,6 +268,9 @@ pub async fn create_user(
         phone: req.emergency_contact_phone,
     };
 
+    // Parse role from request
+    let role = parse_user_role(req.role.as_deref())?;
+
     // Create user
     let user = User {
         username: req.username.clone(),
@@ -242,6 +280,8 @@ pub async fn create_user(
         display_name: req.display_name,
         tenant_id: req.tenant_id,
         enabled: req.enabled,
+        role, // NEW: User role for RBAC
+        department_id: req.department_id, // NEW: Department scoping for department admins
         created_at: std::time::SystemTime::now(),
         updated_at: std::time::SystemTime::now(),
         media_preferences: req.media_preferences,

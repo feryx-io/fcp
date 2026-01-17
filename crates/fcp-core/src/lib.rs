@@ -14,6 +14,7 @@ pub mod forwarding;
 pub mod geographic;
 pub mod identifiers;
 pub mod line_binding;
+pub mod permissions;
 pub mod phone_number;
 pub mod porting;
 pub mod routing;
@@ -51,6 +52,7 @@ pub use crate::geographic::{
 };
 pub use crate::identifiers::*;
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
+pub use crate::permissions::{DeploymentMode, Permission, UserRole};
 pub use crate::phone_number::{E911Address, NumberState, PhoneNumber};
 pub use crate::porting::{
     PortRequest, PortRequestId, PortRejectionReason, PortStatus, PortType, PortingManager,

@@ -359,12 +359,19 @@ impl CredentialStore for MongodbStorage {
             )
         })?;
 
+        // Serialize role to snake_case string for storage
+        let role_str = serde_json::to_string(&user.role)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "end_user".to_string());
+
         let doc = doc! {
             "username": &user.username,
             "password_hash": &user.password,
             "display_name": user.display_name.as_ref(),
             "tenant_id": &tenant_id,
             "enabled": user.enabled,
+            "role": &role_str,
+            "department_id": user.department_id.as_ref(),
             "created_at": system_time_to_bson_datetime(user.created_at),
             "updated_at": system_time_to_bson_datetime(user.updated_at),
             "media_preferences": media_prefs,
@@ -776,6 +783,30 @@ impl CdrStore for MongodbStorage {
 // Document Conversion Helpers
 // ============================================================================
 
+/// Parse role string from database to UserRole enum
+fn parse_role(role_str: &str) -> fcp_core::UserRole {
+    use fcp_core::UserRole;
+
+    // Try deserializing with serde first (handles snake_case like "telecom_admin")
+    if let Ok(role) = serde_json::from_str::<UserRole>(&format!("\"{}\"", role_str)) {
+        return role;
+    }
+
+    // Fallback to manual matching for backward compatibility
+    match role_str.to_lowercase().as_str() {
+        "superadmin" | "super_admin" => UserRole::SuperAdmin,
+        "telecomadmin" | "telecom_admin" => UserRole::TelecomAdmin,
+        "useradmin" | "user_admin" => UserRole::UserAdmin,
+        "departmentadmin" | "department_admin" => UserRole::DepartmentAdmin,
+        "readonly" | "read_only" => UserRole::ReadOnly,
+        "enduser" | "end_user" => UserRole::EndUser,
+        _ => {
+            tracing::warn!("Unknown role '{}', defaulting to EndUser", role_str);
+            UserRole::EndUser
+        }
+    }
+}
+
 fn document_to_user(doc: Document) -> Result<User> {
     let media_prefs = doc
         .get("media_preferences")
@@ -809,6 +840,10 @@ fn document_to_user(doc: Document) -> Result<User> {
     let account_status_str = doc.get_str("account_status").unwrap_or("active");
     let account_status = AccountStatus::from_str(account_status_str).unwrap_or(AccountStatus::Active);
 
+    // Parse role from database (defaults to EndUser if not found or invalid)
+    let role_str = doc.get_str("role").unwrap_or("enduser");
+    let role = parse_role(role_str);
+
     // Parse emergency contact
     let emergency_contact = EmergencyContact {
         name: doc.get_str("emergency_contact_name").ok().map(String::from),
@@ -832,6 +867,8 @@ fn document_to_user(doc: Document) -> Result<User> {
         })?)
         .unwrap_or_else(|_| TenantId::nil()),
         enabled: doc.get_bool("enabled").unwrap_or(true),
+        role, // User role for RBAC
+        department_id: doc.get_str("department_id").ok().map(String::from), // Department ID for scoping
         created_at,
         updated_at,
         media_preferences: media_prefs,
@@ -849,6 +886,8 @@ fn document_to_user(doc: Document) -> Result<User> {
         account_status,
         last_login,
         emergency_contact,
+        primary_phone_number_id: None, // TODO: Add to MongoDB schema
+        voicemail_box_id: None,        // TODO: Add to MongoDB schema
     })
 }
 

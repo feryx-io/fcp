@@ -11,6 +11,10 @@ const MAX_RTP_PORT_SPAN: u16 = 10_000;
 /// Complete runtime configuration for FCP.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FcpConfig {
+    /// Deployment mode (carrier, service_provider, enterprise)
+    #[serde(default)]
+    pub deployment_mode: crate::DeploymentMode,
+
     /// Node configuration
     pub node: NodeConfig,
 

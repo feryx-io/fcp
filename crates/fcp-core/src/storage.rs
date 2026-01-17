@@ -272,6 +272,13 @@ pub struct User {
     #[serde(default = "default_tenant_id")]
     pub tenant_id: crate::TenantId,
 
+    /// User role for permissions
+    #[serde(default)]
+    pub role: crate::UserRole,
+
+    /// Department ID for department-scoped admins
+    pub department_id: Option<String>,
+
     /// Enabled flag
     pub enabled: bool,
 
@@ -443,6 +450,35 @@ fn default_codecs() -> Vec<String> {
     vec!["PCMU".to_string(), "PCMA".to_string()]
 }
 
+impl User {
+    /// Check if user has a specific permission in the given deployment mode
+    pub fn has_permission(&self, permission: crate::Permission, mode: crate::DeploymentMode) -> bool {
+        self.role.has_permission(permission, mode)
+    }
+
+    /// Check if user can access a specific tenant
+    pub fn can_access_tenant(&self, tenant_id: &crate::TenantId) -> bool {
+        match self.role {
+            crate::UserRole::SuperAdmin => true,
+            _ => &self.tenant_id == tenant_id,
+        }
+    }
+
+    /// Check if user can access a specific department
+    pub fn can_access_department(&self, dept_id: &str) -> bool {
+        match self.role {
+            crate::UserRole::SuperAdmin | crate::UserRole::TelecomAdmin | crate::UserRole::UserAdmin => true,
+            crate::UserRole::DepartmentAdmin => self.department_id.as_deref() == Some(dept_id),
+            _ => false,
+        }
+    }
+
+    /// Get all permissions this user has in the given mode
+    pub fn permissions(&self, mode: crate::DeploymentMode) -> Vec<crate::Permission> {
+        self.role.permissions(mode)
+    }
+}
+
 /// User definition for config files (passwords are plaintext and will be hashed on load).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserFileEntry {
@@ -463,6 +499,13 @@ pub struct UserFileEntry {
     /// Tenant ID (optional, defaults to nil tenant)
     #[serde(default = "default_tenant_id")]
     pub tenant_id: crate::TenantId,
+
+    /// User role (optional, defaults to EndUser)
+    #[serde(default)]
+    pub role: Option<crate::UserRole>,
+
+    /// Department ID (optional)
+    pub department_id: Option<String>,
 
     /// Enabled flag (default: true)
     #[serde(default = "default_true")]

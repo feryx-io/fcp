@@ -749,6 +749,30 @@ impl CdrStore for SqliteStorage {
 // Helper Functions
 // ============================================================================
 
+/// Parse role string from database to UserRole enum
+fn parse_role(role_str: &str) -> fcp_core::UserRole {
+    use fcp_core::UserRole;
+
+    // Try deserializing with serde first (handles snake_case like "telecom_admin")
+    if let Ok(role) = serde_json::from_str::<UserRole>(&format!("\"{}\"", role_str)) {
+        return role;
+    }
+
+    // Fallback to manual matching for backward compatibility
+    match role_str.to_lowercase().as_str() {
+        "superadmin" | "super_admin" => UserRole::SuperAdmin,
+        "telecomadmin" | "telecom_admin" => UserRole::TelecomAdmin,
+        "useradmin" | "user_admin" => UserRole::UserAdmin,
+        "departmentadmin" | "department_admin" => UserRole::DepartmentAdmin,
+        "readonly" | "read_only" => UserRole::ReadOnly,
+        "enduser" | "end_user" => UserRole::EndUser,
+        _ => {
+            tracing::warn!("Unknown role '{}', defaulting to EndUser", role_str);
+            UserRole::EndUser
+        }
+    }
+}
+
 /// Convert SQLite row to User
 fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
     use fcp_core::{AccountStatus, EmergencyContact};
@@ -771,6 +795,10 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
     let account_status_str: String = row.get("account_status");
     let account_status = AccountStatus::from_str(&account_status_str).unwrap_or_default();
 
+    // Parse role from database (defaults to EndUser if not found or invalid)
+    let role_str: String = row.try_get("role").unwrap_or_else(|_| "enduser".to_string());
+    let role = parse_role(&role_str);
+
     let emergency_contact = EmergencyContact {
         name: row.get("emergency_contact_name"),
         phone: row.get("emergency_contact_phone"),
@@ -785,6 +813,8 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
         tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
             .unwrap_or_else(|_| TenantId::nil()),
         enabled: row.get::<i64, _>("enabled") != 0,
+        role, // User role for RBAC
+        department_id: row.try_get("department_id").ok(), // Department ID for scoping
         created_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("created_at") as u64),
         updated_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("updated_at") as u64),
         media_preferences,

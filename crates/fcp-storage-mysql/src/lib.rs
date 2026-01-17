@@ -175,7 +175,7 @@ impl CredentialStore for MysqlStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let row = sqlx::query(
             "SELECT username, password_hash, display_name, tenant_id, enabled,
-                    created_at, updated_at, media_preferences
+                    role, department_id, created_at, updated_at, media_preferences
              FROM users
              WHERE username = ?",
         )
@@ -195,14 +195,21 @@ impl CredentialStore for MysqlStorage {
         let created_at = system_time_to_datetime(user.created_at);
         let updated_at = system_time_to_datetime(user.updated_at);
 
+        // Serialize role to snake_case string for storage
+        let role_str = serde_json::to_string(&user.role)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "end_user".to_string());
+
         sqlx::query(
             "INSERT INTO users (username, password_hash, display_name, tenant_id, enabled,
-                               created_at, updated_at, media_preferences)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                               role, department_id, created_at, updated_at, media_preferences)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                  password_hash = VALUES(password_hash),
                  display_name = VALUES(display_name),
                  enabled = VALUES(enabled),
+                 role = VALUES(role),
+                 department_id = VALUES(department_id),
                  updated_at = VALUES(updated_at),
                  media_preferences = VALUES(media_preferences)",
         )
@@ -211,6 +218,8 @@ impl CredentialStore for MysqlStorage {
         .bind(&user.display_name)
         .bind(&tenant_id)
         .bind(user.enabled)
+        .bind(&role_str)
+        .bind(&user.department_id)
         .bind(created_at)
         .bind(updated_at)
         .bind(&media_prefs)
@@ -234,7 +243,7 @@ impl CredentialStore for MysqlStorage {
     async fn list_users(&self) -> Result<Vec<User>> {
         let rows = sqlx::query(
             "SELECT username, password_hash, display_name, tenant_id, enabled,
-                    created_at, updated_at, media_preferences
+                    role, department_id, created_at, updated_at, media_preferences
              FROM users
              ORDER BY username",
         )
@@ -533,6 +542,30 @@ impl CdrStore for MysqlStorage {
 // Helper Functions
 // ============================================================================
 
+/// Parse role string from database to UserRole enum
+fn parse_role(role_str: &str) -> fcp_core::UserRole {
+    use fcp_core::UserRole;
+
+    // Try deserializing with serde first (handles snake_case like "telecom_admin")
+    if let Ok(role) = serde_json::from_str::<UserRole>(&format!("\"{}\"", role_str)) {
+        return role;
+    }
+
+    // Fallback to manual matching for backward compatibility
+    match role_str.to_lowercase().as_str() {
+        "superadmin" | "super_admin" => UserRole::SuperAdmin,
+        "telecomadmin" | "telecom_admin" => UserRole::TelecomAdmin,
+        "useradmin" | "user_admin" => UserRole::UserAdmin,
+        "departmentadmin" | "department_admin" => UserRole::DepartmentAdmin,
+        "readonly" | "read_only" => UserRole::ReadOnly,
+        "enduser" | "end_user" => UserRole::EndUser,
+        _ => {
+            tracing::warn!("Unknown role '{}', defaulting to EndUser", role_str);
+            UserRole::EndUser
+        }
+    }
+}
+
 /// Convert MySQL row to User
 fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
     let media_prefs: Option<serde_json::Value> = row.get("media_preferences");
@@ -556,6 +589,10 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
     let account_status_str: String = row.try_get("account_status").unwrap_or_else(|_| "active".to_string());
     let account_status = AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
 
+    // Parse role from database (defaults to EndUser if not found or invalid)
+    let role_str: String = row.try_get("role").unwrap_or_else(|_| "enduser".to_string());
+    let role = parse_role(&role_str);
+
     // Parse emergency contact
     let emergency_contact = EmergencyContact {
         name: row.try_get("emergency_contact_name").ok(),
@@ -571,6 +608,8 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
             .unwrap_or_else(|_| TenantId::nil()),
         enabled: row.get("enabled"),
+        role, // User role for RBAC
+        department_id: row.try_get("department_id").ok(), // Department ID for scoping
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
         media_preferences,
@@ -588,6 +627,8 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         account_status,
         last_login,
         emergency_contact,
+        primary_phone_number_id: None, // TODO: Add to MySQL schema
+        voicemail_box_id: None,        // TODO: Add to MySQL schema
     })
 }
 
