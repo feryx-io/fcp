@@ -421,7 +421,7 @@ fn render_add_modal(
             Span::raw(state.input_device_type.value()),
             if type_focused { Span::raw(" █") } else { Span::raw("") },
         ]),
-        Line::from(Span::styled("  (softphone, deskphone, conference, ata)", theme.muted())),
+        Line::from(Span::styled("  (desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)", theme.muted())),
         Line::from(""),
         Line::from(vec![
             Span::styled("Tenant ID: ", theme.muted()),
@@ -505,7 +505,7 @@ fn render_edit_modal(
             Span::raw(state.input_device_type.value()),
             if type_focused { Span::raw(" █") } else { Span::raw("") },
         ]),
-        Line::from(Span::styled("  (softphone, deskphone, conference, ata)", theme.muted())),
+        Line::from(Span::styled("  (desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)", theme.muted())),
         Line::from(""),
         Line::from(vec![
             Span::styled("Tenant ID: ", theme.muted()),
@@ -736,12 +736,12 @@ pub async fn create_device(api_client: &crate::api::ApiClient, state: &mut Devic
         return;
     }
 
-    // Validate device type
+    // Validate device type (must match server's parse_device_type expectations)
     if !matches!(
         device_type.as_str(),
-        "softphone" | "deskphone" | "conference" | "ata"
+        "desk_phone" | "softphone" | "webrtc" | "conference_room" | "ata" | "gateway" | "mobile" | "other"
     ) {
-        state.error = Some("Invalid device type (use: softphone, deskphone, conference, ata)".to_string());
+        state.error = Some("Invalid device type (use: desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)".to_string());
         return;
     }
 
@@ -803,12 +803,12 @@ pub async fn update_device(api_client: &crate::api::ApiClient, state: &mut Devic
         return;
     }
 
-    // Validate device type
+    // Validate device type (must match server's parse_device_type expectations)
     if !matches!(
         device_type.as_str(),
-        "softphone" | "deskphone" | "conference" | "ata"
+        "desk_phone" | "softphone" | "webrtc" | "conference_room" | "ata" | "gateway" | "mobile" | "other"
     ) {
-        state.error = Some("Invalid device type (use: softphone, deskphone, conference, ata)".to_string());
+        state.error = Some("Invalid device type (use: desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)".to_string());
         return;
     }
 
