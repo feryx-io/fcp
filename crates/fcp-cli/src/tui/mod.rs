@@ -185,8 +185,8 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 app.clear_error();
             }
         }
-        Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='5') => {
-            // Number keys 1-5 jump directly to main tabs
+        Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='7') => {
+            // Number keys 1-7 jump directly to main tabs
             if let Some(tab) = Tab::from_index((c as usize) - ('1' as usize)) {
                 app.set_tab(tab);
                 check_and_load_tab_data(app).await;
