@@ -17,6 +17,9 @@
 //! while requiring no external database server. For development and testing only, a
 //! FileBackedStorage implementation is also available that uses in-memory storage with JSON file persistence.
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -333,6 +336,13 @@ pub struct User {
     /// Emergency contact information
     #[serde(default)]
     pub emergency_contact: EmergencyContact,
+
+    // ===== Phone Number Support =====
+    /// Primary phone number for outbound caller ID
+    pub primary_phone_number_id: Option<crate::PhoneNumberId>,
+
+    /// Voicemail box ID
+    pub voicemail_box_id: Option<crate::VoicemailBoxId>,
 }
 
 fn default_language() -> String {
@@ -503,6 +513,13 @@ pub struct UserFileEntry {
     /// Emergency contact information
     #[serde(default)]
     pub emergency_contact: EmergencyContact,
+
+    // ===== Phone Number Support =====
+    /// Primary phone number for outbound caller ID
+    pub primary_phone_number_id: Option<crate::PhoneNumberId>,
+
+    /// Voicemail box ID
+    pub voicemail_box_id: Option<crate::VoicemailBoxId>,
 }
 
 fn default_true() -> bool {
@@ -785,6 +802,225 @@ pub trait CdrStore: Send + Sync {
 
     /// Get CDR count for a query
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize>;
+}
+
+/// Storage backend for phone numbers
+#[async_trait]
+pub trait PhoneNumberStore: Send + Sync {
+    /// Get a phone number by ID
+    async fn get_phone_number(
+        &self,
+        id: &crate::PhoneNumberId,
+    ) -> Result<Option<crate::PhoneNumber>>;
+
+    /// Get a phone number by E.164 string
+    async fn get_phone_number_by_e164(&self, e164: &str) -> Result<Option<crate::PhoneNumber>>;
+
+    /// List all phone numbers for a tenant
+    async fn list_phone_numbers(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::PhoneNumber>>;
+
+    /// Create or update a phone number
+    async fn put_phone_number(&self, phone_number: crate::PhoneNumber) -> Result<()>;
+
+    /// Delete a phone number by ID
+    async fn delete_phone_number(&self, id: &crate::PhoneNumberId) -> Result<()>;
+}
+
+/// Storage backend for line bindings
+#[async_trait]
+pub trait LineBindingStore: Send + Sync {
+    /// Get a line binding by ID
+    async fn get_line_binding(
+        &self,
+        id: &crate::LineBindingId,
+    ) -> Result<Option<crate::LineBinding>>;
+
+    /// Get line binding for a phone number
+    async fn get_line_binding_by_phone_number(
+        &self,
+        phone_number_id: &crate::PhoneNumberId,
+    ) -> Result<Option<crate::LineBinding>>;
+
+    /// List all line bindings for a tenant
+    async fn list_line_bindings(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::LineBinding>>;
+
+    /// List line bindings for a user
+    async fn list_line_bindings_by_user(
+        &self,
+        user_id: &crate::UserId,
+    ) -> Result<Vec<crate::LineBinding>>;
+
+    /// List line bindings for a device
+    async fn list_line_bindings_by_device(
+        &self,
+        device_id: &crate::DeviceId,
+    ) -> Result<Vec<crate::LineBinding>>;
+
+    /// Create or update a line binding
+    async fn put_line_binding(&self, binding: crate::LineBinding) -> Result<()>;
+
+    /// Delete a line binding by ID
+    async fn delete_line_binding(&self, id: &crate::LineBindingId) -> Result<()>;
+}
+
+/// Storage backend for extensions
+#[async_trait]
+pub trait ExtensionStore: Send + Sync {
+    /// Get an extension by ID
+    async fn get_extension(&self, id: &crate::ExtensionId) -> Result<Option<crate::Extension>>;
+
+    /// Get an extension by number within a tenant
+    async fn get_extension_by_number(
+        &self,
+        tenant_id: &crate::TenantId,
+        number: &str,
+    ) -> Result<Option<crate::Extension>>;
+
+    /// List all extensions for a tenant
+    async fn list_extensions(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Extension>>;
+
+    /// Create or update an extension
+    async fn put_extension(&self, extension: crate::Extension) -> Result<()>;
+
+    /// Delete an extension by ID
+    async fn delete_extension(&self, id: &crate::ExtensionId) -> Result<()>;
+}
+
+/// Storage backend for devices
+#[async_trait]
+pub trait DeviceStore: Send + Sync {
+    /// Get a device by ID
+    async fn get_device(&self, id: &crate::DeviceId) -> Result<Option<crate::Device>>;
+
+    /// Get a device by SIP URI
+    async fn get_device_by_sip_uri(&self, sip_uri: &str) -> Result<Option<crate::Device>>;
+
+    /// List all devices for a tenant
+    async fn list_devices(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Device>>;
+
+    /// List devices for a user
+    async fn list_devices_by_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::Device>>;
+
+    /// Create or update a device
+    async fn put_device(&self, device: crate::Device) -> Result<()>;
+
+    /// Delete a device by ID
+    async fn delete_device(&self, id: &crate::DeviceId) -> Result<()>;
+}
+
+/// Voicemail storage operations.
+#[async_trait::async_trait]
+pub trait VoicemailStore: Send + Sync {
+    /// Get a voicemail mailbox by ID
+    async fn get_mailbox(&self, id: &str) -> Result<Option<crate::VoicemailMailbox>>;
+
+    /// Get a mailbox by line binding ID
+    async fn get_mailbox_by_line_binding(
+        &self,
+        line_binding_id: &crate::LineBindingId,
+    ) -> Result<Option<crate::VoicemailMailbox>>;
+
+    /// Get a mailbox by user ID
+    async fn get_mailbox_by_user(
+        &self,
+        user_id: &crate::UserId,
+    ) -> Result<Option<crate::VoicemailMailbox>>;
+
+    /// Get a mailbox by extension
+    async fn get_mailbox_by_extension(
+        &self,
+        tenant_id: &crate::TenantId,
+        extension: &str,
+    ) -> Result<Option<crate::VoicemailMailbox>>;
+
+    /// List all mailboxes for a tenant
+    async fn list_mailboxes(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::VoicemailMailbox>>;
+
+    /// Create or update a mailbox
+    async fn put_mailbox(&self, mailbox: crate::VoicemailMailbox) -> Result<()>;
+
+    /// Delete a mailbox
+    async fn delete_mailbox(&self, id: &str) -> Result<()>;
+
+    /// Get a voicemail message by ID
+    async fn get_message(&self, id: &str) -> Result<Option<crate::VoicemailMessage>>;
+
+    /// List messages for a mailbox
+    async fn list_messages(
+        &self,
+        mailbox_id: &str,
+    ) -> Result<Vec<crate::VoicemailMessage>>;
+
+    /// List messages by status
+    async fn list_messages_by_status(
+        &self,
+        mailbox_id: &str,
+        status: crate::MessageStatus,
+    ) -> Result<Vec<crate::VoicemailMessage>>;
+
+    /// Create or update a message
+    async fn put_message(&self, message: crate::VoicemailMessage) -> Result<()>;
+
+    /// Delete a message
+    async fn delete_message(&self, id: &str) -> Result<()>;
+
+    /// Get MWI status for a mailbox
+    async fn get_mwi_status(&self, mailbox_id: &str) -> Result<crate::MwiStatus>;
+
+    /// Get mailbox statistics
+    async fn get_mailbox_stats(&self, mailbox_id: &str) -> Result<crate::VoicemailStats>;
+}
+
+/// Geographic routing storage operations.
+#[async_trait::async_trait]
+pub trait GeoRoutingStore: Send + Sync {
+    /// Get a geographic routing rule by ID
+    async fn get_geo_rule(&self, id: &str) -> Result<Option<crate::GeoRoutingRule>>;
+
+    /// List all geographic routing rules for a tenant
+    async fn list_geo_rules(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::GeoRoutingRule>>;
+
+    /// Create or update a geographic routing rule
+    async fn put_geo_rule(&self, rule: crate::GeoRoutingRule) -> Result<()>;
+
+    /// Delete a geographic routing rule
+    async fn delete_geo_rule(&self, id: &str) -> Result<()>;
+
+    /// Get phone number location information
+    async fn get_phone_number_location(
+        &self,
+        phone_number_id: &crate::PhoneNumberId,
+    ) -> Result<Option<crate::PhoneNumberLocation>>;
+
+    /// List all phone number locations for a tenant
+    async fn list_phone_number_locations(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::PhoneNumberLocation>>;
+
+    /// Create or update phone number location
+    async fn put_phone_number_location(
+        &self,
+        location: crate::PhoneNumberLocation,
+    ) -> Result<()>;
+
+    /// Delete phone number location
+    async fn delete_phone_number_location(
+        &self,
+        phone_number_id: &crate::PhoneNumberId,
+    ) -> Result<()>;
 }
 
 /// Serde helper for Optional<SystemTime>
@@ -1073,6 +1309,13 @@ pub struct DynStorage {
     credential_store: Arc<dyn CredentialStore>,
     registration_store: Arc<dyn RegistrationStore>,
     cdr_store: Arc<dyn CdrStore>,
+    phone_number_store: Arc<dyn PhoneNumberStore>,
+    line_binding_store: Arc<dyn LineBindingStore>,
+    extension_store: Arc<dyn ExtensionStore>,
+    device_store: Arc<dyn DeviceStore>,
+    voicemail_store: Arc<dyn VoicemailStore>,
+    geo_routing_store: Arc<dyn GeoRoutingStore>,
+    porting_store: Arc<dyn crate::porting::PortingStore>,
 }
 
 impl DynStorage {
@@ -1081,26 +1324,57 @@ impl DynStorage {
         credential_store: Arc<dyn CredentialStore>,
         registration_store: Arc<dyn RegistrationStore>,
         cdr_store: Arc<dyn CdrStore>,
+        phone_number_store: Arc<dyn PhoneNumberStore>,
+        line_binding_store: Arc<dyn LineBindingStore>,
+        extension_store: Arc<dyn ExtensionStore>,
+        device_store: Arc<dyn DeviceStore>,
+        voicemail_store: Arc<dyn VoicemailStore>,
+        geo_routing_store: Arc<dyn GeoRoutingStore>,
+        porting_store: Arc<dyn crate::porting::PortingStore>,
     ) -> Self {
         Self {
             credential_store,
             registration_store,
             cdr_store,
+            phone_number_store,
+            line_binding_store,
+            extension_store,
+            device_store,
+            voicemail_store,
+            geo_routing_store,
+            porting_store,
         }
     }
 
-    /// Create a new DynStorage from a storage backend that implements all three traits.
+    /// Create a new DynStorage from a storage backend that implements all traits.
     ///
-    /// This is a convenience method for backends like FileBackedStorage that implement
+    /// This is a convenience method for backends like SqliteStorage that implement
     /// all storage traits.
     pub fn from_all_in_one<T>(storage: Arc<T>) -> Self
     where
-        T: CredentialStore + RegistrationStore + CdrStore + 'static,
+        T: CredentialStore
+            + RegistrationStore
+            + CdrStore
+            + PhoneNumberStore
+            + LineBindingStore
+            + ExtensionStore
+            + DeviceStore
+            + VoicemailStore
+            + GeoRoutingStore
+            + crate::porting::PortingStore
+            + 'static,
     {
         Self {
             credential_store: storage.clone(),
             registration_store: storage.clone(),
-            cdr_store: storage,
+            cdr_store: storage.clone(),
+            phone_number_store: storage.clone(),
+            line_binding_store: storage.clone(),
+            extension_store: storage.clone(),
+            device_store: storage.clone(),
+            voicemail_store: storage.clone(),
+            geo_routing_store: storage.clone(),
+            porting_store: storage,
         }
     }
 }
@@ -1170,6 +1444,318 @@ impl CdrStore for DynStorage {
     }
 }
 
+#[async_trait]
+impl PhoneNumberStore for DynStorage {
+    async fn get_phone_number(
+        &self,
+        id: &crate::PhoneNumberId,
+    ) -> Result<Option<crate::PhoneNumber>> {
+        self.phone_number_store.get_phone_number(id).await
+    }
+
+    async fn get_phone_number_by_e164(&self, e164: &str) -> Result<Option<crate::PhoneNumber>> {
+        self.phone_number_store.get_phone_number_by_e164(e164).await
+    }
+
+    async fn list_phone_numbers(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::PhoneNumber>> {
+        self.phone_number_store.list_phone_numbers(tenant_id).await
+    }
+
+    async fn put_phone_number(&self, phone_number: crate::PhoneNumber) -> Result<()> {
+        self.phone_number_store.put_phone_number(phone_number).await
+    }
+
+    async fn delete_phone_number(&self, id: &crate::PhoneNumberId) -> Result<()> {
+        self.phone_number_store.delete_phone_number(id).await
+    }
+}
+
+#[async_trait]
+impl LineBindingStore for DynStorage {
+    async fn get_line_binding(
+        &self,
+        id: &crate::LineBindingId,
+    ) -> Result<Option<crate::LineBinding>> {
+        self.line_binding_store.get_line_binding(id).await
+    }
+
+    async fn get_line_binding_by_phone_number(
+        &self,
+        phone_number_id: &crate::PhoneNumberId,
+    ) -> Result<Option<crate::LineBinding>> {
+        self.line_binding_store
+            .get_line_binding_by_phone_number(phone_number_id)
+            .await
+    }
+
+    async fn list_line_bindings(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::LineBinding>> {
+        self.line_binding_store.list_line_bindings(tenant_id).await
+    }
+
+    async fn list_line_bindings_by_user(
+        &self,
+        user_id: &crate::UserId,
+    ) -> Result<Vec<crate::LineBinding>> {
+        self.line_binding_store
+            .list_line_bindings_by_user(user_id)
+            .await
+    }
+
+    async fn list_line_bindings_by_device(
+        &self,
+        device_id: &crate::DeviceId,
+    ) -> Result<Vec<crate::LineBinding>> {
+        self.line_binding_store
+            .list_line_bindings_by_device(device_id)
+            .await
+    }
+
+    async fn put_line_binding(&self, binding: crate::LineBinding) -> Result<()> {
+        self.line_binding_store.put_line_binding(binding).await
+    }
+
+    async fn delete_line_binding(&self, id: &crate::LineBindingId) -> Result<()> {
+        self.line_binding_store.delete_line_binding(id).await
+    }
+}
+
+#[async_trait]
+impl ExtensionStore for DynStorage {
+    async fn get_extension(&self, id: &crate::ExtensionId) -> Result<Option<crate::Extension>> {
+        self.extension_store.get_extension(id).await
+    }
+
+    async fn get_extension_by_number(
+        &self,
+        tenant_id: &crate::TenantId,
+        number: &str,
+    ) -> Result<Option<crate::Extension>> {
+        self.extension_store
+            .get_extension_by_number(tenant_id, number)
+            .await
+    }
+
+    async fn list_extensions(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Extension>> {
+        self.extension_store.list_extensions(tenant_id).await
+    }
+
+    async fn put_extension(&self, extension: crate::Extension) -> Result<()> {
+        self.extension_store.put_extension(extension).await
+    }
+
+    async fn delete_extension(&self, id: &crate::ExtensionId) -> Result<()> {
+        self.extension_store.delete_extension(id).await
+    }
+}
+
+#[async_trait]
+impl DeviceStore for DynStorage {
+    async fn get_device(&self, id: &crate::DeviceId) -> Result<Option<crate::Device>> {
+        self.device_store.get_device(id).await
+    }
+
+    async fn get_device_by_sip_uri(&self, sip_uri: &str) -> Result<Option<crate::Device>> {
+        self.device_store.get_device_by_sip_uri(sip_uri).await
+    }
+
+    async fn list_devices(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Device>> {
+        self.device_store.list_devices(tenant_id).await
+    }
+
+    async fn list_devices_by_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::Device>> {
+        self.device_store.list_devices_by_user(user_id).await
+    }
+
+    async fn put_device(&self, device: crate::Device) -> Result<()> {
+        self.device_store.put_device(device).await
+    }
+
+    async fn delete_device(&self, id: &crate::DeviceId) -> Result<()> {
+        self.device_store.delete_device(id).await
+    }
+}
+
+#[async_trait]
+impl VoicemailStore for DynStorage {
+    async fn get_mailbox(&self, id: &str) -> Result<Option<crate::VoicemailMailbox>> {
+        self.voicemail_store.get_mailbox(id).await
+    }
+
+    async fn get_mailbox_by_line_binding(
+        &self,
+        line_binding_id: &crate::LineBindingId,
+    ) -> Result<Option<crate::VoicemailMailbox>> {
+        self.voicemail_store
+            .get_mailbox_by_line_binding(line_binding_id)
+            .await
+    }
+
+    async fn get_mailbox_by_user(
+        &self,
+        user_id: &crate::UserId,
+    ) -> Result<Option<crate::VoicemailMailbox>> {
+        self.voicemail_store.get_mailbox_by_user(user_id).await
+    }
+
+    async fn get_mailbox_by_extension(
+        &self,
+        tenant_id: &crate::TenantId,
+        extension: &str,
+    ) -> Result<Option<crate::VoicemailMailbox>> {
+        self.voicemail_store
+            .get_mailbox_by_extension(tenant_id, extension)
+            .await
+    }
+
+    async fn list_mailboxes(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::VoicemailMailbox>> {
+        self.voicemail_store.list_mailboxes(tenant_id).await
+    }
+
+    async fn put_mailbox(&self, mailbox: crate::VoicemailMailbox) -> Result<()> {
+        self.voicemail_store.put_mailbox(mailbox).await
+    }
+
+    async fn delete_mailbox(&self, id: &str) -> Result<()> {
+        self.voicemail_store.delete_mailbox(id).await
+    }
+
+    async fn get_message(&self, id: &str) -> Result<Option<crate::VoicemailMessage>> {
+        self.voicemail_store.get_message(id).await
+    }
+
+    async fn list_messages(&self, mailbox_id: &str) -> Result<Vec<crate::VoicemailMessage>> {
+        self.voicemail_store.list_messages(mailbox_id).await
+    }
+
+    async fn list_messages_by_status(
+        &self,
+        mailbox_id: &str,
+        status: crate::MessageStatus,
+    ) -> Result<Vec<crate::VoicemailMessage>> {
+        self.voicemail_store
+            .list_messages_by_status(mailbox_id, status)
+            .await
+    }
+
+    async fn put_message(&self, message: crate::VoicemailMessage) -> Result<()> {
+        self.voicemail_store.put_message(message).await
+    }
+
+    async fn delete_message(&self, id: &str) -> Result<()> {
+        self.voicemail_store.delete_message(id).await
+    }
+
+    async fn get_mwi_status(&self, mailbox_id: &str) -> Result<crate::MwiStatus> {
+        self.voicemail_store.get_mwi_status(mailbox_id).await
+    }
+
+    async fn get_mailbox_stats(&self, mailbox_id: &str) -> Result<crate::VoicemailStats> {
+        self.voicemail_store.get_mailbox_stats(mailbox_id).await
+    }
+}
+
+#[async_trait]
+impl GeoRoutingStore for DynStorage {
+    async fn get_geo_rule(&self, id: &str) -> Result<Option<crate::GeoRoutingRule>> {
+        self.geo_routing_store.get_geo_rule(id).await
+    }
+
+    async fn list_geo_rules(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::GeoRoutingRule>> {
+        self.geo_routing_store.list_geo_rules(tenant_id).await
+    }
+
+    async fn put_geo_rule(&self, rule: crate::GeoRoutingRule) -> Result<()> {
+        self.geo_routing_store.put_geo_rule(rule).await
+    }
+
+    async fn delete_geo_rule(&self, id: &str) -> Result<()> {
+        self.geo_routing_store.delete_geo_rule(id).await
+    }
+
+    async fn get_phone_number_location(
+        &self,
+        phone_number_id: &crate::PhoneNumberId,
+    ) -> Result<Option<crate::PhoneNumberLocation>> {
+        self.geo_routing_store
+            .get_phone_number_location(phone_number_id)
+            .await
+    }
+
+    async fn list_phone_number_locations(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::PhoneNumberLocation>> {
+        self.geo_routing_store
+            .list_phone_number_locations(tenant_id)
+            .await
+    }
+
+    async fn put_phone_number_location(
+        &self,
+        location: crate::PhoneNumberLocation,
+    ) -> Result<()> {
+        self.geo_routing_store
+            .put_phone_number_location(location)
+            .await
+    }
+
+    async fn delete_phone_number_location(
+        &self,
+        phone_number_id: &crate::PhoneNumberId,
+    ) -> Result<()> {
+        self.geo_routing_store
+            .delete_phone_number_location(phone_number_id)
+            .await
+    }
+}
+
+#[async_trait]
+impl crate::porting::PortingStore for DynStorage {
+    async fn get_port_request(
+        &self,
+        id: &crate::PortRequestId,
+    ) -> Result<Option<crate::PortRequest>> {
+        self.porting_store.get_port_request(id).await
+    }
+
+    async fn list_port_requests(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::PortRequest>> {
+        self.porting_store.list_port_requests(tenant_id).await
+    }
+
+    async fn list_port_requests_by_status(
+        &self,
+        tenant_id: &crate::TenantId,
+        status: crate::PortStatus,
+    ) -> Result<Vec<crate::PortRequest>> {
+        self.porting_store
+            .list_port_requests_by_status(tenant_id, status)
+            .await
+    }
+
+    async fn put_port_request(&self, request: crate::PortRequest) -> Result<()> {
+        self.porting_store.put_port_request(request).await
+    }
+
+    async fn delete_port_request(&self, id: &crate::PortRequestId) -> Result<()> {
+        self.porting_store.delete_port_request(id).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,6 +1771,8 @@ mod tests {
         let user = User {
             username: "alice".to_string(),
             password: password_hash,
+            digest_password: None,
+            sip_ha1_hash: None,
             display_name: Some("Alice".to_string()),
             tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,
@@ -1205,6 +1793,8 @@ mod tests {
             account_status: AccountStatus::Active,
             last_login: None,
             emergency_contact: EmergencyContact::default(),
+            primary_phone_number_id: None,
+            voicemail_box_id: None,
         };
 
         storage.put_user(user.clone()).await.unwrap();

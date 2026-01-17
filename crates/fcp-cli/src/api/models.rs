@@ -252,6 +252,87 @@ pub struct DebugCallResponse {
     pub state: String,
 }
 
+// ==================== Phone Number Models ====================
+
+/// Phone number response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PhoneNumberResponse {
+    pub id: String,
+    pub e164: String,
+    pub country_code: String,
+    pub npa: String,
+    pub nxx: String,
+    pub line: String,
+    pub state: String,
+    pub tenant_id: String,
+    pub e911_address: Option<E911AddressResponse>,
+    pub e911_callback: Option<String>,
+    pub cnam: Option<String>,
+    pub spam_score: Option<f32>,
+    pub carrier: Option<String>,
+    pub lrn: Option<String>,
+    pub rate_center: Option<String>,
+    #[serde(with = "system_time_as_string")]
+    pub acquired_at: std::time::SystemTime,
+    #[serde(with = "optional_system_time_as_string", default)]
+    pub activated_at: Option<std::time::SystemTime>,
+    pub recording_enabled: bool,
+    pub block_anonymous: bool,
+    pub tags: Vec<String>,
+    #[serde(with = "system_time_as_string")]
+    pub created_at: std::time::SystemTime,
+    #[serde(with = "system_time_as_string")]
+    pub updated_at: std::time::SystemTime,
+}
+
+/// E911 address response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct E911AddressResponse {
+    pub address1: String,
+    pub address2: Option<String>,
+    pub city: String,
+    pub state: String,
+    pub postal_code: String,
+    pub country: String,
+    pub validated: bool,
+    #[serde(with = "optional_system_time_as_string", default)]
+    pub validated_at: Option<std::time::SystemTime>,
+}
+
+// ==================== Device Models ====================
+
+/// Device response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeviceResponse {
+    pub id: String,
+    pub name: String,
+    pub device_type: String,
+    pub mac_address: Option<String>,
+    pub model: Option<String>,
+    pub firmware_version: Option<String>,
+    pub tenant_id: String,
+    pub owner_user_id: Option<String>,
+    pub sip_uri: Option<String>,
+    pub registration_state: String,
+    #[serde(with = "optional_system_time_as_string", default)]
+    pub last_registration: Option<std::time::SystemTime>,
+    pub last_ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub max_lines: u8,
+    pub supports_video: bool,
+    pub supports_blf: bool,
+    pub codec_support: Vec<String>,
+    pub location: Option<String>,
+    pub e911_override: Option<E911AddressResponse>,
+    pub provisioning_url: Option<String>,
+    pub config_template_id: Option<String>,
+    pub enabled: bool,
+    #[serde(with = "system_time_as_string")]
+    pub created_at: std::time::SystemTime,
+    #[serde(with = "system_time_as_string")]
+    pub updated_at: std::time::SystemTime,
+}
+
 // ==================== Serde Helpers ====================
 
 /// Serialize/deserialize SystemTime as string for display

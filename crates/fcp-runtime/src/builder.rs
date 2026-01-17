@@ -281,29 +281,20 @@ async fn create_registrar(
             fcp_core::StorageBackend::Sqlite => {
                 #[cfg(feature = "storage-sqlite")]
                 {
-                    use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
-                    use std::path::PathBuf;
+                    use fcp_core::storage::sqlite::SqliteStorage;
 
-                    // Parse connection string (format: sqlite://path/to/db.sqlite)
-                    let db_path = if let Some(path) = config.storage.connection_string.strip_prefix("sqlite://") {
-                        PathBuf::from(path)
-                    } else {
-                        anyhow::bail!("Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite");
-                    };
+                    // Parse connection string (format: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite)
+                    let db_path = config.storage.connection_string
+                        .strip_prefix("sqlite://")
+                        .or_else(|| config.storage.connection_string.strip_prefix("sqlite:///"))
+                        .ok_or_else(|| anyhow::anyhow!("Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite"))?;
 
-                    let sqlite_config = SqliteConfig {
-                        database_path: db_path,
-                        max_connections: config.storage.max_connections,
-                        connection_timeout: config.storage.connection_timeout,
-                        enable_wal: true,
-                        create_if_missing: true,
-                    };
-
-                    let storage = SqliteStorage::new(sqlite_config)
+                    // fcp-core's SqliteStorage::new takes just a path string
+                    let storage = SqliteStorage::new(db_path)
                         .await
                         .context("Failed to initialize SQLite storage for registrar")?;
 
-                    Arc::new(DynStorage::from_all_in_one(Arc::new(storage)))
+                    Arc::new(fcp_core::DynStorage::from_all_in_one(Arc::new(storage)))
                 }
 
                 #[cfg(not(feature = "storage-sqlite"))]
@@ -676,6 +667,8 @@ async fn load_users_from_file(
             account_status: fcp_core::AccountStatus::Active,
             last_login: None,
             emergency_contact: fcp_core::EmergencyContact::default(),
+            primary_phone_number_id: None,
+            voicemail_box_id: None,
         };
 
         storage.put_user(user).await?;
@@ -691,7 +684,7 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>, realm: &
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User};
 
-    let test_users = vec![("alice", "secret123", "Alice"), ("bob", "secret456", "Bob")];
+    let test_users = vec![("alice", "Secret123!", "Alice"), ("bob", "Secret456!", "Bob")];
 
     for (username, plaintext_password, display_name) in test_users {
         // Hash the password using bcrypt
@@ -726,6 +719,8 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>, realm: &
             account_status: fcp_core::AccountStatus::Active,
             last_login: None,
             emergency_contact: fcp_core::EmergencyContact::default(),
+            primary_phone_number_id: None,
+            voicemail_box_id: None,
         };
 
         storage.put_user(user.clone()).await?;

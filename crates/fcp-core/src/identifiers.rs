@@ -64,6 +64,13 @@ define_id!(TransactionId, "txn");
 define_id!(RegistrationId, "reg");
 define_id!(NodeId, "node");
 define_id!(TenantId, "tenant");
+define_id!(PhoneNumberId, "num");
+define_id!(LineBindingId, "bind");
+define_id!(ExtensionId, "ext");
+define_id!(DeviceId, "dev");
+define_id!(VoicemailBoxId, "vm");
+define_id!(ServiceId, "svc");
+define_id!(UserId, "user");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

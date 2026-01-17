@@ -1,8 +1,12 @@
 //! API v1 routes.
 
 pub mod debug;
+pub mod devices;
+pub mod extensions;
+pub mod line_bindings;
 pub mod media;
 pub mod metrics;
+pub mod phone_numbers;
 pub mod registrations;
 pub mod system;
 pub mod users;
@@ -61,5 +65,53 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/calls/:call_id/recording/stop",
             post(media::stop_recording),
+        )
+        // Phone number management
+        .route(
+            "/phone-numbers",
+            get(phone_numbers::list_phone_numbers).post(phone_numbers::create_phone_number),
+        )
+        .route(
+            "/phone-numbers/:id",
+            get(phone_numbers::get_phone_number)
+                .patch(phone_numbers::update_phone_number)
+                .delete(phone_numbers::delete_phone_number),
+        )
+        .route(
+            "/phone-numbers/:id/activate",
+            post(phone_numbers::activate_phone_number),
+        )
+        // Line bindings
+        .route(
+            "/line-bindings",
+            get(line_bindings::list_line_bindings).post(line_bindings::create_line_binding),
+        )
+        .route(
+            "/line-bindings/:id",
+            get(line_bindings::get_line_binding)
+                .patch(line_bindings::update_line_binding)
+                .delete(line_bindings::delete_line_binding),
+        )
+        // Extensions
+        .route(
+            "/extensions",
+            get(extensions::list_extensions).post(extensions::create_extension),
+        )
+        .route(
+            "/extensions/:number",
+            get(extensions::get_extension)
+                .patch(extensions::update_extension)
+                .delete(extensions::delete_extension),
+        )
+        // Devices
+        .route(
+            "/devices",
+            get(devices::list_devices).post(devices::create_device),
+        )
+        .route(
+            "/devices/:id",
+            get(devices::get_device)
+                .patch(devices::update_device)
+                .delete(devices::delete_device),
         )
 }

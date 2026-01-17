@@ -98,6 +98,10 @@ fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::
     match app.active_tab {
         Tab::Dashboard => views::dashboard::render(f, app, area),
         Tab::Users => views::users::render(f, &app.theme, &mut app.users_view, area),
+        Tab::PhoneNumbers => {
+            views::phone_numbers::render(f, &app.theme, &mut app.phone_numbers_view, area)
+        }
+        Tab::Devices => views::devices::render(f, &app.theme, &mut app.devices_view, area),
         Tab::Calls => views::calls::render(f, &app.theme, &mut app.calls_view, area),
         Tab::Registrations => {
             views::registrations::render(f, &app.theme, &mut app.registrations_view, area)
@@ -224,6 +228,12 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 Tab::Users => {
                     views::users::handle_navigation(&mut app.users_view, &event);
                 }
+                Tab::PhoneNumbers => {
+                    views::phone_numbers::handle_navigation(&mut app.phone_numbers_view, &event);
+                }
+                Tab::Devices => {
+                    views::devices::handle_navigation(&mut app.devices_view, &event);
+                }
                 Tab::Calls => {
                     views::calls::handle_navigation(&mut app.calls_view, &event);
                 }
@@ -272,7 +282,7 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 Tab::Calls => time_since > std::time::Duration::from_secs(2), // Fast refresh for live durations
                 Tab::Registrations => time_since > std::time::Duration::from_secs(3), // Medium refresh for expiration countdown
                 Tab::Debug => time_since > std::time::Duration::from_secs(4), // Debug refresh
-                Tab::Users | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
+                Tab::Users | Tab::PhoneNumbers | Tab::Devices | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
             };
 
             if should_refresh {
@@ -293,6 +303,14 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                     }
                     Tab::Debug => {
                         views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view)
+                            .await;
+                    }
+                    Tab::PhoneNumbers => {
+                        views::phone_numbers::fetch_phone_numbers(&app.api_client, &mut app.phone_numbers_view)
+                            .await;
+                    }
+                    Tab::Devices => {
+                        views::devices::fetch_devices(&app.api_client, &mut app.devices_view)
                             .await;
                     }
                     _ => {}

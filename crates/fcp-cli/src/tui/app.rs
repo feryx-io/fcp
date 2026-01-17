@@ -3,6 +3,8 @@
 use super::theme::Theme;
 use super::views::calls::CallsViewState;
 use super::views::debug::DebugViewState;
+use super::views::devices::DevicesViewState;
+use super::views::phone_numbers::PhoneNumbersViewState;
 use super::views::registrations::RegistrationsViewState;
 use super::views::users::UsersViewState;
 use crate::api::ApiClient;
@@ -14,6 +16,8 @@ use anyhow::Result;
 pub enum Tab {
     Dashboard,
     Users,
+    PhoneNumbers,
+    Devices,
     Calls,
     Registrations,
     Debug,
@@ -25,6 +29,8 @@ impl Tab {
         &[
             Tab::Dashboard,
             Tab::Users,
+            Tab::PhoneNumbers,
+            Tab::Devices,
             Tab::Calls,
             Tab::Registrations,
             Tab::Debug,
@@ -36,6 +42,8 @@ impl Tab {
         match self {
             Tab::Dashboard => "Dashboard",
             Tab::Users => "Users",
+            Tab::PhoneNumbers => "Phone Numbers",
+            Tab::Devices => "Devices",
             Tab::Calls => "Calls",
             Tab::Registrations => "Registrations",
             Tab::Debug => "Debug",
@@ -80,6 +88,10 @@ pub struct App {
     pub last_update: std::time::Instant,
     /// Users view state
     pub users_view: UsersViewState,
+    /// Phone numbers view state
+    pub phone_numbers_view: PhoneNumbersViewState,
+    /// Devices view state
+    pub devices_view: DevicesViewState,
     /// Calls view state
     pub calls_view: CallsViewState,
     /// Registrations view state
@@ -102,6 +114,8 @@ impl App {
             error: None,
             last_update: std::time::Instant::now(),
             users_view: UsersViewState::default(),
+            phone_numbers_view: PhoneNumbersViewState::default(),
+            devices_view: DevicesViewState::default(),
             calls_view: CallsViewState::default(),
             registrations_view: RegistrationsViewState::default(),
             debug_view: DebugViewState::default(),

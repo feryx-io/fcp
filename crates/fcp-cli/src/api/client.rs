@@ -278,6 +278,90 @@ impl ApiClient {
     pub async fn list_debug_calls(&self) -> Result<Vec<DebugCallResponse>> {
         self.request(Method::GET, "/debug/calls").await
     }
+
+    // ==================== Phone Number Endpoints ====================
+
+    /// List phone numbers, optionally filtered by tenant
+    pub async fn list_phone_numbers(&self, tenant_id: Option<&str>) -> Result<Vec<PhoneNumberResponse>> {
+        let path = match tenant_id {
+            Some(id) => format!("/phone-numbers?tenant_id={}", id),
+            None => "/phone-numbers".to_string(),
+        };
+        self.request(Method::GET, &path).await
+    }
+
+    /// Get a specific phone number
+    pub async fn get_phone_number(&self, id: &str) -> Result<PhoneNumberResponse> {
+        self.request(Method::GET, &format!("/phone-numbers/{}", id)).await
+    }
+
+    /// Create a new phone number
+    pub async fn create_phone_number<B>(&self, req: &B) -> Result<PhoneNumberResponse>
+    where
+        B: serde::Serialize,
+    {
+        self.request_with_body(Method::POST, "/phone-numbers", req).await
+    }
+
+    /// Update a phone number
+    pub async fn update_phone_number<B>(&self, id: &str, req: &B) -> Result<PhoneNumberResponse>
+    where
+        B: serde::Serialize,
+    {
+        self.request_with_body(Method::PATCH, &format!("/phone-numbers/{}", id), req).await
+    }
+
+    /// Delete a phone number
+    pub async fn delete_phone_number(&self, id: &str) -> Result<()> {
+        self.request_no_content(Method::DELETE, &format!("/phone-numbers/{}", id)).await
+    }
+
+    /// Activate a phone number
+    pub async fn activate_phone_number(&self, id: &str) -> Result<PhoneNumberResponse> {
+        self.request(Method::POST, &format!("/phone-numbers/{}/activate", id)).await
+    }
+
+    // ==================== Device Endpoints ====================
+
+    /// List devices, optionally filtered by tenant
+    pub async fn list_devices(&self, tenant_id: Option<&str>) -> Result<Vec<DeviceResponse>> {
+        let path = match tenant_id {
+            Some(id) => format!("/devices?tenant_id={}", id),
+            None => "/devices".to_string(),
+        };
+        self.request(Method::GET, &path).await
+    }
+
+    /// List devices for a specific user
+    pub async fn list_devices_by_user(&self, user_id: &str) -> Result<Vec<DeviceResponse>> {
+        self.request(Method::GET, &format!("/devices?user_id={}", user_id)).await
+    }
+
+    /// Get a specific device
+    pub async fn get_device(&self, id: &str) -> Result<DeviceResponse> {
+        self.request(Method::GET, &format!("/devices/{}", id)).await
+    }
+
+    /// Create a new device
+    pub async fn create_device<B>(&self, req: &B) -> Result<DeviceResponse>
+    where
+        B: serde::Serialize,
+    {
+        self.request_with_body(Method::POST, "/devices", req).await
+    }
+
+    /// Update a device
+    pub async fn update_device<B>(&self, id: &str, req: &B) -> Result<DeviceResponse>
+    where
+        B: serde::Serialize,
+    {
+        self.request_with_body(Method::PATCH, &format!("/devices/{}", id), req).await
+    }
+
+    /// Delete a device
+    pub async fn delete_device(&self, id: &str) -> Result<()> {
+        self.request_no_content(Method::DELETE, &format!("/devices/{}", id)).await
+    }
 }
 
 #[cfg(test)]

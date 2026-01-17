@@ -259,6 +259,8 @@ pub async fn create_user(
         account_status,
         last_login: None,
         emergency_contact,
+        primary_phone_number_id: None,
+        voicemail_box_id: None,
     };
 
     storage.put_user(user.clone()).await?;

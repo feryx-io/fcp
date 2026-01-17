@@ -34,25 +34,16 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<Arc<DynStorage
         StorageBackend::Sqlite => {
             #[cfg(feature = "storage-sqlite")]
             {
-                use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
-                use std::path::PathBuf;
+                use fcp_core::storage::sqlite::SqliteStorage;
 
-                // Parse connection string (format: sqlite://path/to/db.sqlite)
-                let db_path = if let Some(path) = config.connection_string.strip_prefix("sqlite://") {
-                    PathBuf::from(path)
-                } else {
-                    anyhow::bail!("Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite");
-                };
+                // Parse connection string (format: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite)
+                let db_path = config.connection_string
+                    .strip_prefix("sqlite://")
+                    .or_else(|| config.connection_string.strip_prefix("sqlite:///"))
+                    .ok_or_else(|| anyhow::anyhow!("Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite"))?;
 
-                let sqlite_config = SqliteConfig {
-                    database_path: db_path,
-                    max_connections: config.max_connections as u32,
-                    connection_timeout: config.connection_timeout,
-                    enable_wal: true,
-                    create_if_missing: true,
-                };
-
-                let storage = SqliteStorage::new(sqlite_config)
+                // fcp-core's SqliteStorage::new takes just a path string
+                let storage = SqliteStorage::new(db_path)
                     .await
                     .context("Failed to initialize SQLite storage")?;
 
