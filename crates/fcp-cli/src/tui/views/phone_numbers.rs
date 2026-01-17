@@ -878,6 +878,9 @@ pub async fn update_phone_number(api_client: &crate::api::ApiClient, state: &mut
         state: String,
         postal_code: String,
         country: String,
+        validated: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        validated_at: Option<String>,
     }
 
     #[derive(serde::Serialize)]
@@ -903,6 +906,8 @@ pub async fn update_phone_number(api_client: &crate::api::ApiClient, state: &mut
             state: e911_state,
             postal_code: e911_postal,
             country: "US".to_string(),
+            validated: false, // User-entered addresses are not pre-validated
+            validated_at: None,
         })
     } else {
         None
