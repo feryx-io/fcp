@@ -4,8 +4,10 @@ use super::theme::Theme;
 use super::views::calls::CallsViewState;
 use super::views::debug::DebugViewState;
 use super::views::devices::DevicesViewState;
+use super::views::line_bindings::LineBindingsViewState;
 use super::views::phone_numbers::PhoneNumbersViewState;
 use super::views::registrations::RegistrationsViewState;
+use super::views::tenants::TenantsState;
 use super::views::users::UsersViewState;
 use crate::api::ApiClient;
 use crate::config::ResolvedContext;
@@ -49,9 +51,11 @@ impl CurrentUser {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Dashboard,
+    Tenants,
     Users,
     PhoneNumbers,
     Devices,
+    LineBindings,
     Calls,
     Registrations,
     Debug,
@@ -62,9 +66,11 @@ impl Tab {
     pub fn all() -> &'static [Tab] {
         &[
             Tab::Dashboard,
+            Tab::Tenants,
             Tab::Users,
             Tab::PhoneNumbers,
             Tab::Devices,
+            Tab::LineBindings,
             Tab::Calls,
             Tab::Registrations,
             Tab::Debug,
@@ -75,9 +81,11 @@ impl Tab {
     pub fn title(&self) -> &'static str {
         match self {
             Tab::Dashboard => "Dashboard",
+            Tab::Tenants => "Tenants",
             Tab::Users => "Users",
             Tab::PhoneNumbers => "Phone Numbers",
             Tab::Devices => "Devices",
+            Tab::LineBindings => "Line Bindings",
             Tab::Calls => "Calls",
             Tab::Registrations => "Registrations",
             Tab::Debug => "Debug",
@@ -98,7 +106,7 @@ impl Tab {
         tabs[(current_idx + tabs.len() - 1) % tabs.len()]
     }
 
-    /// Get tab by index (0-4)
+    /// Get tab by index (0-7)
     pub fn from_index(index: usize) -> Option<Tab> {
         Self::all().get(index).copied()
     }
@@ -130,12 +138,16 @@ pub struct App {
     pub phone_numbers_view: PhoneNumbersViewState,
     /// Devices view state
     pub devices_view: DevicesViewState,
+    /// Line bindings view state
+    pub line_bindings_view: LineBindingsViewState,
     /// Calls view state
     pub calls_view: CallsViewState,
     /// Registrations view state
     pub registrations_view: RegistrationsViewState,
     /// Debug view state
     pub debug_view: DebugViewState,
+    /// Tenants view state
+    pub tenants_view: TenantsState,
 }
 
 impl App {
@@ -170,9 +182,11 @@ impl App {
             users_view: UsersViewState::default(),
             phone_numbers_view: PhoneNumbersViewState::default(),
             devices_view: DevicesViewState::default(),
+            line_bindings_view: LineBindingsViewState::new(),
             calls_view: CallsViewState::default(),
             registrations_view: RegistrationsViewState::default(),
             debug_view: DebugViewState::default(),
+            tenants_view: TenantsState::new(),
         })
     }
 
@@ -343,9 +357,11 @@ impl App {
     pub fn can_access_tab(&self, tab: &Tab) -> bool {
         match tab {
             Tab::Dashboard => true, // Everyone can see dashboard
+            Tab::Tenants => self.current_user.role == UserRole::SuperAdmin, // Only SuperAdmin can manage tenants
             Tab::Users => self.current_user.has_permission(Permission::UserRead, self.deployment_mode),
             Tab::PhoneNumbers => self.current_user.has_permission(Permission::PhoneNumberRead, self.deployment_mode),
             Tab::Devices => self.current_user.has_permission(Permission::DeviceRead, self.deployment_mode),
+            Tab::LineBindings => self.current_user.has_permission(Permission::PhoneNumberRead, self.deployment_mode) && self.current_user.has_permission(Permission::DeviceRead, self.deployment_mode),
             Tab::Calls => self.current_user.has_permission(Permission::CallView, self.deployment_mode),
             Tab::Registrations => self.current_user.has_permission(Permission::RegistrationView, self.deployment_mode),
             Tab::Debug => self.current_user.has_permission(Permission::DebugView, self.deployment_mode),

@@ -22,6 +22,7 @@ pub mod routing_engine;
 pub mod service;
 pub mod sip_handler;
 pub mod storage;
+pub mod tenant;
 pub mod time;
 pub mod transport;
 pub mod voicemail;
@@ -70,8 +71,9 @@ pub use crate::sip_handler::{
 pub use crate::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
     DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences,
-    Registration, RegistrationStore, User, UserFileEntry,
+    Registration, RegistrationStore, TenantStore, User, UserFileEntry,
 };
+pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

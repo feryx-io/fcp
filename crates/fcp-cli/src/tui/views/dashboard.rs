@@ -83,8 +83,8 @@ fn render_stats_section(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("    • ", app.theme.muted()),
-            Span::styled("1-5", app.theme.primary()),
-            Span::styled(" - Jump to tab (Dashboard, Users, Calls, Registrations, Debug)", app.theme.normal()),
+            Span::styled("1-8", app.theme.primary()),
+            Span::styled(" - Jump to tab (Dashboard, Users, Phone Numbers, Devices, Line Bindings, Calls, Registrations, Debug)", app.theme.normal()),
         ]),
         Line::from(vec![
             Span::styled("    • ", app.theme.muted()),

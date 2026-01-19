@@ -188,6 +188,9 @@ pub struct Call {
     /// Unique call identifier
     pub id: CallId,
 
+    /// Tenant ID for multi-tenancy (defaults to nil for MVP single-tenant)
+    pub tenant_id: fcp_core::TenantId,
+
     /// Current call state
     pub state: CallState,
 
@@ -246,6 +249,7 @@ impl fmt::Debug for Call {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Call")
             .field("id", &self.id)
+            .field("tenant_id", &self.tenant_id)
             .field("state", &self.state)
             .field("a_leg", &self.a_leg)
             .field("a_leg_invite_tx", &self.a_leg_invite_tx)
@@ -268,6 +272,7 @@ impl Call {
 
         Self {
             id: CallId::new(),
+            tenant_id: fcp_core::TenantId::nil(), // TODO: Phase 2 - extract from context
             state: CallState::Initiated,
             a_leg,
             a_leg_invite_tx: None,

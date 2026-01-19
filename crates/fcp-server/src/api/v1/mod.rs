@@ -1,5 +1,6 @@
 //! API v1 routes.
 
+pub mod cdrs;
 pub mod debug;
 pub mod devices;
 pub mod extensions;
@@ -9,6 +10,7 @@ pub mod metrics;
 pub mod phone_numbers;
 pub mod registrations;
 pub mod system;
+pub mod tenants;
 pub mod users;
 
 use crate::api::state::ApiState;
@@ -29,6 +31,17 @@ pub fn router() -> Router<ApiState> {
         .route("/debug/subscriptions", get(debug::list_subscriptions))
         .route("/debug/calls", get(debug::list_calls))
         .route("/debug/rate-limits", get(debug::list_rate_limits))
+        // Tenant management endpoints
+        .route(
+            "/tenants",
+            get(tenants::list_tenants).post(tenants::create_tenant),
+        )
+        .route(
+            "/tenants/:id",
+            get(tenants::get_tenant)
+                .put(tenants::update_tenant)
+                .delete(tenants::delete_tenant),
+        )
         // User management endpoints
         .route("/users", get(users::list_users).post(users::create_user))
         .route(
@@ -66,6 +79,9 @@ pub fn router() -> Router<ApiState> {
             "/calls/:call_id/recording/stop",
             post(media::stop_recording),
         )
+        // CDR (Call Detail Record) endpoints
+        .route("/cdrs", get(cdrs::list_cdrs))
+        .route("/cdrs/:call_id", get(cdrs::get_cdr))
         // Phone number management
         .route(
             "/phone-numbers",

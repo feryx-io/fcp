@@ -35,6 +35,7 @@ mod credential_store_tests {
 
         // Create a user
         let user = User {
+            id: crate::UserId::new(),
             username: "alice".to_string(),
             password: "hashed_password".to_string(),
             digest_password: Some("digest_hash".to_string()),
@@ -42,6 +43,8 @@ mod credential_store_tests {
             display_name: Some("Alice Smith".to_string()),
             tenant_id: tenant_id.clone(),
             enabled: true,
+            role: crate::UserRole::EndUser,
+            department_id: None,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             media_preferences: MediaPreferences::default(),
@@ -139,6 +142,7 @@ mod credential_store_tests {
         let voicemail_id = crate::VoicemailBoxId::new();
 
         let user = User {
+            id: crate::UserId::new(),
             username: "bob".to_string(),
             password: "hashed_password".to_string(),
             digest_password: None,
@@ -146,6 +150,8 @@ mod credential_store_tests {
             display_name: Some("Bob Smith".to_string()),
             tenant_id: tenant_id.clone(),
             enabled: true,
+            role: crate::UserRole::EndUser,
+            department_id: None,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             media_preferences: crate::MediaPreferences::default(),
@@ -1215,5 +1221,107 @@ mod porting_store_tests {
             .await
             .expect("Failed to get deleted port request");
         assert!(deleted.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tenant_store_tests {
+    use super::*;
+    use crate::{Tenant, TenantStatus};
+
+    #[tokio::test]
+    async fn test_tenant_crud() {
+        let storage = create_test_storage().await;
+
+        // Create a tenant
+        let tenant = Tenant::new("Acme Corporation".to_string());
+        let tenant_id = tenant.id.clone();
+
+        // Save tenant
+        storage
+            .put_tenant(tenant.clone())
+            .await
+            .expect("Failed to insert tenant");
+
+        // Get tenant by ID
+        let loaded = storage
+            .get_tenant(&tenant_id)
+            .await
+            .expect("Failed to get tenant")
+            .expect("Tenant not found");
+
+        assert_eq!(loaded.id, tenant.id);
+        assert_eq!(loaded.name, "Acme Corporation");
+        assert_eq!(loaded.status, TenantStatus::Active);
+
+        // Get tenant by name
+        let by_name = storage
+            .get_tenant_by_name("Acme Corporation")
+            .await
+            .expect("Failed to get tenant by name")
+            .expect("Tenant not found by name");
+
+        assert_eq!(by_name.id, tenant.id);
+        assert_eq!(by_name.name, "Acme Corporation");
+
+        // Update tenant
+        let mut updated_tenant = loaded.clone();
+        updated_tenant.status = TenantStatus::Trial;
+        updated_tenant.description = Some("Test company".to_string());
+        updated_tenant.max_users = Some(100);
+        updated_tenant.max_concurrent_calls = Some(50);
+
+        storage
+            .put_tenant(updated_tenant.clone())
+            .await
+            .expect("Failed to update tenant");
+
+        let reloaded = storage
+            .get_tenant(&tenant_id)
+            .await
+            .expect("Failed to get updated tenant")
+            .expect("Updated tenant not found");
+
+        assert_eq!(reloaded.status, TenantStatus::Trial);
+        assert_eq!(reloaded.description, Some("Test company".to_string()));
+        assert_eq!(reloaded.max_users, Some(100));
+        assert_eq!(reloaded.max_concurrent_calls, Some(50));
+
+        // Create another tenant
+        let tenant2 = Tenant::new("Widget Inc".to_string());
+        storage
+            .put_tenant(tenant2.clone())
+            .await
+            .expect("Failed to insert second tenant");
+
+        // List tenants
+        let tenants = storage
+            .list_tenants()
+            .await
+            .expect("Failed to list tenants");
+        assert_eq!(tenants.len(), 2);
+        // Should be sorted by name
+        assert_eq!(tenants[0].name, "Acme Corporation");
+        assert_eq!(tenants[1].name, "Widget Inc");
+
+        // Delete tenant
+        storage
+            .delete_tenant(&tenant_id)
+            .await
+            .expect("Failed to delete tenant");
+
+        let deleted = storage
+            .get_tenant(&tenant_id)
+            .await
+            .expect("Failed to get deleted tenant");
+        assert!(deleted.is_none());
+
+        // List should now have only one tenant
+        let remaining_tenants = storage
+            .list_tenants()
+            .await
+            .expect("Failed to list remaining tenants");
+        assert_eq!(remaining_tenants.len(), 1);
+        assert_eq!(remaining_tenants[0].name, "Widget Inc");
     }
 }

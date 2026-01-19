@@ -196,6 +196,7 @@ use crate::metrics::MetricsHandle;
 use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
+use fcp_core::storage::{DeviceStore, LineBindingStore, PhoneNumberStore};
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -230,6 +231,9 @@ pub struct SipMessageHandler {
 
     /// User Agent Client for making outbound calls (B-leg)
     uac: Option<Arc<SipUserAgentClient>>,
+
+    /// Optional storage for line binding lookups
+    storage: Option<Arc<fcp_core::DynStorage>>,
 
     /// Media manager for RTP handling
     media_manager: Option<Arc<fcp_media::MediaManager>>,
@@ -301,6 +305,7 @@ impl SipMessageHandler {
     /// * `routing_service` - Optional routing service for call authorization
     /// * `call_manager` - Call manager for B2BUA functionality
     /// * `uac` - Optional User Agent Client for outbound calls (B-leg forwarding)
+    /// * `storage` - Optional storage for line binding lookups
     /// * `media_manager` - Optional media manager for RTP handling
     /// * `media_config` - Optional media configuration
     pub fn new(
@@ -314,6 +319,7 @@ impl SipMessageHandler {
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
         call_manager: Arc<crate::call_manager::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
+        storage: Option<Arc<fcp_core::DynStorage>>,
         media_manager: Option<Arc<fcp_media::MediaManager>>,
         media_config: Option<fcp_core::config::MediaConfig>,
     ) -> Self {
@@ -329,6 +335,7 @@ impl SipMessageHandler {
             routing_service,
             call_manager,
             uac,
+            storage,
             media_manager,
             media_config,
             settings,
@@ -346,6 +353,7 @@ impl SipMessageHandler {
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
         call_manager: Arc<crate::call_manager::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
+        storage: Option<Arc<fcp_core::DynStorage>>,
         media_manager: Option<Arc<fcp_media::MediaManager>>,
         media_config: Option<fcp_core::config::MediaConfig>,
         settings: ServerSettings,
@@ -426,6 +434,7 @@ impl SipMessageHandler {
             routing_service,
             call_manager,
             uac,
+            storage,
             media_manager,
             media_config,
             mid_dialog_lock: Arc::new(dashmap::DashMap::new()),
@@ -997,61 +1006,282 @@ impl SipMessageHandler {
             call.state = crate::call::CallState::LookingUpDestination;
         });
 
-        // Look up destination in registrar
-        let destination_contacts = if let Some(registrar) = &self.registrar {
-            match registrar.get_registrations(destination_aor).await {
-                Ok(bindings) if !bindings.is_empty() => {
-                    debug!(
-                        call_id = %call_id,
-                        destination = %destination_aor,
-                        contacts = bindings.len(),
-                        "Found registered contacts for destination"
-                    );
-                    bindings
+        // Check if destination is a phone number (E.164 format)
+        // If so, look up line binding to find which user/devices to route to
+        let destination_contacts = if is_e164_number(destination_aor) {
+            debug!(
+                call_id = %call_id,
+                destination = %destination_aor,
+                "Destination is a phone number, looking up line binding"
+            );
+
+            // Try to look up line binding for this phone number
+            if let Some(storage) = &self.storage {
+                // First, get the phone number by E.164
+                match storage.get_phone_number_by_e164(destination_aor).await {
+                    Ok(Some(phone_number)) => {
+                        // Then get the line binding by phone number ID
+                        match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                            Ok(Some(line_binding)) => {
+                                debug!(
+                                    call_id = %call_id,
+                                    phone_number = %destination_aor,
+                                    binding_type = %line_binding.binding_type,
+                                    "Found line binding for phone number"
+                                );
+
+                                // Handle different binding types
+                                match line_binding.binding_type {
+                                    fcp_core::BindingType::User => {
+                                        // Get devices from line binding and look up their registrations
+                                        let enabled_devices = line_binding.enabled_devices();
+
+                                        if enabled_devices.is_empty() {
+                                            warn!(call_id = %call_id, "Line binding has no enabled devices");
+                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some("No devices enabled for line".to_string()));
+                                            return Ok(());
+                                        }
+
+                                        // Collect all contact URIs from all device registrations
+                                        let mut all_contacts = Vec::new();
+                                        for device_binding in enabled_devices {
+                                            // Get the device record from storage
+                                            match storage.get_device(&device_binding.device_id).await {
+                                                Ok(Some(device)) => {
+                                                    if let Some(sip_uri) = &device.sip_uri {
+                                                        // Look up registrations for this device's SIP URI
+                                                        if let Some(registrar) = &self.registrar {
+                                                            match registrar.get_registrations(sip_uri).await {
+                                                                Ok(contacts) if !contacts.is_empty() => {
+                                                                    debug!(
+                                                                        call_id = %call_id,
+                                                                        device = %device.name,
+                                                                        sip_uri = %sip_uri,
+                                                                        contacts = contacts.len(),
+                                                                        "Found registrations for device"
+                                                                    );
+                                                                    all_contacts.extend(contacts);
+                                                                }
+                                                                _ => {
+                                                                    debug!(
+                                                                        call_id = %call_id,
+                                                                        device = %device.name,
+                                                                        sip_uri = %sip_uri,
+                                                                        "Device not currently registered"
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        debug!(
+                                                            call_id = %call_id,
+                                                            device = %device.name,
+                                                            "Device has no SIP URI configured"
+                                                        );
+                                                    }
+                                                }
+                                                Ok(None) => {
+                                                    warn!(call_id = %call_id, device_id = %device_binding.device_id, "Device not found in storage");
+                                                }
+                                                Err(e) => {
+                                                    error!(call_id = %call_id, device_id = %device_binding.device_id, error = %e, "Failed to get device");
+                                                }
+                                            }
+                                        }
+
+                                        // Check if we found any registered contacts
+                                        if all_contacts.is_empty() {
+                                            info!(call_id = %call_id, phone_number = %destination_aor, "No devices registered for phone number");
+                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some("No devices registered".to_string()));
+                                            return Ok(());
+                                        }
+
+                                        all_contacts
+                                    }
+                                    fcp_core::BindingType::Ivr => {
+                                        // IVR not yet implemented (Phase 2)
+                                        info!(call_id = %call_id, "IVR routing not yet implemented");
+                                        let response = self.create_simple_response(request, 501, "Not Implemented");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(&call_id, Some("IVR not implemented".to_string()));
+                                        return Ok(());
+                                    }
+                                    _ => {
+                                        // Other binding types not yet implemented
+                                        info!(call_id = %call_id, binding_type = %line_binding.binding_type, "Binding type not yet supported");
+                                        let response = self.create_simple_response(request, 501, "Not Implemented");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Binding type {} not supported", line_binding.binding_type)));
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                // No line binding for this phone number - fall through to direct registrar lookup
+                                debug!(
+                                    call_id = %call_id,
+                                    phone_number = %destination_aor,
+                                    "No line binding found for phone number, trying direct registrar lookup"
+                                );
+
+                                if let Some(registrar) = &self.registrar {
+                                    match registrar.get_registrations(destination_aor).await {
+                                        Ok(bindings) if !bindings.is_empty() => bindings,
+                                        _ => {
+                                            info!(call_id = %call_id, destination = %destination_aor, "No line binding or registration found");
+                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some("Destination not found".to_string()));
+                                            return Ok(());
+                                        }
+                                    }
+                                } else {
+                                    error!(call_id = %call_id, "No registrar available");
+                                    let response = self.create_simple_response(request, 500, "Service Unavailable");
+                                    a_leg_handle.send_final(response).await;
+                                    let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                                    return Ok(());
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    call_id = %call_id,
+                                    phone_number = %destination_aor,
+                                    error = %e,
+                                    "Failed to look up line binding"
+                                );
+                                let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                a_leg_handle.send_final(response).await;
+                                let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to lookup line binding: {}", e)));
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // Phone number not found in database - fall through to direct registrar lookup
+                        debug!(
+                            call_id = %call_id,
+                            phone_number = %destination_aor,
+                            "Phone number not in database, trying direct registrar lookup"
+                        );
+
+                        if let Some(registrar) = &self.registrar {
+                            match registrar.get_registrations(destination_aor).await {
+                                Ok(bindings) if !bindings.is_empty() => bindings,
+                                _ => {
+                                    info!(call_id = %call_id, destination = %destination_aor, "Phone number not found");
+                                    let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                    a_leg_handle.send_final(response).await;
+                                    let _ = self.call_manager.terminate_call(&call_id, Some("Destination not found".to_string()));
+                                    return Ok(());
+                                }
+                            }
+                        } else {
+                            error!(call_id = %call_id, "No registrar available");
+                            let response = self.create_simple_response(request, 500, "Service Unavailable");
+                            a_leg_handle.send_final(response).await;
+                            let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            call_id = %call_id,
+                            phone_number = %destination_aor,
+                            error = %e,
+                            "Failed to look up phone number"
+                        );
+                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                        a_leg_handle.send_final(response).await;
+                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to lookup phone number: {}", e)));
+                        return Ok(());
+                    }
                 }
-                Ok(_) => {
-                    info!(
-                        call_id = %call_id,
-                        destination = %destination_aor,
-                        "Destination not registered (no bindings)"
-                    );
-                    let response =
-                        self.create_simple_response(request, 480, "Temporarily Unavailable");
+            } else {
+                // No storage available - fall back to direct registrar lookup
+                debug!(call_id = %call_id, "No storage available, using direct registrar lookup");
+                if let Some(registrar) = &self.registrar {
+                    match registrar.get_registrations(destination_aor).await {
+                        Ok(bindings) if !bindings.is_empty() => bindings,
+                        _ => {
+                            info!(call_id = %call_id, destination = %destination_aor, "Destination not registered");
+                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                            a_leg_handle.send_final(response).await;
+                            let _ = self.call_manager.terminate_call(&call_id, Some("Destination not registered".to_string()));
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    error!(call_id = %call_id, "No registrar available");
+                    let response = self.create_simple_response(request, 500, "Service Unavailable");
                     a_leg_handle.send_final(response).await;
-                    let _ = self
-                        .call_manager
-                        .terminate_call(&call_id, Some("Destination not registered".to_string()));
-                    return Ok(());
-                }
-                Err(e) => {
-                    error!(
-                        call_id = %call_id,
-                        destination = %destination_aor,
-                        error = %e,
-                        "Failed to lookup destination"
-                    );
-                    let response =
-                        self.create_simple_response(request, 500, "Internal Server Error");
-                    a_leg_handle.send_final(response).await;
-                    let _ = self.call_manager.terminate_call(
-                        &call_id,
-                        Some(format!("Failed to lookup destination: {}", e)),
-                    );
+                    let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
                     return Ok(());
                 }
             }
         } else {
-            // No registrar configured - cannot forward call
-            error!(
-                call_id = %call_id,
-                "Cannot forward call: No registrar configured"
-            );
-            let response = self.create_simple_response(request, 500, "Service Unavailable");
-            a_leg_handle.send_final(response).await;
-            let _ = self
-                .call_manager
-                .terminate_call(&call_id, Some("No registrar configured".to_string()));
-            return Ok(());
+            // Not a phone number - do direct registrar lookup (existing behavior)
+            debug!(call_id = %call_id, destination = %destination_aor, "Destination is not a phone number, using direct registrar lookup");
+
+            if let Some(registrar) = &self.registrar {
+                match registrar.get_registrations(destination_aor).await {
+                    Ok(bindings) if !bindings.is_empty() => {
+                        debug!(
+                            call_id = %call_id,
+                            destination = %destination_aor,
+                            contacts = bindings.len(),
+                            "Found registered contacts for destination"
+                        );
+                        bindings
+                    }
+                    Ok(_) => {
+                        info!(
+                            call_id = %call_id,
+                            destination = %destination_aor,
+                            "Destination not registered (no bindings)"
+                        );
+                        let response =
+                            self.create_simple_response(request, 480, "Temporarily Unavailable");
+                        a_leg_handle.send_final(response).await;
+                        let _ = self
+                            .call_manager
+                            .terminate_call(&call_id, Some("Destination not registered".to_string()));
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error!(
+                            call_id = %call_id,
+                            destination = %destination_aor,
+                            error = %e,
+                            "Failed to lookup destination"
+                        );
+                        let response =
+                            self.create_simple_response(request, 500, "Internal Server Error");
+                        a_leg_handle.send_final(response).await;
+                        let _ = self.call_manager.terminate_call(
+                            &call_id,
+                            Some(format!("Failed to lookup destination: {}", e)),
+                        );
+                        return Ok(());
+                    }
+                }
+            } else {
+                // No registrar configured - cannot forward call
+                error!(
+                    call_id = %call_id,
+                    "Cannot forward call: No registrar configured"
+                );
+                let response = self.create_simple_response(request, 500, "Service Unavailable");
+                a_leg_handle.send_final(response).await;
+                let _ = self
+                    .call_manager
+                    .terminate_call(&call_id, Some("No registrar configured".to_string()));
+                return Ok(());
+            }
         };
 
         // Use the contact with the highest q-value (RFC 3261 contact prioritization)
@@ -4165,6 +4395,29 @@ fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
     })
 }
 
+/// Helper to check if a URI represents an E.164 phone number.
+///
+/// Extracts the user part from a SIP URI and checks if it looks like an E.164 number.
+/// E.164 numbers start with '+' and have at least 7 digits.
+///
+/// # Examples
+/// - `sip:+15183217034@domain` → true
+/// - `sip:alice@domain` → false
+/// - `sip:+1518@domain` → false (too short)
+fn is_e164_number(uri: &str) -> bool {
+    // Extract user part from sip:+15183217034@domain or just +15183217034
+    let user_part = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+        .unwrap_or(uri)
+        .split('@')
+        .next()
+        .unwrap_or("");
+
+    // E.164 numbers start with '+' and must have at least 7 digits (country code + minimal number)
+    user_part.starts_with('+') && user_part.len() > 7 && user_part[1..].chars().all(|c| c.is_ascii_digit())
+}
+
 /// SDP validation helper (exposed for tests).
 fn validate_sdp_body_static(
     request: &sip_core::Request,
@@ -4668,6 +4921,7 @@ mod tests {
             None, // No routing service
             call_manager,
             None, // No UAC
+            None, // No storage
             None, // No media manager
             None, // No media config
         );
@@ -4729,6 +4983,7 @@ mod tests {
             None,
             call_manager,
             None,
+            None, // No storage
             None, // No media manager
             None, // No media config
         );
@@ -4790,6 +5045,7 @@ mod tests {
             None,
             call_manager,
             None,
+            None, // No storage
             None, // No media manager
             None, // No media config
         );
@@ -4954,6 +5210,7 @@ mod tests {
             None, // No routing service
             call_manager,
             None, // No UAC
+            None, // No storage
             None, // No media manager
             None, // No media config
         );

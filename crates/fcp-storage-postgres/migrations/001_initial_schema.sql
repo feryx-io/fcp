@@ -1,13 +1,38 @@
 -- Initial schema for FCP PostgreSQL storage
 -- Version: 0.1.0
 
+-- Tenants table
+CREATE TABLE IF NOT EXISTS tenants (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    status TEXT NOT NULL,
+    contact_email TEXT,
+    contact_phone TEXT,
+    max_users INTEGER,
+    max_phone_numbers INTEGER,
+    max_concurrent_calls INTEGER,
+    billing_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    trial_expires_at TIMESTAMPTZ,
+    metadata TEXT,
+    data JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenants_name ON tenants(name);
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
+    id TEXT NOT NULL,
     username TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     display_name TEXT,
     tenant_id TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT true,
+    role TEXT NOT NULL DEFAULT 'end_user',
+    department_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     media_preferences JSONB,

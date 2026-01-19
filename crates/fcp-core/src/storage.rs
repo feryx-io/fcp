@@ -243,6 +243,10 @@ pub mod password {
 /// A user account with SIP credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
+    /// Unique user ID
+    #[serde(default = "crate::UserId::new")]
+    pub id: crate::UserId,
+
     /// Username (SIP user part)
     pub username: String,
 
@@ -672,6 +676,25 @@ pub trait CredentialStore: Send + Sync {
             Ok(false)
         }
     }
+}
+
+/// Storage backend for tenants.
+#[async_trait]
+pub trait TenantStore: Send + Sync {
+    /// Get a tenant by ID.
+    async fn get_tenant(&self, id: &crate::TenantId) -> Result<Option<crate::Tenant>>;
+
+    /// Get a tenant by name (for uniqueness checks).
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<crate::Tenant>>;
+
+    /// List all tenants.
+    async fn list_tenants(&self) -> Result<Vec<crate::Tenant>>;
+
+    /// Create or update a tenant.
+    async fn put_tenant(&self, tenant: crate::Tenant) -> Result<()>;
+
+    /// Delete a tenant by ID.
+    async fn delete_tenant(&self, id: &crate::TenantId) -> Result<()>;
 }
 
 /// Storage backend for SIP registrations.
@@ -1359,6 +1382,7 @@ pub struct DynStorage {
     voicemail_store: Arc<dyn VoicemailStore>,
     geo_routing_store: Arc<dyn GeoRoutingStore>,
     porting_store: Arc<dyn crate::porting::PortingStore>,
+    tenant_store: Arc<dyn TenantStore>,
 }
 
 impl DynStorage {
@@ -1374,6 +1398,7 @@ impl DynStorage {
         voicemail_store: Arc<dyn VoicemailStore>,
         geo_routing_store: Arc<dyn GeoRoutingStore>,
         porting_store: Arc<dyn crate::porting::PortingStore>,
+        tenant_store: Arc<dyn TenantStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1386,6 +1411,7 @@ impl DynStorage {
             voicemail_store,
             geo_routing_store,
             porting_store,
+            tenant_store,
         }
     }
 
@@ -1405,6 +1431,7 @@ impl DynStorage {
             + VoicemailStore
             + GeoRoutingStore
             + crate::porting::PortingStore
+            + TenantStore
             + 'static,
     {
         Self {
@@ -1417,7 +1444,8 @@ impl DynStorage {
             device_store: storage.clone(),
             voicemail_store: storage.clone(),
             geo_routing_store: storage.clone(),
-            porting_store: storage,
+            porting_store: storage.clone(),
+            tenant_store: storage,
         }
     }
 }
@@ -1799,6 +1827,29 @@ impl crate::porting::PortingStore for DynStorage {
     }
 }
 
+#[async_trait]
+impl TenantStore for DynStorage {
+    async fn get_tenant(&self, id: &crate::TenantId) -> Result<Option<crate::Tenant>> {
+        self.tenant_store.get_tenant(id).await
+    }
+
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<crate::Tenant>> {
+        self.tenant_store.get_tenant_by_name(name).await
+    }
+
+    async fn list_tenants(&self) -> Result<Vec<crate::Tenant>> {
+        self.tenant_store.list_tenants().await
+    }
+
+    async fn put_tenant(&self, tenant: crate::Tenant) -> Result<()> {
+        self.tenant_store.put_tenant(tenant).await
+    }
+
+    async fn delete_tenant(&self, id: &crate::TenantId) -> Result<()> {
+        self.tenant_store.delete_tenant(id).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1812,6 +1863,7 @@ mod tests {
         // Create user with hashed password (must meet strength requirements)
         let password_hash = password::hash_password("Secr3t!Pass").unwrap();
         let user = User {
+            id: crate::UserId::new(),
             username: "alice".to_string(),
             password: password_hash,
             digest_password: None,
@@ -1819,6 +1871,8 @@ mod tests {
             display_name: Some("Alice".to_string()),
             tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,
+            role: crate::UserRole::EndUser,
+            department_id: None,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             media_preferences: MediaPreferences::default(),

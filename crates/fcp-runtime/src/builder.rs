@@ -134,6 +134,7 @@ impl RuntimeBuilder {
             registrar,
             routing_service,
             Arc::clone(&uac),
+            storage.clone(),
             Arc::clone(&media_manager),
         )?;
 
@@ -436,6 +437,7 @@ fn create_transport_listener(
     registrar: Option<Arc<fcp_sip::registrar::FcpRegistrar>>,
     routing_service: Option<Arc<fcp_routing::RoutingService>>,
     uac: Arc<SipUserAgentClient>,
+    storage: Option<Arc<fcp_core::DynStorage>>,
     media_manager: Arc<fcp_media::MediaManager>,
 ) -> Result<(TransportListener, Arc<SipMessageHandler>, Arc<CallManager>)> {
     use fcp_sip::prelude::{ListenerConfig, SipMessageHandler};
@@ -480,8 +482,12 @@ fn create_transport_listener(
             .unwrap_or_else(|| "127.0.0.1".to_string())
     });
 
-    // Create CallManager for B2BUA functionality
-    let call_manager = Arc::new(fcp_sip::call_manager::CallManager::new());
+    // Create CallManager for B2BUA functionality with storage if available
+    let call_manager = if let Some(ref storage) = storage {
+        Arc::new(fcp_sip::call_manager::CallManager::with_storage(Arc::clone(storage)))
+    } else {
+        Arc::new(fcp_sip::call_manager::CallManager::new())
+    };
 
     // Create message handler that routes to transaction and dialog managers
     let handler = Arc::new(SipMessageHandler::new(
@@ -495,6 +501,7 @@ fn create_transport_listener(
         routing_service,
         Arc::clone(&call_manager),
         Some(uac),
+        storage,
         Some(media_manager),
         Some(config.media.clone()),
     ));
@@ -643,6 +650,7 @@ async fn load_users_from_file(
         let sip_ha1 = fcp_core::storage::password::compute_ha1(&entry.username, realm, password_for_ha1);
 
         let user = User {
+            id: fcp_core::UserId::new(),
             username: entry.username.clone(),
             password: password_hash,
             digest_password: digest_password_hash,
@@ -697,6 +705,7 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>, realm: &
         let sip_ha1 = password::compute_ha1(username, realm, plaintext_password);
 
         let user = User {
+            id: fcp_core::UserId::new(),
             username: username.to_string(),
             password: password_hash,
             digest_password: None, // Test users use same password for API and SIP

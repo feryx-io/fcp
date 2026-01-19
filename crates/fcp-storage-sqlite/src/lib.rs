@@ -804,7 +804,15 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
         phone: row.get("emergency_contact_phone"),
     };
 
+    // Parse user ID from database, or generate a new one if missing
+    let id = row
+        .try_get::<String, _>("id")
+        .ok()
+        .and_then(|s| UserId::from_str(&s).ok())
+        .unwrap_or_else(UserId::new);
+
     Ok(User {
+        id,
         username: row.get("username"),
         password: row.get("password_hash"),
         digest_password: row.try_get("digest_password").ok(),

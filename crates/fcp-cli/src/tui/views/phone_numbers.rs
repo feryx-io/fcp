@@ -279,6 +279,12 @@ fn render_phone_numbers_table(
         })
         .collect();
 
+    let title = if state.loading {
+        format!(" Phone Numbers (Loading...) ")
+    } else {
+        format!(" Phone Numbers ({}) (↑↓ to navigate) ", state.phone_numbers.len())
+    };
+
     let table = Table::new(
         rows,
         [
@@ -292,7 +298,7 @@ fn render_phone_numbers_table(
     .header(header)
     .block(
         Block::default()
-            .title("Phone Numbers (↑↓ to navigate)")
+            .title(title)
             .borders(Borders::ALL)
             .border_style(theme.border()),
     )
@@ -310,7 +316,13 @@ fn render_details_panel(
     area: Rect,
     deployment_mode: fcp_core::DeploymentMode,
 ) {
-    let content = if let Some(phone) = state.selected_phone_number() {
+    let content = if state.loading {
+        vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![Span::styled("  Loading phone numbers...", theme.info())]),
+        ]
+    } else if let Some(phone) = state.selected_phone_number() {
         let mut lines = vec![
             Line::from(vec![
                 Span::styled("Phone Number: ", theme.muted()),

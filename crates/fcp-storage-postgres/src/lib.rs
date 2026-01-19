@@ -32,8 +32,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration,
-    RegistrationStore, TenantId, User,
+    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration, UserId,
+    RegistrationStore, Tenant, TenantId, TenantStore, User,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Pool, Postgres, Row};
@@ -201,10 +201,11 @@ impl CredentialStore for PostgresStorage {
             .unwrap_or_else(|_| "end_user".to_string());
 
         sqlx::query(
-            "INSERT INTO users (username, password_hash, display_name, tenant_id, enabled,
+            "INSERT INTO users (id, username, password_hash, display_name, tenant_id, enabled,
                                role, department_id, created_at, updated_at, media_preferences)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT(tenant_id, username) DO UPDATE SET
+                 id = EXCLUDED.id,
                  password_hash = EXCLUDED.password_hash,
                  display_name = EXCLUDED.display_name,
                  enabled = EXCLUDED.enabled,
@@ -213,6 +214,7 @@ impl CredentialStore for PostgresStorage {
                  updated_at = EXCLUDED.updated_at,
                  media_preferences = EXCLUDED.media_preferences",
         )
+        .bind(user.id.to_string())
         .bind(&user.username)
         .bind(&user.password)
         .bind(&user.display_name)
@@ -557,6 +559,129 @@ impl CdrStore for PostgresStorage {
 }
 
 // ============================================================================
+// TenantStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl TenantStore for PostgresStorage {
+    async fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>> {
+        let row = sqlx::query("SELECT data FROM tenants WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let data: serde_json::Value = row.get("data");
+                let tenant: Tenant = serde_json::from_value(data)?;
+                Ok(Some(tenant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>> {
+        let row = sqlx::query("SELECT data FROM tenants WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let data: serde_json::Value = row.get("data");
+                let tenant: Tenant = serde_json::from_value(data)?;
+                Ok(Some(tenant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_tenants(&self) -> Result<Vec<Tenant>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT data
+            FROM tenants
+            ORDER BY name
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tenants = Vec::new();
+        for row in rows {
+            let data: serde_json::Value = row.get("data");
+            let tenant: Tenant = serde_json::from_value(data)?;
+            tenants.push(tenant);
+        }
+
+        Ok(tenants)
+    }
+
+    async fn put_tenant(&self, tenant: Tenant) -> Result<()> {
+        let data = serde_json::to_value(&tenant)?;
+        let created_at = system_time_to_datetime(tenant.created_at);
+        let updated_at = system_time_to_datetime(tenant.updated_at);
+        let trial_expires_at = tenant.trial_expires_at.map(system_time_to_datetime);
+
+        // Serialize status to snake_case string using serde
+        let status_str = serde_json::to_string(&tenant.status)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "active".to_string());
+
+        sqlx::query(
+            r#"
+            INSERT INTO tenants (id, name, description, status, contact_email, contact_phone, max_users, max_phone_numbers, max_concurrent_calls, billing_id, created_at, updated_at, trial_expires_at, metadata, data)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            ON CONFLICT(id) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                status = EXCLUDED.status,
+                contact_email = EXCLUDED.contact_email,
+                contact_phone = EXCLUDED.contact_phone,
+                max_users = EXCLUDED.max_users,
+                max_phone_numbers = EXCLUDED.max_phone_numbers,
+                max_concurrent_calls = EXCLUDED.max_concurrent_calls,
+                billing_id = EXCLUDED.billing_id,
+                updated_at = EXCLUDED.updated_at,
+                trial_expires_at = EXCLUDED.trial_expires_at,
+                metadata = EXCLUDED.metadata,
+                data = EXCLUDED.data
+            "#,
+        )
+        .bind(tenant.id.to_string())
+        .bind(&tenant.name)
+        .bind(&tenant.description)
+        .bind(status_str)
+        .bind(&tenant.contact_email)
+        .bind(&tenant.contact_phone)
+        .bind(tenant.max_users.map(|v| v as i32))
+        .bind(tenant.max_phone_numbers.map(|v| v as i32))
+        .bind(tenant.max_concurrent_calls.map(|v| v as i32))
+        .bind(&tenant.billing_id)
+        .bind(created_at)
+        .bind(updated_at)
+        .bind(trial_expires_at)
+        .bind(&tenant.metadata)
+        .bind(&data)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(tenant_id = %tenant.id, tenant_name = %tenant.name, "Tenant stored in PostgreSQL");
+        Ok(())
+    }
+
+    async fn delete_tenant(&self, id: &TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(tenant_id = %id, "Tenant deleted from PostgreSQL");
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -617,7 +742,15 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         phone: row.try_get("emergency_contact_phone").ok(),
     };
 
+    // Parse user ID from database, or generate a new one if missing
+    let id = row
+        .try_get::<String, _>("id")
+        .ok()
+        .and_then(|s| UserId::from_str(&s).ok())
+        .unwrap_or_else(UserId::new);
+
     Ok(User {
+        id,
         username: row.get("username"),
         password: row.get("password_hash"),
         digest_password: row.try_get("digest_password").ok(),

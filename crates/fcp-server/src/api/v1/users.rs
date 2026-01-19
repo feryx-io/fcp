@@ -24,6 +24,7 @@ use std::str::FromStr;
 /// User response (excludes password hash).
 #[derive(Debug, Serialize)]
 pub struct UserResponse {
+    pub id: String,
     pub username: String,
     pub display_name: Option<String>,
     pub tenant_id: String,
@@ -57,6 +58,7 @@ impl From<User> for UserResponse {
             .map(|s| s.trim_matches('"').to_string())
             .unwrap_or_else(|_| "end_user".to_string());
         Self {
+            id: user.id.to_string(),
             username: user.username,
             display_name: user.display_name,
             tenant_id: user.tenant_id.to_string(),
@@ -273,6 +275,7 @@ pub async fn create_user(
 
     // Create user
     let user = User {
+        id: fcp_core::UserId::new(),
         username: req.username.clone(),
         password: password_hash,
         digest_password: None, // Can be set separately via API for Cisco-style security

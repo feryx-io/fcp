@@ -55,3 +55,9 @@ impl From<anyhow::Error> for ApiError {
         ApiError::Internal(err.to_string())
     }
 }
+
+impl From<fcp_core::Error> for ApiError {
+    fn from(err: fcp_core::Error) -> Self {
+        ApiError::Internal(err.to_string())
+    }
+}

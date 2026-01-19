@@ -32,8 +32,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration,
-    RegistrationStore, TenantId, User,
+    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration, UserId,
+    RegistrationStore, Tenant, TenantId, TenantStore, User,
 };
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{MySql, Pool, Row};
@@ -201,10 +201,11 @@ impl CredentialStore for MysqlStorage {
             .unwrap_or_else(|_| "end_user".to_string());
 
         sqlx::query(
-            "INSERT INTO users (username, password_hash, display_name, tenant_id, enabled,
+            "INSERT INTO users (id, username, password_hash, display_name, tenant_id, enabled,
                                role, department_id, created_at, updated_at, media_preferences)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
+                 id = VALUES(id),
                  password_hash = VALUES(password_hash),
                  display_name = VALUES(display_name),
                  enabled = VALUES(enabled),
@@ -213,6 +214,7 @@ impl CredentialStore for MysqlStorage {
                  updated_at = VALUES(updated_at),
                  media_preferences = VALUES(media_preferences)",
         )
+        .bind(user.id.to_string())
         .bind(&user.username)
         .bind(&user.password)
         .bind(&user.display_name)
@@ -539,6 +541,133 @@ impl CdrStore for MysqlStorage {
 }
 
 // ============================================================================
+// TenantStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl TenantStore for MysqlStorage {
+    async fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>> {
+        let row = sqlx::query("SELECT data FROM tenants WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let data: String = row.get("data");
+                let tenant: Tenant = serde_json::from_str(&data)?;
+                Ok(Some(tenant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>> {
+        let row = sqlx::query("SELECT data FROM tenants WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let data: String = row.get("data");
+                let tenant: Tenant = serde_json::from_str(&data)?;
+                Ok(Some(tenant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_tenants(&self) -> Result<Vec<Tenant>> {
+        let rows = sqlx::query("SELECT data FROM tenants ORDER BY name")
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut tenants = Vec::new();
+        for row in rows {
+            let data: String = row.get("data");
+            let tenant: Tenant = serde_json::from_str(&data)?;
+            tenants.push(tenant);
+        }
+
+        Ok(tenants)
+    }
+
+    async fn put_tenant(&self, tenant: Tenant) -> Result<()> {
+        let data = serde_json::to_string(&tenant)?;
+        let created_at = tenant
+            .created_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let updated_at = tenant
+            .updated_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let trial_expires_at = tenant
+            .trial_expires_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+
+        // Serialize status to snake_case string using serde
+        let status_str = serde_json::to_string(&tenant.status)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "active".to_string());
+
+        sqlx::query(
+            "INSERT INTO tenants (id, name, description, status, contact_email, contact_phone,
+                                  max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                                  created_at, updated_at, trial_expires_at, metadata, data)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                 name = VALUES(name),
+                 description = VALUES(description),
+                 status = VALUES(status),
+                 contact_email = VALUES(contact_email),
+                 contact_phone = VALUES(contact_phone),
+                 max_users = VALUES(max_users),
+                 max_phone_numbers = VALUES(max_phone_numbers),
+                 max_concurrent_calls = VALUES(max_concurrent_calls),
+                 billing_id = VALUES(billing_id),
+                 updated_at = VALUES(updated_at),
+                 trial_expires_at = VALUES(trial_expires_at),
+                 metadata = VALUES(metadata),
+                 data = VALUES(data)",
+        )
+        .bind(tenant.id.to_string())
+        .bind(&tenant.name)
+        .bind(&tenant.description)
+        .bind(status_str)
+        .bind(&tenant.contact_email)
+        .bind(&tenant.contact_phone)
+        .bind(tenant.max_users.map(|v| v as i64))
+        .bind(tenant.max_phone_numbers.map(|v| v as i64))
+        .bind(tenant.max_concurrent_calls.map(|v| v as i64))
+        .bind(&tenant.billing_id)
+        .bind(created_at)
+        .bind(updated_at)
+        .bind(trial_expires_at)
+        .bind(&tenant.metadata)
+        .bind(data)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(tenant_id = %tenant.id, tenant_name = %tenant.name, "Tenant stored in MySQL");
+        Ok(())
+    }
+
+    async fn delete_tenant(&self, id: &TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM tenants WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(tenant_id = %id, "Tenant deleted from MySQL");
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -599,7 +728,15 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         phone: row.try_get("emergency_contact_phone").ok(),
     };
 
+    // Parse user ID from database, or generate a new one if missing
+    let id = row
+        .try_get::<String, _>("id")
+        .ok()
+        .and_then(|s| UserId::from_str(&s).ok())
+        .unwrap_or_else(UserId::new);
+
     Ok(User {
+        id,
         username: row.get("username"),
         password: row.get("password_hash"),
         digest_password: row.try_get("digest_password").ok(),

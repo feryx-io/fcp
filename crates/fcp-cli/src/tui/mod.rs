@@ -97,6 +97,7 @@ fn render_ui(f: &mut ratatui::Frame, app: &mut App) {
 fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::Rect) {
     match app.active_tab {
         Tab::Dashboard => views::dashboard::render(f, app, area),
+        Tab::Tenants => views::tenants::render(f, area, &mut app.tenants_view),
         Tab::Users => views::users::render(f, &app.theme, &mut app.users_view, area),
         Tab::PhoneNumbers => views::phone_numbers::render(
             f,
@@ -106,6 +107,7 @@ fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::
             app.deployment_mode,
         ),
         Tab::Devices => views::devices::render(f, &app.theme, &mut app.devices_view, area),
+        Tab::LineBindings => views::line_bindings::render(f, area, &app.line_bindings_view, &app.theme),
         Tab::Calls => views::calls::render(f, &app.theme, &mut app.calls_view, area),
         Tab::Registrations => {
             views::registrations::render(f, &app.theme, &mut app.registrations_view, area)
@@ -175,6 +177,14 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         }
     }
 
+    // Handle tenant modal events
+    if app.active_tab == Tab::Tenants && app.tenants_view.modal != crate::tui::views::tenants::TenantModal::None {
+        let handled = views::tenants::handle_tenant_action(&mut app.tenants_view, &app.api_client, &event).await;
+        if handled {
+            return Ok(());
+        }
+    }
+
     match event {
         Event::Key(_) if event.is_quit() => {
             app.quit();
@@ -185,8 +195,8 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 app.clear_error();
             }
         }
-        Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='7') => {
-            // Number keys 1-7 jump directly to main tabs
+        Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='9') => {
+            // Number keys 1-9 jump directly to main tabs
             if let Some(tab) = Tab::from_index((c as usize) - ('1' as usize)) {
                 app.set_tab(tab);
                 check_and_load_tab_data(app).await;
@@ -259,6 +269,23 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 }
                 Tab::Devices => {
                     views::devices::handle_navigation(&mut app.devices_view, &event);
+                }
+                Tab::Tenants => {
+                    // Only handle navigation when no modal is open
+                    if app.tenants_view.modal == crate::tui::views::tenants::TenantModal::None {
+                        if event.is_up() {
+                            app.tenants_view.previous_tenant();
+                        } else if event.is_down() {
+                            app.tenants_view.next_tenant();
+                        }
+                    }
+                }
+                Tab::LineBindings => {
+                    if event.is_up() {
+                        app.line_bindings_view.select_previous();
+                    } else if event.is_down() {
+                        app.line_bindings_view.select_next();
+                    }
                 }
                 Tab::Calls => {
                     views::calls::handle_navigation(&mut app.calls_view, &event);
@@ -349,6 +376,29 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 }
             }
 
+            // Handle line bindings actions
+            if app.active_tab == Tab::LineBindings {
+                match event {
+                    Event::Key(KeyEvent { code: KeyCode::Char('r'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
+                            app.error = Some(format!("Failed to refresh line bindings: {}", e));
+                        }
+                    }
+                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                        if let Err(e) = app.line_bindings_view.delete_selected(&app.api_client).await {
+                            app.error = Some(format!("Failed to delete line binding: {}", e));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Handle tenant actions
+            if app.active_tab == Tab::Tenants && app.tenants_view.modal == crate::tui::views::tenants::TenantModal::None {
+                // Handle action keys (a, e, d, r) - navigation is handled earlier in the event loop
+                views::tenants::handle_tenant_action(&mut app.tenants_view, &app.api_client, &event).await;
+            }
+
             // Handle devices actions
             if app.active_tab == Tab::Devices && app.devices_view.modal == crate::tui::views::devices::DeviceModal::None {
                 match event {
@@ -384,12 +434,15 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 Tab::Calls => time_since > std::time::Duration::from_secs(2), // Fast refresh for live durations
                 Tab::Registrations => time_since > std::time::Duration::from_secs(3), // Medium refresh for expiration countdown
                 Tab::Debug => time_since > std::time::Duration::from_secs(4), // Debug refresh
-                Tab::Users | Tab::PhoneNumbers | Tab::Devices | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
+                Tab::Users | Tab::Tenants | Tab::PhoneNumbers | Tab::Devices | Tab::LineBindings | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
             };
 
             if should_refresh {
                 app.mark_update();
                 match app.active_tab {
+                    Tab::Tenants => {
+                        views::tenants::fetch_tenants(&app.api_client, &mut app.tenants_view).await;
+                    }
                     Tab::Users => {
                         views::users::fetch_users(&app.api_client, &mut app.users_view).await;
                     }
@@ -415,6 +468,11 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                         views::devices::fetch_devices(&app.api_client, &mut app.devices_view)
                             .await;
                     }
+                    Tab::LineBindings => {
+                        if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
+                            app.error = Some(format!("Failed to fetch line bindings: {}", e));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -430,6 +488,12 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
 /// Check if the current tab needs data loading and load it
 async fn check_and_load_tab_data(app: &mut App) {
     match app.active_tab {
+        Tab::Tenants => {
+            // Load tenants if list is empty
+            if app.tenants_view.tenants.is_empty() {
+                views::tenants::fetch_tenants(&app.api_client, &mut app.tenants_view).await;
+            }
+        }
         Tab::Users => {
             // Load users if list is empty or not loading
             if app.users_view.users.is_empty() && !app.users_view.loading {
@@ -458,6 +522,26 @@ async fn check_and_load_tab_data(app: &mut App) {
             // Load debug data if summary is not available or not loading
             if app.debug_view.summary.is_none() && !app.debug_view.loading {
                 views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view).await;
+            }
+        }
+        Tab::PhoneNumbers => {
+            // Load phone numbers if list is empty or not loading
+            if app.phone_numbers_view.phone_numbers.is_empty() && !app.phone_numbers_view.loading {
+                views::phone_numbers::fetch_phone_numbers(&app.api_client, &mut app.phone_numbers_view).await;
+            }
+        }
+        Tab::Devices => {
+            // Load devices if list is empty or not loading
+            if app.devices_view.devices.is_empty() && !app.devices_view.loading {
+                views::devices::fetch_devices(&app.api_client, &mut app.devices_view).await;
+            }
+        }
+        Tab::LineBindings => {
+            // Load line bindings if list is empty
+            if app.line_bindings_view.bindings.is_empty() {
+                if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
+                    app.error = Some(format!("Failed to fetch line bindings: {}", e));
+                }
             }
         }
         _ => {}

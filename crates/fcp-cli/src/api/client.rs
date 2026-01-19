@@ -158,6 +158,33 @@ impl ApiClient {
         self.request(Method::GET, "/status").await
     }
 
+    // ==================== Tenant Endpoints ====================
+
+    /// List all tenants
+    pub async fn list_tenants(&self) -> Result<Vec<TenantResponse>> {
+        self.request(Method::GET, "/tenants").await
+    }
+
+    /// Get a specific tenant
+    pub async fn get_tenant(&self, id: &str) -> Result<TenantResponse> {
+        self.request(Method::GET, &format!("/tenants/{}", id)).await
+    }
+
+    /// Create a new tenant
+    pub async fn create_tenant(&self, req: &CreateTenantRequest) -> Result<TenantResponse> {
+        self.request_with_body(Method::POST, "/tenants", req).await
+    }
+
+    /// Update a tenant
+    pub async fn update_tenant(&self, id: &str, req: &UpdateTenantRequest) -> Result<TenantResponse> {
+        self.request_with_body(Method::PUT, &format!("/tenants/{}", id), req).await
+    }
+
+    /// Delete a tenant
+    pub async fn delete_tenant(&self, id: &str) -> Result<()> {
+        self.request_no_content(Method::DELETE, &format!("/tenants/{}", id)).await
+    }
+
     // ==================== User Endpoints ====================
 
     /// List all users
@@ -361,6 +388,43 @@ impl ApiClient {
     /// Delete a device
     pub async fn delete_device(&self, id: &str) -> Result<()> {
         self.request_no_content(Method::DELETE, &format!("/devices/{}", id)).await
+    }
+
+    // ==================== Line Binding Endpoints ====================
+
+    /// List line bindings, optionally filtered by tenant
+    pub async fn list_line_bindings(&self, tenant_id: Option<&str>) -> Result<Vec<LineBindingResponse>> {
+        let path = match tenant_id {
+            Some(id) => format!("/line-bindings?tenant_id={}", id),
+            None => "/line-bindings".to_string(),
+        };
+        self.request(Method::GET, &path).await
+    }
+
+    /// Get a specific line binding
+    pub async fn get_line_binding(&self, id: &str) -> Result<LineBindingResponse> {
+        self.request(Method::GET, &format!("/line-bindings/{}", id)).await
+    }
+
+    /// Create a new line binding
+    pub async fn create_line_binding<B>(&self, req: &B) -> Result<LineBindingResponse>
+    where
+        B: serde::Serialize,
+    {
+        self.request_with_body(Method::POST, "/line-bindings", req).await
+    }
+
+    /// Update a line binding
+    pub async fn update_line_binding<B>(&self, id: &str, req: &B) -> Result<LineBindingResponse>
+    where
+        B: serde::Serialize,
+    {
+        self.request_with_body(Method::PATCH, &format!("/line-bindings/{}", id), req).await
+    }
+
+    /// Delete a line binding
+    pub async fn delete_line_binding(&self, id: &str) -> Result<()> {
+        self.request_no_content(Method::DELETE, &format!("/line-bindings/{}", id)).await
     }
 }
 

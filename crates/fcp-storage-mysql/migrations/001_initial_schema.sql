@@ -1,6 +1,27 @@
 -- Initial schema for FCP MySQL storage
 -- Version: 0.1.0
 
+-- Tenants table
+CREATE TABLE IF NOT EXISTS tenants (
+    id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    description TEXT,
+    status VARCHAR(50) NOT NULL,
+    contact_email VARCHAR(255),
+    contact_phone VARCHAR(50),
+    max_users INT UNSIGNED,
+    max_phone_numbers INT UNSIGNED,
+    max_concurrent_calls INT UNSIGNED,
+    billing_id VARCHAR(255),
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    trial_expires_at BIGINT,
+    metadata TEXT,
+    data JSON NOT NULL,
+    INDEX idx_tenants_name (name),
+    INDEX idx_tenants_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(255) NOT NULL,

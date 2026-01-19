@@ -97,10 +97,44 @@ impl SqliteStorage {
             .execute(&self.pool)
             .await?;
 
+        // Tenants table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                status TEXT NOT NULL,
+                contact_email TEXT,
+                contact_phone TEXT,
+                max_users INTEGER,
+                max_phone_numbers INTEGER,
+                max_concurrent_calls INTEGER,
+                billing_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                trial_expires_at INTEGER,
+                metadata TEXT,
+                data TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tenants_name ON tenants(name)")
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status)")
+            .execute(&self.pool)
+            .await?;
+
         // Users table
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS users (
+                id TEXT,
                 username TEXT PRIMARY KEY,
                 password TEXT NOT NULL,
                 digest_password TEXT,
@@ -132,6 +166,15 @@ impl SqliteStorage {
         let _ = sqlx::query(
             r#"
             ALTER TABLE users ADD COLUMN department_id TEXT
+            "#,
+        )
+        .execute(&self.pool)
+        .await; // Ignore errors if column already exists
+
+        // Add id column to existing tables (migration)
+        let _ = sqlx::query(
+            r#"
+            ALTER TABLE users ADD COLUMN id TEXT
             "#,
         )
         .execute(&self.pool)
@@ -445,9 +488,10 @@ impl CredentialStore for SqliteStorage {
 
         sqlx::query(
             r#"
-            INSERT INTO users (username, password, digest_password, sip_ha1_hash, display_name, tenant_id, enabled, role, department_id, created_at, updated_at, data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (id, username, password, digest_password, sip_ha1_hash, display_name, tenant_id, enabled, role, department_id, created_at, updated_at, data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(username) DO UPDATE SET
+                id = excluded.id,
                 password = excluded.password,
                 digest_password = excluded.digest_password,
                 sip_ha1_hash = excluded.sip_ha1_hash,
@@ -460,6 +504,7 @@ impl CredentialStore for SqliteStorage {
                 data = excluded.data
             "#,
         )
+        .bind(user.id.to_string())
         .bind(&user.username)
         .bind(&user.password)
         .bind(&user.digest_password)
@@ -1725,6 +1770,123 @@ impl crate::porting::PortingStore for SqliteStorage {
 
     async fn delete_port_request(&self, id: &PortRequestId) -> Result<()> {
         sqlx::query("DELETE FROM port_requests WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+// Implement TenantStore
+#[async_trait]
+impl crate::storage::TenantStore for SqliteStorage {
+    async fn get_tenant(&self, id: &TenantId) -> Result<Option<crate::Tenant>> {
+        let row = sqlx::query("SELECT data FROM tenants WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let data: String = row.get("data");
+                let tenant: crate::Tenant = serde_json::from_str(&data)?;
+                Ok(Some(tenant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<crate::Tenant>> {
+        let row = sqlx::query("SELECT data FROM tenants WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(row) => {
+                let data: String = row.get("data");
+                let tenant: crate::Tenant = serde_json::from_str(&data)?;
+                Ok(Some(tenant))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_tenants(&self) -> Result<Vec<crate::Tenant>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT data
+            FROM tenants
+            ORDER BY name
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tenants = Vec::new();
+        for row in rows {
+            let data: String = row.get("data");
+            let tenant: crate::Tenant = serde_json::from_str(&data)?;
+            tenants.push(tenant);
+        }
+
+        Ok(tenants)
+    }
+
+    async fn put_tenant(&self, tenant: crate::Tenant) -> Result<()> {
+        let data = serde_json::to_string(&tenant)?;
+        let created_at = Self::system_time_to_i64(tenant.created_at);
+        let updated_at = Self::system_time_to_i64(tenant.updated_at);
+        let trial_expires_at = tenant.trial_expires_at.map(Self::system_time_to_i64);
+
+        // Serialize status to snake_case string using serde
+        let status_str = serde_json::to_string(&tenant.status)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "active".to_string());
+
+        sqlx::query(
+            r#"
+            INSERT INTO tenants (id, name, description, status, contact_email, contact_phone, max_users, max_phone_numbers, max_concurrent_calls, billing_id, created_at, updated_at, trial_expires_at, metadata, data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                status = excluded.status,
+                contact_email = excluded.contact_email,
+                contact_phone = excluded.contact_phone,
+                max_users = excluded.max_users,
+                max_phone_numbers = excluded.max_phone_numbers,
+                max_concurrent_calls = excluded.max_concurrent_calls,
+                billing_id = excluded.billing_id,
+                updated_at = excluded.updated_at,
+                trial_expires_at = excluded.trial_expires_at,
+                metadata = excluded.metadata,
+                data = excluded.data
+            "#,
+        )
+        .bind(tenant.id.to_string())
+        .bind(&tenant.name)
+        .bind(&tenant.description)
+        .bind(status_str)
+        .bind(&tenant.contact_email)
+        .bind(&tenant.contact_phone)
+        .bind(tenant.max_users.map(|v| v as i64))
+        .bind(tenant.max_phone_numbers.map(|v| v as i64))
+        .bind(tenant.max_concurrent_calls.map(|v| v as i64))
+        .bind(&tenant.billing_id)
+        .bind(created_at)
+        .bind(updated_at)
+        .bind(trial_expires_at)
+        .bind(&tenant.metadata)
+        .bind(data)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_tenant(&self, id: &TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM tenants WHERE id = ?")
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;

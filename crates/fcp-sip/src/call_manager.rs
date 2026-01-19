@@ -16,13 +16,25 @@ use tracing::{debug, info};
 pub struct CallManager {
     /// Active calls, indexed by CallId
     calls: Arc<DashMap<CallId, Call>>,
+
+    /// Optional storage backend for CDR creation
+    storage: Option<Arc<fcp_core::DynStorage>>,
 }
 
 impl CallManager {
-    /// Create a new call manager.
+    /// Create a new call manager without storage (no CDRs).
     pub fn new() -> Self {
         Self {
             calls: Arc::new(DashMap::new()),
+            storage: None,
+        }
+    }
+
+    /// Create a new call manager with storage backend for CDR creation.
+    pub fn with_storage(storage: Arc<fcp_core::DynStorage>) -> Self {
+        Self {
+            calls: Arc::new(DashMap::new()),
+            storage: Some(storage),
         }
     }
 
@@ -91,7 +103,27 @@ impl CallManager {
             "Call terminated"
         );
 
-        // Remove from active calls (in production, might want to keep for CDR)
+        // Create CDR asynchronously if storage is available
+        if let Some(storage) = &self.storage {
+            let storage = Arc::clone(storage);
+            let call_clone = call.clone();
+            tokio::spawn(async move {
+                if let Err(e) = create_and_insert_cdr(&storage, &call_clone).await {
+                    tracing::error!(
+                        call_id = %call_clone.id,
+                        error = %e,
+                        "Failed to create CDR (non-blocking)"
+                    );
+                } else {
+                    tracing::debug!(
+                        call_id = %call_clone.id,
+                        "CDR created successfully"
+                    );
+                }
+            });
+        }
+
+        // Remove from active calls
         self.calls.remove(call_id);
 
         Ok(())
@@ -283,6 +315,239 @@ impl Default for CallManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Create a CDR from a terminated call and insert it into storage.
+///
+/// This function maps call state to disposition, extracts timing information,
+/// and creates a complete CDR record. It is non-blocking and errors are logged
+/// but do not prevent call termination.
+async fn create_and_insert_cdr(
+    storage: &fcp_core::DynStorage,
+    call: &Call,
+) -> Result<()> {
+    use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, HangupCause};
+
+    // Map CallState to CallDisposition
+    let (disposition, hangup_cause) = map_call_state_to_disposition(call);
+
+    // Extract SIP Call-ID from original INVITE headers
+    let sip_call_id = call
+        .original_invite
+        .as_ref()
+        .and_then(|invite| sip_parse::header(invite.headers(), "Call-ID"))
+        .map(|cid| cid.as_str().to_string())
+        .unwrap_or_else(|| format!("unknown-{}", call.id));
+
+    // Extract SIP status code from failure_reason (e.g., "486 Busy Here" -> 486)
+    let sip_status_code = call
+        .failure_reason
+        .as_ref()
+        .and_then(|reason| extract_sip_status_code(reason));
+
+    // Calculate durations in milliseconds
+    let (setup_duration_ms, call_duration_ms, total_duration_ms) = calculate_durations(call);
+
+    // Extract caller information (from A-leg)
+    let from_uri = call.a_leg.remote_uri.clone();
+    let from_display_name = call.a_leg.remote_display_name.clone();
+
+    // Extract callee information (from B-leg or original INVITE To header)
+    let (to_uri, to_display_name) = if let Some(b_leg) = &call.b_leg {
+        (b_leg.remote_uri.clone(), b_leg.remote_display_name.clone())
+    } else {
+        // Parse To header from original INVITE
+        let to_uri = call
+            .original_invite
+            .as_ref()
+            .and_then(|invite| sip_parse::header(invite.headers(), "To"))
+            .map(|to| to.as_str().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        (to_uri, None)
+    };
+
+    // Extract codec information from SDP (if available)
+    let codec_a_leg = extract_codec_from_sdp(call.a_leg.sdp.as_deref());
+    let codec_b_leg = call
+        .b_leg
+        .as_ref()
+        .and_then(|b| extract_codec_from_sdp(b.sdp.as_deref()));
+
+    // Build CallDetailRecord
+    let cdr = CallDetailRecord {
+        call_id: fcp_core::CallId::from_uuid(*call.id.as_uuid()),
+        tenant_id: call.tenant_id,
+        sip_call_id,
+        from_uri,
+        from_display_name,
+        to_uri,
+        to_display_name,
+        start_time: call.created_at,
+        answer_time: call.established_at,
+        end_time: call.ended_at,
+        setup_duration_ms,
+        call_duration_ms,
+        total_duration_ms,
+        disposition,
+        hangup_cause,
+        hangup_party: None, // TODO: Phase 2 - track BYE direction
+        sip_status_code,
+        sip_reason: call.failure_reason.clone(),
+        route_id: None,
+        gateway_id: None,
+        media_anchored: call.media_anchored,
+        codec_a_leg,
+        codec_b_leg,
+        rtp_packets_sent: None,    // TODO: Phase 2 - RTP statistics
+        rtp_packets_received: None,
+        rtp_bytes_sent: None,
+        rtp_bytes_received: None,
+        recording_url: None, // TODO: Phase 2 - recording integration
+        cost: None,          // TODO: Phase 4 - billing integration
+        currency: None,
+        custom_data: None, // No custom data in MVP
+    };
+
+    // Insert CDR into storage
+    storage
+        .insert_cdr(cdr)
+        .await
+        .context("Failed to insert CDR into storage")?;
+
+    Ok(())
+}
+
+/// Map CallState and failure_reason to CallDisposition and HangupCause.
+fn map_call_state_to_disposition(
+    call: &Call,
+) -> (fcp_core::storage::CallDisposition, fcp_core::storage::HangupCause) {
+    use fcp_core::storage::{CallDisposition, HangupCause};
+
+    match call.state {
+        CallState::Established | CallState::Terminated => {
+            // Call was answered
+            (CallDisposition::Answered, HangupCause::NormalClearing)
+        }
+        CallState::Failed => {
+            // Check failure_reason for specific error codes
+            if let Some(reason) = &call.failure_reason {
+                let reason_lower = reason.to_lowercase();
+
+                // Check for 486 Busy
+                if reason.contains("486") || reason_lower.contains("busy") {
+                    return (CallDisposition::Busy, HangupCause::UserBusy);
+                }
+
+                // Check for 487 Cancelled
+                if reason.contains("487") || reason_lower.contains("cancel") {
+                    return (CallDisposition::Cancelled, HangupCause::NormalClearing);
+                }
+
+                // Check for 480/408 No Answer
+                if reason.contains("480") || reason.contains("408") || reason_lower.contains("timeout") {
+                    return (CallDisposition::NoAnswer, HangupCause::NoAnswer);
+                }
+
+                // Check for 603 Decline
+                if reason.contains("603") || reason_lower.contains("decline") {
+                    return (CallDisposition::Failed, HangupCause::CallRejected);
+                }
+
+                // Check for 5xx errors
+                if reason.starts_with('5') {
+                    if let Some(code) = extract_sip_status_code(reason) {
+                        if code >= 500 && code < 600 {
+                            return (CallDisposition::Failed, HangupCause::InternalError);
+                        }
+                    }
+                }
+
+                // Extract status code for Other cause
+                if let Some(code) = extract_sip_status_code(reason) {
+                    return (CallDisposition::Failed, HangupCause::Other(code));
+                }
+            }
+
+            // Generic failure
+            (CallDisposition::Failed, HangupCause::Other(0))
+        }
+        _ => {
+            // Should not happen (calls should only be terminated in terminal states)
+            tracing::warn!(
+                call_id = %call.id,
+                state = ?call.state,
+                "Unexpected call state during CDR creation"
+            );
+            (CallDisposition::Failed, HangupCause::Other(0))
+        }
+    }
+}
+
+/// Extract SIP status code from a failure reason string (e.g., "486 Busy Here" -> Some(486)).
+fn extract_sip_status_code(reason: &str) -> Option<u16> {
+    reason
+        .split_whitespace()
+        .next()
+        .and_then(|code_str| code_str.parse::<u16>().ok())
+        .filter(|&code| code >= 100 && code < 700)
+}
+
+/// Calculate call durations in milliseconds.
+///
+/// Returns (setup_duration_ms, call_duration_ms, total_duration_ms):
+/// - setup_duration_ms: Time from start to answer (ringing time)
+/// - call_duration_ms: Time from answer to end (talk time)
+/// - total_duration_ms: Time from start to end
+fn calculate_durations(call: &Call) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let start = call.created_at;
+    let answer = call.established_at;
+    let end = call.ended_at;
+
+    // Setup duration: start -> answer
+    let setup_duration_ms = answer.and_then(|ans| {
+        ans.duration_since(start)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+    });
+
+    // Call duration: answer -> end
+    let call_duration_ms = answer.and_then(|ans| {
+        end.and_then(|e| {
+            e.duration_since(ans)
+                .ok()
+                .map(|d| d.as_millis() as u64)
+        })
+    });
+
+    // Total duration: start -> end
+    let total_duration_ms = end.and_then(|e| {
+        e.duration_since(start)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+    });
+
+    (setup_duration_ms, call_duration_ms, total_duration_ms)
+}
+
+/// Extract codec name from SDP body.
+///
+/// This is a simple implementation that looks for common codec names in SDP.
+/// A more robust implementation would parse the SDP properly.
+fn extract_codec_from_sdp(sdp: Option<&str>) -> Option<String> {
+    sdp.and_then(|body| {
+        // Look for "a=rtpmap:X codec/rate" lines
+        for line in body.lines() {
+            if line.starts_with("a=rtpmap:") {
+                // Parse "a=rtpmap:0 PCMU/8000" -> "PCMU"
+                if let Some(codec_part) = line.split_whitespace().nth(1) {
+                    if let Some(codec_name) = codec_part.split('/').next() {
+                        return Some(codec_name.to_uppercase());
+                    }
+                }
+            }
+        }
+        None
+    })
 }
 
 /// Call statistics.

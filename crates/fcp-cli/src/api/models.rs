@@ -22,11 +22,65 @@ pub struct StatusResponse {
     pub active_registrations_count: usize,
 }
 
+// ==================== Tenant Models ====================
+
+/// Tenant response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TenantResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub contact_email: Option<String>,
+    pub contact_phone: Option<String>,
+    pub max_users: Option<u32>,
+    pub max_phone_numbers: Option<u32>,
+    pub max_concurrent_calls: Option<u32>,
+    pub billing_id: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub trial_expires_at: Option<u64>,
+    pub metadata: Option<String>,
+}
+
+/// Create tenant request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTenantRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub status: Option<String>,
+    pub contact_email: Option<String>,
+    pub contact_phone: Option<String>,
+    pub max_users: Option<u32>,
+    pub max_phone_numbers: Option<u32>,
+    pub max_concurrent_calls: Option<u32>,
+    pub billing_id: Option<String>,
+    pub trial_expires_at: Option<u64>,
+    pub metadata: Option<String>,
+}
+
+/// Update tenant request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTenantRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<String>,
+    pub contact_email: Option<String>,
+    pub contact_phone: Option<String>,
+    pub max_users: Option<u32>,
+    pub max_phone_numbers: Option<u32>,
+    pub max_concurrent_calls: Option<u32>,
+    pub billing_id: Option<String>,
+    pub trial_expires_at: Option<u64>,
+    pub metadata: Option<String>,
+}
+
 // ==================== User Models ====================
 
 /// User response (excludes password hash)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserResponse {
+    pub id: String,
     pub username: String,
     pub display_name: Option<String>,
     pub tenant_id: String,
@@ -337,6 +391,40 @@ pub struct DeviceResponse {
     pub created_at: std::time::SystemTime,
     #[serde(with = "system_time_as_string")]
     pub updated_at: std::time::SystemTime,
+}
+
+// ==================== Line Binding Models ====================
+
+/// Line binding response
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LineBindingResponse {
+    pub id: String,
+    pub phone_number_id: String,
+    pub owner_user_id: Option<String>,
+    pub binding_type: String,
+    pub devices: Vec<DeviceBindingResponse>,
+    pub ring_strategy: String,
+    pub tenant_id: String,
+    pub no_answer_timeout_secs: u64,
+    pub forward_on_busy: Option<String>,
+    pub forward_on_no_answer: Option<String>,
+    pub forward_unconditional: Option<String>,
+    pub outbound_caller_id: Option<String>,
+    pub outbound_cnam: Option<String>,
+    #[serde(with = "system_time_as_string")]
+    pub created_at: std::time::SystemTime,
+    #[serde(with = "system_time_as_string")]
+    pub updated_at: std::time::SystemTime,
+}
+
+/// Device binding response (device attached to a line)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeviceBindingResponse {
+    pub device_id: String,
+    pub priority: u8,
+    pub line_appearance: u8,
+    pub shared_line: bool,
+    pub enabled: bool,
 }
 
 // ==================== Serde Helpers ====================

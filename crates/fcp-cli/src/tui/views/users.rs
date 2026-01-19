@@ -600,6 +600,11 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
             ]),
             Line::from(""),
             Line::from(vec![
+                Span::styled("User ID: ", theme.muted()),
+                Span::styled(&user.id, theme.info()),
+            ]),
+            Line::from(""),
+            Line::from(vec![
                 Span::styled("Display Name: ", theme.muted()),
                 Span::styled(
                     user.display_name.as_deref().unwrap_or("-"),

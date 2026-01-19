@@ -16,6 +16,7 @@ pub enum DeviceModal {
     Add,
     Edit,
     Delete,
+    SelectOwner,
 }
 
 /// State for the devices view
@@ -30,6 +31,8 @@ pub struct DevicesViewState {
     pub loading: bool,
     /// Active modal
     pub modal: DeviceModal,
+    /// Previous modal (used when returning from SelectOwner)
+    pub previous_modal: Option<DeviceModal>,
     /// Input field: device name
     pub input_name: Input,
     /// Input field: device type
@@ -40,7 +43,13 @@ pub struct DevicesViewState {
     pub input_mac_address: Input,
     /// Input field: model (optional)
     pub input_model: Input,
-    /// Which input field is focused (0-4)
+    /// Input field: owner user ID (optional)
+    pub input_owner_user_id: Input,
+    /// List of users for owner selection
+    pub users_list: Vec<crate::api::UserResponse>,
+    /// User selection state
+    pub user_table_state: TableState,
+    /// Which input field is focused (0-5)
     pub focused_field: usize,
 }
 
@@ -49,17 +58,24 @@ impl Default for DevicesViewState {
         let mut table_state = TableState::default();
         table_state.select(Some(0));
 
+        let mut user_table_state = TableState::default();
+        user_table_state.select(Some(0));
+
         Self {
             devices: Vec::new(),
             table_state,
             error: None,
             loading: false,
             modal: DeviceModal::None,
+            previous_modal: None,
             input_name: Input::default(),
             input_device_type: Input::new("softphone".to_string()),
             input_tenant_id: Input::new("00000000-0000-0000-0000-000000000000".to_string()),
             input_mac_address: Input::default(),
             input_model: Input::default(),
+            input_owner_user_id: Input::default(),
+            users_list: Vec::new(),
+            user_table_state,
             focused_field: 0,
         }
     }
@@ -127,16 +143,18 @@ impl DevicesViewState {
                 device.device_type.clone(),
                 device.mac_address.clone(),
                 device.model.clone(),
+                device.owner_user_id.clone(),
             )
         });
 
-        if let Some((name, device_type, mac_address, model)) = device_data {
+        if let Some((name, device_type, mac_address, model, owner_user_id)) = device_data {
             self.modal = DeviceModal::Edit;
             self.input_name = Input::new(name);
             self.input_device_type = Input::new(device_type);
             self.input_tenant_id = Input::new("00000000-0000-0000-0000-000000000000".to_string());
             self.input_mac_address = Input::new(mac_address.unwrap_or_default());
             self.input_model = Input::new(model.unwrap_or_default());
+            self.input_owner_user_id = Input::new(owner_user_id.unwrap_or_default());
             self.focused_field = 0;
             self.error = None;
         }
@@ -164,6 +182,53 @@ impl DevicesViewState {
         self.input_tenant_id = Input::new("00000000-0000-0000-0000-000000000000".to_string());
         self.input_mac_address = Input::default();
         self.input_model = Input::default();
+        self.input_owner_user_id = Input::default();
+    }
+
+    /// Open user selection modal
+    pub fn open_select_owner_modal(&mut self) {
+        // Save current modal to return to after selection
+        self.previous_modal = Some(self.modal.clone());
+        self.modal = DeviceModal::SelectOwner;
+        self.user_table_state.select(Some(0));
+        self.error = None;
+    }
+
+    /// Get selected user for owner assignment
+    pub fn selected_user(&self) -> Option<&crate::api::UserResponse> {
+        self.user_table_state.selected().and_then(|i| self.users_list.get(i))
+    }
+
+    /// Move user selection up
+    pub fn select_user_previous(&mut self) {
+        if self.users_list.is_empty() {
+            return;
+        }
+        let selected = self.user_table_state.selected().unwrap_or(0);
+        if selected > 0 {
+            self.user_table_state.select(Some(selected - 1));
+        }
+    }
+
+    /// Move user selection down
+    pub fn select_user_next(&mut self) {
+        if self.users_list.is_empty() {
+            return;
+        }
+        let selected = self.user_table_state.selected().unwrap_or(0);
+        if selected < self.users_list.len() - 1 {
+            self.user_table_state.select(Some(selected + 1));
+        }
+    }
+
+    /// Get user display name by ID
+    pub fn get_user_display_name(&self, user_id: &str) -> Option<String> {
+        self.users_list.iter().find(|u| u.id == user_id).map(|u| {
+            u.display_name
+                .clone()
+                .or_else(|| Some(u.username.clone()))
+                .unwrap_or_else(|| u.username.clone())
+        })
     }
 }
 
@@ -191,6 +256,7 @@ pub fn render(
         DeviceModal::Add => render_add_modal(f, theme, state, area),
         DeviceModal::Edit => render_edit_modal(f, theme, state, area),
         DeviceModal::Delete => render_delete_modal(f, theme, state, area),
+        DeviceModal::SelectOwner => render_select_owner_modal(f, theme, state, area),
         DeviceModal::None => {}
     }
 }
@@ -236,6 +302,12 @@ fn render_devices_table(
         })
         .collect();
 
+    let title = if state.loading {
+        format!(" Devices (Loading...) ")
+    } else {
+        format!(" Devices ({}) (↑↓ to navigate) ", state.devices.len())
+    };
+
     let table = Table::new(
         rows,
         [
@@ -249,7 +321,7 @@ fn render_devices_table(
     .header(header)
     .block(
         Block::default()
-            .title("Devices (↑↓ to navigate)")
+            .title(title)
             .borders(Borders::ALL)
             .border_style(theme.border()),
     )
@@ -266,7 +338,13 @@ fn render_details_panel(
     state: &DevicesViewState,
     area: Rect,
 ) {
-    let content = if let Some(device) = state.selected_device() {
+    let content = if state.loading {
+        vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![Span::styled("  Loading devices...", theme.info())]),
+        ]
+    } else if let Some(device) = state.selected_device() {
         vec![
             Line::from(vec![
                 Span::styled("Device Name: ", theme.muted()),
@@ -318,7 +396,13 @@ fn render_details_panel(
             Line::from(""),
             Line::from(vec![
                 Span::styled("Owner User: ", theme.muted()),
-                Span::raw(device.owner_user_id.as_deref().unwrap_or("-")),
+                Span::raw(
+                    device
+                        .owner_user_id
+                        .as_ref()
+                        .and_then(|id| state.get_user_display_name(id))
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Location: ", theme.muted()),
@@ -403,8 +487,8 @@ fn render_add_modal(
     area: Rect,
 ) {
     // Calculate centered popup area
-    let popup_width = 60.min(area.width - 4);
-    let popup_height = 20.min(area.height - 4);
+    let popup_width = 70.min(area.width - 4);
+    let popup_height = 26.min(area.height - 4);
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -418,6 +502,7 @@ fn render_add_modal(
     let tenant_focused = state.focused_field == 2;
     let mac_focused = state.focused_field == 3;
     let model_focused = state.focused_field == 4;
+    let owner_focused = state.focused_field == 5;
 
     let lines = vec![
         Line::from(""),
@@ -454,6 +539,17 @@ fn render_add_modal(
             if model_focused { Span::raw(" █") } else { Span::raw("") },
         ]),
         Line::from(Span::styled("  (Optional, e.g., Yealink T46S)", theme.muted())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Owner User ID: ", theme.muted()),
+            Span::raw(if state.input_owner_user_id.value().is_empty() {
+                "(none)"
+            } else {
+                state.input_owner_user_id.value()
+            }),
+            if owner_focused { Span::raw(" █") } else { Span::raw("") },
+        ]),
+        Line::from(Span::styled("  (Optional, Tab here and press 's' to select from user list)", theme.muted())),
         Line::from(""),
         Line::from(Span::styled("Enter to submit • Esc to cancel • Tab to navigate", theme.muted())),
     ];
@@ -487,8 +583,8 @@ fn render_edit_modal(
     area: Rect,
 ) {
     // Calculate centered popup area
-    let popup_width = 60.min(area.width - 4);
-    let popup_height = 20.min(area.height - 4);
+    let popup_width = 70.min(area.width - 4);
+    let popup_height = 26.min(area.height - 4);
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -502,6 +598,7 @@ fn render_edit_modal(
     let tenant_focused = state.focused_field == 2;
     let mac_focused = state.focused_field == 3;
     let model_focused = state.focused_field == 4;
+    let owner_focused = state.focused_field == 5;
 
     let lines = vec![
         Line::from(""),
@@ -538,6 +635,17 @@ fn render_edit_modal(
             if model_focused { Span::raw(" █") } else { Span::raw("") },
         ]),
         Line::from(Span::styled("  (Optional, e.g., Yealink T46S)", theme.muted())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Owner User ID: ", theme.muted()),
+            Span::raw(if state.input_owner_user_id.value().is_empty() {
+                "(none)"
+            } else {
+                state.input_owner_user_id.value()
+            }),
+            if owner_focused { Span::raw(" █") } else { Span::raw("") },
+        ]),
+        Line::from(Span::styled("  (Optional, Tab here and press 's' to select from user list)", theme.muted())),
         Line::from(""),
         Line::from(Span::styled("Enter to submit • Esc to cancel • Tab to navigate", theme.muted())),
     ];
@@ -617,10 +725,86 @@ fn render_delete_modal(
     f.render_widget(paragraph, popup_area);
 }
 
+/// Render the user selection modal for assigning device owner
+fn render_select_owner_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &mut DevicesViewState,
+    area: Rect,
+) {
+    // Calculate centered popup area
+    let popup_width = 80.min(area.width - 4);
+    let popup_height = 25.min(area.height - 4);
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area
+    f.render_widget(Clear, popup_area);
+
+    // Create table header
+    let header = Row::new(vec!["Username", "Display Name", "Email", "Role"])
+        .style(theme.title())
+        .bottom_margin(1);
+
+    // Create table rows from users list
+    let rows: Vec<Row> = state
+        .users_list
+        .iter()
+        .map(|user| {
+            Row::new(vec![
+                user.username.clone(),
+                user.display_name.clone().unwrap_or_else(|| "(none)".to_string()),
+                user.email.clone().unwrap_or_else(|| "(none)".to_string()),
+                user.role.clone(),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(30),
+            Constraint::Percentage(20),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .title("Select Device Owner")
+            .borders(Borders::ALL)
+            .border_style(theme.primary()),
+    )
+    .row_highlight_style(theme.selected())
+    .highlight_symbol(">> ");
+
+    f.render_stateful_widget(table, popup_area, &mut state.user_table_state);
+
+    // Show instructions at the bottom
+    let instructions_area = Rect::new(
+        popup_area.x + 2,
+        popup_area.y + popup_area.height - 2,
+        popup_area.width - 4,
+        1,
+    );
+    let instructions = Paragraph::new(Line::from(Span::styled(
+        "↑/↓ Navigate • Enter to select • Esc to cancel",
+        theme.muted(),
+    )));
+    f.render_widget(instructions, instructions_area);
+}
+
 /// Fetch devices from the API
 pub async fn fetch_devices(api_client: &crate::api::ApiClient, state: &mut DevicesViewState) {
     state.loading = true;
     state.error = None;
+
+    // Fetch users list for owner name lookup
+    if let Ok(users) = api_client.list_users().await {
+        state.users_list = users;
+    }
 
     match api_client.list_devices(None).await {
         Ok(devices) => {
@@ -676,18 +860,27 @@ pub async fn handle_device_action(
         crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
             match code {
                 KeyCode::Esc if *modifiers == KeyModifiers::NONE => {
-                    state.close_modal();
+                    // If in SelectOwner modal, return to previous modal instead of closing
+                    if state.modal == DeviceModal::SelectOwner {
+                        if let Some(prev) = state.previous_modal.take() {
+                            state.modal = prev;
+                        } else {
+                            state.close_modal();
+                        }
+                    } else {
+                        state.close_modal();
+                    }
                     return true;
                 }
                 KeyCode::Tab if *modifiers == KeyModifiers::NONE => {
-                    if state.modal != DeviceModal::Delete {
-                        state.focused_field = (state.focused_field + 1) % 5;
+                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner {
+                        state.focused_field = (state.focused_field + 1) % 6;
                     }
                     return true;
                 }
                 KeyCode::BackTab => {
-                    if state.modal != DeviceModal::Delete {
-                        state.focused_field = (state.focused_field + 4) % 5;
+                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner {
+                        state.focused_field = (state.focused_field + 5) % 6;
                     }
                     return true;
                 }
@@ -702,19 +895,55 @@ pub async fn handle_device_action(
                         DeviceModal::Delete => {
                             delete_device(api_client, state).await;
                         }
+                        DeviceModal::SelectOwner => {
+                            // Select the currently highlighted user and set it as owner
+                            if let Some(user) = state.selected_user() {
+                                state.input_owner_user_id = tui_input::Input::new(user.id.clone());
+                            }
+                            // Return to the previous modal (Add or Edit) instead of closing
+                            if let Some(prev) = state.previous_modal.take() {
+                                state.modal = prev;
+                            } else {
+                                state.close_modal();
+                            }
+                        }
                         DeviceModal::None => {}
                     }
                     return true;
                 }
+                KeyCode::Up if *modifiers == KeyModifiers::NONE => {
+                    if state.modal == DeviceModal::SelectOwner {
+                        state.select_user_previous();
+                        return true;
+                    }
+                    return false;
+                }
+                KeyCode::Down if *modifiers == KeyModifiers::NONE => {
+                    if state.modal == DeviceModal::SelectOwner {
+                        state.select_user_next();
+                        return true;
+                    }
+                    return false;
+                }
                 _ => {
-                    // Handle text input for the focused field (not for Delete modal)
-                    if state.modal != DeviceModal::Delete {
+                    // Special handling for 's' key on owner field (field 5)
+                    if let KeyCode::Char('s') | KeyCode::Char('S') = code {
+                        if *modifiers == KeyModifiers::NONE && (state.modal == DeviceModal::Add || state.modal == DeviceModal::Edit) && state.focused_field == 5 {
+                            // Open user selection modal
+                            select_owner(api_client, state).await;
+                            return true;
+                        }
+                    }
+
+                    // Handle text input for the focused field (not for Delete modal or SelectOwner modal)
+                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner {
                         let input = match state.focused_field {
                             0 => &mut state.input_name,
                             1 => &mut state.input_device_type,
                             2 => &mut state.input_tenant_id,
                             3 => &mut state.input_mac_address,
                             4 => &mut state.input_model,
+                            5 => &mut state.input_owner_user_id,
                             _ => return false,
                         };
 
@@ -737,6 +966,7 @@ pub async fn create_device(api_client: &crate::api::ApiClient, state: &mut Devic
     let tenant_id = state.input_tenant_id.value().to_string();
     let mac_address = state.input_mac_address.value().to_string();
     let model = state.input_model.value().to_string();
+    let owner_user_id = state.input_owner_user_id.value().to_string();
 
     if name.is_empty() {
         state.error = Some("Device name is required".to_string());
@@ -766,6 +996,8 @@ pub async fn create_device(api_client: &crate::api::ApiClient, state: &mut Devic
         mac_address: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner_user_id: Option<String>,
     }
 
     let request = CreateDeviceRequest {
@@ -778,6 +1010,11 @@ pub async fn create_device(api_client: &crate::api::ApiClient, state: &mut Devic
             Some(mac_address)
         },
         model: if model.is_empty() { None } else { Some(model) },
+        owner_user_id: if owner_user_id.is_empty() {
+            None
+        } else {
+            Some(owner_user_id)
+        },
     };
 
     match api_client.create_device(&request).await {
@@ -804,6 +1041,7 @@ pub async fn update_device(api_client: &crate::api::ApiClient, state: &mut Devic
     let device_type = state.input_device_type.value().to_string();
     let mac_address = state.input_mac_address.value().to_string();
     let model = state.input_model.value().to_string();
+    let owner_user_id = state.input_owner_user_id.value().to_string();
 
     if name.is_empty() {
         state.error = Some("Device name is required".to_string());
@@ -832,6 +1070,8 @@ pub async fn update_device(api_client: &crate::api::ApiClient, state: &mut Devic
         mac_address: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner_user_id: Option<String>,
     }
 
     let request = UpdateDeviceRequest {
@@ -843,6 +1083,11 @@ pub async fn update_device(api_client: &crate::api::ApiClient, state: &mut Devic
             Some(mac_address)
         },
         model: if model.is_empty() { None } else { Some(model) },
+        owner_user_id: if owner_user_id.is_empty() {
+            None
+        } else {
+            Some(owner_user_id)
+        },
     };
 
     match api_client.update_device(&device_id, &request).await {
@@ -874,6 +1119,20 @@ pub async fn delete_device(api_client: &crate::api::ApiClient, state: &mut Devic
         }
         Err(e) => {
             state.error = Some(format!("Failed to delete device: {}", e));
+        }
+    }
+}
+
+/// Open the user selection modal for device owner assignment
+pub async fn select_owner(api_client: &crate::api::ApiClient, state: &mut DevicesViewState) {
+    // Fetch all users from the API
+    match api_client.list_users().await {
+        Ok(users) => {
+            state.users_list = users;
+            state.open_select_owner_modal();
+        }
+        Err(e) => {
+            state.error = Some(format!("Failed to fetch users: {}", e));
         }
     }
 }

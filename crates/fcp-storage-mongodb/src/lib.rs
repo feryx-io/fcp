@@ -23,13 +23,13 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use bson::{doc, Document, DateTime as BsonDateTime};
+use bson::{doc, DateTime as BsonDateTime, Document};
 use fcp_core::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration,
-    RegistrationStore, User,
+    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration, RegistrationStore,
+    TenantStore, User,
 };
-use fcp_core::{CallId, TenantId};
+use fcp_core::{CallId, Tenant, TenantId};
 use mongodb::{
     options::{ClientOptions, IndexOptions},
     Client, Collection, Database, IndexModel,
@@ -104,6 +104,7 @@ pub struct MongodbStorage {
     users: Collection<Document>,
     registrations: Collection<Document>,
     cdrs: Collection<Document>,
+    tenants: Collection<Document>,
 }
 
 impl MongodbStorage {
@@ -135,6 +136,7 @@ impl MongodbStorage {
         let users = db.collection::<Document>("users");
         let registrations = db.collection::<Document>("registrations");
         let cdrs = db.collection::<Document>("cdrs");
+        let tenants = db.collection::<Document>("tenants");
 
         let storage = Self {
             client,
@@ -142,6 +144,7 @@ impl MongodbStorage {
             users,
             registrations,
             cdrs,
+            tenants,
         };
 
         // Create indexes
@@ -161,16 +164,14 @@ impl MongodbStorage {
                 .keys(doc! { "username": 1 })
                 .options(IndexOptions::builder().unique(true).build())
                 .build(),
-            IndexModel::builder()
-                .keys(doc! { "tenant_id": 1 })
-                .build(),
+            IndexModel::builder().keys(doc! { "id": 1 }).build(),
+            IndexModel::builder().keys(doc! { "tenant_id": 1 }).build(),
+            IndexModel::builder().keys(doc! { "role": 1 }).build(),
         ];
         self.users
             .create_indexes(users_indexes)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to create users indexes: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to create users indexes: {}", e))?;
 
         // Registrations indexes
         let registrations_indexes = vec![
@@ -178,19 +179,13 @@ impl MongodbStorage {
                 .keys(doc! { "aor": 1, "contact": 1 })
                 .options(IndexOptions::builder().unique(true).build())
                 .build(),
-            IndexModel::builder()
-                .keys(doc! { "aor": 1 })
-                .build(),
-            IndexModel::builder()
-                .keys(doc! { "expires_at": 1 })
-                .build(),
+            IndexModel::builder().keys(doc! { "aor": 1 }).build(),
+            IndexModel::builder().keys(doc! { "expires_at": 1 }).build(),
         ];
         self.registrations
             .create_indexes(registrations_indexes)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to create registrations indexes: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to create registrations indexes: {}", e))?;
 
         // CDRs indexes
         let cdrs_indexes = vec![
@@ -198,25 +193,32 @@ impl MongodbStorage {
                 .keys(doc! { "call_id": 1 })
                 .options(IndexOptions::builder().unique(true).build())
                 .build(),
-            IndexModel::builder()
-                .keys(doc! { "tenant_id": 1 })
-                .build(),
-            IndexModel::builder()
-                .keys(doc! { "start_time": 1 })
-                .build(),
-            IndexModel::builder()
-                .keys(doc! { "from_uri": 1 })
-                .build(),
-            IndexModel::builder()
-                .keys(doc! { "to_uri": 1 })
-                .build(),
+            IndexModel::builder().keys(doc! { "tenant_id": 1 }).build(),
+            IndexModel::builder().keys(doc! { "start_time": 1 }).build(),
+            IndexModel::builder().keys(doc! { "from_uri": 1 }).build(),
+            IndexModel::builder().keys(doc! { "to_uri": 1 }).build(),
         ];
         self.cdrs
             .create_indexes(cdrs_indexes)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to create cdrs indexes: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to create cdrs indexes: {}", e))?;
+
+        // Tenants indexes
+        let tenants_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "name": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder().keys(doc! { "status": 1 }).build(),
+        ];
+        self.tenants
+            .create_indexes(tenants_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create tenants indexes: {}", e))?;
 
         debug!("MongoDB indexes created successfully");
         Ok(())
@@ -333,9 +335,7 @@ impl CredentialStore for MongodbStorage {
             .users
             .find_one(filter)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to query user: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to query user: {}", e))?;
 
         match doc {
             Some(doc) => {
@@ -352,12 +352,8 @@ impl CredentialStore for MongodbStorage {
 
     async fn put_user(&self, user: User) -> Result<()> {
         let tenant_id = user.tenant_id.to_string();
-        let media_prefs = bson::to_bson(&user.media_preferences).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to serialize media preferences: {}",
-                e
-            )
-        })?;
+        let media_prefs = bson::to_bson(&user.media_preferences)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize media preferences: {}", e))?;
 
         // Serialize role to snake_case string for storage
         let role_str = serde_json::to_string(&user.role)
@@ -365,6 +361,7 @@ impl CredentialStore for MongodbStorage {
             .unwrap_or_else(|_| "end_user".to_string());
 
         let doc = doc! {
+            "id": user.id.to_string(),
             "username": &user.username,
             "password_hash": &user.password,
             "display_name": user.display_name.as_ref(),
@@ -385,9 +382,7 @@ impl CredentialStore for MongodbStorage {
             .replace_one(filter, doc)
             .upsert(true)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to insert/update user: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update user: {}", e))?;
 
         debug!(username = %user.username, "User stored in MongoDB");
         Ok(())
@@ -401,29 +396,28 @@ impl CredentialStore for MongodbStorage {
         self.users
             .delete_one(filter)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to delete user: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to delete user: {}", e))?;
 
         debug!(username = %username, "User deleted from MongoDB");
         Ok(())
     }
 
     async fn list_users(&self) -> Result<Vec<User>> {
-        let mut cursor = self.users.find(doc! {}).await.map_err(|e| {
-            anyhow::anyhow!("Failed to list users: {}", e)
-        })?;
+        let mut cursor = self
+            .users
+            .find(doc! {})
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list users: {}", e))?;
 
         let mut users = Vec::new();
-        while cursor.advance().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to iterate users cursor: {}",
-                e
-            )
-        })? {
-            let doc = cursor.deserialize_current().map_err(|e| {
-                anyhow::anyhow!("Failed to deserialize user document: {}", e)
-            })?;
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate users cursor: {}", e))?
+        {
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize user document: {}", e))?;
             users.push(document_to_user(doc)?);
         }
 
@@ -443,20 +437,18 @@ impl RegistrationStore for MongodbStorage {
             "aor": aor,
         };
 
-        let mut cursor = self.registrations.find(filter).await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to query registrations: {}",
-                e
-            )
-        })?;
+        let mut cursor = self
+            .registrations
+            .find(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query registrations: {}", e))?;
 
         let mut registrations = Vec::new();
-        while cursor.advance().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to iterate registrations cursor: {}",
-                e
-            )
-        })? {
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate registrations cursor: {}", e))?
+        {
             let doc = cursor.deserialize_current().map_err(|e| {
                 anyhow::anyhow!("Failed to deserialize registration document: {}", e)
             })?;
@@ -492,9 +484,7 @@ impl RegistrationStore for MongodbStorage {
             .replace_one(filter, doc)
             .upsert(true)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to insert/update registration: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update registration: {}", e))?;
 
         debug!(aor = %registration.aor, "Registration stored in MongoDB");
         Ok(())
@@ -509,9 +499,7 @@ impl RegistrationStore for MongodbStorage {
         self.registrations
             .delete_one(filter)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to delete registration: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to delete registration: {}", e))?;
 
         debug!(aor = %aor, contact = %contact, "Registration deleted from MongoDB");
         Ok(())
@@ -525,9 +513,7 @@ impl RegistrationStore for MongodbStorage {
         self.registrations
             .delete_many(filter)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to delete all registrations: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to delete all registrations: {}", e))?;
 
         debug!(aor = %aor, "All registrations deleted from MongoDB");
         Ok(())
@@ -541,12 +527,11 @@ impl RegistrationStore for MongodbStorage {
             }
         };
 
-        let result = self.registrations.delete_many(filter).await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to delete expired registrations: {}",
-                e
-            )
-        })?;
+        let result = self
+            .registrations
+            .delete_many(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete expired registrations: {}", e))?;
 
         debug!(
             count = result.deleted_count,
@@ -564,9 +549,8 @@ impl RegistrationStore for MongodbStorage {
 impl CdrStore for MongodbStorage {
     async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
         let custom_data = if let Some(data) = &cdr.custom_data {
-            bson::to_bson(data).map_err(|e| {
-                anyhow::anyhow!("Failed to serialize custom_data: {}", e)
-            })?
+            bson::to_bson(data)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize custom_data: {}", e))?
         } else {
             bson::Bson::Null
         };
@@ -613,9 +597,7 @@ impl CdrStore for MongodbStorage {
             .replace_one(filter, doc)
             .upsert(true)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to insert/update CDR: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update CDR: {}", e))?;
 
         debug!(call_id = %cdr.call_id, "CDR stored in MongoDB");
         Ok(())
@@ -626,9 +608,11 @@ impl CdrStore for MongodbStorage {
             "call_id": call_id.to_string(),
         };
 
-        let doc = self.cdrs.find_one(filter).await.map_err(|e| {
-            anyhow::anyhow!("Failed to query CDR: {}", e)
-        })?;
+        let doc = self
+            .cdrs
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query CDR: {}", e))?;
 
         match doc {
             Some(doc) => {
@@ -704,20 +688,17 @@ impl CdrStore for MongodbStorage {
             .find(filter)
             .with_options(find_options)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to query CDRs: {}", e)
-            })?;
+            .map_err(|e| anyhow::anyhow!("Failed to query CDRs: {}", e))?;
 
         let mut cdrs = Vec::new();
-        while cursor.advance().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to iterate CDRs cursor: {}",
-                e
-            )
-        })? {
-            let doc = cursor.deserialize_current().map_err(|e| {
-                anyhow::anyhow!("Failed to deserialize CDR document: {}", e)
-            })?;
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate CDRs cursor: {}", e))?
+        {
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize CDR document: {}", e))?;
             cdrs.push(document_to_cdr(doc)?);
         }
 
@@ -771,11 +752,143 @@ impl CdrStore for MongodbStorage {
             filter.insert("disposition", disposition_to_string(*disposition));
         }
 
-        let count = self.cdrs.count_documents(filter).await.map_err(|e| {
-            anyhow::anyhow!("Failed to count CDRs: {}", e)
-        })?;
+        let count = self
+            .cdrs
+            .count_documents(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to count CDRs: {}", e))?;
 
         Ok(count as usize)
+    }
+}
+
+// ============================================================================
+// TenantStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl TenantStore for MongodbStorage {
+    async fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        let doc = self
+            .tenants
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query tenant: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let tenant = document_to_tenant(doc)?;
+                debug!(tenant_id = %id, "Tenant retrieved from MongoDB");
+                Ok(Some(tenant))
+            }
+            None => {
+                debug!(tenant_id = %id, "Tenant not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>> {
+        let filter = doc! {
+            "name": name,
+        };
+
+        let doc = self
+            .tenants
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query tenant by name: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let tenant = document_to_tenant(doc)?;
+                debug!(name = %name, "Tenant retrieved from MongoDB");
+                Ok(Some(tenant))
+            }
+            None => {
+                debug!(name = %name, "Tenant not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn list_tenants(&self) -> Result<Vec<Tenant>> {
+        let mut cursor = self
+            .tenants
+            .find(doc! {})
+            .sort(doc! { "name": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list tenants: {}", e))?;
+
+        let mut tenants = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate tenants cursor: {}", e))?
+        {
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize tenant document: {}", e))?;
+            tenants.push(document_to_tenant(doc)?);
+        }
+
+        debug!(count = tenants.len(), "Tenants listed from MongoDB");
+        Ok(tenants)
+    }
+
+    async fn put_tenant(&self, tenant: Tenant) -> Result<()> {
+        // Serialize status to snake_case string using serde
+        let status_str = serde_json::to_string(&tenant.status)
+            .map(|s| s.trim_matches('"').to_string())
+            .unwrap_or_else(|_| "active".to_string());
+
+        let doc = doc! {
+            "id": tenant.id.to_string(),
+            "name": &tenant.name,
+            "description": tenant.description.as_ref(),
+            "status": &status_str,
+            "contact_email": tenant.contact_email.as_ref(),
+            "contact_phone": tenant.contact_phone.as_ref(),
+            "max_users": tenant.max_users.map(|v| v as i64),
+            "max_phone_numbers": tenant.max_phone_numbers.map(|v| v as i64),
+            "max_concurrent_calls": tenant.max_concurrent_calls.map(|v| v as i64),
+            "billing_id": tenant.billing_id.as_ref(),
+            "created_at": system_time_to_bson_datetime(tenant.created_at),
+            "updated_at": system_time_to_bson_datetime(tenant.updated_at),
+            "trial_expires_at": tenant.trial_expires_at.map(system_time_to_bson_datetime),
+            "metadata": tenant.metadata.as_ref(),
+        };
+
+        let filter = doc! {
+            "id": tenant.id.to_string(),
+        };
+
+        self.tenants
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update tenant: {}", e))?;
+
+        debug!(tenant_id = %tenant.id, tenant_name = %tenant.name, "Tenant stored in MongoDB");
+        Ok(())
+    }
+
+    async fn delete_tenant(&self, id: &TenantId) -> Result<()> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        self.tenants
+            .delete_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete tenant: {}", e))?;
+
+        debug!(tenant_id = %id, "Tenant deleted from MongoDB");
+        Ok(())
     }
 }
 
@@ -838,7 +951,8 @@ fn document_to_user(doc: Document) -> Result<User> {
 
     // Parse account status
     let account_status_str = doc.get_str("account_status").unwrap_or("active");
-    let account_status = AccountStatus::from_str(account_status_str).unwrap_or(AccountStatus::Active);
+    let account_status =
+        AccountStatus::from_str(account_status_str).unwrap_or(AccountStatus::Active);
 
     // Parse role from database (defaults to EndUser if not found or invalid)
     let role_str = doc.get_str("role").unwrap_or("enduser");
@@ -847,10 +961,21 @@ fn document_to_user(doc: Document) -> Result<User> {
     // Parse emergency contact
     let emergency_contact = EmergencyContact {
         name: doc.get_str("emergency_contact_name").ok().map(String::from),
-        phone: doc.get_str("emergency_contact_phone").ok().map(String::from),
+        phone: doc
+            .get_str("emergency_contact_phone")
+            .ok()
+            .map(String::from),
     };
 
+    // Parse or generate user ID
+    let id = doc
+        .get_str("id")
+        .ok()
+        .and_then(|s| fcp_core::UserId::from_str(s).ok())
+        .unwrap_or_else(fcp_core::UserId::new);
+
     Ok(User {
+        id,
         username: doc
             .get_str("username")
             .map_err(|_| anyhow::anyhow!("Missing username field"))?
@@ -862,12 +987,13 @@ fn document_to_user(doc: Document) -> Result<User> {
         digest_password: doc.get_str("digest_password").ok().map(String::from),
         sip_ha1_hash: doc.get_str("sip_ha1_hash").ok().map(String::from),
         display_name: doc.get_str("display_name").ok().map(String::from),
-        tenant_id: TenantId::from_str(doc.get_str("tenant_id").map_err(|_| {
-            anyhow::anyhow!("Missing tenant_id field")
-        })?)
+        tenant_id: TenantId::from_str(
+            doc.get_str("tenant_id")
+                .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+        )
         .unwrap_or_else(|_| TenantId::nil()),
         enabled: doc.get_bool("enabled").unwrap_or(true),
-        role, // User role for RBAC
+        role,                                                               // User role for RBAC
         department_id: doc.get_str("department_id").ok().map(String::from), // Department ID for scoping
         created_at,
         updated_at,
@@ -911,16 +1037,12 @@ fn document_to_registration(doc: Document) -> Result<Registration> {
             .to_string(),
         contact: doc
             .get_str("contact")
-            .map_err(|_| {
-                anyhow::anyhow!("Missing contact field")
-            })?
+            .map_err(|_| anyhow::anyhow!("Missing contact field"))?
             .to_string(),
         expires_at,
         call_id: doc
             .get_str("call_id")
-            .map_err(|_| {
-                anyhow::anyhow!("Missing call_id field")
-            })?
+            .map_err(|_| anyhow::anyhow!("Missing call_id field"))?
             .to_string(),
         cseq: doc.get_i64("cseq").unwrap_or(1) as u32,
         user_agent: doc.get_str("user_agent").ok().map(String::from),
@@ -929,16 +1051,65 @@ fn document_to_registration(doc: Document) -> Result<Registration> {
     })
 }
 
+fn document_to_tenant(doc: Document) -> Result<Tenant> {
+    use fcp_core::TenantStatus;
+    use std::str::FromStr;
+
+    let created_at = doc
+        .get_datetime("created_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let updated_at = doc
+        .get_datetime("updated_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let trial_expires_at = doc
+        .get_datetime("trial_expires_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    // Parse status from database (defaults to Active if not found or invalid)
+    let status_str = doc.get_str("status").unwrap_or("active");
+    let status = serde_json::from_str::<TenantStatus>(&format!("\"{}\"", status_str))
+        .unwrap_or(TenantStatus::Active);
+
+    Ok(Tenant {
+        id: TenantId::from_str(
+            doc.get_str("id")
+                .map_err(|_| anyhow::anyhow!("Missing id field"))?,
+        )
+        .map_err(|_| anyhow::anyhow!("Invalid tenant id format"))?,
+        name: doc
+            .get_str("name")
+            .map_err(|_| anyhow::anyhow!("Missing name field"))?
+            .to_string(),
+        description: doc.get_str("description").ok().map(String::from),
+        status,
+        contact_email: doc.get_str("contact_email").ok().map(String::from),
+        contact_phone: doc.get_str("contact_phone").ok().map(String::from),
+        max_users: doc.get_i64("max_users").ok().map(|v| v as u32),
+        max_phone_numbers: doc.get_i64("max_phone_numbers").ok().map(|v| v as u32),
+        max_concurrent_calls: doc.get_i64("max_concurrent_calls").ok().map(|v| v as u32),
+        billing_id: doc.get_str("billing_id").ok().map(String::from),
+        created_at,
+        updated_at,
+        trial_expires_at,
+        metadata: doc.get_str("metadata").ok().map(String::from),
+    })
+}
+
 fn document_to_cdr(doc: Document) -> Result<CallDetailRecord> {
-    let custom_data = doc
-        .get("custom_data")
-        .and_then(|v| {
-            if v.as_null().is_some() {
-                None
-            } else {
-                bson::from_bson::<serde_json::Value>(v.clone()).ok()
-            }
-        });
+    let custom_data = doc.get("custom_data").and_then(|v| {
+        if v.as_null().is_some() {
+            None
+        } else {
+            bson::from_bson::<serde_json::Value>(v.clone()).ok()
+        }
+    });
 
     let start_time = doc
         .get_datetime("start_time")
@@ -961,21 +1132,18 @@ fn document_to_cdr(doc: Document) -> Result<CallDetailRecord> {
         .map(bson_to_hangup_cause)
         .unwrap_or(HangupCause::Other(0));
 
-    let hangup_party = doc
-        .get_str("hangup_party")
-        .ok()
-        .map(string_to_hangup_party);
+    let hangup_party = doc.get_str("hangup_party").ok().map(string_to_hangup_party);
 
     Ok(CallDetailRecord {
-        call_id: CallId::from_str(doc.get_str("call_id").map_err(|_| {
-            anyhow::anyhow!("Missing call_id field")
-        })?)
-        .map_err(|_| {
-            anyhow::anyhow!("Invalid call_id format")
-        })?,
-        tenant_id: TenantId::from_str(doc.get_str("tenant_id").map_err(|_| {
-            anyhow::anyhow!("Missing tenant_id field")
-        })?)
+        call_id: CallId::from_str(
+            doc.get_str("call_id")
+                .map_err(|_| anyhow::anyhow!("Missing call_id field"))?,
+        )
+        .map_err(|_| anyhow::anyhow!("Invalid call_id format"))?,
+        tenant_id: TenantId::from_str(
+            doc.get_str("tenant_id")
+                .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+        )
         .unwrap_or_else(|_| TenantId::nil()),
         sip_call_id: doc
             .get_str("sip_call_id")
@@ -983,16 +1151,12 @@ fn document_to_cdr(doc: Document) -> Result<CallDetailRecord> {
             .to_string(),
         from_uri: doc
             .get_str("from_uri")
-            .map_err(|_| {
-                anyhow::anyhow!("Missing from_uri field")
-            })?
+            .map_err(|_| anyhow::anyhow!("Missing from_uri field"))?
             .to_string(),
         from_display_name: doc.get_str("from_display_name").ok().map(String::from),
         to_uri: doc
             .get_str("to_uri")
-            .map_err(|_| {
-                anyhow::anyhow!("Missing to_uri field")
-            })?
+            .map_err(|_| anyhow::anyhow!("Missing to_uri field"))?
             .to_string(),
         to_display_name: doc.get_str("to_display_name").ok().map(String::from),
         start_time,
@@ -1001,9 +1165,10 @@ fn document_to_cdr(doc: Document) -> Result<CallDetailRecord> {
         setup_duration_ms: doc.get_i64("setup_duration_ms").ok().map(|d| d as u64),
         call_duration_ms: doc.get_i64("call_duration_ms").ok().map(|d| d as u64),
         total_duration_ms: doc.get_i64("total_duration_ms").ok().map(|d| d as u64),
-        disposition: string_to_disposition(doc.get_str("disposition").map_err(|_| {
-            anyhow::anyhow!("Missing disposition field")
-        })?),
+        disposition: string_to_disposition(
+            doc.get_str("disposition")
+                .map_err(|_| anyhow::anyhow!("Missing disposition field"))?,
+        ),
         hangup_cause,
         hangup_party,
         sip_status_code: doc.get_i32("sip_status_code").ok().map(|c| c as u16),
