@@ -422,14 +422,24 @@ async fn create_flow_handler(
 
     // Create flow handler with event publishing and media playback
     let flow_handler = FlowCallHandler::new(
-        flow_store as Arc<dyn fcp_flow::FlowStore>,
+        Arc::clone(&flow_store) as Arc<dyn fcp_flow::FlowStore>,
         Some(Arc::clone(event_bus) as Arc<dyn fcp_events::EventPublisher>),
         Some(Arc::clone(media_manager)),
     );
 
     info!("Flow handler created successfully (using in-memory store)");
 
-    Ok(Arc::new(flow_handler))
+    let flow_handler = Arc::new(flow_handler);
+
+    // Load test flow for IVR testing (debug builds only)
+    if cfg!(debug_assertions) {
+        info!("Loading test IVR flow");
+        if let Err(e) = load_test_ivr_flow(&flow_store, &flow_handler).await {
+            tracing::warn!("Failed to load test IVR flow: {}", e);
+        }
+    }
+
+    Ok(flow_handler)
 }
 
 /// Create a media manager based on configuration.
@@ -861,6 +871,102 @@ fn mask_connection_string(conn_str: &str) -> String {
     } else {
         "***".to_string()
     }
+}
+
+/// Load a test IVR flow for development and testing.
+///
+/// This function creates a simple welcome IVR flow that:
+/// 1. Answers the call
+/// 2. Plays welcome.wav audio file
+/// 3. Hangs up
+///
+/// The flow is accessible by calling +15551234567
+async fn load_test_ivr_flow(
+    flow_store: &Arc<fcp_flow::InMemoryFlowStore>,
+    handler: &Arc<fcp_sip::flow_handler::FlowCallHandler>,
+) -> Result<()> {
+    use fcp_flow::{FlowDefinition, FlowNode, NodeType, FlowStore};
+    use std::collections::HashMap;
+
+    info!("Creating test IVR flow nodes");
+
+    // Create nodes
+    let mut nodes = HashMap::new();
+
+    nodes.insert(
+        "answer".to_string(),
+        FlowNode {
+            id: "answer".to_string(),
+            name: Some("Answer Call".to_string()),
+            node_type: NodeType::Answer {
+                next: "play_welcome".to_string(),
+            },
+        },
+    );
+
+    nodes.insert(
+        "play_welcome".to_string(),
+        FlowNode {
+            id: "play_welcome".to_string(),
+            name: Some("Play Welcome".to_string()),
+            node_type: NodeType::Play {
+                url: "/var/lib/fcp/audio/welcome.wav".to_string(),
+                loop_count: 0,
+                next: "hangup".to_string(),
+                on_error: None,
+            },
+        },
+    );
+
+    nodes.insert(
+        "hangup".to_string(),
+        FlowNode {
+            id: "hangup".to_string(),
+            name: Some("Hangup".to_string()),
+            node_type: NodeType::Hangup { reason: None },
+        },
+    );
+
+    // Create flow definition
+    let flow = FlowDefinition {
+        id: "welcome-ivr".to_string(),
+        name: "Welcome IVR".to_string(),
+        description: Some("Plays welcome message".to_string()),
+        version: 1,
+        initial_node: "answer".to_string(),
+        nodes,
+        variables: HashMap::new(),
+        tenant_id: None,
+        enabled: true,
+        webhook_url: None,
+        created_at: None,
+        updated_at: None,
+    };
+
+    info!(
+        flow_id = %flow.id,
+        node_count = flow.nodes.len(),
+        "Test IVR flow definition created"
+    );
+
+    // Insert flow into store
+    flow_store
+        .insert_flow(flow)
+        .await
+        .context("Failed to insert test IVR flow into store")?;
+
+    info!("Test IVR flow inserted into flow store");
+
+    // Configure DID routing: +15551234567 -> welcome-ivr
+    handler.add_route("+15551234567".to_string(), "welcome-ivr".to_string()).await;
+
+    info!(
+        did = "+15551234567",
+        flow_id = "welcome-ivr",
+        "Test IVR DID routing configured - call +15551234567 to test audio playback"
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]

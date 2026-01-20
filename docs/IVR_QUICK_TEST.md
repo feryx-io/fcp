@@ -2,7 +2,13 @@
 
 ## Overview
 
-This guide provides the fastest way to test audio playback in a flow. Since flows are currently in-memory only, we'll configure everything programmatically.
+This guide provides the fastest way to test audio playback in a flow. The test IVR flow is **automatically loaded** when running fcp-server in debug mode - no manual configuration needed!
+
+## Prerequisites
+
+- FCP workspace compiled
+- Audio file: `welcome.wav` created
+- Registered SIP users (alice and bob are auto-created)
 
 ## Step-by-Step Instructions
 
@@ -19,212 +25,78 @@ sudo cp welcome.wav /var/lib/fcp/audio/welcome.wav
 sudo chmod 644 /var/lib/fcp/audio/welcome.wav
 ```
 
-### Step 2: Create a Test Configuration Script
+### Step 2: Build and Run FCP Server in Debug Mode
 
-Create `/tmp/configure-ivr.sh`:
-
-```bash
-#!/bin/bash
-
-# This script configures the flow and DID routing via REST API
-# Run this AFTER fcp-server has started
-
-API_BASE="http://localhost:8080/api/v1"
-
-# 1. Create a simple welcome flow
-echo "Creating welcome flow..."
-FLOW_JSON=$(cat <<'EOF'
-{
-  "id": "welcome-ivr",
-  "name": "Welcome IVR",
-  "description": "Plays a welcome message",
-  "version": 1,
-  "enabled": true,
-  "initial_node": "answer",
-  "nodes": {
-    "answer": {
-      "id": "answer",
-      "name": "Answer Call",
-      "type": "answer",
-      "next": "play_welcome"
-    },
-    "play_welcome": {
-      "id": "play_welcome",
-      "name": "Play Welcome",
-      "type": "play",
-      "url": "/var/lib/fcp/audio/welcome.wav",
-      "loop_count": 0,
-      "next": "hangup"
-    },
-    "hangup": {
-      "id": "hangup",
-      "name": "Hangup",
-      "type": "hangup",
-      "reason": "normal"
-    }
-  },
-  "variables": {}
-}
-EOF
-)
-
-# Note: These API endpoints need to be implemented
-# For now, this is the intended API design
-
-curl -X POST "${API_BASE}/flows" \
-  -H "Content-Type: application/json" \
-  -d "${FLOW_JSON}"
-
-# 2. Configure DID routing (map phone number to flow)
-echo "Configuring DID routing..."
-curl -X POST "${API_BASE}/flow-routes" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "did": "+15551234567",
-    "flow_id": "welcome-ivr",
-    "enabled": true
-  }'
-
-echo "Configuration complete!"
-echo "Now call +15551234567 from your SIP client"
-```
-
-Make it executable:
+**Important**: The test IVR flow is automatically loaded **only in debug builds**. This is controlled by `cfg!(debug_assertions)` in the runtime code.
 
 ```bash
-chmod +x /tmp/configure-ivr.sh
+# Option A: Build and run in debug mode (recommended for testing)
+cargo run -p fcp-server
+
+# Option B: Build debug binary explicitly
+cargo build -p fcp-server
+./target/debug/fcp-server
+
+# Option C: Build with specific profile
+cargo build --profile dev -p fcp-server
+./target/dev/fcp-server
 ```
 
-### Step 3: Start FCP Server
+**Note**: Do NOT use `--release` flag, as release builds disable the test flow.
 
-```bash
-# Build the server (if not already built)
-cargo build --release -p fcp-server
+### Step 3: Verify Test Flow Loaded
 
-# Start the server
-./target/release/fcp-server
+Watch the server startup logs for these messages:
+
+```
+INFO Loading test IVR flow
+INFO Creating test IVR flow nodes
+INFO Test IVR flow definition created flow_id=welcome-ivr node_count=3
+INFO Test IVR flow inserted into flow store
+INFO Test IVR DID routing configured - call +15551234567 to test audio playback did=+15551234567 flow_id=welcome-ivr
 ```
 
-### Step 4: Configure Flow (Temporary Workaround)
+If you see these messages, the test flow is ready!
 
-Since the REST API for flow configuration is not yet implemented, here's the workaround:
+### Step 4: Make a Test Call
 
-**Option A: Add to Runtime Directly (Code Change)**
+From your SIP client (alice or bob):
+1. Dial: `+15551234567`
+2. The call should be answered automatically
+3. You should hear the welcome.wav file playing
+4. The call will hang up after playback completes
 
-Edit `crates/fcp-runtime/src/builder.rs` and add this after line 431:
+### Step 5: Verify Flow Execution in Logs
 
-```rust
-// Load test flow for IVR testing
-if cfg!(debug_assertions) {
-    info!("Loading test IVR flow");
-    load_test_ivr_flow(&flow_store, &flow_handler).await?;
-}
+Watch for these log messages during the call:
+
 ```
-
-Then add this function before the closing brace:
-
-```rust
-async fn load_test_ivr_flow(
-    store: &Arc<fcp_flow::InMemoryFlowStore>,
-    handler: &Arc<fcp_sip::flow_handler::FlowCallHandler>,
-) -> Result<()> {
-    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
-    use std::collections::HashMap;
-
-    // Create nodes
-    let mut nodes = HashMap::new();
-
-    nodes.insert(
-        "answer".to_string(),
-        FlowNode {
-            id: "answer".to_string(),
-            name: Some("Answer Call".to_string()),
-            node_type: NodeType::Answer {
-                next: "play_welcome".to_string(),
-            },
-        },
-    );
-
-    nodes.insert(
-        "play_welcome".to_string(),
-        FlowNode {
-            id: "play_welcome".to_string(),
-            name: Some("Play Welcome".to_string()),
-            node_type: NodeType::Play {
-                url: "/var/lib/fcp/audio/welcome.wav".to_string(),
-                loop_count: 0,
-                next: "hangup".to_string(),
-                on_error: None,
-            },
-        },
-    );
-
-    nodes.insert(
-        "hangup".to_string(),
-        FlowNode {
-            id: "hangup".to_string(),
-            name: Some("Hangup".to_string()),
-            node_type: NodeType::Hangup { reason: None },
-        },
-    );
-
-    // Create flow definition
-    let flow = FlowDefinition {
-        id: "welcome-ivr".to_string(),
-        name: "Welcome IVR".to_string(),
-        description: Some("Plays welcome message".to_string()),
-        version: 1,
-        initial_node: "answer".to_string(),
-        nodes,
-        variables: HashMap::new(),
-        tenant_id: None,
-        enabled: true,
-        webhook_url: None,
-        created_at: None,
-        updated_at: None,
-    };
-
-    // Insert flow
-    store.insert_flow(flow).await?;
-
-    // Configure DID routing: +15551234567 -> welcome-ivr
-    handler.add_route("+15551234567".to_string(), "welcome-ivr".to_string()).await;
-
-    info!("Test IVR flow loaded: call +15551234567 to test");
-
-    Ok(())
-}
+INFO Starting flow execution for call call_id=call-xxx flow_id=welcome-ivr
+INFO Executing flow node call_id=call-xxx node_id=answer node_type=Answer
+INFO Executing flow node call_id=call-xxx node_id=play_welcome node_type=Play
+INFO Playing audio file call_id=call-xxx url=/var/lib/fcp/audio/welcome.wav
+INFO Audio playback started call_id=call-xxx playback_id=playback-xxx
+INFO Executing flow node call_id=call-xxx node_id=hangup node_type=Hangup
 ```
-
-### Step 5: Test the IVR
-
-1. **Start FCP Server** (with debug build so test flow loads):
-   ```bash
-   cargo run -p fcp-server
-   ```
-
-2. **Watch the Logs**:
-   ```bash
-   # In another terminal
-   tail -f fcp-server.log | grep -E "(flow|playback|Playing)"
-   ```
-
-3. **Make a Test Call**:
-   - From your SIP client (alice or bob)
-   - Dial: `+15551234567` (or whatever DID you configured)
-   - You should hear the welcome.wav file playing
-
-4. **Expected Log Output**:
-   ```
-   INFO  Test IVR flow loaded: call +15551234567 to test
-   INFO  Starting flow execution for call call_id=call-xxx flow_id=welcome-ivr
-   INFO  Executing flow node call_id=call-xxx node_id=answer
-   INFO  Executing flow node call_id=call-xxx node_id=play_welcome
-   INFO  Playing audio file call_id=call-xxx url=/var/lib/fcp/audio/welcome.wav
-   INFO  Audio playback started call_id=call-xxx playback_id=playback-1
-   ```
 
 ## Troubleshooting
+
+### Test Flow Not Loading
+
+**Problem**: You don't see "Loading test IVR flow" in the logs.
+
+**Solution**: Make sure you're running a debug build:
+```bash
+# Wrong - release build (test flow disabled)
+cargo run --release -p fcp-server
+
+# Correct - debug build (test flow enabled)
+cargo run -p fcp-server
+```
+
+You can verify the build type in the logs:
+- Debug builds show more verbose logging
+- Look for "Loading test IVR flow" message at startup
 
 ### No Audio Playing
 
@@ -236,85 +108,163 @@ async fn load_test_ivr_flow(
 
 2. **Check logs for errors**:
    ```bash
-   grep -i "error\|failed" fcp-server.log | grep -i audio
+   # If using journald
+   journalctl -u fcp-server | grep -i "audio\|playback"
+
+   # If using file logging
+   grep -i "error\|failed" logs/fcp-server.log | grep -i audio
    ```
 
 3. **Verify media manager initialized**:
    ```bash
-   grep "Media manager" fcp-server.log
+   # Look for media manager startup
+   grep "Media manager" logs/fcp-server.log
+   grep "MediaManager created" logs/fcp-server.log
    ```
 
 ### Flow Not Triggering
 
 1. **Check DID routing was configured**:
    ```bash
-   grep "flow routing rule" fcp-server.log
-   grep "+15551234567" fcp-server.log
+   # Should show the routing configuration
+   grep "Test IVR DID routing configured" logs/fcp-server.log
+   grep "+15551234567" logs/fcp-server.log
    ```
 
 2. **Verify flow was loaded**:
    ```bash
-   grep "welcome-ivr" fcp-server.log
+   # Should show flow insertion
+   grep "welcome-ivr" logs/fcp-server.log
+   grep "Test IVR flow inserted" logs/fcp-server.log
    ```
 
 3. **Check call is being received**:
    ```bash
-   grep "INVITE" fcp-server.log | tail -5
+   # Look for INVITE messages
+   grep "INVITE" logs/fcp-server.log | tail -5
+   grep "Received request" logs/fcp-server.log | grep INVITE
    ```
 
 ### Call Connects But No Audio
 
-This is expected for now because:
-- PlaybackManager starts playback
-- But actual RTP injection is not yet fully wired
-- The logs will show "Audio playback started" but you might not hear anything yet
+**Current Status**: RTP playback integration is in progress.
 
-**Next Steps for Full RTP Integration**:
-- Wire PlaybackManager to ForwardingEngine
-- Ensure media session is anchored on FCP server
-- Test end-to-end with actual audio
+If you see these logs but don't hear audio:
+- "Audio playback started" - Playback manager initialized correctly
+- "Playing audio file" - File was found and opened
 
-## Alternative: Manual Testing Without Code Changes
+This means the flow engine and media manager are working, but RTP injection may not be fully wired yet.
 
-If you don't want to modify the runtime code, you can:
+**What to check**:
+- Media session is established (check SDP in logs)
+- RTP ports are open and accessible
+- No firewall blocking RTP traffic
 
-1. Run fcp-server normally
-2. Use a REST client (curl, Postman) to configure flows via API (once implemented)
-3. Or wait for the flow management UI (Phase 2)
+## How It Works
 
-For now, the code change approach above is the fastest way to test.
+### Automatic Test Flow Loading
+
+The test IVR flow is automatically loaded in `crates/fcp-runtime/src/builder.rs` via the `load_test_ivr_flow()` function.
+
+**What it does**:
+1. Creates a 3-node flow: Answer → Play → Hangup
+2. Configures DID routing: +15551234567 → welcome-ivr flow
+3. Only runs in debug builds (controlled by `cfg!(debug_assertions)`)
+
+**Flow Definition**:
+```
+answer node:
+  - Answers the incoming call
+  - Next: play_welcome
+
+play_welcome node:
+  - Plays /var/lib/fcp/audio/welcome.wav
+  - Loop count: 0 (play once)
+  - Next: hangup
+
+hangup node:
+  - Terminates the call
+  - Reason: normal
+```
+
+### Debug vs Release Builds
+
+| Build Type | Command | Test Flow | Use Case |
+|------------|---------|-----------|----------|
+| Debug | `cargo run -p fcp-server` | ✅ Enabled | Development and testing |
+| Debug | `cargo build -p fcp-server` | ✅ Enabled | Development and testing |
+| Release | `cargo build --release -p fcp-server` | ❌ Disabled | Production deployment |
+
+**Why debug-only?**
+- Test flows should not load in production
+- `cfg!(debug_assertions)` is a compile-time check
+- Release builds have zero overhead from test code
 
 ## Next Steps
 
 Once you verify the flow triggers and logs show playback starting:
 
-1. Implement full RTP injection (connect PlaybackManager to ForwardingEngine)
-2. Add database-backed FlowStore
-3. Implement REST API for flow management
-4. Add flow editor UI
-5. Test with multiple concurrent calls
+1. **Verify RTP Integration**: Confirm audio actually plays through to the SIP client
+2. **Test with Multiple Calls**: Make several concurrent calls to test stability
+3. **Create Custom Flows**: Experiment with different flow configurations
+4. **Database Integration**: Migrate from InMemoryFlowStore to DatabaseFlowStore (Phase 2)
+5. **REST API**: Implement flow management endpoints (Phase 2)
+6. **Flow Editor UI**: Build web-based flow designer (Phase 2)
 
 ## Quick Reference
 
-**Default Test Users**:
-- Username: `alice`, Password: `Secret123!`
-- Username: `bob`, Password: `Secret456!`
+### Test Configuration
 
-**Test DID**: `+15551234567`
+| Item | Value |
+|------|-------|
+| **Test DID** | `+15551234567` |
+| **Flow ID** | `welcome-ivr` |
+| **Audio File** | `/var/lib/fcp/audio/welcome.wav` |
+| **SIP Users** | alice / bob (auto-created) |
+| **Build Mode** | Debug only (`cargo run -p fcp-server`) |
 
-**Flow ID**: `welcome-ivr`
+### Expected Call Flow
 
-**Audio File Path**: `/var/lib/fcp/audio/welcome.wav`
+1. User dials `+15551234567` from SIP client
+2. FCP server matches DID to flow (welcome-ivr)
+3. Flow engine starts execution
+4. Answer node: Call is auto-answered
+5. Play node: welcome.wav plays
+6. Hangup node: Call terminates normally
 
-**Expected Behavior**:
-1. Call +15551234567
-2. Flow starts execution
-3. Call is answered
-4. Audio file plays (or attempts to play)
-5. Call hangs up
+### Key Log Messages
 
-**Log Keywords to Watch**:
-- "flow routing rule" - DID mapping configured
-- "Starting flow execution" - Flow started
-- "Playing audio file" - Play node executing
-- "Audio playback started" - Playback initiated
+| Message | Meaning |
+|---------|---------|
+| `Loading test IVR flow` | Test flow loading started |
+| `Test IVR DID routing configured` | DID +15551234567 mapped to flow |
+| `Starting flow execution` | Call triggered flow |
+| `node_type=Answer` | Call answered |
+| `node_type=Play` | Audio playback node executing |
+| `Audio playback started` | Media playback initiated |
+| `node_type=Hangup` | Call terminating |
+
+### File Locations
+
+```
+/var/lib/fcp/audio/welcome.wav    # Audio file (you provide)
+crates/fcp-runtime/src/builder.rs # Test flow code (lines 876-970)
+docs/IVR_QUICK_TEST.md           # This guide
+docs/IVR_TESTING_GUIDE.md        # Comprehensive guide
+```
+
+### Quick Commands
+
+```bash
+# Place audio file
+sudo mkdir -p /var/lib/fcp/audio && sudo cp welcome.wav /var/lib/fcp/audio/
+
+# Run server (debug mode)
+cargo run -p fcp-server
+
+# Watch logs (in another terminal)
+tail -f logs/fcp-server.log | grep -E "flow|playback|Playing"
+
+# Check if test flow loaded
+grep "Test IVR DID routing configured" logs/fcp-server.log
+```
