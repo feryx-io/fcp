@@ -1462,6 +1462,7 @@ dependencies = [
  "dashmap 5.5.3",
  "fcp-core",
  "fcp-events",
+ "fcp-flow",
  "fcp-media",
  "fcp-routing",
  "fcp-sip",

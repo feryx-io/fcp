@@ -131,6 +131,17 @@ impl RuntimeBuilder {
         let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
         info!("Event bus initialized (in-memory)");
 
+        // Create flow handler if storage is available
+        let flow_handler = if let Some(storage) = &storage {
+            Some(create_flow_handler(
+                storage,
+                &event_bus,
+                &media_manager,
+            ).await?)
+        } else {
+            None
+        };
+
         // Create transport listener
         let (listener, handler, call_manager) = create_transport_listener(
             &config,
@@ -142,6 +153,7 @@ impl RuntimeBuilder {
             storage.clone(),
             Arc::clone(&media_manager),
             Arc::clone(&event_bus),
+            flow_handler,
         )?;
 
         // Spawn task to route responses from outbound TCP connections back into the handler
@@ -393,6 +405,33 @@ async fn create_routing_service(config: &FcpConfig) -> Result<Arc<fcp_routing::R
     }
 }
 
+/// Create a flow handler for programmable call flows.
+async fn create_flow_handler(
+    _storage: &Arc<fcp_core::DynStorage>,
+    event_bus: &Arc<dyn EventBus>,
+    media_manager: &Arc<fcp_media::MediaManager>,
+) -> Result<Arc<fcp_sip::flow_handler::FlowCallHandler>> {
+    use fcp_flow::InMemoryFlowStore;
+    use fcp_sip::flow_handler::FlowCallHandler;
+
+    info!("Creating flow handler");
+
+    // Create in-memory flow store
+    // TODO: Implement DatabaseFlowStore to load flows from storage
+    let flow_store = Arc::new(InMemoryFlowStore::new());
+
+    // Create flow handler with event publishing and media playback
+    let flow_handler = FlowCallHandler::new(
+        flow_store as Arc<dyn fcp_flow::FlowStore>,
+        Some(Arc::clone(event_bus) as Arc<dyn fcp_events::EventPublisher>),
+        Some(Arc::clone(media_manager)),
+    );
+
+    info!("Flow handler created successfully (using in-memory store)");
+
+    Ok(Arc::new(flow_handler))
+}
+
 /// Create a media manager based on configuration.
 async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::MediaManager>> {
     use fcp_media::{BackendType, MediaConfig};
@@ -447,6 +486,7 @@ fn create_transport_listener(
     storage: Option<Arc<fcp_core::DynStorage>>,
     media_manager: Arc<fcp_media::MediaManager>,
     event_bus: Arc<dyn EventBus>,
+    flow_handler: Option<Arc<fcp_sip::flow_handler::FlowCallHandler>>,
 ) -> Result<(TransportListener, Arc<SipMessageHandler>, Arc<CallManager>)> {
     use fcp_sip::prelude::{ListenerConfig, SipMessageHandler};
 
@@ -522,6 +562,7 @@ fn create_transport_listener(
         storage,
         Some(media_manager),
         Some(config.media.clone()),
+        flow_handler,
     ));
 
     // Create listener (cast handler to trait object)
