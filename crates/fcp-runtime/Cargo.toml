@@ -18,6 +18,7 @@ fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip" }
 fcp-routing = { path = "../fcp-routing" }
 fcp-media = { path = "../fcp-media" }
+fcp-events = { path = "../fcp-events" }
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
 
 # Async runtime

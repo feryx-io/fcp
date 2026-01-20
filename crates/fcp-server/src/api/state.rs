@@ -1,6 +1,7 @@
 //! Shared API state.
 
 use fcp_core::DynStorage;
+use fcp_events::EventBus;
 use fcp_media::MediaManager;
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
@@ -28,6 +29,9 @@ pub struct ApiState {
     /// Media manager for recording control (optional)
     pub media_manager: Option<Arc<MediaManager>>,
 
+    /// Event bus for real-time event streaming
+    pub event_bus: Arc<dyn EventBus>,
+
     /// SIP realm for authentication
     pub realm: String,
 }
@@ -40,6 +44,7 @@ impl ApiState {
         call_manager: Arc<CallManager>,
         handler: Arc<SipMessageHandler>,
         media_manager: Option<Arc<MediaManager>>,
+        event_bus: Arc<dyn EventBus>,
         realm: String,
     ) -> Self {
         Self {
@@ -49,6 +54,7 @@ impl ApiState {
             call_manager,
             handler,
             media_manager,
+            event_bus,
             realm,
         }
     }

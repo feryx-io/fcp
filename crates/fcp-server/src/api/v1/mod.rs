@@ -3,6 +3,7 @@
 pub mod cdrs;
 pub mod debug;
 pub mod devices;
+pub mod events;
 pub mod extensions;
 pub mod line_bindings;
 pub mod media;
@@ -25,6 +26,8 @@ pub fn router() -> Router<ApiState> {
         // System endpoints
         .route("/health", get(system::health))
         .route("/status", get(system::status))
+        // Event streaming (WebSocket)
+        .route("/events", get(events::event_stream_websocket))
         // Debug endpoints (for live system inspection)
         .route("/debug/summary", get(debug::debug_summary))
         .route("/debug/dialogs", get(debug::list_dialogs))

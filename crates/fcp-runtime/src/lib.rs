@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
+use fcp_events::EventBus;
 use fcp_media::MediaManager;
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
@@ -49,6 +50,9 @@ pub struct Runtime {
 
     /// Media manager for RTP handling
     media_manager: Arc<MediaManager>,
+
+    /// Event bus for real-time event streaming
+    event_bus: Arc<dyn EventBus>,
 
     /// Transport listener for receiving inbound SIP messages
     listener: Option<TransportListener>,
@@ -112,6 +116,11 @@ impl Runtime {
     /// Get the media manager.
     pub fn media_manager(&self) -> &Arc<MediaManager> {
         &self.media_manager
+    }
+
+    /// Get the event bus for real-time event streaming.
+    pub fn event_bus(&self) -> &Arc<dyn EventBus> {
+        &self.event_bus
     }
 
     /// Get the storage (if registrar is enabled).

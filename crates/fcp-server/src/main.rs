@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     let call_manager = Arc::clone(runtime.call_manager());
     let handler = Arc::clone(runtime.handler());
     let media_manager = Some(Arc::clone(runtime.media_manager()));
+    let event_bus = Arc::clone(runtime.event_bus());
 
     // Start the runtime
     runtime.start().await?;
@@ -88,6 +89,7 @@ async fn main() -> Result<()> {
             call_manager,
             handler,
             media_manager,
+            event_bus,
             realm,
         );
         let bind_addr = api_config.bind;

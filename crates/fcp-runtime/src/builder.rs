@@ -3,6 +3,7 @@
 use crate::Runtime;
 use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, ServiceManager};
+use fcp_events::{EventBus, InMemoryEventBus};
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
@@ -126,6 +127,10 @@ impl RuntimeBuilder {
         // Create media manager
         let media_manager = create_media_manager(&config).await?;
 
+        // Create event bus for real-time event streaming
+        let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
+        info!("Event bus initialized (in-memory)");
+
         // Create transport listener
         let (listener, handler, call_manager) = create_transport_listener(
             &config,
@@ -136,6 +141,7 @@ impl RuntimeBuilder {
             Arc::clone(&uac),
             storage.clone(),
             Arc::clone(&media_manager),
+            Arc::clone(&event_bus),
         )?;
 
         // Spawn task to route responses from outbound TCP connections back into the handler
@@ -178,6 +184,7 @@ impl RuntimeBuilder {
             call_manager,
             handler,
             media_manager,
+            event_bus,
             listener: Some(listener),
             shutdown_tx: None,
             storage,
@@ -439,6 +446,7 @@ fn create_transport_listener(
     uac: Arc<SipUserAgentClient>,
     storage: Option<Arc<fcp_core::DynStorage>>,
     media_manager: Arc<fcp_media::MediaManager>,
+    event_bus: Arc<dyn EventBus>,
 ) -> Result<(TransportListener, Arc<SipMessageHandler>, Arc<CallManager>)> {
     use fcp_sip::prelude::{ListenerConfig, SipMessageHandler};
 
@@ -482,11 +490,21 @@ fn create_transport_listener(
             .unwrap_or_else(|| "127.0.0.1".to_string())
     });
 
-    // Create CallManager for B2BUA functionality with storage if available
-    let call_manager = if let Some(ref storage) = storage {
-        Arc::new(fcp_sip::call_manager::CallManager::with_storage(Arc::clone(storage)))
-    } else {
-        Arc::new(fcp_sip::call_manager::CallManager::new())
+    // Create CallManager for B2BUA functionality with storage and events
+    let call_manager = match &storage {
+        Some(storage) => {
+            // Both storage and events available
+            Arc::new(fcp_sip::call_manager::CallManager::with_storage_and_events(
+                Arc::clone(storage),
+                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+            ))
+        }
+        None => {
+            // Only events available
+            Arc::new(fcp_sip::call_manager::CallManager::with_events(
+                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+            ))
+        }
     };
 
     // Create message handler that routes to transaction and dialog managers

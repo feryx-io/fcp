@@ -98,12 +98,16 @@ Week 15-16: Sprint 16 - Integration & Examples
 
 ---
 
-## Sprint 9: Event System & WebSocket API (Weeks 1-2)
+## Sprint 9: Event System & WebSocket API (Weeks 1-2) ✅ COMPLETE
+
+**Status**: ✅ Completed
+**Documentation**: See `/docs/API_EVENTS.md` and `/crates/fcp-events/README.md`
+**Example Client**: `/examples/websocket-events-client.html`
 
 ### Goals
-- Design and implement event bus architecture
-- Create WebSocket API for real-time event streaming
-- Publish call lifecycle events
+- ✅ Design and implement event bus architecture
+- ✅ Create WebSocket API for real-time event streaming
+- ✅ Publish call lifecycle events
 
 ### 9.1 Event Bus Architecture
 

@@ -233,6 +233,7 @@ checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
 dependencies = [
  "async-trait",
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "http 1.4.0",
@@ -251,8 +252,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper 1.0.2",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tower 0.5.2",
  "tower-layer",
  "tower-service",
@@ -1294,7 +1297,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-cli"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1342,6 +1345,23 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "fcp-events"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "dashmap 5.5.3",
+ "fcp-core",
+ "parking_lot 0.12.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]
@@ -1400,13 +1420,14 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
  "dashmap 5.5.3",
  "fcp-core",
+ "fcp-events",
  "fcp-media",
  "fcp-routing",
  "fcp-sip",
@@ -1422,12 +1443,13 @@ dependencies = [
 
 [[package]]
 name = "fcp-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
  "fcp-core",
+ "fcp-events",
  "fcp-media",
  "fcp-runtime",
  "fcp-sip",
@@ -1435,6 +1457,7 @@ dependencies = [
  "fcp-storage-mysql",
  "fcp-storage-postgres",
  "fcp-storage-sqlite",
+ "futures-util",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1448,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sip"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1456,6 +1479,7 @@ dependencies = [
  "chrono",
  "dashmap 6.1.0",
  "fcp-core",
+ "fcp-events",
  "fcp-media",
  "fcp-routing",
  "md5",
@@ -1488,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1507,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1525,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1543,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1660,7 +1684,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.21.0",
  "tracing",
  "uuid",
 ]
@@ -5488,7 +5512,19 @@ dependencies = [
  "native-tls",
  "tokio",
  "tokio-native-tls",
- "tungstenite",
+ "tungstenite 0.21.0",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite 0.24.0",
 ]
 
 [[package]]
@@ -5774,6 +5810,24 @@ dependencies = [
  "sha1",
  "thiserror 1.0.69",
  "url",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18e5b8366ee7a95b16d32197d0b2604b43a0be89dc5fac9f8e96ccafbaedda8a"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "http 1.4.0",
+ "httparse",
+ "log",
+ "rand 0.8.5",
+ "sha1",
+ "thiserror 1.0.69",
  "utf-8",
 ]
 

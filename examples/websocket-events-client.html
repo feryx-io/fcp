@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FCP Event Stream - WebSocket Client</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #555;
+        }
+        input, select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .disconnect {
+            background-color: #dc3545;
+        }
+        .disconnect:hover {
+            background-color: #c82333;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+        }
+        .events-container {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .event-item {
+            background: white;
+            border-left: 4px solid #007bff;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .event-item.call {
+            border-left-color: #28a745;
+        }
+        .event-item.media {
+            border-left-color: #17a2b8;
+        }
+        .event-item.system {
+            border-left-color: #ffc107;
+        }
+        .event-header {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .event-time {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 8px;
+        }
+        .event-data {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #333;
+            background: #f5f5f5;
+            padding: 8px;
+            border-radius: 3px;
+            overflow-x: auto;
+        }
+        .clear-button {
+            background-color: #6c757d;
+            margin-top: 10px;
+        }
+        .clear-button:hover {
+            background-color: #5a6268;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .stat-item {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #007bff;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 FCP Event Stream - WebSocket Client</h1>
+
+        <div id="status" class="status disconnected">
+            Disconnected
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="wsUrl">WebSocket URL</label>
+                <input type="text" id="wsUrl" value="ws://localhost:8080/api/v1/events" placeholder="ws://localhost:8080/api/v1/events">
+            </div>
+
+            <div class="control-group">
+                <label for="tenantId">Tenant ID (Optional)</label>
+                <input type="text" id="tenantId" placeholder="tenant-123e4567-e89b-12d3-a456-426614174000">
+            </div>
+
+            <div class="control-group">
+                <label for="callId">Call ID (Optional)</label>
+                <input type="text" id="callId" placeholder="call-123e4567-e89b-12d3-a456-426614174000">
+            </div>
+
+            <div class="control-group">
+                <label for="eventTypes">Event Types (Optional)</label>
+                <select id="eventTypes" multiple size="5">
+                    <option value="call">Call Events</option>
+                    <option value="media">Media Events</option>
+                    <option value="ivr">IVR Events</option>
+                    <option value="recording">Recording Events</option>
+                    <option value="system">System Events</option>
+                </select>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled class="disconnect">Disconnect</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Statistics</h2>
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-value" id="totalEvents">0</div>
+                <div class="stat-label">Total Events</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="callEvents">0</div>
+                <div class="stat-label">Call Events</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="mediaEvents">0</div>
+                <div class="stat-label">Media Events</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="systemEvents">0</div>
+                <div class="stat-label">System Events</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Events (Real-time)</h2>
+        <button onclick="clearEvents()" class="clear-button">Clear Events</button>
+        <div id="events" class="events-container">
+            <p style="color: #666; text-align: center;">Connect to start receiving events...</p>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let eventCount = {
+            total: 0,
+            call: 0,
+            media: 0,
+            ivr: 0,
+            recording: 0,
+            system: 0
+        };
+
+        function updateStatus(message, className) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = 'status ' + className;
+        }
+
+        function buildWebSocketUrl() {
+            const baseUrl = document.getElementById('wsUrl').value;
+            const params = new URLSearchParams();
+
+            const tenantId = document.getElementById('tenantId').value.trim();
+            if (tenantId) {
+                params.append('tenant_id', tenantId);
+            }
+
+            const callId = document.getElementById('callId').value.trim();
+            if (callId) {
+                params.append('call_id', callId);
+            }
+
+            const eventTypesSelect = document.getElementById('eventTypes');
+            const selectedTypes = Array.from(eventTypesSelect.selectedOptions).map(opt => opt.value);
+            if (selectedTypes.length > 0) {
+                params.append('event_types', selectedTypes.join(','));
+            }
+
+            const queryString = params.toString();
+            return queryString ? `${baseUrl}?${queryString}` : baseUrl;
+        }
+
+        function connect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                console.log('Already connected');
+                return;
+            }
+
+            const url = buildWebSocketUrl();
+            console.log('Connecting to:', url);
+
+            updateStatus('Connecting...', 'connecting');
+            document.getElementById('connectBtn').disabled = true;
+
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateStatus('Connected', 'connected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                console.log('Received message:', event.data);
+                try {
+                    const message = JSON.parse(event.data);
+                    handleEvent(message);
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateStatus('Error: Connection failed', 'disconnected');
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                updateStatus('Disconnected', 'disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+                ws = null;
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function handleEvent(event) {
+            if (event.type === 'connected') {
+                // Connection confirmation message
+                console.log('Connection confirmed:', event.message);
+                return;
+            }
+
+            // Increment counters
+            eventCount.total++;
+            const eventType = event.event_type;
+            if (eventType && eventCount.hasOwnProperty(eventType)) {
+                eventCount[eventType]++;
+            }
+
+            // Update statistics
+            updateStatistics();
+
+            // Display event
+            displayEvent(event);
+        }
+
+        function updateStatistics() {
+            document.getElementById('totalEvents').textContent = eventCount.total;
+            document.getElementById('callEvents').textContent = eventCount.call;
+            document.getElementById('mediaEvents').textContent = eventCount.media;
+            document.getElementById('systemEvents').textContent = eventCount.system;
+        }
+
+        function displayEvent(event) {
+            const eventsContainer = document.getElementById('events');
+
+            // Clear placeholder text
+            if (eventCount.total === 1) {
+                eventsContainer.innerHTML = '';
+            }
+
+            const eventEl = document.createElement('div');
+            eventEl.className = 'event-item ' + (event.event_type || '');
+
+            const now = new Date();
+            const timestamp = now.toLocaleTimeString();
+
+            const eventHeader = getEventHeader(event);
+
+            eventEl.innerHTML = `
+                <div class="event-header">${eventHeader}</div>
+                <div class="event-time">${timestamp}</div>
+                <div class="event-data">${JSON.stringify(event, null, 2)}</div>
+            `;
+
+            eventsContainer.insertBefore(eventEl, eventsContainer.firstChild);
+
+            // Limit to 50 events
+            while (eventsContainer.children.length > 50) {
+                eventsContainer.removeChild(eventsContainer.lastChild);
+            }
+        }
+
+        function getEventHeader(event) {
+            const type = event.event_type || 'Unknown';
+            const subtype = event.call?.type || event.media?.type || event.system?.type || 'Event';
+
+            return `${type.toUpperCase()} - ${subtype}`;
+        }
+
+        function clearEvents() {
+            document.getElementById('events').innerHTML = '<p style="color: #666; text-align: center;">Events cleared. Waiting for new events...</p>';
+            eventCount = {
+                total: 0,
+                call: 0,
+                media: 0,
+                ivr: 0,
+                recording: 0,
+                system: 0
+            };
+            updateStatistics();
+        }
+
+        // Connect on page load
+        window.addEventListener('load', () => {
+            console.log('Page loaded. Ready to connect.');
+        });
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (ws) {
+                ws.close();
+            }
+        });
+    </script>
+</body>
+</html>

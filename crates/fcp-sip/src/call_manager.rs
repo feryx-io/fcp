@@ -2,9 +2,10 @@
 //!
 //! The CallManager tracks all active calls and provides methods for call control.
 
-use crate::call::{Call, CallId, CallState};
+use crate::call::{Call, CallDirection, CallId, CallState};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
+use fcp_events::{CallEvent, EventPublisher, PlatformEvent};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -19,6 +20,9 @@ pub struct CallManager {
 
     /// Optional storage backend for CDR creation
     storage: Option<Arc<fcp_core::DynStorage>>,
+
+    /// Optional event publisher for real-time events
+    events: Option<Arc<dyn EventPublisher>>,
 }
 
 impl CallManager {
@@ -27,6 +31,7 @@ impl CallManager {
         Self {
             calls: Arc::new(DashMap::new()),
             storage: None,
+            events: None,
         }
     }
 
@@ -35,6 +40,28 @@ impl CallManager {
         Self {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
+            events: None,
+        }
+    }
+
+    /// Create a new call manager with storage and event publishing.
+    pub fn with_storage_and_events(
+        storage: Arc<fcp_core::DynStorage>,
+        events: Arc<dyn EventPublisher>,
+    ) -> Self {
+        Self {
+            calls: Arc::new(DashMap::new()),
+            storage: Some(storage),
+            events: Some(events),
+        }
+    }
+
+    /// Create a new call manager with only event publishing (no CDRs).
+    pub fn with_events(events: Arc<dyn EventPublisher>) -> Self {
+        Self {
+            calls: Arc::new(DashMap::new()),
+            storage: None,
+            events: Some(events),
         }
     }
 
@@ -49,6 +76,28 @@ impl CallManager {
             callee = ?call.callee(),
             "Creating new call"
         );
+
+        // Publish CallEvent::Initiated
+        if let Some(events) = &self.events {
+            let event = PlatformEvent::Call(CallEvent::Initiated {
+                call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                tenant_id: call.tenant_id,
+                from: call.a_leg.remote_uri.clone(),
+                to: call.callee().unwrap_or("unknown").to_string(),
+                direction: match call.a_leg.direction {
+                    CallDirection::Inbound => fcp_events::CallDirection::Inbound,
+                    CallDirection::Outbound => fcp_events::CallDirection::Outbound,
+                },
+                timestamp: call.created_at,
+            });
+
+            let events = Arc::clone(events);
+            tokio::spawn(async move {
+                if let Err(e) = events.publish(event).await {
+                    tracing::error!(error = %e, "Failed to publish CallEvent::Initiated");
+                }
+            });
+        }
 
         self.calls.insert(call_id, call);
         call_id
@@ -71,15 +120,57 @@ impl CallManager {
     {
         let mut entry = self.calls.get_mut(call_id).context("Call not found")?;
 
+        // Capture old state for comparison
+        let old_state = entry.state;
+
         update_fn(entry.value_mut());
+
+        let new_state = entry.state;
+        let updated_call = entry.value().clone();
 
         debug!(
             call_id = %call_id,
-            state = ?entry.state,
+            old_state = ?old_state,
+            new_state = ?new_state,
             "Updated call"
         );
 
-        Ok(entry.value().clone())
+        // Publish state change events
+        if let Some(events) = &self.events {
+            let should_publish = match (old_state, new_state) {
+                // Ringing: transition to Proceeding
+                (_, CallState::Proceeding) if old_state != CallState::Proceeding => {
+                    Some(PlatformEvent::Call(CallEvent::Ringing {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        timestamp: std::time::SystemTime::now(),
+                    }))
+                }
+                // Answered: transition to Established
+                (_, CallState::Established) if old_state != CallState::Established => {
+                    // Extract codec from SDP if available
+                    let codec = extract_codec_from_sdp(updated_call.a_leg.sdp.as_deref())
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    Some(PlatformEvent::Call(CallEvent::Answered {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        answer_time: updated_call.established_at.unwrap_or_else(std::time::SystemTime::now),
+                        codec,
+                    }))
+                }
+                _ => None,
+            };
+
+            if let Some(event) = should_publish {
+                let events = Arc::clone(events);
+                tokio::spawn(async move {
+                    if let Err(e) = events.publish(event).await {
+                        tracing::error!(error = %e, "Failed to publish state change event");
+                    }
+                });
+            }
+        }
+
+        Ok(updated_call)
     }
 
     /// Terminate a call.
@@ -102,6 +193,63 @@ impl CallManager {
             state = ?call.state,
             "Call terminated"
         );
+
+        // Publish termination event
+        if let Some(events) = &self.events {
+            let event = match call.state {
+                CallState::Terminated => {
+                    // Normal termination
+                    PlatformEvent::Call(CallEvent::Ended {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        end_time: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
+                        duration_ms: call.duration()
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        hangup_cause: "Normal Clearing".to_string(),
+                        hangup_party: None, // TODO: Phase 2 - track BYE direction
+                    })
+                }
+                CallState::Failed => {
+                    // Failed call
+                    let (reason, sip_code) = call.failure_reason
+                        .as_ref()
+                        .map(|r| {
+                            let code = extract_sip_status_code(r);
+                            (r.clone(), code)
+                        })
+                        .unwrap_or_else(|| ("Unknown error".to_string(), None));
+
+                    PlatformEvent::Call(CallEvent::Failed {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        timestamp: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
+                        reason,
+                        sip_code,
+                    })
+                }
+                _ => {
+                    // Unexpected state - log warning but don't publish event
+                    tracing::warn!(
+                        call_id = %call_id,
+                        state = ?call.state,
+                        "Call terminated in unexpected state"
+                    );
+                    // Publish as Failed with generic reason
+                    PlatformEvent::Call(CallEvent::Failed {
+                        call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
+                        timestamp: std::time::SystemTime::now(),
+                        reason: format!("Terminated in unexpected state: {:?}", call.state),
+                        sip_code: None,
+                    })
+                }
+            };
+
+            let events = Arc::clone(events);
+            tokio::spawn(async move {
+                if let Err(e) = events.publish(event).await {
+                    tracing::error!(error = %e, "Failed to publish termination event");
+                }
+            });
+        }
 
         // Create CDR asynchronously if storage is available
         if let Some(storage) = &self.storage {
