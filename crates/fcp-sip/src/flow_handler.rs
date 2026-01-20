@@ -83,6 +83,8 @@ impl FlowCallHandler {
         call: &mut Call,
         flow_id: String,
         initial_variables: HashMap<String, String>,
+        answer_callback: fcp_flow::AnswerCallback,
+        hangup_callback: fcp_flow::HangupCallback,
     ) -> Result<()> {
         info!(
             call_id = %call.id,
@@ -115,6 +117,10 @@ impl FlowCallHandler {
         if let Some(media_session_id) = call.media_session_id {
             context.set_media_session_id(media_session_id);
         }
+
+        // Set callbacks for Answer and Hangup nodes
+        context.set_answer_callback(answer_callback);
+        context.set_hangup_callback(hangup_callback);
 
         // Store context
         self.contexts
@@ -202,6 +208,93 @@ impl FlowCallHandler {
             node_id = %current_node,
             "Executing flow node"
         );
+
+        // Check if this is an Answer or Hangup node - execute callbacks
+        let node_type = context_guard
+            .flow
+            .nodes
+            .get(&current_node)
+            .map(|n| n.node_type.clone());
+
+        if let Some(node_type) = node_type {
+            use fcp_flow::NodeType;
+
+            match node_type {
+                NodeType::Answer { next } => {
+                    info!(
+                        call_id = %call_id,
+                        node_id = %current_node,
+                        "Answer node: calling answer callback"
+                    );
+
+                    // Clone callback before dropping guard
+                    let callback = context_guard.answer_callback.clone();
+                    drop(context_guard);
+
+                    // Execute answer callback if available
+                    if let Some(callback) = callback {
+                        match callback().await {
+                            Ok(()) => {
+                                info!(call_id = %call_id, "Call answered successfully");
+                            }
+                            Err(e) => {
+                                error!(call_id = %call_id, error = %e, "Failed to answer call");
+                            }
+                        }
+
+                        // Re-acquire lock and continue to next node
+                        let mut context_guard = context.write().await;
+                        context_guard.current_node = next.clone();
+                        drop(context_guard);
+
+                        return Box::pin(self.execute_next_node(call_id)).await;
+                    } else {
+                        warn!(call_id = %call_id, "Answer callback not set");
+                        let mut context_guard = context.write().await;
+                        context_guard.current_node = next.clone();
+                        drop(context_guard);
+                        return Box::pin(self.execute_next_node(call_id)).await;
+                    }
+                }
+
+                NodeType::Hangup { reason } => {
+                    info!(
+                        call_id = %call_id,
+                        node_id = %current_node,
+                        reason = ?reason,
+                        "Hangup node: calling hangup callback"
+                    );
+
+                    // Clone callback before dropping guard
+                    let callback = context_guard.hangup_callback.clone();
+                    drop(context_guard);
+
+                    // Execute hangup callback if available
+                    if let Some(callback) = callback {
+                        match callback(reason).await {
+                            Ok(()) => {
+                                info!(call_id = %call_id, "Call hung up successfully");
+                            }
+                            Err(e) => {
+                                error!(call_id = %call_id, error = %e, "Failed to hang up call");
+                            }
+                        }
+
+                        // Clean up context
+                        self.contexts.remove(&call_id);
+                        return Ok(());
+                    } else {
+                        warn!(call_id = %call_id, "Hangup callback not set");
+                        self.contexts.remove(&call_id);
+                        return Ok(());
+                    }
+                }
+
+                _ => {
+                    // Not Answer or Hangup, continue with normal processing
+                }
+            }
+        }
 
         // Check if this is a Play or Say node - handle media playback before execution
         if let Some(media_manager) = &self.media_manager {

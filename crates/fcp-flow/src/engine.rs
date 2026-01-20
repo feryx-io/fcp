@@ -5,6 +5,7 @@
 use crate::schema::{BranchOperator, FlowDefinition, NodeType};
 use crate::{FlowError, Result};
 use fcp_core::CallId;
+use futures::future::BoxFuture;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -454,6 +455,12 @@ impl Default for FlowEngine {
     }
 }
 
+/// Callback for answering a call (sends 200 OK)
+pub type AnswerCallback = Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
+
+/// Callback for hanging up a call (sends BYE)
+pub type HangupCallback = Arc<dyn Fn(Option<String>) -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
+
 /// Flow execution context.
 ///
 /// Holds the state of a flow execution including variables and execution history.
@@ -478,6 +485,12 @@ pub struct FlowContext {
 
     /// Timestamp when execution started
     pub started_at: chrono::DateTime<chrono::Utc>,
+
+    /// Callback to answer the call (send 200 OK)
+    pub answer_callback: Option<AnswerCallback>,
+
+    /// Callback to hangup the call (send BYE)
+    pub hangup_callback: Option<HangupCallback>,
 }
 
 impl FlowContext {
@@ -498,12 +511,24 @@ impl FlowContext {
             variables: Arc::new(RwLock::new(variables)),
             execution_path: Vec::new(),
             started_at: chrono::Utc::now(),
+            answer_callback: None,
+            hangup_callback: None,
         }
     }
 
     /// Set the media session ID for this flow context.
     pub fn set_media_session_id(&mut self, session_id: CallId) {
         self.media_session_id = Some(session_id);
+    }
+
+    /// Set the answer callback.
+    pub fn set_answer_callback(&mut self, callback: AnswerCallback) {
+        self.answer_callback = Some(callback);
+    }
+
+    /// Set the hangup callback.
+    pub fn set_hangup_callback(&mut self, callback: HangupCallback) {
+        self.hangup_callback = Some(callback);
     }
 
     /// Get a variable value.

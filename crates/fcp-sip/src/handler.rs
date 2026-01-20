@@ -814,9 +814,36 @@ impl SipMessageHandler {
                             initial_variables.insert("sip_call_id".to_string(), sip_call_id.to_string());
                         }
 
+                        // Create callbacks for Answer and Hangup nodes
+                        let answer_handle = handle.clone();
+                        let answer_request = request.clone();
+                        let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
+                            let handle = answer_handle.clone();
+                            let request = answer_request.clone();
+                            Box::pin(async move {
+                                // Send 200 OK to answer the call
+                                let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
+                                // TODO: Add SDP to response body if needed
+                                handle.send_final(response).await;
+                                Ok(())
+                            })
+                        });
+
+                        let hangup_call_id = call_id;
+                        let hangup_call_manager = Arc::clone(&self.call_manager);
+                        let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
+                            let call_id = hangup_call_id;
+                            let call_manager = Arc::clone(&hangup_call_manager);
+                            Box::pin(async move {
+                                // Terminate the call
+                                call_manager.terminate_call(&call_id, reason);
+                                Ok(())
+                            })
+                        });
+
                         // Get mutable call reference and start flow
                         if let Some(mut call_entry) = self.call_manager.get_call(&call_id) {
-                            match flow_handler.start_flow(&mut call_entry, flow_id, initial_variables).await {
+                            match flow_handler.start_flow(&mut call_entry, flow_id, initial_variables, answer_callback, hangup_callback).await {
                                 Ok(()) => {
                                     info!(call_id = %call_id, "Flow execution started successfully");
                                     // Flow will handle the call - don't forward to B-leg

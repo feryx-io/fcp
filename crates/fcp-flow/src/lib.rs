@@ -10,7 +10,7 @@ pub mod executor;
 
 // Re-exports
 pub use schema::{FlowDefinition, FlowNode, NodeType};
-pub use engine::{FlowEngine, FlowContext, FlowExecutionResult};
+pub use engine::{FlowEngine, FlowContext, FlowExecutionResult, AnswerCallback, HangupCallback};
 pub use storage::{FlowStore, FlowQuery, InMemoryFlowStore};
 
 use thiserror::Error;
