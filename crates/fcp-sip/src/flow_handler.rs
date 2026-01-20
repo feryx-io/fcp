@@ -106,10 +106,15 @@ impl FlowCallHandler {
 
         // Create flow context
         let call_id_core = fcp_core::CallId::from_uuid(*call.id.as_uuid());
-        let context = self
+        let mut context = self
             .engine
             .execute(flow.clone(), call_id_core, initial_variables)
             .await?;
+
+        // Set media session ID if available (needed for Play/Say nodes)
+        if let Some(media_session_id) = call.media_session_id {
+            context.set_media_session_id(media_session_id);
+        }
 
         // Store context
         self.contexts
@@ -216,12 +221,14 @@ impl FlowCallHandler {
                         // For now, use raw URL value
                         let url_value = url.clone();
 
-                        // Convert CallId to fcp_core::CallId for media manager
-                        let fcp_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+                        // Use media session ID from context (not SIP call ID)
+                        let session_id = context_guard.media_session_id.ok_or_else(|| {
+                            anyhow::anyhow!("No media session ID available for playback")
+                        })?;
 
                         // Start playback (to both participants)
                         match media_manager
-                            .play_file(&fcp_call_id, url_value.clone(), AudioTarget::Both)
+                            .play_file(&session_id, url_value.clone(), AudioTarget::Both)
                             .await
                         {
                             Ok(playback_id) => {
@@ -275,13 +282,15 @@ impl FlowCallHandler {
                         let language_value = language.clone();
                         let voice_value = voice.clone();
 
-                        // Convert CallId to fcp_core::CallId for media manager
-                        let fcp_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+                        // Use media session ID from context (not SIP call ID)
+                        let session_id = context_guard.media_session_id.ok_or_else(|| {
+                            anyhow::anyhow!("No media session ID available for TTS playback")
+                        })?;
 
                         // Start TTS playback
                         match media_manager
                             .play_tts(
-                                &fcp_call_id,
+                                &session_id,
                                 text_value,
                                 language_value,
                                 voice_value,

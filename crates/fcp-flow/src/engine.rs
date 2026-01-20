@@ -464,6 +464,9 @@ pub struct FlowContext {
     /// Call ID this flow is executing for
     pub call_id: CallId,
 
+    /// Media session ID (for media operations like Play/Say)
+    pub media_session_id: Option<CallId>,
+
     /// Current node being executed
     pub current_node: String,
 
@@ -490,11 +493,17 @@ impl FlowContext {
         Self {
             flow: flow.clone(),
             call_id,
+            media_session_id: None,
             current_node: flow.initial_node.clone(),
             variables: Arc::new(RwLock::new(variables)),
             execution_path: Vec::new(),
             started_at: chrono::Utc::now(),
         }
+    }
+
+    /// Set the media session ID for this flow context.
+    pub fn set_media_session_id(&mut self, session_id: CallId) {
+        self.media_session_id = Some(session_id);
     }
 
     /// Get a variable value.
