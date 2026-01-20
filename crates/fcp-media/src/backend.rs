@@ -49,11 +49,70 @@ pub trait MediaBackend: Send + Sync {
     /// Stop recording
     async fn stop_recording(&self, call_id: &CallId) -> Result<()>;
 
+    /// Play an audio file into the call
+    ///
+    /// # Arguments
+    ///
+    /// * `call_id` - The call to inject audio into
+    /// * `file_path` - Path to the audio file (WAV, MP3, etc.)
+    /// * `target` - Which participant(s) should hear the audio
+    ///
+    /// # Returns
+    ///
+    /// A playback ID that can be used to stop the playback
+    async fn play_file(
+        &self,
+        call_id: &CallId,
+        file_path: String,
+        target: AudioTarget,
+    ) -> Result<String>;
+
+    /// Play text-to-speech into the call
+    ///
+    /// # Arguments
+    ///
+    /// * `call_id` - The call to inject audio into
+    /// * `text` - Text to convert to speech
+    /// * `language` - Language code (e.g., "en-US")
+    /// * `voice` - Voice identifier (provider-specific)
+    /// * `target` - Which participant(s) should hear the audio
+    ///
+    /// # Returns
+    ///
+    /// A playback ID that can be used to stop the playback
+    async fn play_tts(
+        &self,
+        call_id: &CallId,
+        text: String,
+        language: String,
+        voice: Option<String>,
+        target: AudioTarget,
+    ) -> Result<String>;
+
+    /// Stop an active playback
+    ///
+    /// # Arguments
+    ///
+    /// * `call_id` - The call with active playback
+    /// * `playback_id` - ID returned from play_file or play_tts
+    async fn stop_playback(&self, call_id: &CallId, playback_id: String) -> Result<()>;
+
     /// Get backend type name (for logging/metrics)
     fn backend_name(&self) -> &'static str;
 
     /// Health check
     async fn health_check(&self) -> Result<bool>;
+}
+
+/// Audio injection target
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioTarget {
+    /// Inject audio to participant A (caller)
+    ParticipantA,
+    /// Inject audio to participant B (callee)
+    ParticipantB,
+    /// Inject audio to both participants
+    Both,
 }
 
 /// Embedded backend - forge-media runs in-process
@@ -65,8 +124,10 @@ pub mod embedded {
     use forge_core::{EventBus, ParticipantId};
     use forge_engine::{
         session::{DtmfConfig, ParticipantCodecConfig, TranscodingConfig},
-        MediaSession as ForgeMediaSession, SessionManager, SessionManagerConfig,
+        AudioTarget as ForgeAudioTarget, MediaSession as ForgeMediaSession, MixMode,
+        PlaybackManager, SessionManager, SessionManagerConfig,
     };
+    use forge_injection::FileSource;
     use forge_rtp::PortPoolConfig;
     use std::time::Duration;
     use tracing::{debug, info, warn};
@@ -74,6 +135,9 @@ pub mod embedded {
     pub struct EmbeddedBackend {
         /// forge-media session manager
         session_manager: Arc<SessionManager>,
+
+        /// Audio playback manager
+        playback_manager: Arc<PlaybackManager>,
 
         /// Mapping of FCP CallId to forge-media session and participant IDs
         /// This lets us look up forge sessions using FCP call IDs
@@ -131,10 +195,14 @@ pub mod embedded {
             // Initialize SessionManager
             let session_manager = SessionManager::new(manager_config, Some(event_bus));
 
+            // Initialize PlaybackManager for audio injection
+            let playback_manager = Arc::new(PlaybackManager::new());
+
             info!("Embedded media backend initialized");
 
             Ok(Self {
                 session_manager,
+                playback_manager,
                 sessions: DashMap::new(),
             })
         }
@@ -454,6 +522,152 @@ pub mod embedded {
             Ok(())
         }
 
+        async fn play_file(
+            &self,
+            call_id: &fcp_core::CallId,
+            file_path: String,
+            target: AudioTarget,
+        ) -> Result<String> {
+            debug!(?call_id, path = %file_path, target = ?target, "Starting audio playback");
+
+            // Get session info to retrieve forge call_id
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+
+            let forge_call_id = session_info.forge_call_id.clone();
+            drop(session_info); // Release lock
+
+            // Create FileSource for the audio file
+            let source = Box::new(
+                FileSource::new(&file_path)
+                    .map_err(|e| Error::ForgeMedia(format!("Failed to open audio file: {}", e)))?,
+            );
+
+            // Convert FCP AudioTarget to forge AudioTarget
+            let forge_target = match target {
+                AudioTarget::ParticipantA => ForgeAudioTarget::ParticipantA,
+                AudioTarget::ParticipantB => ForgeAudioTarget::ParticipantB,
+                AudioTarget::Both => ForgeAudioTarget::Both,
+            };
+
+            // Start playback
+            let handle = self
+                .playback_manager
+                .start_playback(forge_call_id, source, forge_target, MixMode::Replace)
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to start playback: {}", e)))?;
+
+            let playback_id = handle.id().to_string();
+
+            info!(?call_id, playback_id = %playback_id, "Audio playback started");
+
+            Ok(playback_id)
+        }
+
+        async fn play_tts(
+            &self,
+            call_id: &fcp_core::CallId,
+            text: String,
+            language: String,
+            voice: Option<String>,
+            target: AudioTarget,
+        ) -> Result<String> {
+            debug!(
+                ?call_id,
+                text = %text,
+                language = %language,
+                voice = ?voice,
+                target = ?target,
+                "Starting TTS playback"
+            );
+
+            // Get session info to retrieve forge call_id
+            let _session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+
+            // Create TtsSource for text-to-speech
+            // Note: TtsSource requires a TTS provider to be configured
+            // For now, we'll return an error indicating TTS is not yet configured
+            // TODO: Add TTS provider configuration (Google, AWS, Azure)
+            return Err(Error::InvalidState(
+                "TTS provider not yet configured. Use play_file() with pre-recorded audio instead."
+                    .to_string(),
+            ));
+
+            // Future implementation when TTS providers are added:
+            /*
+            let source = Box::new(
+                TtsSource::new(text, language, voice)
+                    .map_err(|e| Error::ForgeMedia(format!("Failed to create TTS source: {}", e)))?,
+            );
+
+            let forge_target = match target {
+                AudioTarget::ParticipantA => ForgeAudioTarget::ParticipantA,
+                AudioTarget::ParticipantB => ForgeAudioTarget::ParticipantB,
+                AudioTarget::Both => ForgeAudioTarget::Both,
+            };
+
+            let handle = self
+                .playback_manager
+                .start_playback(forge_call_id, source, forge_target, MixMode::Replace)
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to start TTS playback: {}", e)))?;
+
+            let playback_id = handle.id().to_string();
+
+            info!(?call_id, playback_id = %playback_id, "TTS playback started");
+
+            Ok(playback_id)
+            */
+        }
+
+        async fn stop_playback(
+            &self,
+            call_id: &fcp_core::CallId,
+            playback_id: String,
+        ) -> Result<()> {
+            debug!(?call_id, playback_id = %playback_id, "Stopping playback");
+
+            // Parse playback_id (format: "playback-{u64}")
+            // Validate format but we'll use stop_all_playbacks for now
+            let _id_num = playback_id
+                .strip_prefix("playback-")
+                .and_then(|s| s.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    Error::InvalidState(format!("Invalid playback ID format: {}", playback_id))
+                })?;
+
+            // Create PlaybackId from number
+            // Note: This is a workaround since PlaybackId::new() generates a new ID
+            // We need to reconstruct the PlaybackId from the string representation
+            // TODO: Add PlaybackId::from_u64() method to forge-engine
+            // For now, we'll use stop_all_playbacks as a workaround
+
+            // Get session info to retrieve forge call_id
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+
+            let forge_call_id = session_info.forge_call_id.clone();
+            drop(session_info);
+
+            // Stop all playbacks for this call
+            // TODO: Stop specific playback when PlaybackId reconstruction is available
+            self.playback_manager
+                .stop_all_playbacks(&forge_call_id)
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to stop playback: {}", e)))?;
+
+            info!(?call_id, "Playback stopped");
+
+            Ok(())
+        }
+
         fn backend_name(&self) -> &'static str {
             "embedded"
         }
@@ -743,6 +957,37 @@ pub mod remote {
         async fn stop_recording(&self, _call_id: &fcp_core::CallId) -> Result<()> {
             // DELETE /v1/sessions/{id}/recording
             todo!("Implement remote recording stop")
+        }
+
+        async fn play_file(
+            &self,
+            _call_id: &fcp_core::CallId,
+            _file_path: String,
+            _target: AudioTarget,
+        ) -> Result<String> {
+            // POST /v1/sessions/{id}/playback/file
+            todo!("Implement remote audio playback")
+        }
+
+        async fn play_tts(
+            &self,
+            _call_id: &fcp_core::CallId,
+            _text: String,
+            _language: String,
+            _voice: Option<String>,
+            _target: AudioTarget,
+        ) -> Result<String> {
+            // POST /v1/sessions/{id}/playback/tts
+            todo!("Implement remote TTS playback")
+        }
+
+        async fn stop_playback(
+            &self,
+            _call_id: &fcp_core::CallId,
+            _playback_id: String,
+        ) -> Result<()> {
+            // DELETE /v1/sessions/{id}/playback/{playback_id}
+            todo!("Implement remote playback stop")
         }
 
         fn backend_name(&self) -> &'static str {

@@ -1,8 +1,9 @@
 //! Media manager - high-level API for media operations
 
 use crate::{
-    backend::MediaBackend, config::BackendType, Error, MediaConfig, MediaSession,
-    MediaSessionConfig, MediaSessionStats, Result,
+    backend::{AudioTarget, MediaBackend},
+    config::BackendType,
+    Error, MediaConfig, MediaSession, MediaSessionConfig, MediaSessionStats, Result,
 };
 use fcp_core::{CallId, DialogId};
 use std::{path::Path, sync::Arc};
@@ -145,6 +146,86 @@ impl MediaManager {
     /// Stop recording a call
     pub async fn stop_recording(&self, call_id: &CallId) -> Result<()> {
         self.backend.stop_recording(call_id).await
+    }
+
+    /// Play an audio file into a call
+    ///
+    /// # Arguments
+    /// * `call_id` - The call to inject audio into
+    /// * `file_path` - Path to the audio file (WAV, MP3, FLAC, etc.)
+    /// * `target` - Which participant(s) should hear the audio (ParticipantA, ParticipantB, or Both)
+    ///
+    /// # Returns
+    /// A playback ID that can be used to stop the playback
+    ///
+    /// # Example
+    /// ```ignore
+    /// let playback_id = manager.play_file(&call_id, "greeting.wav", AudioTarget::Both).await?;
+    /// // Later, stop playback if needed
+    /// manager.stop_playback(&call_id, playback_id).await?;
+    /// ```
+    pub async fn play_file(
+        &self,
+        call_id: &CallId,
+        file_path: String,
+        target: AudioTarget,
+    ) -> Result<String> {
+        self.backend.play_file(call_id, file_path, target).await
+    }
+
+    /// Play text-to-speech into a call
+    ///
+    /// # Arguments
+    /// * `call_id` - The call to inject audio into
+    /// * `text` - Text to convert to speech
+    /// * `language` - Language code (e.g., "en-US", "es-ES")
+    /// * `voice` - Optional voice identifier (provider-specific)
+    /// * `target` - Which participant(s) should hear the audio
+    ///
+    /// # Returns
+    /// A playback ID that can be used to stop the playback
+    ///
+    /// # Note
+    /// This requires TTS provider configuration. Currently returns an error
+    /// until TTS providers (Google, AWS, Azure) are configured.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let playback_id = manager.play_tts(
+    ///     &call_id,
+    ///     "Welcome to our service".to_string(),
+    ///     "en-US".to_string(),
+    ///     None,
+    ///     AudioTarget::Both
+    /// ).await?;
+    /// ```
+    pub async fn play_tts(
+        &self,
+        call_id: &CallId,
+        text: String,
+        language: String,
+        voice: Option<String>,
+        target: AudioTarget,
+    ) -> Result<String> {
+        self.backend
+            .play_tts(call_id, text, language, voice, target)
+            .await
+    }
+
+    /// Stop an active audio playback
+    ///
+    /// # Arguments
+    /// * `call_id` - The call with active playback
+    /// * `playback_id` - ID returned from play_file or play_tts
+    ///
+    /// # Example
+    /// ```ignore
+    /// let playback_id = manager.play_file(&call_id, "long_audio.wav", AudioTarget::Both).await?;
+    /// // ... later, stop it early
+    /// manager.stop_playback(&call_id, playback_id).await?;
+    /// ```
+    pub async fn stop_playback(&self, call_id: &CallId, playback_id: String) -> Result<()> {
+        self.backend.stop_playback(call_id, playback_id).await
     }
 
     /// Get statistics for all sessions

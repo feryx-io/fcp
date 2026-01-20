@@ -7,7 +7,8 @@ use crate::call::{Call, CallId};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use fcp_events::{EventPublisher, FlowEvent, PlatformEvent};
-use fcp_flow::{FlowContext, FlowEngine, FlowExecutionResult, FlowStore};
+use fcp_flow::{FlowContext, FlowEngine, FlowExecutionResult, FlowNode, FlowStore};
+use fcp_media::{AudioTarget, MediaManager};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -20,6 +21,7 @@ use tracing::{debug, error, info, warn};
 /// - Executing flow nodes
 /// - Tracking execution state per call
 /// - Publishing flow execution events
+/// - Integrating media playback for Play/Say nodes
 pub struct FlowCallHandler {
     /// Flow engine for executing flows
     engine: Arc<FlowEngine>,
@@ -36,6 +38,9 @@ pub struct FlowCallHandler {
     /// Flow routing rules (DID -> flow_id mapping)
     /// TODO: Phase 2 - Load from database
     routing: Arc<RwLock<HashMap<String, String>>>,
+
+    /// Media manager for audio playback
+    media_manager: Option<Arc<MediaManager>>,
 }
 
 impl FlowCallHandler {
@@ -43,6 +48,7 @@ impl FlowCallHandler {
     pub fn new(
         flow_store: Arc<dyn FlowStore>,
         events: Option<Arc<dyn EventPublisher>>,
+        media_manager: Option<Arc<MediaManager>>,
     ) -> Self {
         Self {
             engine: Arc::new(FlowEngine::new()),
@@ -50,6 +56,7 @@ impl FlowCallHandler {
             contexts: Arc::new(DashMap::new()),
             events,
             routing: Arc::new(RwLock::new(HashMap::new())),
+            media_manager,
         }
     }
 
@@ -191,6 +198,136 @@ impl FlowCallHandler {
             "Executing flow node"
         );
 
+        // Check if this is a Play or Say node - handle media playback before execution
+        if let Some(media_manager) = &self.media_manager {
+            if let Some(node) = context_guard.flow.nodes.get(&current_node) {
+                use fcp_flow::NodeType;
+
+                match &node.node_type {
+                    NodeType::Play { url, next, .. } => {
+                        info!(
+                            call_id = %call_id,
+                            node_id = %current_node,
+                            url = %url,
+                            "Playing audio file"
+                        );
+
+                        // TODO: Interpolate variables in URL (requires implementing interpolation)
+                        // For now, use raw URL value
+                        let url_value = url.clone();
+
+                        // Convert CallId to fcp_core::CallId for media manager
+                        let fcp_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+
+                        // Start playback (to both participants)
+                        match media_manager
+                            .play_file(&fcp_call_id, url_value.clone(), AudioTarget::Both)
+                            .await
+                        {
+                            Ok(playback_id) => {
+                                info!(
+                                    call_id = %call_id,
+                                    playback_id = %playback_id,
+                                    "Audio playback started"
+                                );
+
+                                // TODO: Wait for playback completion
+                                // For now, just continue immediately to next node
+                                context_guard.current_node = next.clone();
+                                drop(context_guard);
+
+                                // Continue to next node
+                                return Box::pin(self.execute_next_node(call_id)).await;
+                            }
+                            Err(e) => {
+                                error!(
+                                    call_id = %call_id,
+                                    error = %e,
+                                    "Failed to play audio file"
+                                );
+
+                                // Continue to next node anyway
+                                context_guard.current_node = next.clone();
+                                drop(context_guard);
+
+                                return Box::pin(self.execute_next_node(call_id)).await;
+                            }
+                        }
+                    }
+
+                    NodeType::Say {
+                        text,
+                        language,
+                        voice,
+                        next,
+                        ..
+                    } => {
+                        info!(
+                            call_id = %call_id,
+                            node_id = %current_node,
+                            text = %text,
+                            "Playing text-to-speech"
+                        );
+
+                        // TODO: Interpolate variables in text (requires implementing interpolation)
+                        // For now, use raw values
+                        let text_value = text.clone();
+                        let language_value = language.clone();
+                        let voice_value = voice.clone();
+
+                        // Convert CallId to fcp_core::CallId for media manager
+                        let fcp_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+
+                        // Start TTS playback
+                        match media_manager
+                            .play_tts(
+                                &fcp_call_id,
+                                text_value,
+                                language_value,
+                                voice_value,
+                                AudioTarget::Both,
+                            )
+                            .await
+                        {
+                            Ok(playback_id) => {
+                                info!(
+                                    call_id = %call_id,
+                                    playback_id = %playback_id,
+                                    "TTS playback started"
+                                );
+
+                                // TODO: Wait for playback completion
+                                // For now, just continue immediately to next node
+                                context_guard.current_node = next.clone();
+                                drop(context_guard);
+
+                                return Box::pin(self.execute_next_node(call_id)).await;
+                            }
+                            Err(e) => {
+                                // TTS not configured yet - log and continue
+                                warn!(
+                                    call_id = %call_id,
+                                    error = %e,
+                                    "TTS not available, continuing flow"
+                                );
+
+                                // Continue to next node
+                                context_guard.current_node = next.clone();
+                                drop(context_guard);
+
+                                return Box::pin(self.execute_next_node(call_id)).await;
+                            }
+                        }
+                    }
+
+                    _ => {
+                        // Not a media node, continue with normal execution
+                    }
+                }
+            }
+        }
+
+        // Normal node execution (non-media nodes or when media_manager not available)
         let result = self
             .engine
             .execute_node(&mut context_guard, &current_node)
@@ -372,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn test_flow_routing() {
         let store = Arc::new(InMemoryFlowStore::new());
-        let handler = FlowCallHandler::new(store, None);
+        let handler = FlowCallHandler::new(store, None, None);
 
         handler.add_route("+15551234567".to_string(), "test-flow".to_string()).await;
 
