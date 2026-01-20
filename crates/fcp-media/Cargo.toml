@@ -24,6 +24,7 @@ forge-engine = { path = "../../external/forge-media/crates/forge-engine", option
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp", optional = false }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs", optional = false }
 forge-recorder = { path = "../../external/forge-media/crates/forge-recorder", optional = false }
+forge-injection = { path = "../../external/forge-media/crates/forge-injection", optional = false }
 
 # SIP dependencies (for SDP handling)
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

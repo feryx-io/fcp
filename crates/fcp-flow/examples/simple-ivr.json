@@ -1,0 +1,154 @@
+{
+  "id": "simple-ivr",
+  "name": "Simple IVR Menu",
+  "description": "A basic IVR menu with Press 1 for Sales, Press 2 for Support",
+  "version": 1,
+  "initial_node": "answer",
+  "enabled": true,
+  "tenant_id": null,
+  "nodes": {
+    "answer": {
+      "id": "answer",
+      "name": "Answer Call",
+      "type": "answer",
+      "next": "welcome"
+    },
+    "welcome": {
+      "id": "welcome",
+      "name": "Welcome Message",
+      "type": "say",
+      "text": "Welcome to ACME Corporation. Please listen carefully as our menu options have changed.",
+      "language": "en-US",
+      "next": "main_menu"
+    },
+    "main_menu": {
+      "id": "main_menu",
+      "name": "Main Menu",
+      "type": "gather",
+      "prompt": {
+        "type": "say",
+        "text": "Press 1 for Sales. Press 2 for Support. Press 3 to hear our business hours.",
+        "language": "en-US"
+      },
+      "num_digits": 1,
+      "timeout": 5,
+      "finish_on_key": "#",
+      "variable": "menu_choice",
+      "transitions": {
+        "1": "sales",
+        "2": "support",
+        "3": "business_hours"
+      },
+      "default": "invalid_choice",
+      "on_timeout": "timeout"
+    },
+    "sales": {
+      "id": "sales",
+      "name": "Transfer to Sales",
+      "type": "say",
+      "text": "Please hold while we transfer you to our sales department.",
+      "language": "en-US",
+      "next": "dial_sales"
+    },
+    "dial_sales": {
+      "id": "dial_sales",
+      "name": "Dial Sales Queue",
+      "type": "dial",
+      "destination": "sip:sales@acme.example.com",
+      "timeout": 30,
+      "next": "goodbye",
+      "on_no_answer": "sales_voicemail",
+      "on_busy": "sales_busy"
+    },
+    "support": {
+      "id": "support",
+      "name": "Transfer to Support",
+      "type": "say",
+      "text": "Connecting you to technical support. One moment please.",
+      "language": "en-US",
+      "next": "dial_support"
+    },
+    "dial_support": {
+      "id": "dial_support",
+      "name": "Dial Support Queue",
+      "type": "dial",
+      "destination": "sip:support@acme.example.com",
+      "timeout": 30,
+      "next": "goodbye",
+      "on_no_answer": "support_voicemail",
+      "on_busy": "support_busy"
+    },
+    "business_hours": {
+      "id": "business_hours",
+      "name": "Business Hours Message",
+      "type": "say",
+      "text": "Our business hours are Monday through Friday, 9 AM to 5 PM Eastern Time. We are closed on weekends and major holidays.",
+      "language": "en-US",
+      "next": "main_menu"
+    },
+    "invalid_choice": {
+      "id": "invalid_choice",
+      "name": "Invalid Choice",
+      "type": "say",
+      "text": "I'm sorry, that is not a valid option. Please try again.",
+      "language": "en-US",
+      "next": "main_menu"
+    },
+    "timeout": {
+      "id": "timeout",
+      "name": "Timeout Message",
+      "type": "say",
+      "text": "I didn't receive your selection. Please try again.",
+      "language": "en-US",
+      "next": "main_menu"
+    },
+    "sales_voicemail": {
+      "id": "sales_voicemail",
+      "name": "Sales Voicemail",
+      "type": "say",
+      "text": "All of our sales representatives are currently assisting other customers. Please leave a message after the tone, and we will return your call shortly.",
+      "language": "en-US",
+      "next": "goodbye"
+    },
+    "sales_busy": {
+      "id": "sales_busy",
+      "name": "Sales Busy",
+      "type": "say",
+      "text": "Our sales queue is currently full. Please try again later or visit our website at acme dot com.",
+      "language": "en-US",
+      "next": "goodbye"
+    },
+    "support_voicemail": {
+      "id": "support_voicemail",
+      "name": "Support Voicemail",
+      "type": "say",
+      "text": "All support agents are currently busy. Please leave a detailed message including your name, phone number, and issue, and we will get back to you as soon as possible.",
+      "language": "en-US",
+      "next": "goodbye"
+    },
+    "support_busy": {
+      "id": "support_busy",
+      "name": "Support Busy",
+      "type": "say",
+      "text": "Our support queue is at capacity. For immediate assistance, please check our knowledge base at support dot acme dot com.",
+      "language": "en-US",
+      "next": "goodbye"
+    },
+    "goodbye": {
+      "id": "goodbye",
+      "name": "Goodbye",
+      "type": "say",
+      "text": "Thank you for calling ACME Corporation. Goodbye.",
+      "language": "en-US",
+      "next": "hangup"
+    },
+    "hangup": {
+      "id": "hangup",
+      "name": "Hangup",
+      "type": "hangup",
+      "reason": "normal"
+    }
+  },
+  "variables": {},
+  "webhook_url": null
+}

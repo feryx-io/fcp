@@ -5,6 +5,7 @@ pub mod debug;
 pub mod devices;
 pub mod events;
 pub mod extensions;
+pub mod flows;
 pub mod line_bindings;
 pub mod media;
 pub mod metrics;
@@ -85,6 +86,18 @@ pub fn router() -> Router<ApiState> {
         // CDR (Call Detail Record) endpoints
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
+        // Flow engine endpoints
+        .route(
+            "/flows",
+            get(flows::list_flows).post(flows::create_flow),
+        )
+        .route(
+            "/flows/:id",
+            get(flows::get_flow)
+                .put(flows::update_flow)
+                .delete(flows::delete_flow),
+        )
+        .route("/flows/:id/versions", get(flows::list_flow_versions))
         // Phone number management
         .route(
             "/phone-numbers",

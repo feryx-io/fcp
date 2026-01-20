@@ -1,0 +1,42 @@
+[package]
+name = "fcp-flow"
+edition.workspace = true
+version = "0.1.0"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "JSON-based call flow engine for FCP - programmable voice platform"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+dashmap = "6.0"
+
+# Logging
+tracing = { workspace = true }
+
+# Template/variable interpolation
+regex = "1.10"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

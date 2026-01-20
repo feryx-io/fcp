@@ -25,6 +25,7 @@ pub enum EventType {
     Media,
     Ivr,
     Recording,
+    Flow,
     System,
 }
 
@@ -73,6 +74,7 @@ impl EventFilter {
                 PlatformEvent::Media(_) => EventType::Media,
                 PlatformEvent::Ivr(_) => EventType::Ivr,
                 PlatformEvent::Recording(_) => EventType::Recording,
+                PlatformEvent::Flow(_) => EventType::Flow,
                 PlatformEvent::System(_) => EventType::System,
             };
 

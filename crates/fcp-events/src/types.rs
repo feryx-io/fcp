@@ -21,6 +21,9 @@ pub enum PlatformEvent {
     /// Recording-related event
     Recording(RecordingEvent),
 
+    /// Flow execution event
+    Flow(FlowEvent),
+
     /// System-level event
     System(SystemEvent),
 }
@@ -192,6 +195,59 @@ pub enum RecordingEvent {
     },
 }
 
+/// Flow execution events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FlowEvent {
+    /// Flow execution started
+    Started {
+        call_id: CallId,
+        flow_id: String,
+        flow_version: u32,
+        initial_node: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Flow node executed
+    NodeExecuted {
+        call_id: CallId,
+        flow_id: String,
+        node_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Flow waiting for user input (DTMF)
+    WaitingForInput {
+        call_id: CallId,
+        flow_id: String,
+        variable: String,
+        timeout_secs: u32,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Flow execution completed
+    Completed {
+        call_id: CallId,
+        flow_id: String,
+        outcome: String, // "hangup", "stopped", "error"
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Flow execution failed with error
+    Failed {
+        call_id: CallId,
+        flow_id: String,
+        node_id: String,
+        error: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
 /// System-level events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -271,6 +327,7 @@ impl PlatformEvent {
             PlatformEvent::Media(event) => event.call_id(),
             PlatformEvent::Ivr(event) => event.call_id(),
             PlatformEvent::Recording(event) => event.call_id(),
+            PlatformEvent::Flow(event) => event.call_id(),
             PlatformEvent::System(_) => None,
         }
     }
@@ -282,7 +339,30 @@ impl PlatformEvent {
             PlatformEvent::Media(event) => event.timestamp(),
             PlatformEvent::Ivr(event) => event.timestamp(),
             PlatformEvent::Recording(event) => event.timestamp(),
+            PlatformEvent::Flow(event) => event.timestamp(),
             PlatformEvent::System(event) => event.timestamp(),
+        }
+    }
+}
+
+impl FlowEvent {
+    pub fn call_id(&self) -> Option<&CallId> {
+        match self {
+            FlowEvent::Started { call_id, .. }
+            | FlowEvent::NodeExecuted { call_id, .. }
+            | FlowEvent::WaitingForInput { call_id, .. }
+            | FlowEvent::Completed { call_id, .. }
+            | FlowEvent::Failed { call_id, .. } => Some(call_id),
+        }
+    }
+
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            FlowEvent::Started { timestamp, .. }
+            | FlowEvent::NodeExecuted { timestamp, .. }
+            | FlowEvent::WaitingForInput { timestamp, .. }
+            | FlowEvent::Completed { timestamp, .. }
+            | FlowEvent::Failed { timestamp, .. } => *timestamp,
         }
     }
 }

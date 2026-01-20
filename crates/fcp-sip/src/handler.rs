@@ -268,6 +268,9 @@ pub struct SipMessageHandler {
 
     /// Per-dialog rate limits
     rate_limits: Arc<dashmap::DashMap<sip_dialog::DialogId, RateWindow>>,
+
+    /// Flow call handler for executing programmable flows
+    flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
 }
 
 #[derive(Clone)]
@@ -322,6 +325,7 @@ impl SipMessageHandler {
         storage: Option<Arc<fcp_core::DynStorage>>,
         media_manager: Option<Arc<fcp_media::MediaManager>>,
         media_config: Option<fcp_core::config::MediaConfig>,
+        flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
     ) -> Self {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -338,6 +342,7 @@ impl SipMessageHandler {
             storage,
             media_manager,
             media_config,
+            flow_handler,
             settings,
         )
     }
@@ -356,6 +361,7 @@ impl SipMessageHandler {
         storage: Option<Arc<fcp_core::DynStorage>>,
         media_manager: Option<Arc<fcp_media::MediaManager>>,
         media_config: Option<fcp_core::config::MediaConfig>,
+        flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
         settings: ServerSettings,
     ) -> Self {
         // Validate settings early to catch configuration errors at startup
@@ -446,6 +452,7 @@ impl SipMessageHandler {
             transcript_tx,
             settings,
             rate_limits: Arc::new(dashmap::DashMap::new()),
+            flow_handler,
         };
 
         // Start session timer event loop
@@ -465,6 +472,44 @@ impl SipMessageHandler {
     /// Get the count of active rate limit entries.
     pub fn rate_limit_count(&self) -> usize {
         self.rate_limits.len()
+    }
+
+    /// Extract DID (phone number) from a SIP URI.
+    ///
+    /// Extracts the username portion from URIs like:
+    /// - "sip:+15551234567@domain" -> Some("+15551234567")
+    /// - "<sip:+15551234567@domain>" -> Some("+15551234567")
+    /// - "Alice <sip:alice@domain>" -> Some("alice")
+    fn extract_did_from_uri(uri_str: &str) -> Option<String> {
+        // Extract URI between < > if present
+        let uri_part = if let Some(start) = uri_str.find('<') {
+            if let Some(end) = uri_str.find('>') {
+                &uri_str[start + 1..end]
+            } else {
+                uri_str
+            }
+        } else {
+            uri_str
+        };
+
+        // Extract username from sip:username@domain or tel:+15551234567
+        if let Some(user_start) = uri_part.find("sip:") {
+            let after_sip = &uri_part[user_start + 4..];
+            if let Some(at_pos) = after_sip.find('@') {
+                return Some(after_sip[..at_pos].to_string());
+            }
+        } else if let Some(tel_start) = uri_part.find("tel:") {
+            let after_tel = &uri_part[tel_start + 4..];
+            // Remove any parameters after semicolon
+            let number = if let Some(semi_pos) = after_tel.find(';') {
+                &after_tel[..semi_pos]
+            } else {
+                after_tel
+            };
+            return Some(number.to_string());
+        }
+
+        None
     }
 
     /// Handle an incoming SIP request and generate a response.
@@ -733,6 +778,68 @@ impl SipMessageHandler {
 
         // Evaluate media anchoring decision
         self.evaluate_media_anchoring(request, &call_id).await;
+
+        // Check if there's a flow configured for this DID
+        if let Some(flow_handler) = &self.flow_handler {
+            // Extract To URI (DID) from request
+            if let Some(to_header) = sip_parse::header(request.headers(), "To") {
+                // Extract DID from To: <sip:+15551234567@domain>
+                let did = Self::extract_did_from_uri(to_header.as_str());
+
+                if let Some(did) = did {
+                    debug!(call_id = %call_id, did = %did, "Checking for flow routing");
+
+                    if let Some(flow_id) = flow_handler.get_flow_for_did(&did).await {
+                        info!(
+                            call_id = %call_id,
+                            did = %did,
+                            flow_id = %flow_id,
+                            "Starting flow execution for inbound call"
+                        );
+
+                        // Build initial variables from call context
+                        let mut initial_variables = std::collections::HashMap::new();
+
+                        // Extract From URI (caller)
+                        if let Some(from_header) = sip_parse::header(request.headers(), "From") {
+                            if let Some(caller) = Self::extract_did_from_uri(from_header.as_str()) {
+                                initial_variables.insert("caller_number".to_string(), caller);
+                            }
+                        }
+
+                        initial_variables.insert("called_number".to_string(), did.clone());
+
+                        // Extract Call-ID for correlation
+                        if let Some(sip_call_id) = sip_parse::header(request.headers(), "Call-ID") {
+                            initial_variables.insert("sip_call_id".to_string(), sip_call_id.to_string());
+                        }
+
+                        // Get mutable call reference and start flow
+                        if let Some(mut call_entry) = self.call_manager.get_call(&call_id) {
+                            match flow_handler.start_flow(&mut call_entry, flow_id, initial_variables).await {
+                                Ok(()) => {
+                                    info!(call_id = %call_id, "Flow execution started successfully");
+                                    // Flow will handle the call - don't forward to B-leg
+                                    // Send 183 Session Progress to indicate flow is starting
+                                    let mut progress = sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
+                                    self.ensure_response_hygiene(request, &mut progress);
+                                    handle.send_provisional(progress).await;
+                                    return Ok(());
+                                },
+                                Err(e) => {
+                                    error!(
+                                        call_id = %call_id,
+                                        error = %e,
+                                        "Failed to start flow execution, falling back to normal routing"
+                                    );
+                                    // Fall through to normal B2BUA routing
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // If UAC is available, forward to B-leg; otherwise use UAS mode
         if let Some(uac) = &self.uac {
@@ -3204,9 +3311,38 @@ impl SipMessageHandler {
     }
 
     /// Handle in-dialog INFO by forwarding to the opposite leg.
+    ///
+    /// If the call has an active flow and the INFO contains DTMF, routes to FlowCallHandler.
     async fn handle_info(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         debug!("Handling INFO");
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
+
+        // Check if this call has an active flow and INFO is DTMF
+        if call.flow_id.is_some() {
+            if let Some(content_type) = sip_parse::header(request.headers(), "Content-Type") {
+                if content_type.as_str() == "application/dtmf-relay" {
+                    // Parse DTMF digit from body (RFC 4733 format)
+                    let body = String::from_utf8_lossy(request.body());
+                    if let Some(digit) = self.parse_dtmf_from_info_body(&body) {
+                        debug!(call_id = %call.id, digit = %digit, "Received DTMF for flow execution");
+
+                        // Route to FlowCallHandler if available
+                        if let Some(flow_handler) = &self.flow_handler {
+                            match flow_handler.handle_dtmf_input(call.id, digit.to_string()).await {
+                                Ok(()) => {
+                                    info!(call_id = %call.id, digit = %digit, "DTMF routed to flow execution");
+                                    return Ok(self.create_simple_response(request, 200, "OK"));
+                                },
+                                Err(e) => {
+                                    error!(call_id = %call.id, error = %e, "Failed to handle DTMF for flow");
+                                    // Fall through to normal forwarding
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
         let cseq = sip_parse::header(request.headers(), "CSeq");
@@ -4056,6 +4192,29 @@ impl SipMessageHandler {
             return Err(anyhow::anyhow!("Body too large"));
         }
         Ok(())
+    }
+
+    /// Parse DTMF digit from SIP INFO body (RFC 4733 format).
+    ///
+    /// Expected format:
+    /// ```
+    /// Signal=1
+    /// Duration=160
+    /// ```
+    fn parse_dtmf_from_info_body(&self, body: &str) -> Option<char> {
+        for line in body.lines() {
+            let line = line.trim();
+            if let Some(signal_value) = line.strip_prefix("Signal=") {
+                // Extract the digit (0-9, *, #, A-D)
+                let digit_str = signal_value.trim();
+                if let Some(first_char) = digit_str.chars().next() {
+                    if first_char.is_ascii_digit() || matches!(first_char, '*' | '#' | 'A'..='D') {
+                        return Some(first_char);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn check_info_content_type(&self, content_type: &str) -> Result<()> {

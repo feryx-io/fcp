@@ -227,6 +227,12 @@ pub struct Call {
 
     /// Reason for call failure (if failed)
     pub failure_reason: Option<String>,
+
+    /// Flow ID if this call is executing a flow
+    pub flow_id: Option<String>,
+
+    /// Current node ID in the flow execution
+    pub flow_current_node: Option<String>,
 }
 
 impl fmt::Debug for CallLeg {
@@ -285,6 +291,8 @@ impl Call {
             established_at: None,
             ended_at: None,
             failure_reason: None,
+            flow_id: None,
+            flow_current_node: None,
         }
     }
 
