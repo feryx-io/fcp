@@ -1646,25 +1646,202 @@ impl SipMessageHandler {
                                     }
                                 }
                             }
-                            fcp_core::ExtensionTarget::User(_user_id) => {
-                                info!(call_id = %call_id, target = %extension.target, "Extension target type User not yet fully implemented");
-                                let response = self.create_simple_response(request, 501, "Not Implemented");
-                                a_leg_handle.send_final(response).await;
-                                let _ = self.call_manager.terminate_call(&call_id, Some("Extension target type User not implemented".to_string()));
-                                return Ok(());
+                            fcp_core::ExtensionTarget::User(user_id) => {
+                                info!(
+                                    call_id = %call_id,
+                                    user_id = %user_id,
+                                    "Extension routes to user - ring all user's devices"
+                                );
+
+                                // Get all devices owned by this user
+                                match storage.list_devices_by_user(user_id).await {
+                                    Ok(devices) if !devices.is_empty() => {
+                                        debug!(
+                                            call_id = %call_id,
+                                            user_id = %user_id,
+                                            device_count = devices.len(),
+                                            "Found devices for user"
+                                        );
+
+                                        // Get registrations for each device
+                                        if let Some(registrar) = &self.registrar {
+                                            for device in devices {
+                                                if !device.enabled {
+                                                    debug!(
+                                                        call_id = %call_id,
+                                                        device_id = %device.id,
+                                                        "Skipping disabled device"
+                                                    );
+                                                    continue;
+                                                }
+
+                                                if let Some(sip_uri) = &device.sip_uri {
+                                                    match registrar.get_registrations(sip_uri).await {
+                                                        Ok(registrations) if !registrations.is_empty() => {
+                                                            debug!(
+                                                                call_id = %call_id,
+                                                                device_id = %device.id,
+                                                                sip_uri = %sip_uri,
+                                                                reg_count = registrations.len(),
+                                                                "Found registrations for user device"
+                                                            );
+                                                            extension_contacts.extend(registrations);
+                                                        }
+                                                        Ok(_) => {
+                                                            debug!(
+                                                                call_id = %call_id,
+                                                                device_id = %device.id,
+                                                                sip_uri = %sip_uri,
+                                                                "Device not registered"
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(
+                                                                call_id = %call_id,
+                                                                device_id = %device.id,
+                                                                error = %e,
+                                                                "Failed to get registrations for device"
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            warn!(call_id = %call_id, "No registrar available for user device lookup");
+                                        }
+
+                                        if extension_contacts.is_empty() {
+                                            info!(
+                                                call_id = %call_id,
+                                                user_id = %user_id,
+                                                "User has no registered devices"
+                                            );
+                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some("User has no registered devices".to_string()));
+                                            return Ok(());
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        warn!(call_id = %call_id, user_id = %user_id, "User has no devices");
+                                        let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(&call_id, Some("User has no devices".to_string()));
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        error!(call_id = %call_id, user_id = %user_id, error = %e, "Failed to list user devices");
+                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to list user devices: {}", e)));
+                                        return Ok(());
+                                    }
+                                }
                             }
-                            fcp_core::ExtensionTarget::Device(_device_id) => {
-                                info!(call_id = %call_id, target = %extension.target, "Extension target type Device not yet fully implemented");
-                                let response = self.create_simple_response(request, 501, "Not Implemented");
-                                a_leg_handle.send_final(response).await;
-                                let _ = self.call_manager.terminate_call(&call_id, Some("Extension target type Device not implemented".to_string()));
-                                return Ok(());
+                            fcp_core::ExtensionTarget::Device(device_id) => {
+                                info!(
+                                    call_id = %call_id,
+                                    device_id = %device_id,
+                                    "Extension routes to specific device"
+                                );
+
+                                // Get the specific device
+                                match storage.get_device(device_id).await {
+                                    Ok(Some(device)) => {
+                                        if !device.enabled {
+                                            warn!(call_id = %call_id, device_id = %device_id, "Target device is disabled");
+                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some("Target device is disabled".to_string()));
+                                            return Ok(());
+                                        }
+
+                                        if let Some(sip_uri) = &device.sip_uri {
+                                            // Look up device registrations
+                                            if let Some(registrar) = &self.registrar {
+                                                match registrar.get_registrations(sip_uri).await {
+                                                    Ok(registrations) if !registrations.is_empty() => {
+                                                        debug!(
+                                                            call_id = %call_id,
+                                                            device_id = %device_id,
+                                                            sip_uri = %sip_uri,
+                                                            reg_count = registrations.len(),
+                                                            "Found registrations for device"
+                                                        );
+                                                        extension_contacts.extend(registrations);
+                                                    }
+                                                    Ok(_) => {
+                                                        info!(
+                                                            call_id = %call_id,
+                                                            device_id = %device_id,
+                                                            sip_uri = %sip_uri,
+                                                            "Device not registered"
+                                                        );
+                                                        let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                                        a_leg_handle.send_final(response).await;
+                                                        let _ = self.call_manager.terminate_call(&call_id, Some("Device not registered".to_string()));
+                                                        return Ok(());
+                                                    }
+                                                    Err(e) => {
+                                                        error!(
+                                                            call_id = %call_id,
+                                                            device_id = %device_id,
+                                                            error = %e,
+                                                            "Failed to get device registrations"
+                                                        );
+                                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                                        a_leg_handle.send_final(response).await;
+                                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to get device registrations: {}", e)));
+                                                        return Ok(());
+                                                    }
+                                                }
+                                            } else {
+                                                warn!(call_id = %call_id, "No registrar available for device lookup");
+                                                let response = self.create_simple_response(request, 500, "Service Unavailable");
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                                                return Ok(());
+                                            }
+                                        } else {
+                                            warn!(call_id = %call_id, device_id = %device_id, "Device has no SIP URI");
+                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some("Device has no SIP URI".to_string()));
+                                            return Ok(());
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        warn!(call_id = %call_id, device_id = %device_id, "Device not found");
+                                        let response = self.create_simple_response(request, 404, "Not Found");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(&call_id, Some("Device not found".to_string()));
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        error!(call_id = %call_id, device_id = %device_id, error = %e, "Failed to get device");
+                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to get device: {}", e)));
+                                        return Ok(());
+                                    }
+                                }
                             }
-                            fcp_core::ExtensionTarget::Service(_service_id) => {
-                                info!(call_id = %call_id, target = %extension.target, "Extension target type Service not yet fully implemented");
-                                let response = self.create_simple_response(request, 501, "Not Implemented");
+                            fcp_core::ExtensionTarget::Service(service_id) => {
+                                info!(
+                                    call_id = %call_id,
+                                    service_id = %service_id,
+                                    "Extension routes to service (IVR/Queue/Voicemail) - not yet implemented"
+                                );
+                                // TODO: Phase 2 - Implement service routing
+                                // Services include: IVR, call queues, voicemail, conferencing, etc.
+                                // This will require integration with fcp-flow for IVR flows,
+                                // fcp-queue for ACD queues, and fcp-voicemail for voicemail.
+                                let response = self.create_simple_response(request, 501, "Service Routing Not Implemented");
                                 a_leg_handle.send_final(response).await;
-                                let _ = self.call_manager.terminate_call(&call_id, Some("Extension target type Service not implemented".to_string()));
+                                let _ = self.call_manager.terminate_call(
+                                    &call_id,
+                                    Some(format!("Service routing not implemented (service_id: {})", service_id))
+                                );
                                 return Ok(());
                             }
                         }

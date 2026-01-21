@@ -25,3 +25,4 @@ data/
 *.db
 *.db-shm
 *.db-wal
+fcp.db.backup
