@@ -97,6 +97,17 @@ pub trait MediaBackend: Send + Sync {
     /// * `playback_id` - ID returned from play_file or play_tts
     async fn stop_playback(&self, call_id: &CallId, playback_id: String) -> Result<()>;
 
+    /// Wait for a playback to complete
+    ///
+    /// # Arguments
+    ///
+    /// * `playback_id` - ID returned from play_file or play_tts
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when playback completes successfully, or an error if playback failed
+    async fn wait_playback_completion(&self, playback_id: String) -> Result<()>;
+
     /// Get backend type name (for logging/metrics)
     fn backend_name(&self) -> &'static str;
 
@@ -125,7 +136,7 @@ pub mod embedded {
     use forge_engine::{
         session::{DtmfConfig, ParticipantCodecConfig, TranscodingConfig},
         AudioTarget as ForgeAudioTarget, MediaSession as ForgeMediaSession, MixMode,
-        PlaybackManager, SessionManager, SessionManagerConfig,
+        PlaybackHandle, PlaybackManager, SessionManager, SessionManagerConfig,
     };
     use forge_injection::FileSource;
     use forge_rtp::PortPoolConfig;
@@ -142,6 +153,12 @@ pub mod embedded {
         /// Mapping of FCP CallId to forge-media session and participant IDs
         /// This lets us look up forge sessions using FCP call IDs
         sessions: DashMap<fcp_core::CallId, SessionInfo>,
+
+        /// Active playback handles for waiting on completion
+        playback_handles: DashMap<String, PlaybackHandle>,
+
+        /// IP address to advertise in SDP (for RTP media)
+        advertise_ip: String,
     }
 
     /// Information about a forge-media session
@@ -156,6 +173,48 @@ pub mod embedded {
         participant_b: ParticipantId,
         /// FCP dialog ID
         dialog_id: fcp_core::DialogId,
+    }
+
+    /// Parse remote RTP endpoint from SDP
+    /// Extracts IP from c= line and port from m=audio line
+    fn parse_remote_endpoint_from_sdp(sdp: &str) -> std::result::Result<std::net::SocketAddr, String> {
+        use std::net::IpAddr;
+
+        let mut ip: Option<IpAddr> = None;
+        let mut port: Option<u16> = None;
+
+        for line in sdp.lines() {
+            let line = line.trim();
+
+            // Parse c= line: c=IN IP4 192.168.1.80
+            if line.starts_with("c=") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 && parts[1] == "IP4" {
+                    if let Ok(parsed_ip) = parts[2].parse::<IpAddr>() {
+                        ip = Some(parsed_ip);
+                    }
+                } else if parts.len() >= 3 && parts[1] == "IP6" {
+                    if let Ok(parsed_ip) = parts[2].parse::<IpAddr>() {
+                        ip = Some(parsed_ip);
+                    }
+                }
+            }
+
+            // Parse m= line: m=audio 51163 RTP/AVP 0 8
+            if line.starts_with("m=audio ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(parsed_port) = parts[1].parse::<u16>() {
+                        port = Some(parsed_port);
+                    }
+                }
+            }
+        }
+
+        match (ip, port) {
+            (Some(ip), Some(port)) => Ok(std::net::SocketAddr::new(ip, port)),
+            _ => Err("Failed to parse IP or port from SDP".to_string()),
+        }
     }
 
     impl EmbeddedBackend {
@@ -192,18 +251,30 @@ pub mod embedded {
             // Create event bus for forge-media events
             let event_bus = Arc::new(EventBus::new());
 
-            // Initialize SessionManager
+            // Initialize SessionManager (returns Arc<Self>)
             let session_manager = SessionManager::new(manager_config, Some(event_bus));
 
-            // Initialize PlaybackManager for audio injection
-            let playback_manager = Arc::new(PlaybackManager::new());
+            // Initialize PlaybackManager for audio injection (with session_manager reference)
+            let playback_manager = Arc::new(PlaybackManager::new_with_session_manager(session_manager.clone()));
 
-            info!("Embedded media backend initialized");
+            // Determine the IP address to advertise in SDP
+            let advertise_ip = if let Some(ref public_ip) = config.public_ip {
+                info!("Using configured public IP for SDP: {}", public_ip);
+                public_ip.clone()
+            } else {
+                warn!("No public_ip configured in media config - using 127.0.0.1 (this will NOT work for remote clients!)");
+                warn!("Configure media.public_ip in fcp.toml to fix this");
+                "127.0.0.1".to_string()
+            };
+
+            info!("Embedded media backend initialized, advertise_ip: {}", advertise_ip);
 
             Ok(Self {
                 session_manager,
                 playback_manager,
                 sessions: DashMap::new(),
+                playback_handles: DashMap::new(),
+                advertise_ip,
             })
         }
     }
@@ -362,9 +433,25 @@ pub mod embedded {
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
-            // For now, return a simple SDP
-            // TODO: Proper SDP generation using forge-sdp
-            let local_sdp = generate_simple_sdp(&session_info, &remote_sdp)?;
+            // Parse remote SDP to extract client's RTP endpoint
+            // This is critical for IVR scenarios where server sends audio first
+            if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
+                // Set participant_a's remote address (the caller in IVR mode)
+                // Leave participant_b's endpoint unset - there's no B-leg in IVR
+                let participant_a = session_info.forge_session.participant_a();
+                participant_a.write().await.remote_addr = Some(remote_endpoint);
+
+                info!(
+                    ?call_id,
+                    endpoint = %remote_endpoint,
+                    "Set remote RTP endpoint from SDP"
+                );
+            } else {
+                warn!(?call_id, "Failed to parse remote endpoint from SDP - will rely on symmetric RTP learning");
+            }
+
+            // Generate local SDP
+            let local_sdp = generate_simple_sdp(&session_info, &remote_sdp, &self.advertise_ip)?;
 
             Ok(local_sdp)
         }
@@ -561,6 +648,9 @@ pub mod embedded {
 
             let playback_id = handle.id().to_string();
 
+            // Store handle so we can wait for completion later
+            self.playback_handles.insert(playback_id.clone(), handle);
+
             info!(?call_id, playback_id = %playback_id, "Audio playback started");
 
             Ok(playback_id)
@@ -668,6 +758,50 @@ pub mod embedded {
             Ok(())
         }
 
+        async fn wait_playback_completion(&self, playback_id: String) -> Result<()> {
+            debug!(playback_id = %playback_id, "Waiting for playback completion");
+
+            // Get the handle from storage
+            let handle = self
+                .playback_handles
+                .remove(&playback_id)
+                .ok_or_else(|| {
+                    Error::InvalidState(format!(
+                        "Playback ID not found or already completed: {}",
+                        playback_id
+                    ))
+                })?
+                .1; // DashMap::remove returns (key, value) tuple
+
+            // Wait for completion
+            match handle.wait_completion().await {
+                Ok(status) => {
+                    use forge_engine::PlaybackStatus;
+                    match status {
+                        PlaybackStatus::Completed => {
+                            info!(playback_id = %playback_id, "Playback completed successfully");
+                            Ok(())
+                        }
+                        PlaybackStatus::Stopped => {
+                            info!(playback_id = %playback_id, "Playback stopped by request");
+                            Ok(())
+                        }
+                        PlaybackStatus::Failed(reason) => {
+                            warn!(playback_id = %playback_id, reason = %reason, "Playback failed");
+                            Err(Error::ForgeMedia(format!("Playback failed: {}", reason)))
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(playback_id = %playback_id, error = %e, "Failed to wait for playback completion");
+                    Err(Error::ForgeMedia(format!(
+                        "Failed to wait for playback: {}",
+                        e
+                    )))
+                }
+            }
+        }
+
         fn backend_name(&self) -> &'static str {
             "embedded"
         }
@@ -681,20 +815,20 @@ pub mod embedded {
 
     /// Generate a simple SDP for testing
     /// TODO: Use forge-sdp for proper SDP generation
-    fn generate_simple_sdp(session_info: &SessionInfo, _remote_sdp: &str) -> Result<String> {
+    fn generate_simple_sdp(session_info: &SessionInfo, _remote_sdp: &str, advertise_ip: &str) -> Result<String> {
         let ports = session_info.forge_session.ports();
 
         let sdp = format!(
             "v=0\r\n\
-             o=- {} 1 IN IP4 127.0.0.1\r\n\
+             o=- {} 1 IN IP4 {}\r\n\
              s=FCP Media Session\r\n\
-             c=IN IP4 127.0.0.1\r\n\
+             c=IN IP4 {}\r\n\
              t=0 0\r\n\
              m=audio {} RTP/AVP 0 8\r\n\
              a=rtpmap:0 PCMU/8000\r\n\
              a=rtpmap:8 PCMA/8000\r\n\
              a=sendrecv\r\n",
-            session_info.forge_call_id.0, ports.rtp_port
+            session_info.forge_call_id.0, advertise_ip, advertise_ip, ports.rtp_port
         );
 
         Ok(sdp)
@@ -988,6 +1122,11 @@ pub mod remote {
         ) -> Result<()> {
             // DELETE /v1/sessions/{id}/playback/{playback_id}
             todo!("Implement remote playback stop")
+        }
+
+        async fn wait_playback_completion(&self, _playback_id: String) -> Result<()> {
+            // GET /v1/playback/{playback_id}/wait or use websocket for completion events
+            todo!("Implement remote playback completion waiting")
         }
 
         fn backend_name(&self) -> &'static str {

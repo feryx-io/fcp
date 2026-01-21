@@ -431,12 +431,11 @@ async fn create_flow_handler(
 
     let flow_handler = Arc::new(flow_handler);
 
-    // Load test flow for IVR testing (debug builds only)
-    if cfg!(debug_assertions) {
-        info!("Loading test IVR flow");
-        if let Err(e) = load_test_ivr_flow(&flow_store, &flow_handler).await {
-            tracing::warn!("Failed to load test IVR flow: {}", e);
-        }
+    // Load test flow for IVR testing
+    // TODO: Make this configurable via fcp.toml
+    info!("Loading test IVR flow");
+    if let Err(e) = load_test_ivr_flow(&flow_store, &flow_handler).await {
+        tracing::warn!("Failed to load test IVR flow: {}", e);
     }
 
     Ok(flow_handler)
@@ -456,6 +455,10 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
     );
 
     // Build media configuration from FCP config
+    // Use media.public_ip if set, otherwise fall back to transport.local_ip
+    let public_ip = config.media.public_ip.clone()
+        .or(config.transport.local_ip.clone());
+
     let media_config = MediaConfig {
         backend: BackendType::Embedded, // Always use embedded mode for now
         rtp_port_start: config.media.rtp_port_start,
@@ -466,7 +469,7 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
         enable_dtmf: config.media.enable_dtmf,
         recording_dir: "./recordings".to_string(), // Default recording directory
         recording_format: "wav".to_string(),       // Default to WAV format
-        public_ip: config.media.public_ip.clone(),
+        public_ip,
         stun_server: config.media.stun_server.clone(),
         turn_server: config.media.turn_server.clone(),
     };
@@ -912,6 +915,20 @@ async fn load_test_ivr_flow(
             node_type: NodeType::Play {
                 url: "/var/lib/fcp/audio/welcome.wav".to_string(),
                 loop_count: 0,
+                next: "play_goodbye".to_string(),
+                on_error: None,
+            },
+        },
+    );
+
+    nodes.insert(
+        "play_goodbye".to_string(),
+        FlowNode {
+            id: "play_goodbye".to_string(),
+            name: Some("Play Goodbye".to_string()),
+            node_type: NodeType::Play {
+                url: "/var/lib/fcp/audio/goodbye.wav".to_string(),
+                loop_count: 0,
                 next: "hangup".to_string(),
                 on_error: None,
             },
@@ -929,9 +946,9 @@ async fn load_test_ivr_flow(
 
     // Create flow definition
     let flow = FlowDefinition {
-        id: "welcome-ivr".to_string(),
-        name: "Welcome IVR".to_string(),
-        description: Some("Plays welcome message".to_string()),
+        id: "welcome-test".to_string(),
+        name: "Welcome Test IVR".to_string(),
+        description: Some("Simple IVR to test audio playback with welcome.wav".to_string()),
         version: 1,
         initial_node: "answer".to_string(),
         nodes,
@@ -957,12 +974,12 @@ async fn load_test_ivr_flow(
 
     info!("Test IVR flow inserted into flow store");
 
-    // Configure DID routing: +15551234567 -> welcome-ivr
-    handler.add_route("+15551234567".to_string(), "welcome-ivr".to_string()).await;
+    // Configure DID routing: +15551234567 -> welcome-test
+    handler.add_route("+15551234567".to_string(), "welcome-test".to_string()).await;
 
     info!(
         did = "+15551234567",
-        flow_id = "welcome-ivr",
+        flow_id = "welcome-test",
         "Test IVR DID routing configured - call +15551234567 to test audio playback"
     );
 

@@ -832,18 +832,28 @@ impl PhoneNumberStore for SqliteStorage {
     }
 
     async fn get_phone_number_by_e164(&self, e164: &str) -> Result<Option<PhoneNumber>> {
+        tracing::debug!("get_phone_number_by_e164 called with e164: {}", e164);
+
         let row = sqlx::query("SELECT data FROM phone_numbers WHERE e164 = ?")
             .bind(e164)
             .fetch_optional(&self.pool)
             .await?;
 
+        tracing::debug!("get_phone_number_by_e164 query completed, row.is_some(): {}", row.is_some());
+
         match row {
             Some(row) => {
+                tracing::debug!("get_phone_number_by_e164 extracting data column");
                 let data: String = row.get("data");
+                tracing::debug!("get_phone_number_by_e164 data length: {}", data.len());
                 let phone_number: PhoneNumber = serde_json::from_str(&data)?;
+                tracing::debug!("get_phone_number_by_e164 successfully parsed phone number");
                 Ok(Some(phone_number))
             }
-            None => Ok(None),
+            None => {
+                tracing::debug!("get_phone_number_by_e164 returned None");
+                Ok(None)
+            },
         }
     }
 

@@ -228,6 +228,23 @@ impl MediaManager {
         self.backend.stop_playback(call_id, playback_id).await
     }
 
+    /// Wait for a playback to complete
+    ///
+    /// # Arguments
+    /// * `playback_id` - ID returned from play_file or play_tts
+    ///
+    /// # Returns
+    /// Returns Ok(()) when playback completes successfully, or an error if playback failed
+    ///
+    /// # Example
+    /// ```ignore
+    /// let playback_id = manager.play_file(&call_id, "greeting.wav", AudioTarget::Both).await?;
+    /// manager.wait_playback_completion(playback_id).await?; // Wait for playback to finish
+    /// ```
+    pub async fn wait_playback_completion(&self, playback_id: String) -> Result<()> {
+        self.backend.wait_playback_completion(playback_id).await
+    }
+
     /// Get statistics for all sessions
     pub async fn get_stats(&self) -> MediaManagerStats {
         // This would need to be implemented in backend trait if needed

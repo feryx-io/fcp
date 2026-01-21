@@ -294,6 +294,70 @@ struct TranscriptEntry {
     body_hash: Option<String>,
 }
 
+/// Helper function to add response headers for dialog-establishing responses
+/// (Used by flow Answer callback which doesn't have access to self)
+fn add_response_headers(
+    request: &sip_core::Request,
+    response: &mut sip_core::Response,
+    uas: &sip_uas::UserAgentServer,
+) {
+    use smol_str::SmolStr;
+    use uuid::Uuid;
+
+    const ALLOW: &str =
+        "INVITE, ACK, CANCEL, BYE, UPDATE, PRACK, INFO, REFER, SUBSCRIBE, NOTIFY, OPTIONS";
+    const SUPPORTED: &str = "100rel, timer";
+
+    // Ensure To-tag present for dialog-establishing responses
+    let status_code = response.start_line().code();
+    if status_code >= 101 {
+        if let Some(to) = response.headers().get("To") {
+            if !to.contains(";tag=") {
+                let tag = Uuid::new_v4().simple().to_string();
+                let new_to = SmolStr::new(format!("{};tag={}", to, tag));
+                response.headers_mut().remove("To");
+                response.headers_mut().push(SmolStr::new("To"), new_to);
+            }
+        }
+    }
+
+    // INVITE-related responses should carry Contact/Record-Route
+    if request.method() == &sip_core::Method::Invite {
+        if response.headers().get("Contact").is_none() {
+            response.headers_mut().push(
+                SmolStr::new("Contact"),
+                SmolStr::new(format!("<{}>", uas.contact_uri.as_str())),
+            );
+        }
+        if response.headers().get("Record-Route").is_none() {
+            response.headers_mut().push(
+                SmolStr::new("Record-Route"),
+                SmolStr::new(format!("<{};lr>", uas.contact_uri.as_str())),
+            );
+        }
+    }
+
+    // Capability headers
+    if response.headers().get("Allow").is_none() {
+        response
+            .headers_mut()
+            .push(SmolStr::new("Allow"), SmolStr::new(ALLOW));
+    }
+    if response.headers().get("Supported").is_none() {
+        response
+            .headers_mut()
+            .push(SmolStr::new("Supported"), SmolStr::new(SUPPORTED));
+    }
+
+    // Ensure Content-Length matches body
+    let body_len = response.body().len();
+    response.headers_mut().remove("Content-Length");
+    response.headers_mut().push(
+        SmolStr::new("Content-Length"),
+        SmolStr::new(body_len.to_string()),
+    );
+}
+
 impl SipMessageHandler {
     /// Create a new message handler.
     ///
@@ -817,24 +881,141 @@ impl SipMessageHandler {
                         // Create callbacks for Answer and Hangup nodes
                         let answer_handle = handle.clone();
                         let answer_request = request.clone();
+                        let answer_call_id = call_id;
+                        let answer_call_manager = Arc::clone(&self.call_manager);
+                        let answer_media_manager = self.media_manager.clone();
+                        let answer_uas = self.uas.clone();
+                        let answer_dialog_manager = Arc::clone(&self.dialog_manager);
                         let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
                             let handle = answer_handle.clone();
                             let request = answer_request.clone();
+                            let call_id = answer_call_id;
+                            let call_manager = Arc::clone(&answer_call_manager);
+                            let media_manager = answer_media_manager.clone();
+                            let uas = answer_uas.clone();
+                            let dialog_manager = Arc::clone(&answer_dialog_manager);
                             Box::pin(async move {
-                                // Send 200 OK to answer the call
+                                info!(call_id = %call_id, "Answer callback executing - creating 200 OK");
+                                // Create base 200 OK response
                                 let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
-                                // TODO: Add SDP to response body if needed
-                                handle.send_final(response).await;
+
+                                // Add required dialog-establishing headers (To tag, Contact, Record-Route)
+                                add_response_headers(&request, &mut response, &uas);
+
+                                // If media is anchored, we need to add SDP to the response
+                                if let Some(media_mgr) = media_manager {
+                                    // Get the call to retrieve media_session_id
+                                    if let Some(call) = call_manager.get_call(&call_id) {
+                                        // If we have a media session, negotiate SDP
+                                        if let Some(ref media_session_id) = call.media_session_id {
+                                            // Extract remote SDP from INVITE body
+                                            if !request.body().is_empty() {
+                                                let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+
+                                                // Update media session with remote SDP and get local SDP
+                                                match media_mgr.update_session(media_session_id, remote_sdp).await {
+                                                    Ok(local_sdp) => {
+                                                        // Rebuild response with SDP body
+                                                        let sdp_bytes = bytes::Bytes::from(local_sdp);
+
+                                                        // Clone headers and add Content-Type and Content-Length
+                                                        let mut headers = response.headers().clone();
+                                                        headers.push(
+                                                            smol_str::SmolStr::new("Content-Type"),
+                                                            smol_str::SmolStr::new("application/sdp"),
+                                                        );
+                                                        headers.push(
+                                                            smol_str::SmolStr::new("Content-Length"),
+                                                            smol_str::SmolStr::new(&sdp_bytes.len().to_string()),
+                                                        );
+
+                                                        // Create new response with SDP
+                                                        response = sip_core::Response::new(
+                                                            response.start_line().clone(),
+                                                            headers,
+                                                            sdp_bytes,
+                                                        ).expect("Failed to create response with SDP");
+
+                                                        info!(call_id = %call_id, "Added SDP to 200 OK response");
+                                                    },
+                                                    Err(e) => {
+                                                        error!(call_id = %call_id, error = %e, "Failed to update media session with SDP");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Send 200 OK
+                                handle.send_final(response.clone()).await;
+
+                                // Create A-leg dialog from the INVITE request and 200 OK response
+                                if let Some(a_leg_dialog) = sip_dialog::Dialog::new_uas(
+                                    &request,
+                                    &response,
+                                    uas.local_uri.clone(),
+                                    extract_from_uri(&request)
+                                        .unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
+                                ) {
+                                    info!(call_id = %call_id, dialog_id = ?a_leg_dialog.id(), "Created A-leg dialog");
+
+                                    // Insert dialog into dialog manager
+                                    dialog_manager.insert(a_leg_dialog.clone());
+
+                                    // Update call with dialog
+                                    let _ = call_manager.update_call(&call_id, |call| {
+                                        call.a_leg.dialog = Some(a_leg_dialog.clone());
+                                        call.state = crate::call::CallState::Established;
+                                    });
+
+                                    info!(call_id = %call_id, "A-leg dialog stored in call");
+                                } else {
+                                    error!(call_id = %call_id, "Failed to create A-leg dialog from 200 OK");
+                                }
+
                                 Ok(())
                             })
                         });
 
                         let hangup_call_id = call_id;
                         let hangup_call_manager = Arc::clone(&self.call_manager);
+                        let hangup_uac = self.uac.clone();
+                        let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
                         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
                             let call_id = hangup_call_id;
                             let call_manager = Arc::clone(&hangup_call_manager);
+                            let uac_opt = hangup_uac.clone();
+                            let dialog_manager = Arc::clone(&hangup_dialog_manager);
                             Box::pin(async move {
+                                info!(call_id = %call_id, "Hangup callback executing");
+                                // Get the dialog for this call
+                                if let Some(call_entry) = call_manager.get_call(&call_id) {
+                                    info!(call_id = %call_id, "Found call entry, checking for dialog");
+                                    if let Some(dialog) = call_entry.a_leg.dialog.clone() {
+                                        info!(call_id = %call_id, dialog_id = ?dialog.id(), "Found A-leg dialog, sending BYE");
+                                        // Send BYE request if UAC is available
+                                        if let Some(uac) = uac_opt {
+                                            match uac.bye(&dialog).await {
+                                                Ok(_) => {
+                                                    info!(call_id = %call_id, "BYE sent successfully");
+                                                    // Remove dialog from manager
+                                                    dialog_manager.remove(dialog.id());
+                                                }
+                                                Err(e) => {
+                                                    error!(call_id = %call_id, error = %e, "Failed to send BYE");
+                                                }
+                                            }
+                                        } else {
+                                            warn!(call_id = %call_id, "UAC not available, cannot send BYE");
+                                        }
+                                    } else {
+                                        warn!(call_id = %call_id, "No A-leg dialog found, cannot send BYE");
+                                    }
+                                } else {
+                                    warn!(call_id = %call_id, "Call entry not found in call manager");
+                                }
+
                                 // Terminate the call
                                 call_manager.terminate_call(&call_id, reason);
                                 Ok(())
@@ -1149,10 +1330,19 @@ impl SipMessageHandler {
                 "Destination is a phone number, looking up line binding"
             );
 
+            // Extract E.164 number from SIP URI (e.g., sip:+15551234567@host -> +15551234567)
+            let e164_number = destination_aor
+                .strip_prefix("sip:")
+                .or_else(|| destination_aor.strip_prefix("sips:"))
+                .unwrap_or(destination_aor)
+                .split('@')
+                .next()
+                .unwrap_or(destination_aor);
+
             // Try to look up line binding for this phone number
             if let Some(storage) = &self.storage {
                 // First, get the phone number by E.164
-                match storage.get_phone_number_by_e164(destination_aor).await {
+                match storage.get_phone_number_by_e164(e164_number).await {
                     Ok(Some(phone_number)) => {
                         // Then get the line binding by phone number ID
                         match storage.get_line_binding_by_phone_number(&phone_number.id).await {

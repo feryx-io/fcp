@@ -319,9 +319,10 @@ impl FlowCallHandler {
                             anyhow::anyhow!("No media session ID available for playback")
                         })?;
 
-                        // Start playback (to both participants)
+                        // Start playback to ParticipantA (the caller in IVR mode)
+                        // Note: Using ParticipantA instead of Both to avoid echo in IVR scenarios
                         match media_manager
-                            .play_file(&session_id, url_value.clone(), AudioTarget::Both)
+                            .play_file(&session_id, url_value.clone(), AudioTarget::ParticipantA)
                             .await
                         {
                             Ok(playback_id) => {
@@ -331,9 +332,35 @@ impl FlowCallHandler {
                                     "Audio playback started"
                                 );
 
-                                // TODO: Wait for playback completion
-                                // For now, just continue immediately to next node
-                                context_guard.current_node = next.clone();
+                                // Clone next node ID before dropping guard
+                                let next_node = next.clone();
+
+                                // Drop context guard before waiting for completion
+                                drop(context_guard);
+
+                                // Wait for playback to complete before continuing
+                                match media_manager.wait_playback_completion(playback_id.clone()).await
+                                {
+                                    Ok(()) => {
+                                        info!(
+                                            call_id = %call_id,
+                                            playback_id = %playback_id,
+                                            "Audio playback completed"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            call_id = %call_id,
+                                            playback_id = %playback_id,
+                                            error = %e,
+                                            "Audio playback failed or was stopped"
+                                        );
+                                    }
+                                }
+
+                                // Re-acquire lock and continue to next node
+                                let mut context_guard = context.write().await;
+                                context_guard.current_node = next_node;
                                 drop(context_guard);
 
                                 // Continue to next node
@@ -398,9 +425,35 @@ impl FlowCallHandler {
                                     "TTS playback started"
                                 );
 
-                                // TODO: Wait for playback completion
-                                // For now, just continue immediately to next node
-                                context_guard.current_node = next.clone();
+                                // Clone next node ID before dropping guard
+                                let next_node = next.clone();
+
+                                // Drop context guard before waiting for completion
+                                drop(context_guard);
+
+                                // Wait for playback to complete before continuing
+                                match media_manager.wait_playback_completion(playback_id.clone()).await
+                                {
+                                    Ok(()) => {
+                                        info!(
+                                            call_id = %call_id,
+                                            playback_id = %playback_id,
+                                            "TTS playback completed"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            call_id = %call_id,
+                                            playback_id = %playback_id,
+                                            error = %e,
+                                            "TTS playback failed or was stopped"
+                                        );
+                                    }
+                                }
+
+                                // Re-acquire lock and continue to next node
+                                let mut context_guard = context.write().await;
+                                context_guard.current_node = next_node;
                                 drop(context_guard);
 
                                 return Box::pin(self.execute_next_node(call_id)).await;
