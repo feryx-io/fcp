@@ -294,3 +294,207 @@ pub async fn get_cdr(
 
     Ok(Json(CdrResponse::from(cdr)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fcp_core::storage::{CallDetailRecord, CallDisposition, HangupCause, HangupParty};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn create_test_cdr() -> CallDetailRecord {
+        CallDetailRecord {
+            call_id: fcp_core::CallId::new(),
+            tenant_id: fcp_core::TenantId::nil(),
+            sip_call_id: "test-call-id@example.com".to_string(),
+            from_uri: "sip:alice@example.com".to_string(),
+            from_display_name: Some("Alice".to_string()),
+            to_uri: "sip:bob@example.com".to_string(),
+            to_display_name: Some("Bob".to_string()),
+            start_time: SystemTime::now(),
+            answer_time: Some(SystemTime::now()),
+            end_time: Some(SystemTime::now()),
+            setup_duration_ms: Some(2000),
+            call_duration_ms: Some(30000),
+            total_duration_ms: Some(32000),
+            disposition: CallDisposition::Answered,
+            hangup_cause: HangupCause::NormalClearing,
+            hangup_party: Some(HangupParty::Caller),
+            sip_status_code: Some(200),
+            sip_reason: Some("OK".to_string()),
+            route_id: None,
+            gateway_id: None,
+            media_anchored: true,
+            codec_a_leg: Some("PCMU".to_string()),
+            codec_b_leg: Some("PCMU".to_string()),
+            rtp_packets_sent: None,
+            rtp_packets_received: None,
+            rtp_bytes_sent: None,
+            rtp_bytes_received: None,
+            recording_url: None,
+            cost: None,
+            currency: None,
+            custom_data: None,
+        }
+    }
+
+    #[test]
+    fn test_cdr_response_conversion() {
+        let cdr = create_test_cdr();
+        let response = CdrResponse::from(cdr.clone());
+
+        assert_eq!(response.call_id, cdr.call_id.to_string());
+        assert_eq!(response.tenant_id, cdr.tenant_id.to_string());
+        assert_eq!(response.sip_call_id, cdr.sip_call_id);
+        assert_eq!(response.from_uri, cdr.from_uri);
+        assert_eq!(response.from_display_name, cdr.from_display_name);
+        assert_eq!(response.to_uri, cdr.to_uri);
+        assert_eq!(response.to_display_name, cdr.to_display_name);
+        assert_eq!(response.setup_duration_ms, Some(2000));
+        assert_eq!(response.call_duration_ms, Some(30000));
+        assert_eq!(response.total_duration_ms, Some(32000));
+        assert_eq!(response.disposition, "answered");
+        assert_eq!(response.hangup_cause, "normal_clearing");
+        assert_eq!(response.hangup_party, Some("caller".to_string()));
+        assert_eq!(response.sip_status_code, Some(200));
+        assert_eq!(response.sip_reason, Some("OK".to_string()));
+        assert_eq!(response.media_anchored, true);
+        assert_eq!(response.codec_a_leg, Some("PCMU".to_string()));
+        assert_eq!(response.codec_b_leg, Some("PCMU".to_string()));
+    }
+
+    #[test]
+    fn test_cdr_response_timestamps() {
+        let now = SystemTime::now();
+        let now_secs = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let cdr = CallDetailRecord {
+            start_time: now,
+            answer_time: Some(now),
+            end_time: Some(now),
+            ..create_test_cdr()
+        };
+
+        let response = CdrResponse::from(cdr);
+
+        assert_eq!(response.start_time, now_secs);
+        assert_eq!(response.answer_time, Some(now_secs));
+        assert_eq!(response.end_time, Some(now_secs));
+    }
+
+    #[test]
+    fn test_cdr_response_all_dispositions() {
+        // Test all disposition variants serialize correctly
+        let dispositions = vec![
+            (CallDisposition::Answered, "answered"),
+            (CallDisposition::Busy, "busy"),
+            (CallDisposition::NoAnswer, "no_answer"),
+            (CallDisposition::Failed, "failed"),
+            (CallDisposition::Cancelled, "cancelled"),
+        ];
+
+        for (disposition, expected) in dispositions {
+            let cdr = CallDetailRecord {
+                disposition,
+                ..create_test_cdr()
+            };
+            let response = CdrResponse::from(cdr);
+            assert_eq!(response.disposition, expected);
+        }
+    }
+
+    #[test]
+    fn test_cdr_response_all_hangup_causes() {
+        // Test all common hangup cause variants serialize correctly
+        let causes = vec![
+            (HangupCause::NormalClearing, "normal_clearing"),
+            (HangupCause::UserBusy, "user_busy"),
+            (HangupCause::NoAnswer, "no_answer"),
+            (HangupCause::CallRejected, "call_rejected"),
+            (HangupCause::InternalError, "internal_error"),
+        ];
+
+        for (cause, expected) in causes {
+            let cdr = CallDetailRecord {
+                hangup_cause: cause,
+                ..create_test_cdr()
+            };
+            let response = CdrResponse::from(cdr);
+            assert_eq!(response.hangup_cause, expected);
+        }
+    }
+
+    #[test]
+    fn test_cdr_response_hangup_parties() {
+        // Test all hangup party variants serialize correctly
+        let parties = vec![
+            (Some(HangupParty::Caller), Some("caller".to_string())),
+            (Some(HangupParty::Callee), Some("callee".to_string())),
+            (Some(HangupParty::System), Some("system".to_string())),
+            (None, None),
+        ];
+
+        for (party, expected) in parties {
+            let cdr = CallDetailRecord {
+                hangup_party: party,
+                ..create_test_cdr()
+            };
+            let response = CdrResponse::from(cdr);
+            assert_eq!(response.hangup_party, expected);
+        }
+    }
+
+    // TODO: Implement extract_sip_status_code function and enable this test
+    // #[test]
+    // fn test_extract_sip_status_code() {
+    //     use super::extract_sip_status_code;
+    //
+    //     assert_eq!(extract_sip_status_code("486 Busy Here"), Some(486));
+    //     assert_eq!(extract_sip_status_code("200 OK"), Some(200));
+    //     assert_eq!(extract_sip_status_code("404 Not Found"), Some(404));
+    //     assert_eq!(extract_sip_status_code("503 Service Unavailable"), Some(503));
+    //
+    //     // Out of range
+    //     assert_eq!(extract_sip_status_code("99 Invalid"), None);
+    //     assert_eq!(extract_sip_status_code("700 Out of Range"), None);
+    //
+    //     // Not a number
+    //     assert_eq!(extract_sip_status_code("ABC Invalid"), None);
+    //     assert_eq!(extract_sip_status_code("Unknown error"), None);
+    //
+    //     // Empty
+    //     assert_eq!(extract_sip_status_code(""), None);
+    // }
+
+    #[test]
+    fn test_default_limit() {
+        assert_eq!(default_limit(), 100);
+    }
+
+    // TODO: Add serde_urlencoded dependency and enable these tests
+    // #[test]
+    // fn test_list_cdrs_query_defaults() {
+    //     let query_str = "";
+    //     let query: Result<ListCdrsQuery, _> = serde_urlencoded::from_str(query_str);
+    //     assert!(query.is_ok());
+    //     let query = query.unwrap();
+    //     assert_eq!(query.limit, 100);
+    //     assert_eq!(query.offset, 0);
+    //     assert!(query.tenant_id.is_none());
+    //     assert!(query.call_id.is_none());
+    //     assert!(query.from_uri.is_none());
+    //     assert!(query.to_uri.is_none());
+    //     assert!(query.disposition.is_none());
+    // }
+    //
+    // #[test]
+    // fn test_list_cdrs_query_with_filters() {
+    //     let query_str = "tenant_id=tenant-123&from_uri=sip:alice@example.com&limit=50&offset=10";
+    //     let query: Result<ListCdrsQuery, _> = serde_urlencoded::from_str(query_str);
+    //     assert!(query.is_ok());
+    //     let query = query.unwrap();
+    //     assert_eq!(query.limit, 50);
+    //     assert_eq!(query.offset, 10);
+    //     assert_eq!(query.tenant_id, Some("tenant-123".to_string()));
+    //     assert_eq!(query.from_uri, Some("sip:alice@example.com".to_string()));
+    // }
+}

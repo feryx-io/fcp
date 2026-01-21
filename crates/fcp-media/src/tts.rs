@@ -58,7 +58,7 @@
 //!
 //! // Synthesize text to audio file
 //! let audio_path = tts_service
-//!     .synthesize("Hello, world!", "en-US", None)
+//!     .synthesize("Hello, world!", Some("en-US"), None)
 //!     .await?;
 //!
 //! println!("Audio saved to: {}", audio_path.display());

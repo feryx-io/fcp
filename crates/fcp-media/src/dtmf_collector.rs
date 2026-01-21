@@ -95,9 +95,15 @@ impl DtmfCollector {
         };
         drop(digit_rx_guard);
 
+        // Extract values before tracing to avoid Send issues
+        let state_guard = self.state.read().await;
+        let max_digits = state_guard.max_digits;
+        let finish_on_key = state_guard.finish_on_key;
+        drop(state_guard);
+
         info!(
-            max_digits = self.state.read().await.max_digits,
-            finish_on_key = ?self.state.read().await.finish_on_key,
+            max_digits = max_digits,
+            finish_on_key = ?finish_on_key,
             timeout_ms = timeout_duration.as_millis(),
             "Starting DTMF collection"
         );

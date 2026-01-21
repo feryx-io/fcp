@@ -283,7 +283,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_builder() {
-        let config = FcpConfig::default();
+        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let db_path = temp_dir.join("test.db");
+
+        let mut config = FcpConfig::default();
+        config.storage.connection_string = format!("sqlite://{}", db_path.display());
+
         let runtime = Runtime::builder()
             .with_config(config)
             .build()
@@ -291,14 +296,21 @@ mod tests {
             .unwrap();
 
         assert!(!runtime.node_id().is_nil());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
     async fn test_runtime_lifecycle() {
+        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let db_path = temp_dir.join("test.db");
+
         let mut config = FcpConfig::default();
         // Use port 0 to let OS assign random available ports
         config.transport.udp_bind = Some("0.0.0.0:0".parse().unwrap());
         config.transport.tcp_bind = Some("0.0.0.0:0".parse().unwrap());
+        config.storage.connection_string = format!("sqlite://{}", db_path.display());
 
         let mut runtime = Runtime::builder()
             .with_config(config)
@@ -317,5 +329,8 @@ mod tests {
 
         // Shutdown
         runtime.shutdown().await.expect("Failed to shutdown");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

@@ -834,4 +834,330 @@ mod tests {
         assert_eq!(stats.established, 1);
         assert_eq!(stats.terminated, 1);
     }
+
+    // ============================================================================
+    // CDR State Mapping Tests
+    // ============================================================================
+
+    #[test]
+    fn test_cdr_state_mapping_answered() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        // Test Established state
+        let mut call = create_test_call();
+        call.establish();
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Answered);
+        assert_eq!(cause, HangupCause::NormalClearing);
+
+        // Test Terminated state (after being established)
+        call.terminate();
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Answered);
+        assert_eq!(cause, HangupCause::NormalClearing);
+    }
+
+    #[test]
+    fn test_cdr_state_mapping_busy() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        let mut call = create_test_call();
+        call.fail("486 Busy Here".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Busy);
+        assert_eq!(cause, HangupCause::UserBusy);
+
+        // Test with lowercase "busy" keyword
+        let mut call2 = create_test_call();
+        call2.fail("User is busy".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call2);
+        assert_eq!(disposition, CallDisposition::Busy);
+        assert_eq!(cause, HangupCause::UserBusy);
+    }
+
+    #[test]
+    fn test_cdr_state_mapping_cancelled() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        let mut call = create_test_call();
+        call.fail("487 Request Terminated".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Cancelled);
+        assert_eq!(cause, HangupCause::NormalClearing);
+
+        // Test with "cancel" keyword
+        let mut call2 = create_test_call();
+        call2.fail("Call cancelled by user".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call2);
+        assert_eq!(disposition, CallDisposition::Cancelled);
+        assert_eq!(cause, HangupCause::NormalClearing);
+    }
+
+    #[test]
+    fn test_cdr_state_mapping_no_answer() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        // Test 480 Temporarily Unavailable
+        let mut call = create_test_call();
+        call.fail("480 Temporarily Unavailable".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::NoAnswer);
+        assert_eq!(cause, HangupCause::NoAnswer);
+
+        // Test 408 Request Timeout
+        let mut call2 = create_test_call();
+        call2.fail("408 Request Timeout".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call2);
+        assert_eq!(disposition, CallDisposition::NoAnswer);
+        assert_eq!(cause, HangupCause::NoAnswer);
+
+        // Test with "timeout" keyword
+        let mut call3 = create_test_call();
+        call3.fail("Transaction timeout".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call3);
+        assert_eq!(disposition, CallDisposition::NoAnswer);
+        assert_eq!(cause, HangupCause::NoAnswer);
+    }
+
+    #[test]
+    fn test_cdr_state_mapping_declined() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        let mut call = create_test_call();
+        call.fail("603 Decline".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Failed);
+        assert_eq!(cause, HangupCause::CallRejected);
+    }
+
+    #[test]
+    fn test_cdr_state_mapping_server_error() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        let mut call = create_test_call();
+        call.fail("500 Server Internal Error".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Failed);
+        assert_eq!(cause, HangupCause::InternalError);
+
+        // Test 503
+        let mut call2 = create_test_call();
+        call2.fail("503 Service Unavailable".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call2);
+        assert_eq!(disposition, CallDisposition::Failed);
+        assert_eq!(cause, HangupCause::InternalError);
+    }
+
+    #[test]
+    fn test_cdr_state_mapping_other_failure() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        // Test with SIP status code
+        let mut call = create_test_call();
+        call.fail("404 Not Found".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Failed);
+        assert_eq!(cause, HangupCause::Other(404));
+
+        // Test without SIP status code
+        let mut call2 = create_test_call();
+        call2.fail("Unknown error".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call2);
+        assert_eq!(disposition, CallDisposition::Failed);
+        assert_eq!(cause, HangupCause::Other(0));
+    }
+
+    // ============================================================================
+    // SIP Status Code Extraction Tests
+    // ============================================================================
+
+    #[test]
+    fn test_extract_sip_status_code_valid() {
+        assert_eq!(extract_sip_status_code("486 Busy Here"), Some(486));
+        assert_eq!(extract_sip_status_code("200 OK"), Some(200));
+        assert_eq!(extract_sip_status_code("404 Not Found"), Some(404));
+        assert_eq!(extract_sip_status_code("503 Service Unavailable"), Some(503));
+    }
+
+    #[test]
+    fn test_extract_sip_status_code_invalid() {
+        // Out of range
+        assert_eq!(extract_sip_status_code("99 Invalid"), None);
+        assert_eq!(extract_sip_status_code("700 Out of Range"), None);
+
+        // Not a number
+        assert_eq!(extract_sip_status_code("ABC Invalid"), None);
+        assert_eq!(extract_sip_status_code("Unknown error"), None);
+
+        // Empty
+        assert_eq!(extract_sip_status_code(""), None);
+    }
+
+    // ============================================================================
+    // Duration Calculation Tests
+    // ============================================================================
+
+    #[test]
+    fn test_calculate_durations_complete_call() {
+        use std::time::{Duration, SystemTime};
+
+        let mut call = create_test_call();
+        let start = SystemTime::now();
+        call.created_at = start;
+
+        // Simulate 2 second setup time
+        let answer = start + Duration::from_secs(2);
+        call.established_at = Some(answer);
+
+        // Simulate 30 second call duration
+        let end = answer + Duration::from_secs(30);
+        call.ended_at = Some(end);
+
+        let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
+
+        assert_eq!(setup_ms, Some(2000));  // 2 seconds setup
+        assert_eq!(call_ms, Some(30000));  // 30 seconds call
+        assert_eq!(total_ms, Some(32000)); // 32 seconds total
+    }
+
+    #[test]
+    fn test_calculate_durations_unanswered_call() {
+        use std::time::{Duration, SystemTime};
+
+        let mut call = create_test_call();
+        let start = SystemTime::now();
+        call.created_at = start;
+
+        // Call never answered (busy/no answer)
+        let end = start + Duration::from_secs(10);
+        call.ended_at = Some(end);
+
+        let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
+
+        assert_eq!(setup_ms, None);       // Never answered
+        assert_eq!(call_ms, None);        // No call duration
+        assert_eq!(total_ms, Some(10000)); // 10 seconds total (ringing time)
+    }
+
+    #[test]
+    fn test_calculate_durations_active_call() {
+        use std::time::{Duration, SystemTime};
+
+        let mut call = create_test_call();
+        let start = SystemTime::now();
+        call.created_at = start;
+
+        // Call answered but not ended yet
+        let answer = start + Duration::from_secs(3);
+        call.established_at = Some(answer);
+        call.ended_at = None;
+
+        let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
+
+        assert_eq!(setup_ms, Some(3000)); // 3 seconds setup
+        assert_eq!(call_ms, None);        // Call still active
+        assert_eq!(total_ms, None);       // No end time yet
+    }
+
+    // ============================================================================
+    // Codec Extraction Tests
+    // ============================================================================
+
+    #[test]
+    fn test_extract_codec_pcmu() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 5004 RTP/AVP 0\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+
+        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMU".to_string()));
+    }
+
+    #[test]
+    fn test_extract_codec_pcma() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 5004 RTP/AVP 8\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n";
+
+        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMA".to_string()));
+    }
+
+    #[test]
+    fn test_extract_codec_g722() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 5004 RTP/AVP 9\r\n\
+                   a=rtpmap:9 G722/8000\r\n";
+
+        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("G722".to_string()));
+    }
+
+    #[test]
+    fn test_extract_codec_opus() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 5004 RTP/AVP 111\r\n\
+                   a=rtpmap:111 opus/48000/2\r\n";
+
+        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("OPUS".to_string()));
+    }
+
+    #[test]
+    fn test_extract_codec_no_sdp() {
+        assert_eq!(extract_codec_from_sdp(None), None);
+    }
+
+    #[test]
+    fn test_extract_codec_no_rtpmap() {
+        let sdp = "v=0\r\n\
+                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 5004 RTP/AVP 0\r\n";
+
+        assert_eq!(extract_codec_from_sdp(Some(sdp)), None);
+    }
+
+    #[test]
+    fn test_extract_codec_multiple_rtpmaps() {
+        // Should return the first codec found
+        let sdp = "v=0\r\n\
+                   o=- 123456 789012 IN IP4 192.168.1.1\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 5004 RTP/AVP 0 8 9\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n\
+                   a=rtpmap:9 G722/8000\r\n";
+
+        assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMU".to_string()));
+    }
 }

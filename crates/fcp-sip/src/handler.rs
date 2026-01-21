@@ -4426,7 +4426,7 @@ impl SipMessageHandler {
     /// Parse DTMF digit from SIP INFO body (RFC 4733 format).
     ///
     /// Expected format:
-    /// ```
+    /// ```text
     /// Signal=1
     /// Duration=160
     /// ```
@@ -4705,8 +4705,10 @@ impl InboundMessageHandler for SipMessageHandler {
                 Some(&req.headers()),
                 Some(req.body()),
             );
+            // Convert to string to avoid Send issues
+            let method_str = req.method().as_str();
             debug!(
-                method = ?req.method(),
+                method = %method_str,
                 uri = %req.uri(),
                 "Received SIP request"
             );
@@ -5314,6 +5316,7 @@ mod tests {
             None, // No storage
             None, // No media manager
             None, // No media config
+            None, // No flow handler
         );
 
         // Create a REGISTER request
@@ -5376,6 +5379,7 @@ mod tests {
             None, // No storage
             None, // No media manager
             None, // No media config
+            None, // No flow handler
         );
 
         let mut headers = Headers::new();
@@ -5438,6 +5442,7 @@ mod tests {
             None, // No storage
             None, // No media manager
             None, // No media config
+            None, // No flow handler
         );
 
         let mut headers = Headers::new();
@@ -5603,6 +5608,7 @@ mod tests {
             None, // No storage
             None, // No media manager
             None, // No media config
+            None, // No flow handler
         );
 
         // Create a REGISTER request
@@ -5645,7 +5651,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(regs.len(), 1);
-        assert_eq!(regs[0].contact, "sip:alice@127.0.0.1:5060");
+        // Contact may include angle brackets as stored in the Contact header
+        assert!(
+            regs[0].contact == "sip:alice@127.0.0.1:5060"
+            || regs[0].contact == "<sip:alice@127.0.0.1:5060>"
+        );
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();

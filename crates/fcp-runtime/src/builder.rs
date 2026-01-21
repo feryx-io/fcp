@@ -1004,20 +1004,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_default() {
+        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let db_path = temp_dir.join("test.db");
+
         let mut config = FcpConfig::default();
         config.transport.udp_bind = Some("0.0.0.0:0".parse().unwrap());
+        config.storage.connection_string = format!("sqlite://{}", db_path.display());
+
         let runtime = RuntimeBuilder::new()
             .with_config(config)
             .build()
             .await
             .unwrap();
         assert!(!runtime.node_id().is_nil());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
     async fn test_builder_with_custom_node_id() {
+        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let db_path = temp_dir.join("test.db");
+
         let mut config = FcpConfig::default();
         config.transport.udp_bind = Some("0.0.0.0:0".parse().unwrap());
+        config.storage.connection_string = format!("sqlite://{}", db_path.display());
+
         let custom_id = NodeId::new();
         let runtime = RuntimeBuilder::new()
             .with_config(config)
@@ -1027,13 +1040,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(runtime.node_id(), custom_id);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
     async fn test_builder_with_config() {
+        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let db_path = temp_dir.join("test.db");
+
         let mut config = FcpConfig::default();
         config.node.name = "test-node".to_string();
         config.transport.udp_bind = Some("0.0.0.0:0".parse().unwrap());
+        config.storage.connection_string = format!("sqlite://{}", db_path.display());
 
         let runtime = RuntimeBuilder::new()
             .with_config(config.clone())
@@ -1042,5 +1062,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(runtime.config().node.name, "test-node");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

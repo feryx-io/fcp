@@ -801,10 +801,15 @@ mod tests {
 
         // Create a test user
         let user = fcp_core::User {
+            id: fcp_core::UserId::new(),
             username: "alice".to_string(),
             password: "secret123".to_string(),
+            digest_password: None,
+            sip_ha1_hash: None,
             display_name: Some("Alice".to_string()),
             tenant_id: fcp_core::TenantId::nil(), // Default tenant for test
+            role: fcp_core::UserRole::default(),
+            department_id: None,
             enabled: true,
             created_at: std::time::SystemTime::now(),
             updated_at: std::time::SystemTime::now(),
@@ -820,11 +825,11 @@ mod tests {
             location: None,
             language: "en-US".to_string(),
             timezone: "UTC".to_string(),
-            account_status: fcp_core::AccountStatus::Active,
             last_login: None,
             emergency_contact: fcp_core::EmergencyContact::default(),
-            digest_password: None,
-            sip_ha1_hash: None,
+            primary_phone_number_id: None,
+            voicemail_box_id: None,
+            account_status: fcp_core::AccountStatus::Active,
         };
         storage.put_user(user).await.unwrap();
 
