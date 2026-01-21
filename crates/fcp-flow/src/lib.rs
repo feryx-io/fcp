@@ -39,6 +39,9 @@ pub enum FlowError {
     #[error("HTTP request failed: {0}")]
     HttpError(String),
 
+    #[error("TTS synthesis failed: {0}")]
+    TtsError(String),
+
     #[error("Timeout: {0}")]
     Timeout(String),
 

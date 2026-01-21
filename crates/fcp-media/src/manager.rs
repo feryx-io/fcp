@@ -132,6 +132,38 @@ impl MediaManager {
         self.backend.send_dtmf(call_id, digit, duration_ms).await
     }
 
+    /// Create a DTMF collector for gathering digits
+    ///
+    /// # Arguments
+    /// * `max_digits` - Maximum number of digits to collect
+    /// * `finish_on_key` - Optional key that ends collection (e.g., '#')
+    ///
+    /// # Returns
+    /// A `DtmfCollector` that can be used to collect DTMF digits with timeout logic
+    ///
+    /// # Note
+    /// The caller is responsible for:
+    /// 1. Calling `collect()` with desired timeout
+    /// 2. Forwarding DTMF events from media backend to the collector via `get_sender()`
+    ///
+    /// # Example
+    /// ```ignore
+    /// let collector = manager.create_dtmf_collector(4, Some('#'));
+    /// let result = collector.collect(Duration::from_secs(10)).await;
+    /// match result {
+    ///     CollectionResult::Complete(digits) => println!("Collected: {}", digits),
+    ///     CollectionResult::Timeout(digits) => println!("Timeout, partial: {}", digits),
+    ///     CollectionResult::Cancelled => println!("Cancelled"),
+    /// }
+    /// ```
+    pub fn create_dtmf_collector(
+        &self,
+        max_digits: usize,
+        finish_on_key: Option<char>,
+    ) -> crate::dtmf_collector::DtmfCollector {
+        crate::dtmf_collector::DtmfCollector::new(max_digits, finish_on_key)
+    }
+
     /// Start recording a call
     ///
     /// # Security
@@ -264,6 +296,53 @@ impl MediaManager {
     /// Get backend type name
     pub fn backend_name(&self) -> &str {
         self.backend.backend_name()
+    }
+
+    /// Bridge two calls together for B2BUA operation
+    ///
+    /// # Arguments
+    ///
+    /// * `a_leg_call_id` - Call ID of the A-leg (incoming call)
+    /// * `b_leg_call_id` - Call ID of the B-leg (outbound call)
+    ///
+    /// # Description
+    ///
+    /// This method configures the media engine to forward RTP packets bidirectionally
+    /// between the two call legs. Audio from A-leg is sent to B-leg, and vice versa.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when bridging is established, or an error if either session
+    /// doesn't exist or bridging fails.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // After A-leg answers and B-leg answers
+    /// manager.bridge_calls(&a_leg_call_id, &b_leg_call_id).await?;
+    /// // Now A and B can talk to each other
+    /// ```
+    pub async fn bridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
+        self.backend.bridge_calls(a_leg_call_id, b_leg_call_id).await
+    }
+
+    /// Unbridge two calls
+    ///
+    /// # Arguments
+    ///
+    /// * `a_leg_call_id` - Call ID of the A-leg
+    /// * `b_leg_call_id` - Call ID of the B-leg
+    ///
+    /// # Description
+    ///
+    /// Removes the media bridge between two calls. After unbridging, each call
+    /// returns to its independent state (silence or can be bridged to other calls).
+    ///
+    /// # Example
+    /// ```ignore
+    /// manager.unbridge_calls(&a_leg_call_id, &b_leg_call_id).await?;
+    /// ```
+    pub async fn unbridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
+        self.backend.unbridge_calls(a_leg_call_id, b_leg_call_id).await
     }
 }
 

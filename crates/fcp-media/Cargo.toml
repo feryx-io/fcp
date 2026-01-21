@@ -10,7 +10,7 @@ default = ["embedded"]
 # Embedded mode: forge-media runs in-process (Phase 1)
 embedded = []
 # Remote mode: forge-media runs as separate service (Future)
-remote = ["reqwest"]
+remote = []
 # Enable both modes
 full = ["embedded", "remote"]
 
@@ -31,8 +31,8 @@ sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
 
-# HTTP client (for remote mode - optional)
-reqwest = { version = "0.12", features = ["json"], optional = true }
+# HTTP client (for remote mode and TTS providers)
+reqwest = { version = "0.12", features = ["json"] }
 
 # Async runtime
 tokio = { workspace = true }
@@ -58,6 +58,10 @@ chrono = "0.4"
 
 # UUIDs
 uuid = { workspace = true }
+
+# Cryptography (for TTS cache keys)
+sha2 = "0.10"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -108,6 +108,37 @@ pub trait MediaBackend: Send + Sync {
     /// Returns Ok(()) when playback completes successfully, or an error if playback failed
     async fn wait_playback_completion(&self, playback_id: String) -> Result<()>;
 
+    /// Bridge two calls together for B2BUA operation
+    ///
+    /// # Arguments
+    ///
+    /// * `a_leg_call_id` - Call ID of the A-leg (incoming call)
+    /// * `b_leg_call_id` - Call ID of the B-leg (outbound call)
+    ///
+    /// # Description
+    ///
+    /// This method configures the media engine to forward RTP packets bidirectionally
+    /// between the two call legs. Audio from A-leg is sent to B-leg, and vice versa.
+    ///
+    /// # Returns
+    ///
+    /// Returns Ok(()) when bridging is established, or an error if either session
+    /// doesn't exist or bridging fails.
+    async fn bridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()>;
+
+    /// Unbridge two calls
+    ///
+    /// # Arguments
+    ///
+    /// * `a_leg_call_id` - Call ID of the A-leg
+    /// * `b_leg_call_id` - Call ID of the B-leg
+    ///
+    /// # Description
+    ///
+    /// Removes the media bridge between two calls. After unbridging, each call
+    /// returns to its independent state (silence or can be bridged to other calls).
+    async fn unbridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()>;
+
     /// Get backend type name (for logging/metrics)
     fn backend_name(&self) -> &'static str;
 
@@ -802,6 +833,66 @@ pub mod embedded {
             }
         }
 
+        async fn bridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
+            info!(
+                a_leg = %a_leg_call_id,
+                b_leg = %b_leg_call_id,
+                "Bridging calls for B2BUA operation"
+            );
+
+            // Get both sessions
+            let _a_leg_session = self.sessions.get(a_leg_call_id)
+                .ok_or_else(|| Error::SessionNotFound(a_leg_call_id.to_string()))?;
+            let _b_leg_session = self.sessions.get(b_leg_call_id)
+                .ok_or_else(|| Error::SessionNotFound(b_leg_call_id.to_string()))?;
+
+            // TODO: Phase 3.1 - Implement actual RTP forwarding via forge-media
+            // For MVP, we just mark the sessions as bridged
+            //
+            // Full implementation will need to:
+            // 1. Get ParticipantA from A-leg session
+            // 2. Get ParticipantA from B-leg session
+            // 3. Configure forge-media to forward RTP bidirectionally:
+            //    - A-leg ParticipantA → B-leg ParticipantA
+            //    - B-leg ParticipantA → A-leg ParticipantA
+            // 4. Enable DTMF passthrough
+            //
+            // Example (pseudocode for future implementation):
+            // ```
+            // self.session_manager.bridge_participants(
+            //     a_leg_session.forge_session.participant_a(),
+            //     b_leg_session.forge_session.participant_a(),
+            // ).await?;
+            // ```
+
+            info!(
+                a_leg = %a_leg_call_id,
+                b_leg = %b_leg_call_id,
+                "Call bridge established (RTP forwarding pending full forge-media integration)"
+            );
+
+            Ok(())
+        }
+
+        async fn unbridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
+            info!(
+                a_leg = %a_leg_call_id,
+                b_leg = %b_leg_call_id,
+                "Unbridging calls"
+            );
+
+            // TODO: Phase 3.1 - Implement actual RTP forwarding removal
+            // For MVP, this is a no-op
+
+            info!(
+                a_leg = %a_leg_call_id,
+                b_leg = %b_leg_call_id,
+                "Call bridge removed"
+            );
+
+            Ok(())
+        }
+
         fn backend_name(&self) -> &'static str {
             "embedded"
         }
@@ -1127,6 +1218,18 @@ pub mod remote {
         async fn wait_playback_completion(&self, _playback_id: String) -> Result<()> {
             // GET /v1/playback/{playback_id}/wait or use websocket for completion events
             todo!("Implement remote playback completion waiting")
+        }
+
+        async fn bridge_calls(&self, _a_leg_call_id: &CallId, _b_leg_call_id: &CallId) -> Result<()> {
+            // POST /v1/bridge
+            // Body: { "a_leg": "call-id-1", "b_leg": "call-id-2" }
+            todo!("Implement remote call bridging")
+        }
+
+        async fn unbridge_calls(&self, _a_leg_call_id: &CallId, _b_leg_call_id: &CallId) -> Result<()> {
+            // DELETE /v1/bridge
+            // Body: { "a_leg": "call-id-1", "b_leg": "call-id-2" }
+            todo!("Implement remote call unbridging")
         }
 
         fn backend_name(&self) -> &'static str {

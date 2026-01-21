@@ -5,6 +5,7 @@
 use crate::schema::{BranchOperator, FlowDefinition, NodeType};
 use crate::{FlowError, Result};
 use fcp_core::CallId;
+use fcp_media::TtsService;
 use futures::future::BoxFuture;
 use regex::Regex;
 use std::collections::HashMap;
@@ -16,6 +17,9 @@ use tracing::{debug, error, info, warn};
 pub struct FlowEngine {
     /// HTTP client for HTTP nodes
     http_client: reqwest::Client,
+
+    /// TTS service for Say nodes (optional)
+    tts_service: Option<Arc<TtsService>>,
 }
 
 impl FlowEngine {
@@ -26,7 +30,23 @@ impl FlowEngine {
             .build()
             .expect("Failed to build HTTP client");
 
-        Self { http_client }
+        Self {
+            http_client,
+            tts_service: None,
+        }
+    }
+
+    /// Create a new flow engine with TTS service.
+    pub fn with_tts(tts_service: Arc<TtsService>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to build HTTP client");
+
+        Self {
+            http_client,
+            tts_service: Some(tts_service),
+        }
     }
 
     /// Start executing a flow.
@@ -103,16 +123,58 @@ impl FlowEngine {
                 on_error,
             } => {
                 let interpolated_text = self.interpolate_variables(text, context)?;
-                info!(
-                    call_id = %context.call_id,
-                    text = %interpolated_text,
-                    voice = ?voice,
-                    language = %language,
-                    "Speaking text (TTS)"
-                );
 
-                // In real implementation, this would trigger TTS
-                Ok(FlowExecutionResult::Continue(next.clone()))
+                // If TTS service is available, synthesize the text
+                if let Some(tts_service) = &self.tts_service {
+                    info!(
+                        call_id = %context.call_id,
+                        text = %interpolated_text,
+                        voice = ?voice,
+                        language = %language,
+                        "Synthesizing text with TTS"
+                    );
+
+                    match tts_service
+                        .synthesize(&interpolated_text, Some(language), voice.as_deref())
+                        .await
+                    {
+                        Ok(audio_path) => {
+                            // Store audio path in context for flow handler
+                            context.set_variable(
+                                "__tts_audio_path".to_string(),
+                                audio_path.display().to_string(),
+                            );
+                            context.set_variable("__tts_next_node".to_string(), next.clone());
+
+                            info!(
+                                call_id = %context.call_id,
+                                audio_path = %audio_path.display(),
+                                "TTS synthesis complete"
+                            );
+
+                            Ok(FlowExecutionResult::WaitingForMedia)
+                        }
+                        Err(e) => {
+                            error!(
+                                call_id = %context.call_id,
+                                error = %e,
+                                "TTS synthesis failed"
+                            );
+
+                            if let Some(error_node) = on_error {
+                                Ok(FlowExecutionResult::Continue(error_node.clone()))
+                            } else {
+                                Err(FlowError::TtsError(e.to_string()))
+                            }
+                        }
+                    }
+                } else {
+                    warn!(
+                        call_id = %context.call_id,
+                        "TTS service not available, skipping Say node"
+                    );
+                    Ok(FlowExecutionResult::Continue(next.clone()))
+                }
             }
 
             NodeType::Gather {
@@ -129,11 +191,70 @@ impl FlowEngine {
                     call_id = %context.call_id,
                     num_digits = %num_digits,
                     timeout = %timeout,
+                    has_prompt = prompt.is_some(),
                     "Gathering DTMF input"
                 );
 
-                // In real implementation, this would wait for DTMF input
-                // For now, we return WaitingForInput to signal the caller
+                // Handle prompt if present
+                if let Some(gather_prompt) = prompt {
+                    use crate::schema::GatherPrompt;
+
+                    match gather_prompt {
+                        GatherPrompt::Play { url } => {
+                            // Store Play prompt information for flow handler
+                            context.set_variable("__gather_prompt_type".to_string(), "play".to_string());
+                            context.set_variable("__gather_prompt_url".to_string(), url.clone());
+                        }
+                        GatherPrompt::Say { text, voice, language } => {
+                            // If TTS service is available, synthesize the prompt
+                            if let Some(tts_service) = &self.tts_service {
+                                let interpolated_text = self.interpolate_variables(text, context)?;
+
+                                match tts_service
+                                    .synthesize(&interpolated_text, Some(language), voice.as_deref())
+                                    .await
+                                {
+                                    Ok(audio_path) => {
+                                        // Store synthesized audio path
+                                        context.set_variable(
+                                            "__gather_prompt_type".to_string(),
+                                            "play".to_string(),
+                                        );
+                                        context.set_variable(
+                                            "__gather_prompt_url".to_string(),
+                                            audio_path.display().to_string(),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            call_id = %context.call_id,
+                                            error = %e,
+                                            "TTS synthesis failed for Gather prompt"
+                                        );
+                                        // Continue anyway - will gather without prompt
+                                    }
+                                }
+                            } else {
+                                warn!(
+                                    call_id = %context.call_id,
+                                    "TTS service not available for Gather prompt"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Store gather configuration in context
+                context.set_variable("__gather_num_digits".to_string(), num_digits.to_string());
+                context.set_variable("__gather_timeout".to_string(), timeout.to_string());
+                if let Some(key) = finish_on_key {
+                    context.set_variable("__gather_finish_on_key".to_string(), key.to_string());
+                }
+                if let Some(timeout_node) = on_timeout {
+                    context.set_variable("__gather_on_timeout".to_string(), timeout_node.clone());
+                }
+
+                // Return WaitingForInput with transition information
                 Ok(FlowExecutionResult::WaitingForInput {
                     variable: variable.clone(),
                     transitions: transitions.clone(),
@@ -151,16 +272,44 @@ impl FlowEngine {
                 on_no_answer,
                 on_error,
             } => {
+                // Interpolate variables in destination
                 let interpolated_dest = self.interpolate_variables(destination, context)?;
+
+                // Interpolate caller ID if provided
+                let interpolated_cid = if let Some(cid) = caller_id {
+                    Some(self.interpolate_variables(cid, context)?)
+                } else {
+                    None
+                };
+
                 info!(
                     call_id = %context.call_id,
                     destination = %interpolated_dest,
                     timeout = %timeout,
+                    max_duration = %max_duration,
+                    caller_id = ?interpolated_cid,
                     "Dialing destination"
                 );
 
-                // In real implementation, this would create a B-leg
-                Ok(FlowExecutionResult::Continue(next.clone()))
+                // Store dial configuration in context
+                context.set_variable("__dial_destination".to_string(), interpolated_dest.clone());
+                context.set_variable("__dial_timeout".to_string(), timeout.to_string());
+                if let Some(cid) = &interpolated_cid {
+                    context.set_variable("__dial_caller_id".to_string(), cid.clone());
+                }
+                context.set_variable("__dial_max_duration".to_string(), max_duration.to_string());
+
+                // Return WaitingForDial to let flow handler create the outbound call
+                Ok(FlowExecutionResult::WaitingForDial {
+                    destination: interpolated_dest,
+                    timeout_secs: *timeout,
+                    caller_id: interpolated_cid,
+                    max_duration_secs: *max_duration,
+                    on_busy: on_busy.clone(),
+                    on_no_answer: on_no_answer.clone(),
+                    on_error: on_error.clone(),
+                    next: next.clone(),
+                })
             }
 
             NodeType::Hangup { reason } => {
@@ -337,6 +486,19 @@ impl FlowEngine {
                 debug!(
                     call_id = %context.call_id,
                     "Flow execution paused, waiting for input"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForMedia) => {
+                debug!(
+                    call_id = %context.call_id,
+                    "Flow execution paused, waiting for media playback"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForDial { destination, .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    destination = %destination,
+                    "Flow execution paused, waiting for outbound call"
                 );
             }
             Err(e) => {
@@ -566,6 +728,21 @@ pub enum FlowExecutionResult {
         variable: String,
         transitions: HashMap<String, String>,
         default: Option<String>,
+    },
+
+    /// Waiting for media playback to complete (Play/Say nodes)
+    WaitingForMedia,
+
+    /// Waiting for outbound call to complete (Dial node)
+    WaitingForDial {
+        destination: String,
+        timeout_secs: u32,
+        caller_id: Option<String>,
+        max_duration_secs: u32,
+        on_busy: Option<String>,
+        on_no_answer: Option<String>,
+        on_error: Option<String>,
+        next: String,
     },
 }
 

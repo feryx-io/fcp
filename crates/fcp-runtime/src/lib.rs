@@ -63,6 +63,9 @@ pub struct Runtime {
     /// Storage for registrations and users (if registrar enabled)
     storage: Option<Arc<fcp_core::DynStorage>>,
 
+    /// Flow store for managing call flows (if registrar enabled)
+    flow_store: Option<Arc<dyn fcp_flow::FlowStore>>,
+
     /// Background cleanup task handle
     cleanup_task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -126,6 +129,11 @@ impl Runtime {
     /// Get the storage (if registrar is enabled).
     pub fn storage(&self) -> Option<&Arc<fcp_core::DynStorage>> {
         self.storage.as_ref()
+    }
+
+    /// Get the flow store (if available).
+    pub fn flow_store(&self) -> Option<&Arc<dyn fcp_flow::FlowStore>> {
+        self.flow_store.as_ref()
     }
 
     /// Start the runtime and all services.

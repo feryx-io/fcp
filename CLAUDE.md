@@ -636,6 +636,9 @@ cargo run -p siphond -- --mode registrar
 
 - **ARCHITECTURE-v0.2.md**: Complete architecture vision and roadmap
 - **Phase1 plan.md**: Detailed MVP implementation plan with sprint breakdowns
+- **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
+  - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)
+  - **CDR System**: Automatic call detail record creation with REST API
 - **external/siphon-rs/CLAUDE.md**: Comprehensive SIP stack documentation
 - **external/siphon-rs/bins/siphond/README.md**: siphond daemon documentation
 - **RFC Implementation Docs**: `external/siphon-rs/RFC_*_IMPLEMENTATION.md`

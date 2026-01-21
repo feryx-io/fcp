@@ -52,10 +52,12 @@ pub mod backend;
 pub mod codec;
 pub mod config;
 pub mod decision;
+pub mod dtmf_collector;
 pub mod error;
 pub mod manager;
 pub mod sdp;
 pub mod session;
+pub mod tts;
 
 // Re-exports
 pub use backend::{AudioTarget, EmbeddedBackend, MediaBackend};
@@ -67,6 +69,8 @@ pub use sdp::{extract_codecs_from_sdp, rewrite_sdp_for_anchoring};
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,
 };
+pub use tts::{TtsConfig, TtsProvider, TtsProviderConfig, TtsService, VoiceInfo};
+pub use dtmf_collector::{CollectionResult, DtmfCollector};
 
 #[cfg(feature = "remote")]
 pub use backend::RemoteBackend;

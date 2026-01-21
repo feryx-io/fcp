@@ -795,18 +795,20 @@ impl SipMessageHandler {
             {
                 Ok(decision) => {
                     if !decision.action.is_allow() {
+                        let matched_rule_str = format!("{:?}", decision.matched_rule);
                         info!(
                             reason = %decision.reason,
-                            matched_rule = ?decision.matched_rule,
+                            matched_rule = %matched_rule_str,
                             "Call denied by routing policy"
                         );
                         let response = self.create_simple_response(request, 403, &decision.reason);
                         handle.send_final(response).await;
                         return Ok(());
                     }
+                    let matched_rule_str = format!("{:?}", decision.matched_rule);
                     debug!(
                         reason = %decision.reason,
-                        matched_rule = ?decision.matched_rule,
+                        matched_rule = %matched_rule_str,
                         eval_time_us = decision.evaluation_time_us,
                         "Call allowed by routing policy"
                     );
@@ -833,10 +835,18 @@ impl SipMessageHandler {
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
 
+        // Extract caller/callee for logging (to avoid non-Send tracing issues)
+        let caller_str = sip_parse::header(request.headers(), "From")
+            .map(|h| h.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let callee_str = sip_parse::header(request.headers(), "To")
+            .map(|h| h.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
         info!(
             call_id = %call_id,
-            caller = ?sip_parse::header(request.headers(), "From"),
-            callee = ?sip_parse::header(request.headers(), "To"),
+            caller = %caller_str,
+            callee = %callee_str,
             "Created B2BUA call"
         );
 
@@ -958,7 +968,8 @@ impl SipMessageHandler {
                                     extract_from_uri(&request)
                                         .unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
                                 ) {
-                                    info!(call_id = %call_id, dialog_id = ?a_leg_dialog.id(), "Created A-leg dialog");
+                                    let dialog_id_str = format!("{:?}", a_leg_dialog.id());
+                                    info!(call_id = %call_id, dialog_id = %dialog_id_str, "Created A-leg dialog");
 
                                     // Insert dialog into dialog manager
                                     dialog_manager.insert(a_leg_dialog.clone());
@@ -993,7 +1004,8 @@ impl SipMessageHandler {
                                 if let Some(call_entry) = call_manager.get_call(&call_id) {
                                     info!(call_id = %call_id, "Found call entry, checking for dialog");
                                     if let Some(dialog) = call_entry.a_leg.dialog.clone() {
-                                        info!(call_id = %call_id, dialog_id = ?dialog.id(), "Found A-leg dialog, sending BYE");
+                                        let dialog_id_str = format!("{:?}", dialog.id());
+                                        info!(call_id = %call_id, dialog_id = %dialog_id_str, "Found A-leg dialog, sending BYE");
                                         // Send BYE request if UAC is available
                                         if let Some(uac) = uac_opt {
                                             match uac.bye(&dialog).await {
@@ -4662,8 +4674,10 @@ impl InboundMessageHandler for SipMessageHandler {
         payload: Bytes,
         stream: Option<mpsc::Sender<Bytes>>,
     ) -> Result<()> {
+        // Convert transport to string to avoid non-Send issues
+        let transport_str = format!("{:?}", transport);
         debug!(
-            transport = ?transport,
+            transport = %transport_str,
             peer = %peer,
             size = payload.len(),
             "Handling inbound SIP message"

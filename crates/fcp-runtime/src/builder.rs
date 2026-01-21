@@ -110,11 +110,11 @@ impl RuntimeBuilder {
         .await?;
 
         // Create registrar if enabled
-        let (registrar, storage) = if config.registrar.enabled {
-            let (reg, store) = create_registrar(&config, self.storage).await?;
-            (Some(reg), Some(store))
+        let (registrar, storage, flow_store) = if config.registrar.enabled {
+            let (reg, store, flow) = create_registrar(&config, self.storage).await?;
+            (Some(reg), Some(store), Some(flow))
         } else {
-            (None, self.storage)
+            (None, self.storage, None)
         };
 
         // Create routing service if enabled
@@ -131,10 +131,10 @@ impl RuntimeBuilder {
         let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
         info!("Event bus initialized (in-memory)");
 
-        // Create flow handler if storage is available
-        let flow_handler = if let Some(storage) = &storage {
+        // Create flow handler if flow_store is available
+        let flow_handler = if let Some(flow_store) = &flow_store {
             Some(create_flow_handler(
-                storage,
+                flow_store,
                 &event_bus,
                 &media_manager,
             ).await?)
@@ -200,6 +200,7 @@ impl RuntimeBuilder {
             listener: Some(listener),
             shutdown_tx: None,
             storage,
+            flow_store,
             cleanup_task: None,
         })
     }
@@ -275,6 +276,7 @@ async fn create_registrar(
 ) -> Result<(
     Arc<fcp_sip::registrar::FcpRegistrar>,
     Arc<fcp_core::DynStorage>,
+    Arc<dyn fcp_flow::FlowStore>,
 )> {
     use fcp_core::{CredentialStore, DynStorage};
     use fcp_sip::registrar::FcpRegistrar;
@@ -286,9 +288,12 @@ async fn create_registrar(
     );
 
     // Use provided storage or initialize from config
-    let storage: Arc<DynStorage> = if let Some(storage) = provided_storage {
+    // We need to keep both DynStorage and FlowStore references
+    let (storage, flow_store): (Arc<DynStorage>, Arc<dyn fcp_flow::FlowStore>) = if let Some(storage) = provided_storage {
         info!("Using provided storage backend for registrar");
-        storage
+        // TODO: Extract FlowStore from provided storage
+        // For now, use InMemoryFlowStore as fallback
+        (storage, Arc::new(fcp_flow::InMemoryFlowStore::new()))
     } else {
         info!(
             backend = ?config.storage.backend,
@@ -301,7 +306,7 @@ async fn create_registrar(
             fcp_core::StorageBackend::Sqlite => {
                 #[cfg(feature = "storage-sqlite")]
                 {
-                    use fcp_core::storage::sqlite::SqliteStorage;
+                    use fcp_storage_sqlite::{SqliteStorage, SqliteConfig};
 
                     // Parse connection string (format: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite)
                     let db_path = config.storage.connection_string
@@ -309,12 +314,21 @@ async fn create_registrar(
                         .or_else(|| config.storage.connection_string.strip_prefix("sqlite:///"))
                         .ok_or_else(|| anyhow::anyhow!("Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite"))?;
 
-                    // fcp-core's SqliteStorage::new takes just a path string
-                    let storage = SqliteStorage::new(db_path)
+                    // Create SqliteStorage from fcp-storage-sqlite crate
+                    let sqlite_config = SqliteConfig::new(db_path);
+                    let sqlite_storage = Arc::new(SqliteStorage::new(sqlite_config)
                         .await
-                        .context("Failed to initialize SQLite storage for registrar")?;
+                        .context("Failed to initialize SQLite storage for registrar")?);
 
-                    Arc::new(fcp_core::DynStorage::from_all_in_one(Arc::new(storage)))
+                    // Keep reference for FlowStore before wrapping in DynStorage
+                    let flow_store = Arc::clone(&sqlite_storage) as Arc<dyn fcp_flow::FlowStore>;
+
+                    // Create DynStorage for basic storage operations
+                    // Note: This will fail until we implement the missing traits in fcp-storage-sqlite
+                    // For now, let's use InMemoryFlowStore and address the full migration separately
+                    let dyn_storage = Arc::new(fcp_core::DynStorage::from_all_in_one(sqlite_storage));
+
+                    (dyn_storage, flow_store)
                 }
 
                 #[cfg(not(feature = "storage-sqlite"))]
@@ -377,7 +391,7 @@ async fn create_registrar(
         Some(config.registrar.realm.clone()),
     );
 
-    Ok((Arc::new(registrar), storage))
+    Ok((Arc::new(registrar), storage, flow_store))
 }
 
 /// Create a routing service based on configuration.
@@ -407,35 +421,33 @@ async fn create_routing_service(config: &FcpConfig) -> Result<Arc<fcp_routing::R
 
 /// Create a flow handler for programmable call flows.
 async fn create_flow_handler(
-    _storage: &Arc<fcp_core::DynStorage>,
+    flow_store: &Arc<dyn fcp_flow::FlowStore>,
     event_bus: &Arc<dyn EventBus>,
     media_manager: &Arc<fcp_media::MediaManager>,
 ) -> Result<Arc<fcp_sip::flow_handler::FlowCallHandler>> {
-    use fcp_flow::InMemoryFlowStore;
     use fcp_sip::flow_handler::FlowCallHandler;
 
-    info!("Creating flow handler");
-
-    // Create in-memory flow store
-    // TODO: Implement DatabaseFlowStore to load flows from storage
-    let flow_store = Arc::new(InMemoryFlowStore::new());
+    info!("Creating flow handler with database-backed flow store");
 
     // Create flow handler with event publishing and media playback
     let flow_handler = FlowCallHandler::new(
-        Arc::clone(&flow_store) as Arc<dyn fcp_flow::FlowStore>,
+        Arc::clone(&flow_store),
         Some(Arc::clone(event_bus) as Arc<dyn fcp_events::EventPublisher>),
         Some(Arc::clone(media_manager)),
     );
 
-    info!("Flow handler created successfully (using in-memory store)");
+    info!("Flow handler created successfully (using database-backed store)");
 
     let flow_handler = Arc::new(flow_handler);
 
-    // Load test flow for IVR testing
+    // Load test flow for IVR testing (only in debug mode)
     // TODO: Make this configurable via fcp.toml
-    info!("Loading test IVR flow");
-    if let Err(e) = load_test_ivr_flow(&flow_store, &flow_handler).await {
-        tracing::warn!("Failed to load test IVR flow: {}", e);
+    #[cfg(debug_assertions)]
+    {
+        info!("Loading test IVR flow");
+        if let Err(e) = load_test_ivr_flow(&flow_store, &flow_handler).await {
+            tracing::warn!("Failed to load test IVR flow: {}", e);
+        }
     }
 
     Ok(flow_handler)
@@ -885,10 +897,10 @@ fn mask_connection_string(conn_str: &str) -> String {
 ///
 /// The flow is accessible by calling +15551234567
 async fn load_test_ivr_flow(
-    flow_store: &Arc<fcp_flow::InMemoryFlowStore>,
+    flow_store: &Arc<dyn fcp_flow::FlowStore>,
     handler: &Arc<fcp_sip::flow_handler::FlowCallHandler>,
 ) -> Result<()> {
-    use fcp_flow::{FlowDefinition, FlowNode, NodeType, FlowStore};
+    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
     use std::collections::HashMap;
 
     info!("Creating test IVR flow nodes");

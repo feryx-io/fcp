@@ -1309,7 +1309,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-cli"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1352,7 +1352,6 @@ dependencies = [
  "md5",
  "serde",
  "serde_json",
- "sqlx",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -1361,7 +1360,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1386,6 +1385,7 @@ dependencies = [
  "dashmap 6.1.0",
  "fcp-core",
  "fcp-events",
+ "fcp-media",
  "futures",
  "regex",
  "reqwest 0.12.28",
@@ -1404,6 +1404,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dashmap 6.1.0",
  "fcp-core",
@@ -1418,6 +1419,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "sip-core",
  "sip-dialog",
  "sip-sdp",
@@ -1455,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1550,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1569,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1587,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1605,11 +1607,13 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "fcp-core",
+ "fcp-flow",
  "serde",
  "serde_json",
  "sqlx",

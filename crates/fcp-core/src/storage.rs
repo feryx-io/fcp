@@ -17,9 +17,6 @@
 //! while requiring no external database server. For development and testing only, a
 //! FileBackedStorage implementation is also available that uses in-memory storage with JSON file persistence.
 
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

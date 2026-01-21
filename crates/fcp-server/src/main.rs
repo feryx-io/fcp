@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
     let api_config = runtime.config().api.clone();
     let realm = runtime.config().registrar.realm.clone();
     let storage = runtime.storage().cloned();
+    let flow_store = runtime.flow_store().cloned();
     let dialog_manager = Arc::clone(runtime.dialog_manager());
     let subscription_manager = Arc::clone(runtime.subscription_manager());
     let call_manager = Arc::clone(runtime.call_manager());
@@ -84,6 +85,7 @@ async fn main() -> Result<()> {
 
         let api_state = api::state::ApiState::new(
             storage,
+            flow_store,
             dialog_manager,
             subscription_manager,
             call_manager,

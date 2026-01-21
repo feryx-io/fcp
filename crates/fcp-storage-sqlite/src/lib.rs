@@ -27,6 +27,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
@@ -1983,13 +1984,634 @@ fn row_to_device(row: sqlx::sqlite::SqliteRow) -> Result<Device> {
 }
 
 // ============================================================================
+// FlowStore Implementation
+// ============================================================================
+
+use fcp_flow::schema::{FlowDefinition, FlowNode};
+use fcp_flow::storage::{FlowQuery, FlowQueryResult, FlowStore, SortField, SortOrder};
+use fcp_flow::FlowError;
+use std::collections::HashMap;
+
+#[async_trait]
+impl FlowStore for SqliteStorage {
+    async fn get_flow(&self, id: &str) -> std::result::Result<Option<FlowDefinition>, FlowError> {
+        let row = sqlx::query(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             WHERE id = ?
+             ORDER BY version DESC
+             LIMIT 1"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        match row {
+            Some(row) => Ok(Some(parse_flow_from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_flow_version(&self, id: &str, version: u32) -> std::result::Result<Option<FlowDefinition>, FlowError> {
+        let row = sqlx::query(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             WHERE id = ? AND version = ?"
+        )
+        .bind(id)
+        .bind(version as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        match row {
+            Some(row) => Ok(Some(parse_flow_from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_flows(&self, tenant_id: Option<&str>) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
+        let rows = if let Some(tid) = tenant_id {
+            sqlx::query(
+                "SELECT id, name, description, version, initial_node, nodes, variables,
+                        tenant_id, enabled, webhook_url, created_at, updated_at
+                 FROM flows
+                 WHERE tenant_id = ?
+                 ORDER BY updated_at DESC"
+            )
+            .bind(tid)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?
+        } else {
+            sqlx::query(
+                "SELECT id, name, description, version, initial_node, nodes, variables,
+                        tenant_id, enabled, webhook_url, created_at, updated_at
+                 FROM flows
+                 ORDER BY updated_at DESC"
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?
+        };
+
+        let mut flows = Vec::new();
+        for row in rows {
+            flows.push(parse_flow_from_row(&row)?);
+        }
+
+        Ok(flows)
+    }
+
+    async fn query_flows(&self, query: &FlowQuery) -> std::result::Result<FlowQueryResult, FlowError> {
+        // Build WHERE clause
+        let mut where_clauses = Vec::new();
+        let mut where_clause = String::new();
+
+        if query.tenant_id.is_some() {
+            where_clauses.push("tenant_id = ?");
+        }
+        if query.enabled.is_some() {
+            where_clauses.push("enabled = ?");
+        }
+        if query.name_contains.is_some() {
+            where_clauses.push("name LIKE ?");
+        }
+        if query.description_contains.is_some() {
+            where_clauses.push("description LIKE ?");
+        }
+
+        if !where_clauses.is_empty() {
+            where_clause = format!("WHERE {}", where_clauses.join(" AND "));
+        }
+
+        // Build ORDER BY clause
+        let order_by = match query.sort_by.unwrap_or(SortField::UpdatedAt) {
+            SortField::Name => "name",
+            SortField::CreatedAt => "created_at",
+            SortField::UpdatedAt => "updated_at",
+            SortField::Version => "version",
+        };
+
+        let order_direction = match query.sort_order {
+            SortOrder::Asc => "ASC",
+            SortOrder::Desc => "DESC",
+        };
+
+        // Count total matching rows
+        let count_query = format!("SELECT COUNT(*) as count FROM flows {}", where_clause);
+        let mut count_q = sqlx::query(&count_query);
+
+        // Bind parameters for count query (same order as WHERE clauses)
+        if let Some(ref tid) = query.tenant_id {
+            count_q = count_q.bind(tid);
+        }
+        if let Some(enabled) = query.enabled {
+            count_q = count_q.bind(enabled);
+        }
+        if let Some(ref name) = query.name_contains {
+            count_q = count_q.bind(format!("%{}%", name));
+        }
+        if let Some(ref desc) = query.description_contains {
+            count_q = count_q.bind(format!("%{}%", desc));
+        }
+
+        let count_row = count_q.fetch_one(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let total: i64 = count_row.get("count");
+
+        // Query with pagination
+        let select_query = format!(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             {}
+             ORDER BY {} {}
+             LIMIT ? OFFSET ?",
+            where_clause, order_by, order_direction
+        );
+
+        let mut select_q = sqlx::query(&select_query);
+
+        // Bind parameters for select query (same order as WHERE clauses)
+        if let Some(ref tid) = query.tenant_id {
+            select_q = select_q.bind(tid);
+        }
+        if let Some(enabled) = query.enabled {
+            select_q = select_q.bind(enabled);
+        }
+        if let Some(ref name) = query.name_contains {
+            select_q = select_q.bind(format!("%{}%", name));
+        }
+        if let Some(ref desc) = query.description_contains {
+            select_q = select_q.bind(format!("%{}%", desc));
+        }
+
+        // Bind pagination parameters
+        select_q = select_q.bind(query.limit as i64);
+        select_q = select_q.bind(query.offset as i64);
+
+        let rows = select_q.fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        let mut flows = Vec::new();
+        for row in rows {
+            flows.push(parse_flow_from_row(&row)?);
+        }
+
+        Ok(FlowQueryResult {
+            flows,
+            total: total as usize,
+            limit: query.limit,
+            offset: query.offset,
+        })
+    }
+
+    async fn insert_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
+        // Serialize nodes and variables to JSON
+        let nodes_json = serde_json::to_string(&flow.nodes)?;
+        let variables_json = serde_json::to_string(&flow.variables)?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        sqlx::query(
+            "INSERT INTO flows (
+                id, name, description, version, initial_node, nodes, variables,
+                tenant_id, enabled, webhook_url, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&flow.id)
+        .bind(&flow.name)
+        .bind(&flow.description)
+        .bind(flow.version as i64)
+        .bind(&flow.initial_node)
+        .bind(nodes_json)
+        .bind(variables_json)
+        .bind(&flow.tenant_id)
+        .bind(flow.enabled)
+        .bind(&flow.webhook_url)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        debug!(flow_id = %flow.id, version = flow.version, "Flow inserted into SQLite");
+        Ok(())
+    }
+
+    async fn update_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
+        // Get current version
+        let current_version_row = sqlx::query(
+            "SELECT version FROM flows WHERE id = ? ORDER BY version DESC LIMIT 1"
+        )
+        .bind(&flow.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        let current_version: u32 = match current_version_row {
+            Some(row) => {
+                let v: i64 = row.get("version");
+                v as u32
+            }
+            None => 0,
+        };
+
+        let new_version = current_version + 1;
+
+        // Serialize nodes and variables to JSON
+        let nodes_json = serde_json::to_string(&flow.nodes)?;
+        let variables_json = serde_json::to_string(&flow.variables)?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Insert new version
+        sqlx::query(
+            "INSERT INTO flows (
+                id, name, description, version, initial_node, nodes, variables,
+                tenant_id, enabled, webhook_url, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&flow.id)
+        .bind(&flow.name)
+        .bind(&flow.description)
+        .bind(new_version as i64)
+        .bind(&flow.initial_node)
+        .bind(nodes_json)
+        .bind(variables_json)
+        .bind(&flow.tenant_id)
+        .bind(flow.enabled)
+        .bind(&flow.webhook_url)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        debug!(flow_id = %flow.id, old_version = current_version, new_version, "Flow updated in SQLite");
+        Ok(())
+    }
+
+    async fn delete_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
+        // Soft delete - set enabled = false
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let result = sqlx::query(
+            "UPDATE flows SET enabled = 0, updated_at = ? WHERE id = ?"
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
+        }
+
+        debug!(flow_id = %id, "Flow deleted (soft delete) in SQLite");
+        Ok(())
+    }
+
+    async fn list_flow_versions(&self, id: &str) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             WHERE id = ?
+             ORDER BY version DESC"
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        let mut flows = Vec::new();
+        for row in rows {
+            flows.push(parse_flow_from_row(&row)?);
+        }
+
+        Ok(flows)
+    }
+
+    async fn enable_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let result = sqlx::query(
+            "UPDATE flows SET enabled = 1, updated_at = ? WHERE id = ?"
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
+        }
+
+        debug!(flow_id = %id, "Flow enabled in SQLite");
+        Ok(())
+    }
+
+    async fn disable_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let result = sqlx::query(
+            "UPDATE flows SET enabled = 0, updated_at = ? WHERE id = ?"
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
+        }
+
+        debug!(flow_id = %id, "Flow disabled in SQLite");
+        Ok(())
+    }
+}
+
+/// Parse a flow from a database row.
+fn parse_flow_from_row(row: &sqlx::sqlite::SqliteRow) -> std::result::Result<FlowDefinition, FlowError> {
+    let id: String = row.get("id");
+    let name: String = row.get("name");
+    let description: Option<String> = row.get("description");
+    let version: i64 = row.get("version");
+    let initial_node: String = row.get("initial_node");
+    let nodes_json: String = row.get("nodes");
+    let variables_json: String = row.get("variables");
+    let tenant_id: Option<String> = row.get("tenant_id");
+    let enabled: bool = row.get("enabled");
+    let webhook_url: Option<String> = row.get("webhook_url");
+    let created_at: i64 = row.get("created_at");
+    let updated_at: i64 = row.get("updated_at");
+
+    // Deserialize JSON fields
+    let nodes: HashMap<String, FlowNode> = serde_json::from_str(&nodes_json)?;
+    let variables: HashMap<String, String> = serde_json::from_str(&variables_json)?;
+
+    Ok(FlowDefinition {
+        id,
+        name,
+        description,
+        version: version as u32,
+        initial_node,
+        nodes,
+        variables,
+        tenant_id,
+        enabled,
+        webhook_url,
+        created_at: Some(chrono::Utc.timestamp_opt(created_at, 0).single().unwrap_or_else(|| chrono::Utc::now())),
+        updated_at: Some(chrono::Utc.timestamp_opt(updated_at, 0).single().unwrap_or_else(|| chrono::Utc::now())),
+    })
+}
+// ============================================================================
+// Stub Implementations (TODO: Implement these properly)
+// ============================================================================
+
+use fcp_core::storage::{VoicemailStore, GeoRoutingStore, TenantStore};
+use fcp_core::porting::PortingStore;
+
+#[async_trait]
+impl VoicemailStore for SqliteStorage {
+    async fn get_mailbox(&self, _id: &str) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        // TODO: Implement voicemail storage
+        Ok(None)
+    }
+
+    async fn get_mailbox_by_line_binding(
+        &self,
+        _line_binding_id: &fcp_core::LineBindingId,
+    ) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        Ok(None)
+    }
+
+    async fn get_mailbox_by_user(
+        &self,
+        _user_id: &fcp_core::UserId,
+    ) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        Ok(None)
+    }
+
+    async fn get_mailbox_by_extension(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+        _extension: &str,
+    ) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        Ok(None)
+    }
+
+    async fn list_mailboxes(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::VoicemailMailbox>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_mailbox(&self, _mailbox: fcp_core::VoicemailMailbox) -> Result<()> {
+        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    }
+
+    async fn delete_mailbox(&self, _id: &str) -> Result<()> {
+        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    }
+
+    async fn get_message(&self, _id: &str) -> Result<Option<fcp_core::VoicemailMessage>> {
+        Ok(None)
+    }
+
+    async fn list_messages(&self, _mailbox_id: &str) -> Result<Vec<fcp_core::VoicemailMessage>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_message(&self, _message: fcp_core::VoicemailMessage) -> Result<()> {
+        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    }
+
+    async fn delete_message(&self, _id: &str) -> Result<()> {
+        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    }
+
+    async fn list_messages_by_status(
+        &self,
+        _mailbox_id: &str,
+        _status: fcp_core::MessageStatus,
+    ) -> Result<Vec<fcp_core::VoicemailMessage>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_mwi_status(&self, _mailbox_id: &str) -> Result<fcp_core::MwiStatus> {
+        // Return empty MWI status for stub
+        Ok(fcp_core::MwiStatus::new(
+            _mailbox_id.to_string(),
+            fcp_core::LineBindingId::new(),
+        ))
+    }
+
+    async fn get_mailbox_stats(&self, _mailbox_id: &str) -> Result<fcp_core::VoicemailStats> {
+        // Return default stats for stub
+        Ok(fcp_core::VoicemailStats::default())
+    }
+}
+
+#[async_trait]
+impl GeoRoutingStore for SqliteStorage {
+    async fn get_geo_rule(&self, _id: &str) -> Result<Option<fcp_core::GeoRoutingRule>> {
+        Ok(None)
+    }
+
+    async fn list_geo_rules(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::GeoRoutingRule>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_geo_rule(&self, _rule: fcp_core::GeoRoutingRule) -> Result<()> {
+        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+    }
+
+    async fn delete_geo_rule(&self, _id: &str) -> Result<()> {
+        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+    }
+
+    async fn get_phone_number_location(
+        &self,
+        _phone_number_id: &fcp_core::PhoneNumberId,
+    ) -> Result<Option<fcp_core::PhoneNumberLocation>> {
+        Ok(None)
+    }
+
+    async fn list_phone_number_locations(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::PhoneNumberLocation>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_phone_number_location(
+        &self,
+        _location: fcp_core::PhoneNumberLocation,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+    }
+
+    async fn delete_phone_number_location(
+        &self,
+        _phone_number_id: &fcp_core::PhoneNumberId,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+    }
+}
+
+#[async_trait]
+impl PortingStore for SqliteStorage {
+    async fn get_port_request(
+        &self,
+        _id: &fcp_core::PortRequestId,
+    ) -> Result<Option<fcp_core::PortRequest>> {
+        Ok(None)
+    }
+
+    async fn list_port_requests(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::PortRequest>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_port_request(&self, _request: fcp_core::PortRequest) -> Result<()> {
+        Err(anyhow::anyhow!("Number porting storage not yet implemented"))
+    }
+
+    async fn delete_port_request(&self, _id: &fcp_core::PortRequestId) -> Result<()> {
+        Err(anyhow::anyhow!("Number porting storage not yet implemented"))
+    }
+
+    async fn list_port_requests_by_status(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+        _status: fcp_core::PortStatus,
+    ) -> Result<Vec<fcp_core::PortRequest>> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl TenantStore for SqliteStorage {
+    async fn get_tenant(&self, _id: &fcp_core::TenantId) -> Result<Option<fcp_core::Tenant>> {
+        // Return default tenant for single-tenant MVP
+        Ok(Some(fcp_core::Tenant {
+            id: fcp_core::TenantId::nil(),
+            name: "default".to_string(),
+            description: Some("Default tenant (single-tenant mode)".to_string()),
+            status: fcp_core::TenantStatus::Active,
+            contact_email: None,
+            contact_phone: None,
+            max_users: None,
+            max_phone_numbers: None,
+            max_concurrent_calls: None,
+            billing_id: None,
+            created_at: std::time::SystemTime::now(),
+            updated_at: std::time::SystemTime::now(),
+            trial_expires_at: None,
+            metadata: None,
+        }))
+    }
+
+    async fn get_tenant_by_name(&self, _name: &str) -> Result<Option<fcp_core::Tenant>> {
+        // Always return default tenant for MVP
+        self.get_tenant(&fcp_core::TenantId::nil()).await
+    }
+
+    async fn list_tenants(&self) -> Result<Vec<fcp_core::Tenant>> {
+        // Return single default tenant for MVP
+        Ok(vec![self.get_tenant(&fcp_core::TenantId::nil()).await?.unwrap()])
+    }
+
+    async fn put_tenant(&self, _tenant: fcp_core::Tenant) -> Result<()> {
+        Err(anyhow::anyhow!("Multi-tenant storage not yet implemented"))
+    }
+
+    async fn delete_tenant(&self, _id: &fcp_core::TenantId) -> Result<()> {
+        Err(anyhow::anyhow!("Multi-tenant storage not yet implemented"))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fcp_core::CallId;
+    use fcp_core::{CallId, UserId, UserRole};
+    use fcp_core::storage::{AccountStatus, EmergencyContact};
     use tempfile::TempDir;
 
     async fn create_test_storage() -> (SqliteStorage, TempDir) {
@@ -2006,12 +2628,15 @@ mod tests {
 
         // Create user
         let user = User {
+            id: UserId::new(),
             username: "alice".to_string(),
             password: "hashed_password".to_string(),
             digest_password: None,
             sip_ha1_hash: None,
             display_name: Some("Alice".to_string()),
             tenant_id: TenantId::nil(),
+            role: UserRole::EndUser,
+            department_id: None,
             enabled: true,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),

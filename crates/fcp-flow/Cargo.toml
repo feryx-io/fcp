@@ -11,6 +11,7 @@ description = "JSON-based call flow engine for FCP - programmable voice platform
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
+fcp-media = { path = "../fcp-media" }
 
 # Async runtime
 tokio = { workspace = true }

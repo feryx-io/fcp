@@ -2,6 +2,7 @@
 
 use fcp_core::DynStorage;
 use fcp_events::EventBus;
+use fcp_flow::FlowStore;
 use fcp_media::MediaManager;
 use fcp_sip::call_manager::CallManager;
 use fcp_sip::handler::SipMessageHandler;
@@ -13,6 +14,9 @@ use std::sync::Arc;
 pub struct ApiState {
     /// Storage for users and registrations (optional)
     pub storage: Option<Arc<DynStorage>>,
+
+    /// Flow store for managing call flows (optional)
+    pub flow_store: Option<Arc<dyn FlowStore>>,
 
     /// Dialog manager for inspecting active dialogs
     pub dialog_manager: Arc<DialogManager>,
@@ -39,6 +43,7 @@ pub struct ApiState {
 impl ApiState {
     pub fn new(
         storage: Option<Arc<DynStorage>>,
+        flow_store: Option<Arc<dyn FlowStore>>,
         dialog_manager: Arc<DialogManager>,
         subscription_manager: Arc<SubscriptionManager>,
         call_manager: Arc<CallManager>,
@@ -49,6 +54,7 @@ impl ApiState {
     ) -> Self {
         Self {
             storage,
+            flow_store,
             dialog_manager,
             subscription_manager,
             call_manager,

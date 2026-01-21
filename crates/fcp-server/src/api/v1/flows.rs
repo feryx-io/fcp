@@ -8,10 +8,18 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_flow::{FlowDefinition, FlowQuery, FlowStore, InMemoryFlowStore};
+use fcp_flow::{FlowDefinition, FlowQuery, FlowStore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+/// Helper to get flow store from state or return error.
+fn get_flow_store(state: &ApiState) -> Result<Arc<dyn FlowStore>, ApiError> {
+    state
+        .flow_store
+        .clone()
+        .ok_or_else(|| ApiError::Internal("Flow store not available".to_string()))
+}
 
 /// Flow response model.
 #[derive(Debug, Serialize, Deserialize)]
@@ -130,14 +138,12 @@ pub struct ListFlowsResponse {
 ///
 /// GET /api/v1/flows
 pub async fn list_flows(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Query(params): Query<ListFlowsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!("Listing flows with filters: {:?}", params);
 
-    // For MVP, use in-memory store
-    // TODO: Get flow store from state when storage backend is implemented
-    let store = Arc::new(InMemoryFlowStore::new());
+    let store = get_flow_store(&state)?;
 
     // Validate and cap limit
     let limit = if params.limit > 1000 {
@@ -186,13 +192,12 @@ pub async fn list_flows(
 ///
 /// GET /api/v1/flows/:id
 pub async fn get_flow(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!(flow_id = %id, "Getting flow");
 
-    // For MVP, use in-memory store
-    let store = Arc::new(InMemoryFlowStore::new());
+    let store = get_flow_store(&state)?;
 
     let flow = store.get_flow(&id)
         .await
@@ -206,13 +211,12 @@ pub async fn get_flow(
 ///
 /// POST /api/v1/flows
 pub async fn create_flow(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Json(req): Json<CreateFlowRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     info!(flow_id = %req.id, flow_name = %req.name, "Creating flow");
 
-    // For MVP, use in-memory store
-    let store = Arc::new(InMemoryFlowStore::new());
+    let store = get_flow_store(&state)?;
 
     // Deserialize nodes and variables from JSON
     let nodes = serde_json::from_value(req.nodes)
@@ -251,14 +255,13 @@ pub async fn create_flow(
 ///
 /// PUT /api/v1/flows/:id
 pub async fn update_flow(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateFlowRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     info!(flow_id = %id, "Updating flow");
 
-    // For MVP, use in-memory store
-    let store = Arc::new(InMemoryFlowStore::new());
+    let store = get_flow_store(&state)?;
 
     // Get existing flow
     let mut flow = store.get_flow(&id)
@@ -305,13 +308,12 @@ pub async fn update_flow(
 ///
 /// DELETE /api/v1/flows/:id
 pub async fn delete_flow(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     info!(flow_id = %id, "Deleting flow");
 
-    // For MVP, use in-memory store
-    let store = Arc::new(InMemoryFlowStore::new());
+    let store = get_flow_store(&state)?;
 
     store.delete_flow(&id)
         .await
@@ -329,13 +331,12 @@ pub async fn delete_flow(
 ///
 /// GET /api/v1/flows/:id/versions
 pub async fn list_flow_versions(
-    State(_state): State<ApiState>,
+    State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!(flow_id = %id, "Listing flow versions");
 
-    // For MVP, use in-memory store
-    let store = Arc::new(InMemoryFlowStore::new());
+    let store = get_flow_store(&state)?;
 
     let versions = store.list_flow_versions(&id)
         .await
