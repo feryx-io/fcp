@@ -1522,6 +1522,7 @@ dependencies = [
  "fcp-flow",
  "fcp-media",
  "fcp-routing",
+ "futures",
  "md5",
  "rand 0.8.5",
  "rustls-native-certs",

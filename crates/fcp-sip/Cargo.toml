@@ -55,3 +55,4 @@ rand = "0.8"
 tokio-rustls = { version = "0.25", optional = true }
 rustls-native-certs = { version = "0.7", optional = true }
 tempfile = "3.23.0"
+futures = "0.3.31"

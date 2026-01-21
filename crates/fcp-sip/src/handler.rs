@@ -196,7 +196,7 @@ use crate::metrics::MetricsHandle;
 use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
-use fcp_core::storage::{DeviceStore, LineBindingStore, PhoneNumberStore};
+use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore};
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -1321,10 +1321,14 @@ impl SipMessageHandler {
             .unwrap_or(destination_uri)
             .trim();
 
+        // Normalize the dialed number (e.g., 15185556789 -> +15185556789)
+        let normalized_aor = normalize_dialed_number(destination_aor);
+
         debug!(
             call_id = %call_id,
             destination_uri = %destination_uri,
             destination_aor = %destination_aor,
+            normalized_aor = %normalized_aor,
             "Looking up destination in registrar"
         );
 
@@ -1335,21 +1339,21 @@ impl SipMessageHandler {
 
         // Check if destination is a phone number (E.164 format)
         // If so, look up line binding to find which user/devices to route to
-        let destination_contacts = if is_e164_number(destination_aor) {
+        let destination_contacts = if is_e164_number(&normalized_aor) {
             debug!(
                 call_id = %call_id,
-                destination = %destination_aor,
+                destination = %normalized_aor,
                 "Destination is a phone number, looking up line binding"
             );
 
             // Extract E.164 number from SIP URI (e.g., sip:+15551234567@host -> +15551234567)
-            let e164_number = destination_aor
+            let e164_number = normalized_aor
                 .strip_prefix("sip:")
-                .or_else(|| destination_aor.strip_prefix("sips:"))
-                .unwrap_or(destination_aor)
+                .or_else(|| normalized_aor.strip_prefix("sips:"))
+                .unwrap_or(&normalized_aor)
                 .split('@')
                 .next()
-                .unwrap_or(destination_aor);
+                .unwrap_or(&normalized_aor);
 
             // Try to look up line binding for this phone number
             if let Some(storage) = &self.storage {
@@ -1560,95 +1564,210 @@ impl SipMessageHandler {
                 }
             }
         } else {
-            // Not a phone number - do direct registrar lookup (existing behavior)
-            debug!(call_id = %call_id, destination = %destination_aor, "Destination is not a phone number, using direct registrar lookup");
+            // Not a phone number - try extension lookup first, then direct registrar lookup
+            debug!(call_id = %call_id, destination = %normalized_aor, "Destination is not a phone number, checking extensions");
 
-            if let Some(registrar) = &self.registrar {
-                match registrar.get_registrations(destination_aor).await {
-                    Ok(bindings) if !bindings.is_empty() => {
+            // Extract extension number from URI (e.g., sip:5000@host -> 5000)
+            let extension_number = normalized_aor
+                .strip_prefix("sip:")
+                .or_else(|| normalized_aor.strip_prefix("sips:"))
+                .unwrap_or(&normalized_aor)
+                .split('@')
+                .next()
+                .unwrap_or(&normalized_aor);
+
+            // Try extension lookup if storage is available
+            let mut extension_contacts = Vec::new();
+            if let Some(storage) = &self.storage {
+                // Get tenant ID (for now, use default tenant)
+                let tenant_id = fcp_core::TenantId::nil();
+
+                match storage.get_extension_by_number(&tenant_id, extension_number).await {
+                    Ok(Some(extension)) => {
                         debug!(
                             call_id = %call_id,
-                            destination = %destination_aor,
-                            contacts = bindings.len(),
-                            "Found registered contacts for destination"
+                            extension = %extension_number,
+                            target = %extension.target,
+                            "Found extension, routing to target"
                         );
-                        bindings
+
+                        // Route based on extension target type
+                        match &extension.target {
+                            fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
+                                // Look up the phone number and its line bindings
+                                match storage.get_phone_number(phone_number_id).await {
+                                    Ok(Some(phone_number)) => {
+                                        // Get line binding for this phone number
+                                        match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                                            Ok(Some(line_binding)) => {
+                                                // Get devices from line binding
+                                                let enabled_devices = line_binding.enabled_devices();
+                                                if enabled_devices.is_empty() {
+                                                    warn!(call_id = %call_id, "Extension target has no enabled devices");
+                                                    let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                                    a_leg_handle.send_final(response).await;
+                                                    let _ = self.call_manager.terminate_call(&call_id, Some("No devices enabled".to_string()));
+                                                    return Ok(());
+                                                }
+
+                                                // Collect all contact URIs from device registrations
+                                                for device_binding in enabled_devices {
+                                                    match storage.get_device(&device_binding.device_id).await {
+                                                        Ok(Some(device)) => {
+                                                            if let Some(sip_uri) = &device.sip_uri {
+                                                                if let Some(registrar) = &self.registrar {
+                                                                    match registrar.get_registrations(sip_uri).await {
+                                                                        Ok(contacts) if !contacts.is_empty() => {
+                                                                            debug!(
+                                                                                call_id = %call_id,
+                                                                                extension = %extension_number,
+                                                                                device = %device.name,
+                                                                                contacts = contacts.len(),
+                                                                                "Found registrations for extension target device"
+                                                                            );
+                                                                            extension_contacts.extend(contacts);
+                                                                        }
+                                                                        _ => {}
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                            _ => {
+                                                warn!(call_id = %call_id, extension = %extension_number, "Extension target phone number has no line binding");
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        warn!(call_id = %call_id, extension = %extension_number, "Extension target phone number not found");
+                                    }
+                                }
+                            }
+                            fcp_core::ExtensionTarget::User(_user_id) => {
+                                info!(call_id = %call_id, target = %extension.target, "Extension target type User not yet fully implemented");
+                                let response = self.create_simple_response(request, 501, "Not Implemented");
+                                a_leg_handle.send_final(response).await;
+                                let _ = self.call_manager.terminate_call(&call_id, Some("Extension target type User not implemented".to_string()));
+                                return Ok(());
+                            }
+                            fcp_core::ExtensionTarget::Device(_device_id) => {
+                                info!(call_id = %call_id, target = %extension.target, "Extension target type Device not yet fully implemented");
+                                let response = self.create_simple_response(request, 501, "Not Implemented");
+                                a_leg_handle.send_final(response).await;
+                                let _ = self.call_manager.terminate_call(&call_id, Some("Extension target type Device not implemented".to_string()));
+                                return Ok(());
+                            }
+                            fcp_core::ExtensionTarget::Service(_service_id) => {
+                                info!(call_id = %call_id, target = %extension.target, "Extension target type Service not yet fully implemented");
+                                let response = self.create_simple_response(request, 501, "Not Implemented");
+                                a_leg_handle.send_final(response).await;
+                                let _ = self.call_manager.terminate_call(&call_id, Some("Extension target type Service not implemented".to_string()));
+                                return Ok(());
+                            }
+                        }
                     }
-                    Ok(_) => {
-                        info!(
-                            call_id = %call_id,
-                            destination = %destination_aor,
-                            "Destination not registered (no bindings)"
-                        );
-                        let response =
-                            self.create_simple_response(request, 480, "Temporarily Unavailable");
-                        a_leg_handle.send_final(response).await;
-                        let _ = self
-                            .call_manager
-                            .terminate_call(&call_id, Some("Destination not registered".to_string()));
-                        return Ok(());
+                    Ok(None) => {
+                        debug!(call_id = %call_id, extension = %extension_number, "Extension not found, falling back to direct registrar lookup");
                     }
                     Err(e) => {
-                        error!(
-                            call_id = %call_id,
-                            destination = %destination_aor,
-                            error = %e,
-                            "Failed to lookup destination"
-                        );
-                        let response =
-                            self.create_simple_response(request, 500, "Internal Server Error");
-                        a_leg_handle.send_final(response).await;
-                        let _ = self.call_manager.terminate_call(
-                            &call_id,
-                            Some(format!("Failed to lookup destination: {}", e)),
-                        );
-                        return Ok(());
+                        warn!(call_id = %call_id, extension = %extension_number, error = %e, "Failed to lookup extension, falling back to direct registrar lookup");
                     }
                 }
+            }
+
+            // If we found contacts via extension routing, use them
+            if !extension_contacts.is_empty() {
+                extension_contacts
             } else {
-                // No registrar configured - cannot forward call
-                error!(
-                    call_id = %call_id,
-                    "Cannot forward call: No registrar configured"
-                );
-                let response = self.create_simple_response(request, 500, "Service Unavailable");
-                a_leg_handle.send_final(response).await;
-                let _ = self
-                    .call_manager
-                    .terminate_call(&call_id, Some("No registrar configured".to_string()));
-                return Ok(());
+                // Fall back to direct registrar lookup (existing behavior)
+                debug!(call_id = %call_id, destination = %destination_aor, "No extension found, using direct registrar lookup");
+
+                if let Some(registrar) = &self.registrar {
+                    match registrar.get_registrations(destination_aor).await {
+                        Ok(bindings) if !bindings.is_empty() => {
+                            debug!(
+                                call_id = %call_id,
+                                destination = %destination_aor,
+                                contacts = bindings.len(),
+                                "Found registered contacts for destination"
+                            );
+                            bindings
+                        }
+                        Ok(_) => {
+                            info!(
+                                call_id = %call_id,
+                                destination = %destination_aor,
+                                "Destination not registered (no bindings)"
+                            );
+                            let response =
+                                self.create_simple_response(request, 480, "Temporarily Unavailable");
+                            a_leg_handle.send_final(response).await;
+                            let _ = self
+                                .call_manager
+                                .terminate_call(&call_id, Some("Destination not registered".to_string()));
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            error!(
+                                call_id = %call_id,
+                                destination = %destination_aor,
+                                error = %e,
+                                "Failed to lookup destination"
+                            );
+                            let response =
+                                self.create_simple_response(request, 500, "Internal Server Error");
+                            a_leg_handle.send_final(response).await;
+                            let _ = self.call_manager.terminate_call(
+                                &call_id,
+                                Some(format!("Failed to lookup destination: {}", e)),
+                            );
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    // No registrar configured - cannot forward call
+                    error!(
+                        call_id = %call_id,
+                        "Cannot forward call: No registrar configured"
+                    );
+                    let response = self.create_simple_response(request, 500, "Service Unavailable");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(&call_id, Some("No registrar configured".to_string()));
+                    return Ok(());
+                }
             }
         };
 
-        // Use the contact with the highest q-value (RFC 3261 contact prioritization)
-        // If q-values are equal, use the last one (likely most recent)
-        let destination_contact = destination_contacts
+        // Parallel forking: Extract URIs from all contacts
+        let target_uris: Vec<String> = destination_contacts
             .iter()
-            .max_by(|a, b| {
-                a.q_value()
-                    .partial_cmp(&b.q_value())
-                    .unwrap_or(std::cmp::Ordering::Equal)
+            .map(|contact| {
+                let contact_str = contact.contact();
+                // Extract URI from Contact header (strip angle brackets if present)
+                // Contact format: <sip:user@host> or sip:user@host
+                if let Some(start) = contact_str.find('<') {
+                    if let Some(end) = contact_str.find('>') {
+                        contact_str[start + 1..end].to_string()
+                    } else {
+                        contact_str.to_string()
+                    }
+                } else {
+                    // No angle brackets - use as-is, but strip any contact-params after semicolon outside URI
+                    contact_str.split(';').next().unwrap_or(contact_str).to_string()
+                }
             })
-            .unwrap_or(&destination_contacts[0]);
-        let contact_str = destination_contact.contact();
-
-        // Extract URI from Contact header (strip angle brackets if present)
-        // Contact format: <sip:user@host> or sip:user@host
-        let target_uri = if let Some(start) = contact_str.find('<') {
-            if let Some(end) = contact_str.find('>') {
-                &contact_str[start + 1..end]
-            } else {
-                contact_str
-            }
-        } else {
-            // No angle brackets - use as-is, but strip any contact-params after semicolon outside URI
-            contact_str.split(';').next().unwrap_or(contact_str)
-        };
+            .collect();
 
         info!(
             call_id = %call_id,
-            target = %target_uri,
-            "Forwarding INVITE to B-leg"
+            target_count = target_uris.len(),
+            targets = ?target_uris,
+            "Parallel forking INVITE to all registered devices"
         );
 
         // Update call state to Inviting and create B-leg
@@ -1767,56 +1886,56 @@ impl SipMessageHandler {
             .await;
         uac.inner().set_from_uri(caller_from_uri.clone()).await;
 
-        // Create outbound INVITE to B-leg using UAC
-        debug!(
-            call_id = %call_id,
-            target = %target_uri,
-            has_sdp = a_leg_sdp.is_some(),
-            "Creating B-leg INVITE"
-        );
+        // Create outbound INVITEs to all target URIs (parallel forking)
+        let mut b_leg_calls = Vec::new();
+        for target_uri in &target_uris {
+            debug!(
+                call_id = %call_id,
+                target = %target_uri,
+                has_sdp = a_leg_sdp.is_some(),
+                "Creating B-leg INVITE"
+            );
 
-        let b_leg_call = match uac.invite(&target_uri, a_leg_sdp.as_deref()).await {
-            Ok(call) => call,
-            Err(e) => {
-                error!(
-                    call_id = %call_id,
-                    target = %target_uri,
-                    error = %e,
-                    "Failed to create B-leg INVITE"
-                );
-                // Clear caller identity overrides to prevent leaking to subsequent calls
-                uac.inner().set_display_name(None).await;
-                uac.inner().set_from_uri(None).await;
-
-                let response = self.create_simple_response(request, 500, "Failed to forward call");
-                a_leg_handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(
-                    &call_id,
-                    Some(format!("Failed to create B-leg INVITE: {}", e)),
-                );
-                return Ok(());
+            match uac.invite(target_uri, a_leg_sdp.as_deref()).await {
+                Ok(call) => {
+                    info!(
+                        call_id = %call_id,
+                        target = %target_uri,
+                        "B-leg INVITE sent"
+                    );
+                    b_leg_calls.push((target_uri.clone(), Arc::new(call)));
+                }
+                Err(e) => {
+                    warn!(
+                        call_id = %call_id,
+                        target = %target_uri,
+                        error = %e,
+                        "Failed to create B-leg INVITE for one target, continuing with others"
+                    );
+                }
             }
-        };
+        }
 
-        // Clear caller identity overrides after INVITE sent to prevent leaking to subsequent calls
+        // Clear caller identity overrides after INVITEs sent
         uac.inner().set_display_name(None).await;
         uac.inner().set_from_uri(None).await;
 
-        // Shareable handle for cancel/final response tracking
-        // Since await_final() and cancel() both take &self, we only need Arc (no Mutex)
-        let b_leg_handle = Arc::new(b_leg_call);
-
-        // Persist the outbound handle for later control (CANCEL/BYE)
-        let _ = self.call_manager.update_call(&call_id, |call| {
-            if let Some(b_leg) = &mut call.b_leg {
-                b_leg.outbound_handle = Some(Arc::clone(&b_leg_handle));
-            }
-        });
+        // Check if we successfully created any B-legs
+        if b_leg_calls.is_empty() {
+            error!(call_id = %call_id, "Failed to create any B-leg INVITEs");
+            let response = self.create_simple_response(request, 500, "Failed to forward call");
+            a_leg_handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(
+                &call_id,
+                Some("Failed to create any B-leg INVITEs".to_string()),
+            );
+            return Ok(());
+        }
 
         info!(
             call_id = %call_id,
-            target = %target_uri,
-            "B-leg INVITE sent, awaiting responses"
+            b_leg_count = b_leg_calls.len(),
+            "All B-leg INVITEs sent, racing for first answer"
         );
 
         // Update call state to Proceeding
@@ -1824,30 +1943,28 @@ impl SipMessageHandler {
             call.state = crate::call::CallState::Proceeding;
         });
 
-        // Spawn background task to handle B-leg responses asynchronously
-        // This prevents blocking the A-leg transaction while waiting for B-leg responses
+        // Spawn background task to race all B-legs
         let handler = self.clone();
         let request_clone = request.clone();
         let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
-        let b_leg_handle_clone = Arc::clone(&b_leg_handle);
         let call_id_clone = call_id.clone();
 
         tokio::spawn(async move {
             if let Err(e) = handler
-                .handle_b_leg_responses(
+                .handle_parallel_forking(
                     request_clone,
                     a_leg_handle_arc,
-                    b_leg_handle_clone,
+                    b_leg_calls,
                     call_id_clone,
                 )
                 .await
             {
-                error!(call_id = %call_id_clone, error = %e, "Error handling B-leg responses");
+                error!(call_id = %call_id_clone, error = %e, "Error handling parallel forking");
             }
         });
 
         // Return immediately - responses will be handled in background task
-        info!(call_id = %call_id, "B-leg INVITE sent, handling responses in background");
+        info!(call_id = %call_id, "Parallel forking in progress, handling responses in background");
         return Ok(());
     }
 
@@ -2214,6 +2331,199 @@ impl SipMessageHandler {
                 &call_id,
                 Some(format!("B-leg rejected: {} {}", b_leg_status, reason)),
             );
+        }
+
+        Ok(())
+    }
+
+    /// Handle parallel forking: race multiple B-legs for first successful answer.
+    ///
+    /// Sends INVITE to all target contacts simultaneously and races for the first 2xx response.
+    /// When a 2xx arrives, CANCELs all other pending B-legs and connects winner to A-leg.
+    async fn handle_parallel_forking(
+        &self,
+        request: sip_core::Request,
+        a_leg_handle: Arc<ServerTransactionHandle>,
+        b_leg_calls: Vec<(String, Arc<crate::uac::OutboundCall>)>,
+        call_id: crate::call::CallId,
+    ) -> Result<()> {
+        info!(
+            call_id = %call_id,
+            fork_count = b_leg_calls.len(),
+            "Racing {} B-legs for first answer",
+            b_leg_calls.len()
+        );
+
+        // Create tasks to wait for final responses from all B-legs
+        let mut tasks = Vec::new();
+        for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
+            let b_leg_handle_clone = Arc::clone(b_leg_handle);
+            let target_clone = target.clone();
+            let call_id_clone = call_id.clone();
+
+            let task = tokio::spawn(async move {
+                // Wait for final response (this consumes it!)
+                match b_leg_handle_clone.await_final().await {
+                    Ok(response) => {
+                        let code = response.start_line().code();
+                        debug!(
+                            call_id = %call_id_clone,
+                            target = %target_clone,
+                            code = code,
+                            "B-leg {} final response", i
+                        );
+                        Some((i, target_clone, code, response, Arc::clone(&b_leg_handle_clone)))
+                    }
+                    Err(e) => {
+                        warn!(
+                            call_id = %call_id_clone,
+                            target = %target_clone,
+                            error = %e,
+                            "B-leg {} failed", i
+                        );
+                        None
+                    }
+                }
+            });
+            tasks.push(task);
+        }
+
+        // Race all tasks and take the first successful 2xx response
+        let mut winning_index = None;
+        let mut winning_target = None;
+        let mut winning_response = None;
+        let mut winning_handle = None;
+
+        // Keep looping until we get a 2xx or all tasks complete
+        while !tasks.is_empty() {
+            let (result, _index, remaining) = futures::future::select_all(tasks).await;
+            tasks = remaining;
+
+            if let Ok(Some((i, target, code, response, handle))) = result {
+                if code >= 200 && code < 300 {
+                    // Winner! This is the first 2xx
+                    info!(
+                        call_id = %call_id,
+                        winner = %target,
+                        code = code,
+                        "B-leg {} won the race with {}",
+                        i, code
+                    );
+                    winning_index = Some(i);
+                    winning_target = Some(target);
+                    winning_response = Some(response);
+                    winning_handle = Some(handle);
+                    break;
+                }
+            }
+        }
+
+        // CANCEL all non-winning B-legs
+        for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
+            if Some(i) != winning_index {
+                info!(
+                    call_id = %call_id,
+                    target = %target,
+                    "CANCELing non-winning B-leg {}", i
+                );
+                if let Err(e) = b_leg_handle.cancel().await {
+                    warn!(
+                        call_id = %call_id,
+                        target = %target,
+                        error = %e,
+                        "Failed to CANCEL B-leg {}", i
+                    );
+                }
+            }
+        }
+
+        // If we have a winner, relay the response to A-leg
+        if let (Some(target), Some(response), Some(handle)) = (winning_target, winning_response, winning_handle) {
+            let code = response.start_line().code();
+            info!(
+                call_id = %call_id,
+                winner = %target,
+                code = code,
+                "Relaying winning B-leg response to A-leg"
+            );
+
+            // Store the winning B-leg handle
+            let _ = self.call_manager.update_call(&call_id, |call| {
+                if let Some(b_leg) = &mut call.b_leg {
+                    b_leg.outbound_handle = Some(Arc::clone(&handle));
+                }
+                call.state = crate::call::CallState::Established;
+            });
+
+            // Extract SDP from winning B-leg response
+            let mut b_leg_sdp = if !response.body().is_empty() {
+                Some(String::from_utf8_lossy(response.body()).to_string())
+            } else {
+                None
+            };
+
+            // Rewrite B-leg SDP if media is anchored on server (for A-leg response)
+            if let Some(ref original_sdp) = b_leg_sdp {
+                // Check if this call has anchored media
+                let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
+                    if call.media_anchored {
+                        call.media_session_id.clone()
+                    } else {
+                        None
+                    }
+                });
+
+                if let (Some(media_session_id), Some(media_manager)) =
+                    (media_session_id, &self.media_manager)
+                {
+                    // Get media session to extract RTP port (A-leg port)
+                    match media_manager.get_session(&media_session_id).await {
+                        Ok(session) => {
+                            let (rtp_port, _rtcp_port) = session.ports();
+
+                            // Rewrite SDP to point to server's A-leg RTP endpoint
+                            let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                                original_sdp,
+                                &self.local_addr,
+                                rtp_port,
+                            );
+
+                            info!(
+                                call_id = %call_id,
+                                original_port = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
+                                server_ip = %self.local_addr,
+                                rtp_port = rtp_port,
+                                "Rewrote winning B-leg SDP for media anchoring on A-leg"
+                            );
+
+                            b_leg_sdp = Some(rewritten_sdp);
+                        }
+                        Err(e) => {
+                            error!(
+                                call_id = %call_id,
+                                media_session_id = %media_session_id,
+                                error = %e,
+                                "Failed to get media session for B-leg SDP rewriting, using original SDP"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Create 200 OK for A-leg with rewritten SDP
+            let mut ok_response = self.uas.create_ok(&request, b_leg_sdp.as_deref())
+                .expect("Failed to create 200 OK");
+
+            self.ensure_response_hygiene(&request, &mut ok_response);
+
+            info!(call_id = %call_id, "Sending 200 OK to A-leg with media anchoring");
+            a_leg_handle.send_final(ok_response).await;
+        } else {
+            // All B-legs failed
+            warn!(call_id = %call_id, "All B-legs failed, returning 480");
+            let response = self.create_simple_response(&request, 480, "Temporarily Unavailable");
+            a_leg_handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(&call_id, Some("All B-legs failed".to_string()));
         }
 
         Ok(())
@@ -4796,6 +5106,65 @@ fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
 /// - `sip:+15183217034@domain` → true
 /// - `sip:alice@domain` → false
 /// - `sip:+1518@domain` → false (too short)
+/// Normalize a dialed number to E.164 format by adding "+" prefix if needed.
+///
+/// Handles common dialing patterns:
+/// - "15185556789" (11 digits, starts with 1) -> "+15185556789"
+/// - "5185556789" (10 digits, NANP) -> "+15185556789"
+/// - "+15185556789" (already E.164) -> "+15185556789"
+/// - "5000" (short extension) -> "5000" (unchanged)
+/// - "sip:15185556789@host" -> "sip:+15185556789@host"
+fn normalize_dialed_number(uri: &str) -> String {
+    // Check if this is a SIP URI
+    let (prefix, user_and_host) = if let Some(stripped) = uri.strip_prefix("sip:") {
+        ("sip:", stripped)
+    } else if let Some(stripped) = uri.strip_prefix("sips:") {
+        ("sips:", stripped)
+    } else {
+        ("", uri)
+    };
+
+    // Split into user part and host part
+    let parts: Vec<&str> = user_and_host.split('@').collect();
+    let user_part = parts[0];
+    let host_part = if parts.len() > 1 { Some(parts[1]) } else { None };
+
+    // If already has +, it's already E.164
+    if user_part.starts_with('+') {
+        return uri.to_string();
+    }
+
+    // Check if it's all digits
+    if !user_part.chars().all(|c| c.is_ascii_digit()) {
+        return uri.to_string();
+    }
+
+    // Skip normalization for short extensions (< 7 digits)
+    // This preserves extensions like 5000, 1001, etc.
+    if user_part.len() < 7 {
+        return uri.to_string();
+    }
+
+    // Normalize based on length
+    let normalized_user = if user_part.len() == 11 && user_part.starts_with('1') {
+        // North American 11-digit format: 1NXXNXXXXXX -> +1NXXNXXXXXX
+        format!("+{}", user_part)
+    } else if user_part.len() == 10 {
+        // North American 10-digit format: NXXNXXXXXX -> +1NXXNXXXXXX
+        format!("+1{}", user_part)
+    } else {
+        // Unknown format, return as-is
+        return uri.to_string();
+    };
+
+    // Reconstruct the URI
+    if let Some(host) = host_part {
+        format!("{}{}@{}", prefix, normalized_user, host)
+    } else {
+        format!("{}{}", prefix, normalized_user)
+    }
+}
+
 fn is_e164_number(uri: &str) -> bool {
     // Extract user part from sip:+15183217034@domain or just +15183217034
     let user_part = uri
