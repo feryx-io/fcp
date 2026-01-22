@@ -182,8 +182,6 @@ use sip_dialog::session_timer_manager::{SessionTimerEvent, SessionTimerManager};
 use sip_sdp::parse::parse_sdp;
 use smol_str::SmolStr;
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -261,7 +259,7 @@ pub struct SipMessageHandler {
     _transcript_dir: Option<PathBuf>,
 
     /// Channel for async transcript writes (background task)
-    transcript_tx: Option<mpsc::UnboundedSender<TranscriptEntry>>,
+    transcript_tx: Option<mpsc::Sender<TranscriptEntry>>,
 
     /// Settings
     settings: ServerSettings,
@@ -442,7 +440,8 @@ impl SipMessageHandler {
 
         // Initialize transcript background writer if directory configured
         let transcript_tx = if let Some(ref dir) = settings.transcript_dir {
-            let (tx, mut rx) = mpsc::unbounded_channel::<TranscriptEntry>();
+            // Use bounded channel for backpressure (max 1000 pending entries)
+            let (tx, mut rx) = mpsc::channel::<TranscriptEntry>(1000);
             let transcript_dir = dir.clone();
             let max_bytes = settings.transcript_max_bytes;
 
@@ -451,41 +450,81 @@ impl SipMessageHandler {
                     let filename = format!("{}.log", entry.call_id.replace(':', "_"));
                     let path = transcript_dir.join(&filename);
 
+                    // Check file size and rotate if needed (async)
                     if let Some(max) = max_bytes {
-                        if let Ok(meta) = std::fs::metadata(&path) {
-                            if meta.len() > max {
+                        match tokio::fs::metadata(&path).await {
+                            Ok(meta) if meta.len() > max => {
                                 let ts = chrono::Utc::now().timestamp();
-                                let _ = std::fs::rename(
-                                    &path,
-                                    transcript_dir.join(format!(
-                                        "{}.{}.log",
-                                        entry.call_id.replace(':', "_"),
-                                        ts
-                                    )),
+                                let new_path = transcript_dir.join(format!(
+                                    "{}.{}.log",
+                                    entry.call_id.replace(':', "_"),
+                                    ts
+                                ));
+                                if let Err(e) = tokio::fs::rename(&path, new_path).await {
+                                    tracing::warn!(
+                                        call_id = %entry.call_id,
+                                        error = %e,
+                                        "Failed to rotate transcript file"
+                                    );
+                                }
+                            }
+                            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                                tracing::warn!(
+                                    call_id = %entry.call_id,
+                                    error = %e,
+                                    "Failed to check transcript file size"
                                 );
                             }
+                            _ => {}
                         }
                     }
 
-                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-                        let entry_ts =
-                            chrono::DateTime::<chrono::Utc>::from(entry.timestamp).to_rfc3339();
-                        let _ = writeln!(
-                            file,
-                            "{} {} {} dialog={} cseq={} peer={} transport={} rr={} route={} body_hash={}",
-                            entry_ts,
-                            entry.direction,
-                            entry.method_or_status,
-                            entry.dialog_id_str,
-                            entry.cseq,
-                            entry.peer.as_deref().unwrap_or(""),
-                            entry.transport.as_deref().unwrap_or(""),
-                            entry.record_route,
-                            entry.route,
-                            entry.body_hash.as_deref().unwrap_or("")
-                        );
+                    // Open and write to file (async)
+                    match tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .await
+                    {
+                        Ok(mut file) => {
+                            use tokio::io::AsyncWriteExt;
+
+                            let entry_ts = chrono::DateTime::<chrono::Utc>::from(entry.timestamp)
+                                .to_rfc3339();
+                            let line = format!(
+                                "{} {} {} dialog={} cseq={} peer={} transport={} rr={} route={} body_hash={}\n",
+                                entry_ts,
+                                entry.direction,
+                                entry.method_or_status,
+                                entry.dialog_id_str,
+                                entry.cseq,
+                                entry.peer.as_deref().unwrap_or(""),
+                                entry.transport.as_deref().unwrap_or(""),
+                                entry.record_route,
+                                entry.route,
+                                entry.body_hash.as_deref().unwrap_or("")
+                            );
+
+                            if let Err(e) = file.write_all(line.as_bytes()).await {
+                                tracing::error!(
+                                    call_id = %entry.call_id,
+                                    error = %e,
+                                    "Failed to write transcript entry"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                call_id = %entry.call_id,
+                                path = ?path,
+                                error = %e,
+                                "Failed to open transcript file"
+                            );
+                        }
                     }
                 }
+
+                tracing::info!("Transcript writer task exiting");
             });
 
             Some(tx)
@@ -1579,13 +1618,25 @@ impl SipMessageHandler {
             // Try extension lookup if storage is available
             let mut extension_contacts = Vec::new();
             if let Some(storage) = &self.storage {
-                // Get tenant ID (for now, use default tenant)
-                let tenant_id = fcp_core::TenantId::nil();
+                // Get tenant ID from the call (already stored when call was created)
+                // TODO: Phase 2 - Extract tenant from INVITE domain/headers/auth
+                let tenant_id = self.call_manager
+                    .get_call(&call_id)
+                    .map(|call| call.tenant_id)
+                    .unwrap_or_else(|| fcp_core::TenantId::nil());
+
+                debug!(
+                    call_id = %call_id,
+                    tenant_id = %tenant_id,
+                    extension = %extension_number,
+                    "Looking up extension (tenant-aware)"
+                );
 
                 match storage.get_extension_by_number(&tenant_id, extension_number).await {
                     Ok(Some(extension)) => {
-                        debug!(
+                        info!(
                             call_id = %call_id,
+                            tenant_id = %tenant_id,
                             extension = %extension_number,
                             target = %extension.target,
                             "Found extension, routing to target"
@@ -2531,7 +2582,72 @@ impl SipMessageHandler {
             b_leg_calls.len()
         );
 
-        // Create tasks to wait for final responses from all B-legs
+        // Spawn dedicated tasks to listen for provisional responses and relay first 180/183
+        let (provisional_tx, mut provisional_rx) = tokio::sync::mpsc::channel::<(u16, String)>(10);
+        let provisional_sent = Arc::new(tokio::sync::Mutex::new(false));
+
+        for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
+            let b_leg_handle_clone = Arc::clone(b_leg_handle);
+            let target_clone = target.clone();
+            let call_id_clone = call_id.clone();
+            let provisional_tx_clone = provisional_tx.clone();
+            let provisional_sent_clone = Arc::clone(&provisional_sent);
+
+            // Spawn provisional listener task (non-blocking, exits after first 180)
+            tokio::spawn(async move {
+                // Listen for FIRST provisional 180+ response only
+                if let Some(response) = b_leg_handle_clone.await_provisional().await {
+                    let code = response.start_line().code();
+                    debug!(
+                        call_id = %call_id_clone,
+                        target = %target_clone,
+                        code = code,
+                        "B-leg {} first provisional response", i
+                    );
+
+                    // Signal if it's a ringing/progress response
+                    if code >= 180 && code < 200 {
+                        let mut sent = provisional_sent_clone.lock().await;
+                        if !*sent {
+                            info!(
+                                call_id = %call_id_clone,
+                                target = %target_clone,
+                                code = code,
+                                "First provisional from B-leg {} - signaling for relay to A-leg", i
+                            );
+                            let _ = provisional_tx_clone.send((code, target_clone)).await;
+                            *sent = true;
+                        }
+                    }
+                }
+                // Task exits immediately after first provisional (or if none received)
+            });
+        }
+
+        // Drop original sender so channel closes when all provisional tasks complete
+        drop(provisional_tx);
+
+        // Spawn relay task to send first 180 to A-leg
+        let call_id_clone = call_id.clone();
+        let a_leg_handle_clone = Arc::clone(&a_leg_handle);
+        let request_clone = request.clone();
+        let uas_clone = self.uas.clone();
+        tokio::spawn(async move {
+            if let Some((code, target)) = provisional_rx.recv().await {
+                info!(
+                    call_id = %call_id_clone,
+                    code = code,
+                    target = %target,
+                    "Relaying {} provisional response to A-leg (caller will hear ringing)",
+                    code
+                );
+
+                let provisional = uas_clone.create_ringing(&request_clone);
+                a_leg_handle_clone.send_provisional(provisional).await;
+            }
+        });
+
+        // Create tasks to wait for FINAL responses from all B-legs (for racing)
         let mut tasks = Vec::new();
         for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
             let b_leg_handle_clone = Arc::clone(b_leg_handle);
@@ -2539,7 +2655,13 @@ impl SipMessageHandler {
             let call_id_clone = call_id.clone();
 
             let task = tokio::spawn(async move {
-                // Wait for final response (this consumes it!)
+                debug!(
+                    call_id = %call_id_clone,
+                    target = %target_clone,
+                    "B-leg {} race task waiting for final response", i
+                );
+
+                // Wait for final response (this is what we race on)
                 match b_leg_handle_clone.await_final().await {
                     Ok(response) => {
                         let code = response.start_line().code();
@@ -2572,28 +2694,66 @@ impl SipMessageHandler {
         let mut winning_handle = None;
 
         // Keep looping until we get a 2xx or all tasks complete
+        debug!(call_id = %call_id, task_count = tasks.len(), "Starting race for first 2xx response");
         while !tasks.is_empty() {
-            let (result, _index, remaining) = futures::future::select_all(tasks).await;
+            let (result, task_index, remaining) = futures::future::select_all(tasks).await;
             tasks = remaining;
 
-            if let Ok(Some((i, target, code, response, handle))) = result {
-                if code >= 200 && code < 300 {
-                    // Winner! This is the first 2xx
-                    info!(
+            match result {
+                Ok(Some((i, target, code, response, handle))) => {
+                    debug!(
                         call_id = %call_id,
-                        winner = %target,
+                        b_leg_index = i,
+                        target = %target,
                         code = code,
-                        "B-leg {} won the race with {}",
-                        i, code
+                        "B-leg {} completed with code {}", i, code
                     );
-                    winning_index = Some(i);
-                    winning_target = Some(target);
-                    winning_response = Some(response);
-                    winning_handle = Some(handle);
-                    break;
+
+                    if code >= 200 && code < 300 {
+                        // Winner! This is the first 2xx
+                        info!(
+                            call_id = %call_id,
+                            winner = %target,
+                            code = code,
+                            "B-leg {} won the race with {}",
+                            i, code
+                        );
+                        winning_index = Some(i);
+                        winning_target = Some(target);
+                        winning_response = Some(response);
+                        winning_handle = Some(handle);
+                        break;
+                    } else {
+                        debug!(
+                            call_id = %call_id,
+                            code = code,
+                            "B-leg {} returned non-2xx {}, continuing race", i, code
+                        );
+                    }
+                }
+                Ok(None) => {
+                    debug!(
+                        call_id = %call_id,
+                        task_index = task_index,
+                        "B-leg task returned None (likely failed or terminated)"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        call_id = %call_id,
+                        task_index = task_index,
+                        error = ?e,
+                        "B-leg task panicked"
+                    );
                 }
             }
         }
+
+        debug!(
+            call_id = %call_id,
+            has_winner = winning_index.is_some(),
+            "Race complete"
+        );
 
         // CANCEL all non-winning B-legs
         for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
@@ -2692,6 +2852,60 @@ impl SipMessageHandler {
                 .expect("Failed to create 200 OK");
 
             self.ensure_response_hygiene(&request, &mut ok_response);
+
+            // Create A-leg dialog from the 200 OK response
+            let a_leg_dialog = match sip_dialog::Dialog::new_uas(
+                &request,
+                &ok_response,
+                self.uas.local_uri.clone(),
+                extract_from_uri(&request)
+                    .unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
+            ) {
+                Some(dialog) => dialog,
+                None => {
+                    error!(call_id = %call_id, "Failed to create A-leg dialog from 200 OK in parallel forking");
+                    let response =
+                        self.create_simple_response(&request, 500, "Internal Server Error");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self.call_manager.terminate_call(
+                        &call_id,
+                        Some("Failed to create A-leg dialog".to_string()),
+                    );
+                    return Ok(());
+                }
+            };
+
+            // Get B-leg dialog from the winning call handle
+            let b_leg_dialog = {
+                let dialog_guard = handle.dialog.read().await;
+                Some(dialog_guard.clone())
+            };
+
+            debug!(
+                call_id = %call_id,
+                a_leg_dialog_id = ?a_leg_dialog.id(),
+                b_leg_dialog_id = ?b_leg_dialog.as_ref().map(|d| d.id()),
+                "Created dialogs for parallel forking winner"
+            );
+
+            // Register A-leg dialog in dialog_manager
+            self.dialog_manager.insert(a_leg_dialog.clone());
+            self.start_session_timer(&a_leg_dialog);
+
+            // Update call with both dialogs
+            match self.call_manager.update_call(&call_id, |call| {
+                call.a_leg.dialog = Some(a_leg_dialog.clone());
+                if let Some(b_leg) = &mut call.b_leg {
+                    b_leg.dialog = b_leg_dialog.clone();
+                }
+                call.state = crate::call::CallState::Established;
+                call.establish();
+            }) {
+                Ok(_) => debug!(call_id = %call_id, "Successfully stored dialogs in CallManager"),
+                Err(e) => {
+                    error!(call_id = %call_id, error = %e, "Failed to update call with dialogs")
+                }
+            }
 
             info!(call_id = %call_id, "Sending 200 OK to A-leg with media anchoring");
             a_leg_handle.send_final(ok_response).await;
@@ -4899,7 +5113,18 @@ impl SipMessageHandler {
                 route,
                 body_hash,
             };
-            let _ = tx.send(entry);
+
+            // Use try_send for non-blocking send (drops if channel full)
+            // Transcripts are debug/forensic data, not critical path
+            if let Err(e) = tx.try_send(entry) {
+                if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
+                    tracing::warn!(
+                        call_id = %cid,
+                        "Transcript channel full, dropping entry (system under high load)"
+                    );
+                }
+                // Channel closed: silently ignore (server shutting down)
+            }
         }
     }
 
