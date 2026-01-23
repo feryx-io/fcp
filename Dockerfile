@@ -20,7 +20,7 @@ COPY crates/ ./crates/
 COPY external/ ./external/
 
 # Build the application
-RUN cargo build --release --bin fcp-server --bin fcp
+RUN cargo build --release --bin fcp-server --bin fcp-cli
 
 # Stage 2: Runtime stage
 FROM debian:trixie-slim
@@ -46,7 +46,7 @@ RUN mkdir -p /var/lib/fcp/recordings \
 
 # Copy binaries from builder
 COPY --from=builder /app/target/release/fcp-server /usr/local/bin/
-COPY --from=builder /app/target/release/fcp /usr/local/bin/
+COPY --from=builder /app/target/release/fcp-cli /usr/local/bin/
 
 # Copy default configuration
 COPY config/fcp-docker.toml /etc/fcp/fcp.toml
