@@ -194,7 +194,7 @@ use crate::metrics::MetricsHandle;
 use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
-use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore};
+use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore};
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -866,8 +866,49 @@ impl SipMessageHandler {
             }
         }
 
-        // Create Call object from the incoming INVITE
-        let mut call = crate::call::Call::from_invite(request.clone(), peer);
+        // Extract tenant for multi-tenant isolation
+        // Try to extract domain from INVITE and look up tenant in storage
+        let tenant_id = if let Some(storage) = &self.storage {
+            if let Some(domain) = extract_tenant_from_invite(request) {
+                // Look up tenant by domain name
+                match storage.get_tenant_by_name(&domain).await {
+                    Ok(Some(tenant)) => {
+                        debug!(
+                            domain = %domain,
+                            tenant_id = %tenant.id,
+                            tenant_name = %tenant.name,
+                            "Resolved tenant from INVITE domain"
+                        );
+                        tenant.id
+                    }
+                    Ok(None) => {
+                        debug!(
+                            domain = %domain,
+                            "Domain in INVITE not found in tenant store, using default tenant"
+                        );
+                        fcp_core::TenantId::nil()
+                    }
+                    Err(e) => {
+                        warn!(
+                            domain = %domain,
+                            error = %e,
+                            "Failed to lookup tenant by domain, using default tenant"
+                        );
+                        fcp_core::TenantId::nil()
+                    }
+                }
+            } else {
+                // No domain found in INVITE, use default tenant
+                debug!("No domain found in INVITE for tenant resolution, using default tenant");
+                fcp_core::TenantId::nil()
+            }
+        } else {
+            // No storage available, use default tenant
+            fcp_core::TenantId::nil()
+        };
+
+        // Create Call object from the incoming INVITE with tenant context
+        let mut call = crate::call::Call::from_invite(request.clone(), peer, tenant_id);
         call.state = crate::call::CallState::RoutingPending;
         call.a_leg_invite_tx = Some(handle.key().clone());
 
@@ -884,9 +925,10 @@ impl SipMessageHandler {
 
         info!(
             call_id = %call_id,
+            tenant_id = %tenant_id,
             caller = %caller_str,
             callee = %callee_str,
-            "Created B2BUA call"
+            "Created B2BUA call with tenant context"
         );
 
         // Evaluate media anchoring decision
@@ -2583,7 +2625,8 @@ impl SipMessageHandler {
         );
 
         // Spawn dedicated tasks to listen for provisional responses and relay first 180/183
-        let (provisional_tx, mut provisional_rx) = tokio::sync::mpsc::channel::<(u16, String)>(10);
+        // IMPORTANT: Send the full Response object (not just status code) to preserve SDP/headers
+        let (provisional_tx, mut provisional_rx) = tokio::sync::mpsc::channel::<sip_core::Response>(10);
         let provisional_sent = Arc::new(tokio::sync::Mutex::new(false));
 
         for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
@@ -2602,6 +2645,7 @@ impl SipMessageHandler {
                         call_id = %call_id_clone,
                         target = %target_clone,
                         code = code,
+                        has_body = !response.body().is_empty(),
                         "B-leg {} first provisional response", i
                     );
 
@@ -2613,9 +2657,11 @@ impl SipMessageHandler {
                                 call_id = %call_id_clone,
                                 target = %target_clone,
                                 code = code,
-                                "First provisional from B-leg {} - signaling for relay to A-leg", i
+                                has_sdp = !response.body().is_empty(),
+                                "First provisional from B-leg {} - sending full response to relay task", i
                             );
-                            let _ = provisional_tx_clone.send((code, target_clone)).await;
+                            // Send the ENTIRE response object (preserves SDP, Require: 100rel, etc.)
+                            let _ = provisional_tx_clone.send(response).await;
                             *sent = true;
                         }
                     }
@@ -2627,22 +2673,48 @@ impl SipMessageHandler {
         // Drop original sender so channel closes when all provisional tasks complete
         drop(provisional_tx);
 
-        // Spawn relay task to send first 180 to A-leg
+        // Spawn relay task to forward the actual B-leg provisional to A-leg
+        // CRITICAL: This fixes two issues:
+        // 1. Early media/183 with SDP is now forwarded (not dropped)
+        // 2. To-tag is extracted and saved for reuse in 200 OK
         let call_id_clone = call_id.clone();
         let a_leg_handle_clone = Arc::clone(&a_leg_handle);
         let request_clone = request.clone();
-        let uas_clone = self.uas.clone();
+        let call_manager_clone = self.call_manager.clone();
+        let handler_clone = self.clone();
         tokio::spawn(async move {
-            if let Some((code, target)) = provisional_rx.recv().await {
+            if let Some(b_leg_provisional) = provisional_rx.recv().await {
+                let code = b_leg_provisional.start_line().code();
+                let has_body = !b_leg_provisional.body().is_empty();
+
                 info!(
                     call_id = %call_id_clone,
                     code = code,
-                    target = %target,
-                    "Relaying {} provisional response to A-leg (caller will hear ringing)",
-                    code
+                    has_sdp = has_body,
+                    "Forwarding actual B-leg provisional to A-leg (preserves early media/183)"
                 );
 
-                let provisional = uas_clone.create_ringing(&request_clone);
+                // Build provisional using B-leg response as template
+                // This preserves: status code, SDP body, Require/RSeq headers, etc.
+                let provisional = handler_clone.create_provisional_from_b_leg(&request_clone, &b_leg_provisional);
+
+                // Extract and save To-tag for reuse in 200 OK (RFC 3261 §12.1.1)
+                if let Some(to_header) = provisional.headers().get("To") {
+                    let to_smol = SmolStr::new(to_header);
+                    if let Some(tag) = extract_tag_value(Some(&to_smol)) {
+                        debug!(
+                            call_id = %call_id_clone,
+                            a_leg_to_tag = %tag,
+                            "Saved A-leg To-tag from forked provisional for later 200 OK"
+                        );
+
+                        // Store tag in Call struct for 200 OK reuse
+                        let _ = call_manager_clone.update_call(&call_id_clone, |call| {
+                            call.a_leg_to_tag = Some(tag.to_string());
+                        });
+                    }
+                }
+
                 a_leg_handle_clone.send_provisional(provisional).await;
             }
         });
@@ -2847,9 +2919,41 @@ impl SipMessageHandler {
                 }
             }
 
-            // Create 200 OK for A-leg with rewritten SDP
-            let mut ok_response = self.uas.create_ok(&request, b_leg_sdp.as_deref())
-                .expect("Failed to create 200 OK");
+            // Retrieve saved A-leg To-tag from provisional response
+            let saved_tag = self.call_manager.get_call(&call_id)
+                .and_then(|call| call.a_leg_to_tag.clone());
+
+            // Create 200 OK response manually to ensure To-tag consistency
+            // CRITICAL: Must reuse the To-tag from the provisional response (RFC 3261 §12.1.1)
+            let mut ok_response = if let Some(ref tag) = saved_tag {
+                // Build 200 OK with the SAME To-tag as the provisional
+                let mut resp = self.uas.create_ok(&request, b_leg_sdp.as_deref())
+                    .expect("Failed to create 200 OK");
+
+                // Replace To header with one containing our saved tag
+                if let Some(to) = request.headers().get("To") {
+                    let to_with_tag = format!("{};tag={}", to, tag);
+                    // Remove old To header and add new one with correct tag
+                    resp.headers_mut().retain(|h| h.name() != "To");
+                    resp.headers_mut()
+                        .push(SmolStr::new("To"), SmolStr::new(to_with_tag));
+                    debug!(
+                        call_id = %call_id,
+                        a_leg_to_tag = %tag,
+                        "Reused To-tag in forked 200 OK for dialog consistency"
+                    );
+                }
+
+                resp
+            } else {
+                // Fallback: No provisional was sent (shouldn't happen in forking)
+                warn!(
+                    call_id = %call_id,
+                    "No A-leg To-tag saved in forking path, generating new one (dialog mismatch possible)"
+                );
+                self.uas.create_ok(&request, b_leg_sdp.as_deref())
+                    .expect("Failed to create 200 OK")
+            };
 
             self.ensure_response_hygiene(&request, &mut ok_response);
 
@@ -5499,6 +5603,82 @@ fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
     })
 }
 
+/// Extract tenant identifier from an INVITE request.
+///
+/// Multi-tenant isolation strategy (priority order):
+/// 1. X-Tenant-ID header (explicit tenant override for authenticated requests)
+/// 2. Domain from Request-URI (e.g., user@tenant1.example.com -> "tenant1.example.com")
+/// 3. Domain from To header (fallback if Request-URI has no domain)
+///
+/// Returns the domain/tenant name as a String for lookup in TenantStore.get_tenant_by_name().
+/// The caller should convert this to a TenantId via storage lookup.
+///
+/// # Returns
+/// - Some(String) if a domain/tenant can be extracted
+/// - None if no tenant context is available (use TenantId::nil() as fallback)
+fn extract_tenant_from_invite(request: &sip_core::Request) -> Option<String> {
+    // Priority 1: Check for explicit X-Tenant-ID header (for authenticated requests)
+    if let Some(tenant_header) = request.headers().get("X-Tenant-ID") {
+        let tenant_id = tenant_header.trim();
+        if !tenant_id.is_empty() {
+            return Some(tenant_id.to_string());
+        }
+    }
+
+    // Priority 2: Extract domain from Request-URI
+    if let Some(domain) = extract_domain_from_uri(request.uri()) {
+        return Some(domain);
+    }
+
+    // Priority 3: Extract domain from To header
+    if let Some(to_header) = request.headers().get("To") {
+        // Parse To header: "Display Name" <sip:user@domain>;tag=xyz
+        // Extract the URI part between < and >
+        let to_str = to_header.to_string();
+        let uri_str = if let Some(start) = to_str.find('<') {
+            if let Some(end) = to_str.find('>') {
+                &to_str[start + 1..end]
+            } else {
+                &to_str
+            }
+        } else {
+            &to_str
+        };
+
+        // Try parsing as SIP URI to extract domain
+        if let Ok(uri) = sip_core::SipUri::parse(uri_str.trim()) {
+            let domain = uri.host().to_string();
+            if !domain.is_empty() && domain != "localhost" && domain != "127.0.0.1" {
+                return Some(domain);
+            }
+        }
+    }
+
+    None
+}
+
+/// Helper to extract domain from a SIP URI.
+fn extract_domain_from_uri(uri: &sip_core::Uri) -> Option<String> {
+    match uri {
+        sip_core::Uri::Sip(sip_uri) => {
+            let domain = sip_uri.host().to_string();
+            // Filter out common non-tenant domains
+            if !domain.is_empty()
+                && domain != "localhost"
+                && domain != "127.0.0.1"
+                && !domain.starts_with("192.168.")
+                && !domain.starts_with("10.")
+            {
+                Some(domain)
+            } else {
+                None
+            }
+        }
+        sip_core::Uri::Tel(_) => None,      // tel URIs don't have domains
+        sip_core::Uri::Absolute(_) => None, // Absolute URIs (http, etc.) not supported for tenant extraction
+    }
+}
+
 /// Helper to check if a URI represents an E.164 phone number.
 ///
 /// Extracts the user part from a SIP URI and checks if it looks like an E.164 number.
@@ -6480,6 +6660,7 @@ mod tests {
         let call = crate::call::Call::from_invite(
             build_invite_with_sdp("call-a", true),
             "127.0.0.1:5060".parse().unwrap(),
+            fcp_core::TenantId::nil(), // Use default tenant for test
         );
         let call_id = call.id;
         let cm = crate::call_manager::CallManager::new();

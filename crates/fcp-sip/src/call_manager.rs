@@ -751,7 +751,7 @@ mod tests {
         )
         .expect("Failed to create request");
 
-        Call::from_invite(request, peer)
+        Call::from_invite(request, peer, fcp_core::TenantId::nil())
     }
 
     #[test]

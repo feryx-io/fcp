@@ -273,12 +273,17 @@ impl fmt::Debug for Call {
 
 impl Call {
     /// Create a new call from an inbound INVITE.
-    pub fn from_invite(request: Request, peer: SocketAddr) -> Self {
+    ///
+    /// # Arguments
+    /// * `request` - The incoming INVITE request
+    /// * `peer` - Socket address of the peer sending the INVITE
+    /// * `tenant_id` - Tenant ID for multi-tenant isolation (use TenantId::nil() for default tenant)
+    pub fn from_invite(request: Request, peer: SocketAddr, tenant_id: fcp_core::TenantId) -> Self {
         let a_leg = CallLeg::from_invite(&request, peer);
 
         Self {
             id: CallId::new(),
-            tenant_id: fcp_core::TenantId::nil(), // TODO: Phase 2 - extract from context
+            tenant_id,
             state: CallState::Initiated,
             a_leg,
             a_leg_invite_tx: None,
