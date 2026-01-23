@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for FCP (Ferrous Communications Platform)
 # Stage 1: Build stage
-FROM rust:1.74-slim as builder
+FROM rust:1.92-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -26,13 +26,14 @@ RUN cargo build --release --bin fcp-server
 RUN cargo build --release --bin fcp-server --bin fcp-cli
 
 # Stage 2: Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
+    libssl3t64 \
     libsqlite3-0 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
