@@ -50,8 +50,8 @@ RUN mkdir -p /var/lib/fcp/recordings \
 COPY --from=builder /app/target/release/fcp-server /usr/local/bin/
 COPY --from=builder /app/target/release/fcp-cli /usr/local/bin/
 
-# Copy default configuration (if exists)
-COPY config/fcp.toml.example /etc/fcp/fcp.toml.example
+# Copy default configuration
+COPY config/fcp-docker.toml /etc/fcp/fcp.toml
 
 # Switch to non-root user
 USER fcp
