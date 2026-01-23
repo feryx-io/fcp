@@ -464,6 +464,47 @@ impl FlowEngine {
                 }
                 Ok(FlowExecutionResult::Continue(next.clone()))
             }
+
+            NodeType::Voicemail {
+                mailbox,
+                is_busy,
+                max_duration,
+                play_beep,
+                next_on_success,
+                next_on_error,
+            } => {
+                let interpolated_mailbox = self.interpolate_variables(mailbox, context)?;
+
+                info!(
+                    call_id = %context.call_id,
+                    mailbox = %interpolated_mailbox,
+                    is_busy = %is_busy,
+                    max_duration = %max_duration,
+                    "Recording voicemail message"
+                );
+
+                // Store voicemail configuration in context
+                context.set_variable("__voicemail_mailbox".to_string(), interpolated_mailbox.clone());
+                context.set_variable("__voicemail_is_busy".to_string(), is_busy.to_string());
+                context.set_variable("__voicemail_max_duration".to_string(), max_duration.to_string());
+                context.set_variable("__voicemail_play_beep".to_string(), play_beep.to_string());
+                context.set_variable("__voicemail_next_on_success".to_string(), next_on_success.clone());
+                if let Some(error_node) = next_on_error {
+                    context.set_variable("__voicemail_next_on_error".to_string(), error_node.clone());
+                }
+
+                // Return WaitingForVoicemail to let flow handler invoke voicemail service
+                // The flow handler will need to integrate with VoicemailService
+                info!(
+                    call_id = %context.call_id,
+                    "Voicemail node configured, waiting for voicemail recording to complete"
+                );
+
+                // For now, we'll just continue to next_on_success
+                // In full implementation, this would return a new FlowExecutionResult variant
+                // like WaitingForVoicemail
+                Ok(FlowExecutionResult::Continue(next_on_success.clone()))
+            }
         };
 
         match &result {

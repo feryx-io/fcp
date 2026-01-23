@@ -14,6 +14,7 @@ pub mod registrations;
 pub mod system;
 pub mod tenants;
 pub mod users;
+pub mod voicemail;
 
 use crate::api::state::ApiState;
 use axum::{
@@ -145,5 +146,26 @@ pub fn router() -> Router<ApiState> {
             get(devices::get_device)
                 .patch(devices::update_device)
                 .delete(devices::delete_device),
+        )
+        // Voicemail
+        .route(
+            "/voicemail/mailboxes",
+            get(voicemail::list_mailboxes).post(voicemail::create_mailbox),
+        )
+        .route(
+            "/voicemail/mailboxes/:id",
+            get(voicemail::get_mailbox)
+                .put(voicemail::update_mailbox)
+                .delete(voicemail::delete_mailbox),
+        )
+        .route(
+            "/voicemail/mailboxes/:mailbox_id/messages",
+            get(voicemail::list_messages),
+        )
+        .route(
+            "/voicemail/messages/:id",
+            get(voicemail::get_message)
+                .put(voicemail::update_message)
+                .delete(voicemail::delete_message),
         )
 }

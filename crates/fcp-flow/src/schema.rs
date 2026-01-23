@@ -318,6 +318,32 @@ pub enum NodeType {
         /// Next node to execute
         next: String,
     },
+
+    /// Leave a voicemail message
+    Voicemail {
+        /// Extension or mailbox ID to leave message for
+        /// Supports variable interpolation (e.g., "{{dialedNumber}}")
+        mailbox: String,
+
+        /// Play busy greeting instead of unavailable greeting
+        #[serde(default)]
+        is_busy: bool,
+
+        /// Maximum recording duration in seconds
+        #[serde(default = "default_voicemail_duration")]
+        max_duration: u32,
+
+        /// Play beep before recording
+        #[serde(default = "default_true")]
+        play_beep: bool,
+
+        /// Node to execute after message is successfully recorded
+        next_on_success: String,
+
+        /// Node to execute on error (mailbox full, disabled, etc.)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_on_error: Option<String>,
+    },
 }
 
 /// Prompt configuration for Gather node
@@ -433,6 +459,10 @@ fn default_recording_var() -> String {
 
 fn default_log_level() -> LogLevel {
     LogLevel::Info
+}
+
+fn default_voicemail_duration() -> u32 {
+    300 // 5 minutes
 }
 
 #[cfg(test)]

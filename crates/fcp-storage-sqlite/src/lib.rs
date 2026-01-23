@@ -34,9 +34,9 @@ use fcp_core::{
         PhoneNumberStore, RegistrationStore,
     }, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
-    ExtensionTarget, HangupCause, HangupParty, LineBinding, LineBindingId, MediaPreferences,
-    NumberState, PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy,
-    TenantId, User, UserId,
+    ExtensionTarget, HangupCause, HangupParty, LineBinding, LineBindingId,
+    MediaPreferences, NumberState, PhoneNumber, PhoneNumberId,
+    Registration, RegistrationState, RingStrategy, TenantId, User, UserId,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
@@ -133,6 +133,12 @@ impl SqliteStorage {
             "SQLite storage initialized"
         );
 
+        // Enable foreign key constraints
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .context("Failed to enable foreign key constraints")?;
+
         // Run migrations
         Self::run_migrations(&pool).await?;
 
@@ -161,6 +167,14 @@ impl SqliteStorage {
         // Migration 004: Phone number support
         let migration_004 = include_str!("../migrations/004_add_phone_number_support.sql");
         Self::execute_migration(pool, migration_004, "004").await?;
+
+        // Migration 005: Flow engine support
+        let migration_005 = include_str!("../migrations/005_add_flow_engine.sql");
+        Self::execute_migration(pool, migration_005, "005").await?;
+
+        // Migration 006: Voicemail support
+        let migration_006 = include_str!("../migrations/006_add_voicemail_support.sql");
+        Self::execute_migration(pool, migration_006, "006").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -1402,6 +1416,124 @@ impl SqliteStorage {
 
         Ok(())
     }
+
+    // Helper method to map a mailbox row from database to VoicemailMailbox
+    async fn map_mailbox_row(&self, row: sqlx::sqlite::SqliteRow) -> Result<fcp_core::VoicemailMailbox> {
+        use sqlx::Row;
+
+        let id: String = row.try_get("id")?;
+        let tenant_id = fcp_core::TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?;
+        let user_id = fcp_core::UserId::from_str(&row.try_get::<String, _>("user_id")?)?;
+        let line_binding_id = fcp_core::LineBindingId::from_str(&row.try_get::<String, _>("line_binding_id")?)?;
+        let extension: String = row.try_get("extension")?;
+        let pin: String = row.try_get("pin")?;
+        let enabled: i32 = row.try_get("enabled")?;
+        let max_message_duration: i32 = row.try_get("max_message_duration")?;
+        let max_messages: i32 = row.try_get("max_messages")?;
+        let email_notification: i32 = row.try_get("email_notification")?;
+        let email_address: Option<String> = row.try_get("email_address")?;
+        let attach_audio: i32 = row.try_get("attach_audio")?;
+        let include_transcription: i32 = row.try_get("include_transcription")?;
+        let transcription_enabled: i32 = row.try_get("transcription_enabled")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let updated_at: i64 = row.try_get("updated_at")?;
+
+        // Fetch greetings for this mailbox
+        let greeting_rows = sqlx::query(
+            "SELECT greeting_type, audio_path, created_at, expires_at
+             FROM voicemail_greetings WHERE mailbox_id = ?"
+        )
+        .bind(&id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut greetings = Vec::new();
+        for greeting_row in greeting_rows {
+            let greeting_type_str: String = greeting_row.try_get("greeting_type")?;
+            let greeting_type = match greeting_type_str.as_str() {
+                "unavailable" => fcp_core::GreetingType::Unavailable,
+                "busy" => fcp_core::GreetingType::Busy,
+                "name" => fcp_core::GreetingType::Name,
+                "temporary" => fcp_core::GreetingType::Temporary,
+                _ => continue, // Skip unknown greeting types
+            };
+
+            let audio_path: String = greeting_row.try_get("audio_path")?;
+            let greeting_created_at: i64 = greeting_row.try_get("created_at")?;
+            let expires_at: Option<i64> = greeting_row.try_get("expires_at")?;
+
+            greetings.push(fcp_core::VoicemailGreeting {
+                greeting_type,
+                audio_path: std::path::PathBuf::from(audio_path),
+                created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(greeting_created_at as u64),
+                expires_at: expires_at.map(|ts| std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64)),
+            });
+        }
+
+        Ok(fcp_core::VoicemailMailbox {
+            id,
+            tenant_id,
+            user_id,
+            line_binding_id,
+            extension,
+            pin,
+            enabled: enabled != 0,
+            max_message_duration: max_message_duration as u32,
+            max_messages: max_messages as u32,
+            email_notification: email_notification != 0,
+            email_address,
+            attach_audio: attach_audio != 0,
+            include_transcription: include_transcription != 0,
+            transcription_enabled: transcription_enabled != 0,
+            greetings,
+            created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(created_at as u64),
+            updated_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(updated_at as u64),
+        })
+    }
+
+    // Helper method to map a message row from database to VoicemailMessage
+    fn map_message_row(row: sqlx::sqlite::SqliteRow) -> Result<fcp_core::VoicemailMessage> {
+        use sqlx::Row;
+
+        let id: String = row.try_get("id")?;
+        let mailbox_id: String = row.try_get("mailbox_id")?;
+        let caller: String = row.try_get("caller")?;
+        let caller_name: Option<String> = row.try_get("caller_name")?;
+        let status_str: String = row.try_get("status")?;
+        let priority_str: String = row.try_get("priority")?;
+        let duration: i32 = row.try_get("duration")?;
+        let recording_path: String = row.try_get("recording_path")?;
+        let transcription: Option<String> = row.try_get("transcription")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let accessed_at: Option<i64> = row.try_get("accessed_at")?;
+
+        let status = match status_str.as_str() {
+            "new" => fcp_core::MessageStatus::New,
+            "heard" => fcp_core::MessageStatus::Heard,
+            "saved" => fcp_core::MessageStatus::Saved,
+            "deleted" => fcp_core::MessageStatus::Deleted,
+            _ => fcp_core::MessageStatus::New, // Default fallback
+        };
+
+        let priority = match priority_str.as_str() {
+            "urgent" => fcp_core::MessagePriority::Urgent,
+            _ => fcp_core::MessagePriority::Normal,
+        };
+
+        Ok(fcp_core::VoicemailMessage {
+            id,
+            mailbox_id,
+            caller,
+            caller_name,
+            status,
+            priority,
+            duration: duration as u32,
+            recording_path: std::path::PathBuf::from(recording_path),
+            transcription,
+            created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(created_at as u64),
+            accessed_at: accessed_at.map(|ts| std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64)),
+        })
+    }
 }
 
 // ============================================================================
@@ -2399,83 +2531,375 @@ use fcp_core::porting::PortingStore;
 
 #[async_trait]
 impl VoicemailStore for SqliteStorage {
-    async fn get_mailbox(&self, _id: &str) -> Result<Option<fcp_core::VoicemailMailbox>> {
-        // TODO: Implement voicemail storage
-        Ok(None)
+    async fn get_mailbox(&self, id: &str) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn get_mailbox_by_line_binding(
         &self,
-        _line_binding_id: &fcp_core::LineBindingId,
+        line_binding_id: &fcp_core::LineBindingId,
     ) -> Result<Option<fcp_core::VoicemailMailbox>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE line_binding_id = ?"
+        )
+        .bind(line_binding_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn get_mailbox_by_user(
         &self,
-        _user_id: &fcp_core::UserId,
+        user_id: &fcp_core::UserId,
     ) -> Result<Option<fcp_core::VoicemailMailbox>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE user_id = ?"
+        )
+        .bind(user_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn get_mailbox_by_extension(
         &self,
-        _tenant_id: &fcp_core::TenantId,
-        _extension: &str,
+        tenant_id: &fcp_core::TenantId,
+        extension: &str,
     ) -> Result<Option<fcp_core::VoicemailMailbox>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE tenant_id = ? AND extension = ?"
+        )
+        .bind(tenant_id.to_string())
+        .bind(extension)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn list_mailboxes(
         &self,
-        _tenant_id: &fcp_core::TenantId,
+        tenant_id: &fcp_core::TenantId,
     ) -> Result<Vec<fcp_core::VoicemailMailbox>> {
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE tenant_id = ? ORDER BY extension"
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut mailboxes = Vec::new();
+        for row in rows {
+            let mailbox = self.map_mailbox_row(row).await?;
+            mailboxes.push(mailbox);
+        }
+        Ok(mailboxes)
     }
 
-    async fn put_mailbox(&self, _mailbox: fcp_core::VoicemailMailbox) -> Result<()> {
-        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    async fn put_mailbox(&self, mailbox: fcp_core::VoicemailMailbox) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let created_at = mailbox.created_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Insert or replace mailbox
+        sqlx::query(
+            "INSERT OR REPLACE INTO voicemail_mailboxes
+             (id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+              max_message_duration, max_messages, email_notification, email_address,
+              attach_audio, include_transcription, transcription_enabled,
+              created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&mailbox.id)
+        .bind(mailbox.tenant_id.to_string())
+        .bind(mailbox.user_id.to_string())
+        .bind(mailbox.line_binding_id.to_string())
+        .bind(&mailbox.extension)
+        .bind(&mailbox.pin)
+        .bind(mailbox.enabled as i32)
+        .bind(mailbox.max_message_duration as i32)
+        .bind(mailbox.max_messages as i32)
+        .bind(mailbox.email_notification as i32)
+        .bind(mailbox.email_address.as_deref())
+        .bind(mailbox.attach_audio as i32)
+        .bind(mailbox.include_transcription as i32)
+        .bind(mailbox.transcription_enabled as i32)
+        .bind(created_at)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete existing greetings for this mailbox
+        sqlx::query("DELETE FROM voicemail_greetings WHERE mailbox_id = ?")
+            .bind(&mailbox.id)
+            .execute(&self.pool)
+            .await?;
+
+        // Insert greetings
+        for greeting in &mailbox.greetings {
+            let greeting_created_at = greeting.created_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+
+            let expires_at = greeting.expires_at.map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64
+            });
+
+            sqlx::query(
+                "INSERT INTO voicemail_greetings
+                 (mailbox_id, greeting_type, audio_path, created_at, expires_at)
+                 VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(&mailbox.id)
+            .bind(greeting.greeting_type.to_string())
+            .bind(greeting.audio_path.to_string_lossy().as_ref())
+            .bind(greeting_created_at)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(())
     }
 
-    async fn delete_mailbox(&self, _id: &str) -> Result<()> {
-        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    async fn delete_mailbox(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM voicemail_mailboxes WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
-    async fn get_message(&self, _id: &str) -> Result<Option<fcp_core::VoicemailMessage>> {
-        Ok(None)
+    async fn get_message(&self, id: &str) -> Result<Option<fcp_core::VoicemailMessage>> {
+        let row = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at
+             FROM voicemail_messages WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_message_row(row)?)),
+            None => Ok(None),
+        }
     }
 
-    async fn list_messages(&self, _mailbox_id: &str) -> Result<Vec<fcp_core::VoicemailMessage>> {
-        Ok(Vec::new())
+    async fn list_messages(&self, mailbox_id: &str) -> Result<Vec<fcp_core::VoicemailMessage>> {
+        let rows = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at
+             FROM voicemail_messages
+             WHERE mailbox_id = ? AND status != 'deleted'
+             ORDER BY created_at DESC"
+        )
+        .bind(mailbox_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(Self::map_message_row(row)?);
+        }
+        Ok(messages)
     }
 
-    async fn put_message(&self, _message: fcp_core::VoicemailMessage) -> Result<()> {
-        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    async fn put_message(&self, message: fcp_core::VoicemailMessage) -> Result<()> {
+        let created_at = message.created_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let accessed_at = message.accessed_at.map(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        });
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO voicemail_messages
+             (id, mailbox_id, caller, caller_name, status, priority, duration,
+              recording_path, transcription, created_at, accessed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&message.id)
+        .bind(&message.mailbox_id)
+        .bind(&message.caller)
+        .bind(message.caller_name.as_deref())
+        .bind(message.status.to_string())
+        .bind(match message.priority {
+            fcp_core::MessagePriority::Normal => "normal",
+            fcp_core::MessagePriority::Urgent => "urgent",
+        })
+        .bind(message.duration as i32)
+        .bind(message.recording_path.to_string_lossy().as_ref())
+        .bind(message.transcription.as_deref())
+        .bind(created_at)
+        .bind(accessed_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
-    async fn delete_message(&self, _id: &str) -> Result<()> {
-        Err(anyhow::anyhow!("Voicemail storage not yet implemented"))
+    async fn delete_message(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM voicemail_messages WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn list_messages_by_status(
         &self,
-        _mailbox_id: &str,
-        _status: fcp_core::MessageStatus,
+        mailbox_id: &str,
+        status: fcp_core::MessageStatus,
     ) -> Result<Vec<fcp_core::VoicemailMessage>> {
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at
+             FROM voicemail_messages
+             WHERE mailbox_id = ? AND status = ?
+             ORDER BY created_at DESC"
+        )
+        .bind(mailbox_id)
+        .bind(status.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(Self::map_message_row(row)?);
+        }
+        Ok(messages)
     }
 
-    async fn get_mwi_status(&self, _mailbox_id: &str) -> Result<fcp_core::MwiStatus> {
-        // Return empty MWI status for stub
-        Ok(fcp_core::MwiStatus::new(
-            _mailbox_id.to_string(),
-            fcp_core::LineBindingId::new(),
-        ))
+    async fn get_mwi_status(&self, mailbox_id: &str) -> Result<fcp_core::MwiStatus> {
+        // Get mailbox to retrieve line_binding_id
+        let mailbox = self.get_mailbox(mailbox_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Mailbox not found"))?;
+
+        // Count messages by status and priority
+        let row = sqlx::query(
+            "SELECT
+                COUNT(CASE WHEN status = 'new' AND priority = 'normal' THEN 1 END) as new_normal,
+                COUNT(CASE WHEN status = 'new' AND priority = 'urgent' THEN 1 END) as new_urgent,
+                COUNT(CASE WHEN status IN ('heard', 'saved') AND priority = 'normal' THEN 1 END) as old_normal,
+                COUNT(CASE WHEN status IN ('heard', 'saved') AND priority = 'urgent' THEN 1 END) as old_urgent
+             FROM voicemail_messages
+             WHERE mailbox_id = ?"
+        )
+        .bind(mailbox_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let new_normal: i32 = row.try_get("new_normal")?;
+        let new_urgent: i32 = row.try_get("new_urgent")?;
+        let old_normal: i32 = row.try_get("old_normal")?;
+        let old_urgent: i32 = row.try_get("old_urgent")?;
+
+        Ok(fcp_core::MwiStatus {
+            mailbox_id: mailbox_id.to_string(),
+            line_binding_id: mailbox.line_binding_id,
+            new_messages: new_normal as u32,
+            old_messages: old_normal as u32,
+            urgent_new_messages: new_urgent as u32,
+            urgent_old_messages: old_urgent as u32,
+        })
     }
 
-    async fn get_mailbox_stats(&self, _mailbox_id: &str) -> Result<fcp_core::VoicemailStats> {
-        // Return default stats for stub
-        Ok(fcp_core::VoicemailStats::default())
+    async fn get_mailbox_stats(&self, mailbox_id: &str) -> Result<fcp_core::VoicemailStats> {
+        let row = sqlx::query(
+            "SELECT
+                COUNT(*) as total,
+                COUNT(CASE WHEN status = 'new' THEN 1 END) as new,
+                COUNT(CASE WHEN status = 'heard' THEN 1 END) as heard,
+                COUNT(CASE WHEN status = 'saved' THEN 1 END) as saved,
+                COALESCE(AVG(duration), 0) as avg_duration
+             FROM voicemail_messages
+             WHERE mailbox_id = ? AND status != 'deleted'"
+        )
+        .bind(mailbox_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let total: i32 = row.try_get("total")?;
+        let new: i32 = row.try_get("new")?;
+        let heard: i32 = row.try_get("heard")?;
+        let saved: i32 = row.try_get("saved")?;
+        let avg_duration: f64 = row.try_get("avg_duration")?;
+
+        Ok(fcp_core::VoicemailStats {
+            total_messages: total as u32,
+            new_messages: new as u32,
+            heard_messages: heard as u32,
+            saved_messages: saved as u32,
+            storage_used: 0, // TODO: Calculate actual storage from file sizes
+            avg_duration: avg_duration as u32,
+        })
     }
 }
 

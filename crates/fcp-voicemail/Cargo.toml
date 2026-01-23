@@ -1,0 +1,29 @@
+[package]
+name = "fcp-voicemail"
+version = "0.1.0"
+edition = "2021"
+authors = ["FCP Contributors"]
+description = "Voicemail service for FCP"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-media = { path = "../fcp-media" }
+
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+async-trait = "0.1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+
+# UUID generation
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

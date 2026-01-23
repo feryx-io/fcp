@@ -1,0 +1,115 @@
+# FCP Production Configuration for Docker Deployment
+# This configuration is optimized for containerized deployment
+
+[server]
+# API server settings
+bind_address = "0.0.0.0:8080"
+log_level = "info"
+log_format = "json"
+enable_metrics = true
+metrics_port = 8080
+
+[sip]
+# SIP server settings
+bind_address = "0.0.0.0:5060"
+# Set this to your public IP or domain in production
+external_ip = "auto"  # Will detect container IP
+domain = "fcp.local"
+transport = ["udp", "tcp"]
+session_expires = 1800
+
+# TLS settings (optional)
+# tls_enabled = true
+# tls_bind_address = "0.0.0.0:5061"
+# tls_cert_path = "/etc/fcp/certs/fcp.crt"
+# tls_key_path = "/etc/fcp/certs/fcp.key"
+
+[registrar]
+# Registration settings
+enabled = true
+max_contacts = 5
+default_expiry = 3600
+min_expiry = 60
+max_expiry = 7200
+
+[b2bua]
+# B2BUA settings
+enabled = true
+parallel_forking = true
+max_forwards = 70
+session_timers = true
+
+[storage]
+# Database configuration - PostgreSQL for production
+backend = "postgres"
+connection_string = "postgresql://fcp:fcp_password@postgres:5432/fcp"
+max_connections = 100
+connection_timeout = 30
+
+# SQLite alternative (single-node only)
+# backend = "sqlite"
+# database_path = "/var/lib/fcp/fcp.db"
+
+[media]
+# RTP media settings
+rtp_port_range = "10000-20000"
+recording_dir = "/var/lib/fcp/recordings"
+recording_format = "wav"
+enable_rtcp = true
+dtmf_mode = "rfc2833"
+
+[voicemail]
+# Voicemail settings
+enabled = true
+recordings_dir = "/var/lib/fcp/voicemail"
+greetings_dir = "/var/lib/fcp/voicemail/greetings"
+max_message_duration = 300  # 5 minutes
+max_messages_per_mailbox = 100
+play_beep = true
+default_greeting_path = "/var/lib/fcp/audio/default-greeting.wav"
+beep_audio_path = "/var/lib/fcp/audio/beep.wav"
+email_notifications = false
+transcription_enabled = false
+
+[flow]
+# Flow engine settings
+enabled = true
+max_execution_time = 300  # 5 minutes
+webhook_timeout = 10  # seconds
+tts_enabled = false
+
+[routing]
+# Routing settings
+enable_lcr = false
+default_route_timeout = 60
+
+[observability]
+# Logging and monitoring
+structured_logging = true
+log_file = "/var/log/fcp/fcp.log"
+enable_tracing = true
+trace_sample_rate = 0.1  # 10% sampling
+
+# Prometheus metrics
+prometheus_enabled = true
+prometheus_endpoint = "/api/v1/metrics"
+
+[security]
+# Security settings
+digest_auth_enabled = true
+rate_limiting_enabled = false  # Phase 2
+cors_enabled = true
+cors_origins = ["*"]  # Configure restrictively in production
+
+[tenants.default]
+# Default tenant configuration
+name = "Default Tenant"
+domain = "fcp.local"
+max_extensions = 1000
+max_concurrent_calls = 100
+
+[redis]
+# Redis settings for clustering (Phase 3)
+enabled = false
+# connection_string = "redis://redis:6379"
+# max_connections = 10

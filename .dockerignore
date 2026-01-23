@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Build artifacts
+target/
+**/target/
+**/debug/
+**/release/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+!README.md
+docs/
+CLAUDE.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Testing
+tests/results/
+*.profraw
+*.profdata
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Local dev
+.env
+.env.local
+*.local
+
+# Temporary files
+tmp/
+temp/

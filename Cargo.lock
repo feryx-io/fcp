@@ -1627,6 +1627,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-voicemail"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fcp-core",
+ "fcp-media",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "filedescriptor"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
