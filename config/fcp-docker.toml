@@ -75,6 +75,7 @@ service_name = "fcp"
 enabled = false
 default_tenant_id = "default"
 
-[routing.backend.yaml]
+[routing.backend]
+type = "yaml"
 path = "routing.yaml"
 watch = true
