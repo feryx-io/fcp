@@ -32,15 +32,16 @@ min_expires = 60
 max_expires = 7200
 
 [storage]
-# Database configuration - PostgreSQL for production
-backend = "postgres"
-connection_string = "postgresql://fcp:fcp_password@postgres:5432/fcp"
-max_connections = 100
+# Database configuration - SQLite (fully implemented)
+backend = "sqlite"
+connection_string = "sqlite:///var/lib/fcp/fcp.db"
+max_connections = 10
 connection_timeout = { secs = 30, nanos = 0 }
 
-# SQLite alternative (single-node only)
-# backend = "sqlite"
-# connection_string = "sqlite:///var/lib/fcp/fcp.db"
+# PostgreSQL (not yet fully implemented)
+# backend = "postgres"
+# connection_string = "postgresql://fcp:fcp_password@postgres:5432/fcp"
+# max_connections = 100
 
 [media]
 # RTP media settings
