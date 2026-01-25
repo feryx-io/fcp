@@ -28,10 +28,11 @@ session_expires = 1800
 # Registration settings
 enabled = true
 auth_enabled = true
-max_contacts = 5
-default_expiry = 3600
-min_expiry = 60
-max_expiry = 7200
+realm = "fcp.local"
+data_dir = "/var/lib/fcp/registrar"
+default_expires = 3600
+min_expires = 60
+max_expires = 7200
 
 [b2bua]
 # B2BUA settings
