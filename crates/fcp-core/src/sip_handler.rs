@@ -229,6 +229,7 @@ pub struct InviteHandler {
     call_forker: Arc<CallForker>,
     call_state_manager: Arc<CallStateManager>,
     forwarding_rules_manager: Arc<tokio::sync::RwLock<ForwardingRulesManager>>,
+    #[allow(dead_code)] // TODO: Implement geographic routing for emergency services
     geo_routing_manager: Arc<tokio::sync::RwLock<GeoRoutingManager>>,
     voicemail_store: Option<Arc<dyn VoicemailStore>>,
     cdr_store: Option<Arc<dyn CdrStore>>,

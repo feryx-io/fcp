@@ -22,6 +22,7 @@ pub struct DefaultRoutingEngine {
     line_binding_store: Arc<dyn LineBindingStore>,
     extension_store: Arc<dyn ExtensionStore>,
     device_store: Arc<dyn DeviceStore>,
+    #[allow(dead_code)] // TODO: Implement round-robin and longest-idle ring strategies
     call_state_manager: Arc<CallStateManager>,
     forwarding_rules_manager: Arc<tokio::sync::RwLock<ForwardingRulesManager>>,
 }

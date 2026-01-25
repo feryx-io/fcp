@@ -12,7 +12,5 @@ pub use types::*;
 pub use bus::{EventBus, EventPublisher, EventSubscriber, EventStream, InMemoryEventBus};
 pub use filter::EventFilter;
 
-use anyhow::Result;
-
 #[cfg(test)]
 mod tests;

@@ -223,29 +223,144 @@ impl PostgresStorage {
 
 #[async_trait]
 impl CredentialStore for PostgresStorage {
-    async fn get_user_credentials(&self, username: &str) -> Result<Option<(String, String)>> {
+    async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let row = sqlx::query(
-            "SELECT username, password_hash FROM users WHERE username = $1 AND status = 'active'",
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id
+             FROM users
+             WHERE username = $1",
         )
         .bind(username)
         .fetch_optional(&self.pool)
         .await?;
 
         match row {
-            Some(row) => {
-                let username: String = row.get("username");
-                let password_hash: String = row.get("password_hash");
-                Ok(Some((username, password_hash)))
-            }
+            Some(row) => Ok(Some(row_to_user(row)?)),
             None => Ok(None),
         }
     }
 
-    async fn get_device_credentials(&self, device_id: &str) -> Result<Option<(String, String)>> {
-        // For device credentials, we could query a separate devices table
-        // For now, return None as device auth is not yet implemented
-        let _ = device_id;
-        Ok(None)
+    async fn put_user(&self, user: User) -> Result<()> {
+        let id = user.id.to_string();
+        let tenant_id = user.tenant_id.to_string();
+        let role = serde_json::to_string(&user.role)?.trim_matches('"').to_string();
+        let account_status = user.account_status.to_string();
+        let media_preferences = serde_json::to_value(&user.media_preferences)?;
+        let emergency_contact = serde_json::to_value(&user.emergency_contact)?;
+        let created_at = system_time_to_datetime(user.created_at);
+        let updated_at = system_time_to_datetime(user.updated_at);
+        let password_last_reset = user.password_last_reset.map(system_time_to_datetime);
+        let last_login = user.last_login.map(system_time_to_datetime);
+        let primary_phone_number_id = user.primary_phone_number_id.map(|id| id.to_string());
+        let voicemail_box_id = user.voicemail_box_id.map(|id| id.to_string());
+
+        sqlx::query(
+            "INSERT INTO users (
+                id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                role, department_id, enabled, created_at, updated_at, media_preferences,
+                email, password_last_reset, phone_number, mobile_number, pin,
+                extension, department, job_title, location, language, timezone,
+                account_status, last_login, emergency_contact_json,
+                primary_phone_number_id, voicemail_box_id
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+             ON CONFLICT(username, tenant_id) DO UPDATE SET
+                 password_hash = EXCLUDED.password_hash,
+                 digest_password = EXCLUDED.digest_password,
+                 sip_ha1_hash = EXCLUDED.sip_ha1_hash,
+                 display_name = EXCLUDED.display_name,
+                 role = EXCLUDED.role,
+                 department_id = EXCLUDED.department_id,
+                 enabled = EXCLUDED.enabled,
+                 updated_at = EXCLUDED.updated_at,
+                 media_preferences = EXCLUDED.media_preferences,
+                 email = EXCLUDED.email,
+                 password_last_reset = EXCLUDED.password_last_reset,
+                 phone_number = EXCLUDED.phone_number,
+                 mobile_number = EXCLUDED.mobile_number,
+                 pin = EXCLUDED.pin,
+                 extension = EXCLUDED.extension,
+                 department = EXCLUDED.department,
+                 job_title = EXCLUDED.job_title,
+                 location = EXCLUDED.location,
+                 language = EXCLUDED.language,
+                 timezone = EXCLUDED.timezone,
+                 account_status = EXCLUDED.account_status,
+                 last_login = EXCLUDED.last_login,
+                 emergency_contact_json = EXCLUDED.emergency_contact_json,
+                 primary_phone_number_id = EXCLUDED.primary_phone_number_id,
+                 voicemail_box_id = EXCLUDED.voicemail_box_id",
+        )
+        .bind(&id)
+        .bind(&user.username)
+        .bind(&user.password)
+        .bind(&user.digest_password)
+        .bind(&user.sip_ha1_hash)
+        .bind(&user.display_name)
+        .bind(&tenant_id)
+        .bind(&role)
+        .bind(&user.department_id)
+        .bind(user.enabled)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .bind(&media_preferences)
+        .bind(&user.email)
+        .bind(password_last_reset)
+        .bind(&user.phone_number)
+        .bind(&user.mobile_number)
+        .bind(&user.pin)
+        .bind(&user.extension)
+        .bind(&user.department)
+        .bind(&user.job_title)
+        .bind(&user.location)
+        .bind(&user.language)
+        .bind(&user.timezone)
+        .bind(&account_status)
+        .bind(last_login)
+        .bind(&emergency_contact)
+        .bind(&primary_phone_number_id)
+        .bind(&voicemail_box_id)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(username = %user.username, "User stored");
+        Ok(())
+    }
+
+    async fn delete_user(&self, username: &str) -> Result<()> {
+        sqlx::query("DELETE FROM users WHERE username = $1")
+            .bind(username)
+            .execute(&self.pool)
+            .await?;
+
+        debug!(username = %username, "User deleted");
+        Ok(())
+    }
+
+    async fn list_users(&self) -> Result<Vec<User>> {
+        let rows = sqlx::query(
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id
+             FROM users
+             ORDER BY username",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let users = rows
+            .into_iter()
+            .filter_map(|row| row_to_user(row).ok())
+            .collect();
+
+        Ok(users)
     }
 }
 
@@ -255,95 +370,40 @@ impl CredentialStore for PostgresStorage {
 
 #[async_trait]
 impl RegistrationStore for PostgresStorage {
-    async fn get_registration(&self, aor: &str) -> Result<Option<Registration>> {
-        let row = sqlx::query(
-            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, instance_id, reg_id
+    async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
+        let rows = sqlx::query(
+            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at
              FROM registrations
-             WHERE aor = $1 AND expires_at > NOW()",
+             WHERE aor = $1
+             ORDER BY q DESC NULLS LAST",
         )
         .bind(aor)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-
-        match row {
-            Some(row) => {
-                let expires_at: DateTime<Utc> = row.get("expires_at");
-                let expires_at = datetime_to_system_time(expires_at);
-
-                Ok(Some(Registration {
-                    aor: row.get("aor"),
-                    contact: row.get("contact"),
-                    expires_at,
-                    call_id: row.get("call_id"),
-                    cseq: row.get::<i64, _>("cseq") as u32,
-                    user_agent: row.get("user_agent"),
-                    instance_id: row.get("instance_id"),
-                    reg_id: row.get::<Option<i64>, _>("reg_id").map(|r| r as u32),
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn list_registrations(&self, aor_prefix: Option<&str>) -> Result<Vec<Registration>> {
-        let rows = if let Some(prefix) = aor_prefix {
-            sqlx::query(
-                "SELECT aor, contact, expires_at, call_id, cseq, user_agent, instance_id, reg_id
-                 FROM registrations
-                 WHERE aor LIKE $1 AND expires_at > NOW()
-                 ORDER BY aor",
-            )
-            .bind(format!("{}%", prefix))
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query(
-                "SELECT aor, contact, expires_at, call_id, cseq, user_agent, instance_id, reg_id
-                 FROM registrations
-                 WHERE expires_at > NOW()
-                 ORDER BY aor",
-            )
-            .fetch_all(&self.pool)
-            .await?
-        };
 
         let registrations = rows
             .into_iter()
-            .map(|row| {
-                let expires_at: DateTime<Utc> = row.get("expires_at");
-                let expires_at = datetime_to_system_time(expires_at);
-
-                Registration {
-                    aor: row.get("aor"),
-                    contact: row.get("contact"),
-                    expires_at,
-                    call_id: row.get("call_id"),
-                    cseq: row.get::<i64, _>("cseq") as u32,
-                    user_agent: row.get("user_agent"),
-                    instance_id: row.get("instance_id"),
-                    reg_id: row.get::<Option<i64>, _>("reg_id").map(|r| r as u32),
-                }
-            })
+            .filter_map(|row| row_to_registration(row).ok())
             .collect();
 
         Ok(registrations)
     }
 
-    async fn put_registration(&self, registration: &Registration) -> Result<()> {
+    async fn put_registration(&self, registration: Registration) -> Result<()> {
         let expires_at = system_time_to_datetime(registration.expires_at);
+        let registered_at = system_time_to_datetime(registration.registered_at);
 
         sqlx::query(
-            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, instance_id, reg_id, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (aor, contact)
              DO UPDATE SET
                  expires_at = EXCLUDED.expires_at,
                  call_id = EXCLUDED.call_id,
                  cseq = EXCLUDED.cseq,
                  user_agent = EXCLUDED.user_agent,
-                 instance_id = EXCLUDED.instance_id,
-                 reg_id = EXCLUDED.reg_id,
-                 updated_at = NOW()",
+                 q = EXCLUDED.q,
+                 registered_at = EXCLUDED.registered_at",
         )
         .bind(&registration.aor)
         .bind(&registration.contact)
@@ -351,8 +411,8 @@ impl RegistrationStore for PostgresStorage {
         .bind(&registration.call_id)
         .bind(registration.cseq as i64)
         .bind(&registration.user_agent)
-        .bind(&registration.instance_id)
-        .bind(registration.reg_id.map(|r| r as i64))
+        .bind(registration.q)
+        .bind(registered_at)
         .execute(&self.pool)
         .await?;
 
@@ -360,31 +420,33 @@ impl RegistrationStore for PostgresStorage {
         Ok(())
     }
 
-    async fn delete_registration(&self, aor: &str, contact: Option<&str>) -> Result<()> {
-        if let Some(contact) = contact {
-            sqlx::query("DELETE FROM registrations WHERE aor = $1 AND contact = $2")
-                .bind(aor)
-                .bind(contact)
-                .execute(&self.pool)
-                .await?;
-            debug!(aor = %aor, contact = %contact, "Registration deleted");
-        } else {
-            sqlx::query("DELETE FROM registrations WHERE aor = $1")
-                .bind(aor)
-                .execute(&self.pool)
-                .await?;
-            debug!(aor = %aor, "All registrations for AOR deleted");
-        }
+    async fn delete_registration(&self, aor: &str, contact: &str) -> Result<()> {
+        sqlx::query("DELETE FROM registrations WHERE aor = $1 AND contact = $2")
+            .bind(aor)
+            .bind(contact)
+            .execute(&self.pool)
+            .await?;
 
+        debug!(aor = %aor, contact = %contact, "Registration deleted");
         Ok(())
     }
 
-    async fn cleanup_expired(&self) -> Result<u64> {
+    async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM registrations WHERE aor = $1")
+            .bind(aor)
+            .execute(&self.pool)
+            .await?;
+
+        debug!(aor = %aor, "All registrations for AOR deleted");
+        Ok(())
+    }
+
+    async fn cleanup_expired(&self) -> Result<usize> {
         let result = sqlx::query("DELETE FROM registrations WHERE expires_at <= NOW()")
             .execute(&self.pool)
             .await?;
 
-        let count = result.rows_affected();
+        let count = result.rows_affected() as usize;
         if count > 0 {
             debug!(count = count, "Expired registrations cleaned up");
         }
@@ -401,9 +463,9 @@ impl RegistrationStore for PostgresStorage {
 impl TenantStore for PostgresStorage {
     async fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>> {
         let row = sqlx::query(
-            "SELECT id, name, status, max_users, max_devices, max_phone_numbers,
-                    billing_email, technical_contact_json, emergency_contact_json,
-                    media_preferences_json, created_at, updated_at
+            "SELECT id, name, description, status, contact_email, contact_phone,
+                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                    created_at, updated_at, trial_expires_at, metadata
              FROM tenants
              WHERE id = $1",
         )
@@ -417,11 +479,29 @@ impl TenantStore for PostgresStorage {
         }
     }
 
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>> {
+        let row = sqlx::query(
+            "SELECT id, name, description, status, contact_email, contact_phone,
+                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                    created_at, updated_at, trial_expires_at, metadata
+             FROM tenants
+             WHERE name = $1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_tenant(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn list_tenants(&self) -> Result<Vec<Tenant>> {
         let rows = sqlx::query(
-            "SELECT id, name, status, max_users, max_devices, max_phone_numbers,
-                    billing_email, technical_contact_json, emergency_contact_json,
-                    media_preferences_json, created_at, updated_at
+            "SELECT id, name, description, status, contact_email, contact_phone,
+                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                    created_at, updated_at, trial_expires_at, metadata
              FROM tenants
              ORDER BY name",
         )
@@ -438,47 +518,46 @@ impl TenantStore for PostgresStorage {
 
     async fn put_tenant(&self, tenant: Tenant) -> Result<()> {
         let id = tenant.id.to_string();
-        let status = tenant.status.to_string();
-        let technical_contact_json = serde_json::to_value(&tenant.technical_contact)?;
-        let emergency_contact_json = tenant
-            .emergency_contact
-            .map(|c| serde_json::to_value(&c))
-            .transpose()?;
-        let media_preferences_json = serde_json::to_value(&tenant.media_preferences)?;
+        let status = serde_json::to_string(&tenant.status)?.trim_matches('"').to_string();
         let created_at = system_time_to_datetime(tenant.created_at);
         let updated_at = system_time_to_datetime(tenant.updated_at);
+        let trial_expires_at = tenant.trial_expires_at.map(system_time_to_datetime);
 
         sqlx::query(
             "INSERT INTO tenants (
-                id, name, status, max_users, max_devices, max_phone_numbers,
-                billing_email, technical_contact_json, emergency_contact_json,
-                media_preferences_json, created_at, updated_at
+                id, name, description, status, contact_email, contact_phone,
+                max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                created_at, updated_at, trial_expires_at, metadata
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
+                 description = EXCLUDED.description,
                  status = EXCLUDED.status,
+                 contact_email = EXCLUDED.contact_email,
+                 contact_phone = EXCLUDED.contact_phone,
                  max_users = EXCLUDED.max_users,
-                 max_devices = EXCLUDED.max_devices,
                  max_phone_numbers = EXCLUDED.max_phone_numbers,
-                 billing_email = EXCLUDED.billing_email,
-                 technical_contact_json = EXCLUDED.technical_contact_json,
-                 emergency_contact_json = EXCLUDED.emergency_contact_json,
-                 media_preferences_json = EXCLUDED.media_preferences_json,
-                 updated_at = EXCLUDED.updated_at",
+                 max_concurrent_calls = EXCLUDED.max_concurrent_calls,
+                 billing_id = EXCLUDED.billing_id,
+                 updated_at = EXCLUDED.updated_at,
+                 trial_expires_at = EXCLUDED.trial_expires_at,
+                 metadata = EXCLUDED.metadata",
         )
         .bind(&id)
         .bind(&tenant.name)
+        .bind(&tenant.description)
         .bind(&status)
+        .bind(&tenant.contact_email)
+        .bind(&tenant.contact_phone)
         .bind(tenant.max_users.map(|u| u as i64))
-        .bind(tenant.max_devices.map(|d| d as i64))
         .bind(tenant.max_phone_numbers.map(|p| p as i64))
-        .bind(&tenant.billing_email)
-        .bind(&technical_contact_json)
-        .bind(&emergency_contact_json)
-        .bind(&media_preferences_json)
+        .bind(tenant.max_concurrent_calls.map(|c| c as i64))
+        .bind(&tenant.billing_id)
         .bind(created_at)
         .bind(updated_at)
+        .bind(trial_expires_at)
+        .bind(&tenant.metadata)
         .execute(&self.pool)
         .await?;
 
@@ -500,40 +579,28 @@ impl TenantStore for PostgresStorage {
 fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
     let id = TenantId::from_str(&row.get::<String, _>("id"))?;
     let status_str: String = row.get("status");
-    let status = AccountStatus::from_str(&status_str).unwrap_or(AccountStatus::Active);
-
-    let technical_contact: fcp_core::TechnicalContact = row
-        .get::<serde_json::Value, _>("technical_contact_json")
-        .try_into()
-        .map_err(|e: serde_json::Error| anyhow::anyhow!("Failed to parse technical_contact: {}", e))?;
-
-    let emergency_contact: Option<EmergencyContact> = row
-        .get::<Option<serde_json::Value>, _>("emergency_contact_json")
-        .and_then(|v| serde_json::from_value(v).ok());
-
-    let media_preferences: MediaPreferences = row
-        .get::<serde_json::Value, _>("media_preferences_json")
-        .try_into()
-        .map_err(|e: serde_json::Error| anyhow::anyhow!("Failed to parse media_preferences: {}", e))?;
+    let status = serde_json::from_str::<fcp_core::TenantStatus>(&format!("\"{}\"", status_str))
+        .unwrap_or(fcp_core::TenantStatus::Active);
 
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+    let trial_expires_at = row.get::<Option<DateTime<Utc>>, _>("trial_expires_at").map(datetime_to_system_time);
 
     Ok(Tenant {
         id,
         name: row.get("name"),
+        description: row.get("description"),
         status,
-        max_users: row.get::<Option<i64>, _>("max_users").map(|u| u as usize),
-        max_devices: row.get::<Option<i64>, _>("max_devices").map(|d| d as usize),
-        max_phone_numbers: row
-            .get::<Option<i64>, _>("max_phone_numbers")
-            .map(|p| p as usize),
-        billing_email: row.get("billing_email"),
-        technical_contact,
-        emergency_contact,
-        media_preferences,
+        contact_email: row.get("contact_email"),
+        contact_phone: row.get("contact_phone"),
+        max_users: row.get::<Option<i64>, _>("max_users").map(|u| u as u32),
+        max_phone_numbers: row.get::<Option<i64>, _>("max_phone_numbers").map(|p| p as u32),
+        max_concurrent_calls: row.get::<Option<i64>, _>("max_concurrent_calls").map(|c| c as u32),
+        billing_id: row.get("billing_id"),
         created_at,
         updated_at,
+        trial_expires_at,
+        metadata: row.get("metadata"),
     })
 }
 
@@ -543,104 +610,16 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
 
 #[async_trait]
 impl CdrStore for PostgresStorage {
-    async fn get_cdr(&self, id: &str) -> Result<Option<CallDetailRecord>> {
-        let row = sqlx::query(
-            "SELECT id, tenant_id, call_id, call_id_header, direction, caller, callee, start_time,
-                    answer_time, end_time, duration_secs, billable_duration_secs, hangup_cause,
-                    hangup_party, disposition, from_uri, to_uri, contact_uri, user_agent,
-                    remote_sdp, local_sdp, audio_codec, video_codec, dtmf_method, rtp_packets_sent,
-                    rtp_packets_received, rtp_bytes_sent, rtp_bytes_received, recording_url,
-                    cost, currency, custom_data
-             FROM cdrs
-             WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        match row {
-            Some(row) => Ok(Some(row_to_cdr(row)?)),
-            None => Ok(None),
-        }
-    }
-
-    async fn list_cdrs(&self, query: &CdrQuery) -> Result<Vec<CallDetailRecord>> {
-        let mut sql = String::from(
-            "SELECT id, tenant_id, call_id, call_id_header, direction, caller, callee, start_time,
-                    answer_time, end_time, duration_secs, billable_duration_secs, hangup_cause,
-                    hangup_party, disposition, from_uri, to_uri, contact_uri, user_agent,
-                    remote_sdp, local_sdp, audio_codec, video_codec, dtmf_method, rtp_packets_sent,
-                    rtp_packets_received, rtp_bytes_sent, rtp_bytes_received, recording_url,
-                    cost, currency, custom_data
-             FROM cdrs
-             WHERE 1=1",
-        );
-
-        // Add filters
-        if query.tenant_id.is_some() {
-            sql.push_str(" AND tenant_id = $1");
-        }
-        if query.caller.is_some() {
-            let param_num = if query.tenant_id.is_some() { 2 } else { 1 };
-            sql.push_str(&format!(" AND caller = ${}", param_num));
-        }
-        if query.callee.is_some() {
-            let param_num = match (query.tenant_id.is_some(), query.caller.is_some()) {
-                (true, true) => 3,
-                (true, false) | (false, true) => 2,
-                (false, false) => 1,
-            };
-            sql.push_str(&format!(" AND callee = ${}", param_num));
-        }
-
-        // Add ordering and limit
-        sql.push_str(" ORDER BY start_time DESC");
-        if let Some(limit) = query.limit {
-            let param_num = match (
-                query.tenant_id.is_some(),
-                query.caller.is_some(),
-                query.callee.is_some(),
-            ) {
-                (true, true, true) => 4,
-                (true, true, false) | (true, false, true) | (false, true, true) => 3,
-                (true, false, false) | (false, true, false) | (false, false, true) => 2,
-                (false, false, false) => 1,
-            };
-            sql.push_str(&format!(" LIMIT ${}", param_num));
-        }
-
-        // Build query with bindings
-        let mut query_builder = sqlx::query(&sql);
-        if let Some(ref tenant_id) = query.tenant_id {
-            query_builder = query_builder.bind(tenant_id.to_string());
-        }
-        if let Some(ref caller) = query.caller {
-            query_builder = query_builder.bind(caller);
-        }
-        if let Some(ref callee) = query.callee {
-            query_builder = query_builder.bind(callee);
-        }
-        if let Some(limit) = query.limit {
-            query_builder = query_builder.bind(limit as i64);
-        }
-
-        let rows = query_builder.fetch_all(&self.pool).await?;
-
-        let cdrs = rows.into_iter().filter_map(|row| row_to_cdr(row).ok()).collect();
-
-        Ok(cdrs)
-    }
-
-    async fn put_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
-        let id = cdr.id.clone();
-        let tenant_id = cdr.tenant_id.to_string();
+    async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
         let call_id = cdr.call_id.to_string();
-        let hangup_cause = cdr.hangup_cause.to_string();
-        let hangup_party = cdr.hangup_party.to_string();
-        let disposition = cdr.disposition.to_string();
-        let audio_codec = cdr.audio_codec.map(|c| c.to_string());
-        let video_codec = cdr.video_codec.map(|c| c.to_string());
-        let custom_data = serde_json::to_value(&cdr.custom_data)?;
+        let tenant_id = cdr.tenant_id.to_string();
+        let disposition = serde_json::to_string(&cdr.disposition)?.trim_matches('"').to_string();
+        let hangup_cause = match cdr.hangup_cause {
+            HangupCause::Other(code) => format!("other:{}", code),
+            _ => serde_json::to_string(&cdr.hangup_cause)?.trim_matches('"').to_string(),
+        };
+        let hangup_party = cdr.hangup_party.map(|p| serde_json::to_string(&p).unwrap_or_default().trim_matches('"').to_string());
+        let custom_data = cdr.custom_data.map(|v| serde_json::to_value(&v)).transpose()?;
 
         let start_time = system_time_to_datetime(cdr.start_time);
         let answer_time = cdr.answer_time.map(system_time_to_datetime);
@@ -648,22 +627,37 @@ impl CdrStore for PostgresStorage {
 
         sqlx::query(
             "INSERT INTO cdrs (
-                id, tenant_id, call_id, call_id_header, direction, caller, callee, start_time,
-                answer_time, end_time, duration_secs, billable_duration_secs, hangup_cause,
-                hangup_party, disposition, from_uri, to_uri, contact_uri, user_agent,
-                remote_sdp, local_sdp, audio_codec, video_codec, dtmf_method, rtp_packets_sent,
-                rtp_packets_received, rtp_bytes_sent, rtp_bytes_received, recording_url,
-                cost, currency, custom_data, created_at
+                call_id, tenant_id, sip_call_id,
+                from_uri, from_display_name, to_uri, to_display_name,
+                start_time, answer_time, end_time,
+                setup_duration_ms, call_duration_ms, total_duration_ms,
+                disposition, hangup_cause, hangup_party,
+                sip_status_code, sip_reason,
+                route_id, gateway_id,
+                media_anchored, codec_a_leg, codec_b_leg,
+                rtp_packets_sent, rtp_packets_received, rtp_bytes_sent, rtp_bytes_received,
+                recording_url, cost, currency, custom_data, created_at
+             ) VALUES (
+                $1, $2, $3,
+                $4, $5, $6, $7,
+                $8, $9, $10,
+                $11, $12, $13,
+                $14, $15, $16,
+                $17, $18,
+                $19, $20,
+                $21, $22, $23,
+                $24, $25, $26, $27,
+                $28, $29, $30, $31, NOW()
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, NOW())
-             ON CONFLICT(id) DO UPDATE SET
+             ON CONFLICT(call_id) DO UPDATE SET
                  answer_time = EXCLUDED.answer_time,
                  end_time = EXCLUDED.end_time,
-                 duration_secs = EXCLUDED.duration_secs,
-                 billable_duration_secs = EXCLUDED.billable_duration_secs,
+                 setup_duration_ms = EXCLUDED.setup_duration_ms,
+                 call_duration_ms = EXCLUDED.call_duration_ms,
+                 total_duration_ms = EXCLUDED.total_duration_ms,
+                 disposition = EXCLUDED.disposition,
                  hangup_cause = EXCLUDED.hangup_cause,
                  hangup_party = EXCLUDED.hangup_party,
-                 disposition = EXCLUDED.disposition,
                  rtp_packets_sent = EXCLUDED.rtp_packets_sent,
                  rtp_packets_received = EXCLUDED.rtp_packets_received,
                  rtp_bytes_sent = EXCLUDED.rtp_bytes_sent,
@@ -673,30 +667,29 @@ impl CdrStore for PostgresStorage {
                  currency = EXCLUDED.currency,
                  custom_data = EXCLUDED.custom_data",
         )
-        .bind(&id)
-        .bind(&tenant_id)
         .bind(&call_id)
-        .bind(&cdr.call_id_header)
-        .bind(&cdr.direction)
-        .bind(&cdr.caller)
-        .bind(&cdr.callee)
+        .bind(&tenant_id)
+        .bind(&cdr.sip_call_id)
+        .bind(&cdr.from_uri)
+        .bind(&cdr.from_display_name)
+        .bind(&cdr.to_uri)
+        .bind(&cdr.to_display_name)
         .bind(start_time)
         .bind(answer_time)
         .bind(end_time)
-        .bind(cdr.duration.map(|d| d.as_secs() as i64))
-        .bind(cdr.billable_duration.map(|d| d.as_secs() as i64))
+        .bind(cdr.setup_duration_ms.map(|d| d as i64))
+        .bind(cdr.call_duration_ms.map(|d| d as i64))
+        .bind(cdr.total_duration_ms.map(|d| d as i64))
+        .bind(&disposition)
         .bind(&hangup_cause)
         .bind(&hangup_party)
-        .bind(&disposition)
-        .bind(&cdr.from_uri)
-        .bind(&cdr.to_uri)
-        .bind(&cdr.contact_uri)
-        .bind(&cdr.user_agent)
-        .bind(&cdr.remote_sdp)
-        .bind(&cdr.local_sdp)
-        .bind(&audio_codec)
-        .bind(&video_codec)
-        .bind(&cdr.dtmf_method)
+        .bind(cdr.sip_status_code.map(|c| c as i64))
+        .bind(&cdr.sip_reason)
+        .bind(&cdr.route_id)
+        .bind(&cdr.gateway_id)
+        .bind(cdr.media_anchored)
+        .bind(&cdr.codec_a_leg)
+        .bind(&cdr.codec_b_leg)
         .bind(cdr.rtp_packets_sent.map(|p| p as i64))
         .bind(cdr.rtp_packets_received.map(|p| p as i64))
         .bind(cdr.rtp_bytes_sent.map(|b| b as i64))
@@ -708,19 +701,217 @@ impl CdrStore for PostgresStorage {
         .execute(&self.pool)
         .await?;
 
-        debug!(id = %id, call_id = %call_id, "CDR stored");
+        debug!(call_id = %call_id, "CDR stored");
         Ok(())
     }
 
-    async fn delete_cdr(&self, id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM cdrs WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
+    async fn get_cdr(&self, call_id: &fcp_core::CallId) -> Result<Option<CallDetailRecord>> {
+        let row = sqlx::query("SELECT * FROM cdrs WHERE call_id = $1")
+            .bind(call_id.to_string())
+            .fetch_optional(&self.pool)
             .await?;
 
-        debug!(id = %id, "CDR deleted");
-        Ok(())
+        match row {
+            Some(row) => Ok(Some(row_to_cdr(row)?)),
+            None => Ok(None),
+        }
     }
+
+    async fn query_cdrs(&self, query: CdrQuery) -> Result<Vec<CallDetailRecord>> {
+        let mut sql = String::from("SELECT * FROM cdrs WHERE 1=1");
+        let mut conditions = Vec::new();
+
+        if let Some(tenant_id) = &query.tenant_id {
+            conditions.push(("tenant_id", tenant_id.to_string()));
+        }
+
+        if let Some(call_id) = &query.call_id {
+            conditions.push(("call_id", call_id.to_string()));
+        }
+
+        if let Some(from_uri) = &query.from_uri {
+            conditions.push(("from_uri_like", format!("%{}%", from_uri)));
+        }
+
+        if let Some(to_uri) = &query.to_uri {
+            conditions.push(("to_uri_like", format!("%{}%", to_uri)));
+        }
+
+        if let Some(start_from) = query.start_time_from {
+            let dt = system_time_to_datetime(start_from);
+            conditions.push(("start_time_from", dt.to_rfc3339()));
+        }
+
+        if let Some(start_to) = query.start_time_to {
+            let dt = system_time_to_datetime(start_to);
+            conditions.push(("start_time_to", dt.to_rfc3339()));
+        }
+
+        if let Some(disposition) = &query.disposition {
+            let disp_str = serde_json::to_string(disposition)?.trim_matches('"').to_string();
+            conditions.push(("disposition", disp_str));
+        }
+
+        // Build dynamic query
+        for (key, _value) in &conditions {
+            match *key {
+                "from_uri_like" => {
+                    sql.push_str(" AND from_uri LIKE $");
+                }
+                "to_uri_like" => {
+                    sql.push_str(" AND to_uri LIKE $");
+                }
+                "start_time_from" => {
+                    sql.push_str(" AND start_time >= $");
+                }
+                "start_time_to" => {
+                    sql.push_str(" AND start_time <= $");
+                }
+                _ => {
+                    sql.push_str(&format!(" AND {} = $", key));
+                }
+            }
+        }
+
+        sql.push_str(" ORDER BY start_time DESC");
+
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        if let Some(offset) = query.offset {
+            sql.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        // Execute query with bindings
+        let mut final_query = sqlx::query(&sql);
+        for (_, value) in conditions {
+            final_query = final_query.bind(value);
+        }
+
+        let rows = final_query.fetch_all(&self.pool).await?;
+
+        let cdrs = rows
+            .into_iter()
+            .filter_map(|row| row_to_cdr(row).ok())
+            .collect();
+
+        Ok(cdrs)
+    }
+
+    async fn count_cdrs(&self, query: CdrQuery) -> Result<usize> {
+        let mut sql = String::from("SELECT COUNT(*) as count FROM cdrs WHERE 1=1");
+        let mut conditions = Vec::new();
+
+        if let Some(tenant_id) = &query.tenant_id {
+            sql.push_str(" AND tenant_id = $1");
+            conditions.push(tenant_id.to_string());
+        }
+
+        if let Some(disposition) = &query.disposition {
+            let param_num = if conditions.is_empty() { 1 } else { conditions.len() + 1 };
+            sql.push_str(&format!(" AND disposition = ${}", param_num));
+            let disp_str = serde_json::to_string(disposition)?.trim_matches('"').to_string();
+            conditions.push(disp_str);
+        }
+
+        let mut query_builder = sqlx::query(&sql);
+        for condition in conditions {
+            query_builder = query_builder.bind(condition);
+        }
+
+        let row = query_builder.fetch_one(&self.pool).await?;
+        let count: i64 = row.get("count");
+
+        Ok(count as usize)
+    }
+}
+
+// ============================================================================
+// Helper Functions for Row Conversion
+// ============================================================================
+
+/// Convert PostgreSQL row to User
+fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
+    let id = UserId::from_str(&row.get::<String, _>("id"))?;
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+
+    let role_str: String = row.get("role");
+    let role = serde_json::from_str::<fcp_core::UserRole>(&format!("\"{}\"", role_str))
+        .unwrap_or(fcp_core::UserRole::EndUser);
+
+    let account_status_str: String = row.get("account_status");
+    let account_status = AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
+
+    let media_preferences: MediaPreferences = serde_json::from_value(
+        row.get::<serde_json::Value, _>("media_preferences")
+    ).map_err(|e| anyhow::anyhow!("Failed to parse media_preferences: {}", e))?;
+
+    let emergency_contact: EmergencyContact = serde_json::from_value(
+        row.get::<serde_json::Value, _>("emergency_contact_json")
+    ).map_err(|e| anyhow::anyhow!("Failed to parse emergency_contact: {}", e))?;
+
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+    let password_last_reset = row.get::<Option<DateTime<Utc>>, _>("password_last_reset").map(datetime_to_system_time);
+    let last_login = row.get::<Option<DateTime<Utc>>, _>("last_login").map(datetime_to_system_time);
+
+    let primary_phone_number_id = row
+        .get::<Option<String>, _>("primary_phone_number_id")
+        .and_then(|s| PhoneNumberId::from_str(&s).ok());
+
+    let voicemail_box_id = row
+        .get::<Option<String>, _>("voicemail_box_id")
+        .and_then(|s| fcp_core::VoicemailBoxId::from_str(&s).ok());
+
+    Ok(User {
+        id,
+        username: row.get("username"),
+        password: row.get("password_hash"),
+        digest_password: row.get("digest_password"),
+        sip_ha1_hash: row.get("sip_ha1_hash"),
+        display_name: row.get("display_name"),
+        tenant_id,
+        role,
+        department_id: row.get("department_id"),
+        enabled: row.get("enabled"),
+        created_at,
+        updated_at,
+        media_preferences,
+        email: row.get("email"),
+        password_last_reset,
+        phone_number: row.get("phone_number"),
+        mobile_number: row.get("mobile_number"),
+        pin: row.get("pin"),
+        extension: row.get("extension"),
+        department: row.get("department"),
+        job_title: row.get("job_title"),
+        location: row.get("location"),
+        language: row.get("language"),
+        timezone: row.get("timezone"),
+        account_status,
+        last_login,
+        emergency_contact,
+        primary_phone_number_id,
+        voicemail_box_id,
+    })
+}
+
+/// Convert PostgreSQL row to Registration
+fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
+    let expires_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("expires_at"));
+    let registered_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("registered_at"));
+
+    Ok(Registration {
+        aor: row.get("aor"),
+        contact: row.get("contact"),
+        expires_at,
+        call_id: row.get("call_id"),
+        cseq: row.get::<i64, _>("cseq") as u32,
+        user_agent: row.get("user_agent"),
+        q: row.get("q"),
+        registered_at,
+    })
 }
 
 fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
@@ -728,26 +919,24 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
     let call_id = fcp_core::CallId::from_str(&row.get::<String, _>("call_id"))?;
 
     let hangup_cause_str: String = row.get("hangup_cause");
-    let hangup_cause = HangupCause::from_str(&hangup_cause_str).unwrap_or(HangupCause::NormalClearing);
+    let hangup_cause = if hangup_cause_str.starts_with("other:") {
+        let code = hangup_cause_str.strip_prefix("other:").unwrap().parse().unwrap_or(0);
+        HangupCause::Other(code)
+    } else {
+        serde_json::from_str::<HangupCause>(&format!("\"{}\"", hangup_cause_str))
+            .unwrap_or(HangupCause::NormalClearing)
+    };
 
-    let hangup_party_str: String = row.get("hangup_party");
-    let hangup_party = HangupParty::from_str(&hangup_party_str).unwrap_or(HangupParty::Unknown);
+    let hangup_party: Option<HangupParty> = row
+        .get::<Option<String>, _>("hangup_party")
+        .and_then(|s| serde_json::from_str::<HangupParty>(&format!("\"{}\"", s)).ok());
 
     let disposition_str: String = row.get("disposition");
-    let disposition = CallDisposition::from_str(&disposition_str).unwrap_or(CallDisposition::NoAnswer);
+    let disposition = serde_json::from_str::<CallDisposition>(&format!("\"{}\"", disposition_str))
+        .unwrap_or(CallDisposition::NoAnswer);
 
-    let audio_codec = row
-        .get::<Option<String>, _>("audio_codec")
-        .and_then(|s| AudioCodec::from_str(&s).ok());
-
-    let video_codec = row
-        .get::<Option<String>, _>("video_codec")
-        .map(|s| fcp_core::VideoCodec::from_str(&s).unwrap_or(fcp_core::VideoCodec::H264));
-
-    let custom_data = row
-        .get::<serde_json::Value, _>("custom_data")
-        .try_into()
-        .unwrap_or_default();
+    let custom_data: Option<serde_json::Value> = row
+        .get::<Option<serde_json::Value>, _>("custom_data");
 
     let start_time = datetime_to_system_time(row.get::<DateTime<Utc>, _>("start_time"));
     let answer_time = row
@@ -758,34 +947,37 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
         .map(datetime_to_system_time);
 
     Ok(CallDetailRecord {
-        id: row.get("id"),
-        tenant_id,
         call_id,
-        call_id_header: row.get("call_id_header"),
-        direction: row.get("direction"),
-        caller: row.get("caller"),
-        callee: row.get("callee"),
+        tenant_id,
+        sip_call_id: row.get("sip_call_id"),
+        from_uri: row.get("from_uri"),
+        from_display_name: row.get("from_display_name"),
+        to_uri: row.get("to_uri"),
+        to_display_name: row.get("to_display_name"),
         start_time,
         answer_time,
         end_time,
-        duration: row
-            .get::<Option<i64>, _>("duration_secs")
-            .map(|d| Duration::from_secs(d as u64)),
-        billable_duration: row
-            .get::<Option<i64>, _>("billable_duration_secs")
-            .map(|d| Duration::from_secs(d as u64)),
+        setup_duration_ms: row
+            .get::<Option<i64>, _>("setup_duration_ms")
+            .map(|d| d as u64),
+        call_duration_ms: row
+            .get::<Option<i64>, _>("call_duration_ms")
+            .map(|d| d as u64),
+        total_duration_ms: row
+            .get::<Option<i64>, _>("total_duration_ms")
+            .map(|d| d as u64),
+        disposition,
         hangup_cause,
         hangup_party,
-        disposition,
-        from_uri: row.get("from_uri"),
-        to_uri: row.get("to_uri"),
-        contact_uri: row.get("contact_uri"),
-        user_agent: row.get("user_agent"),
-        remote_sdp: row.get("remote_sdp"),
-        local_sdp: row.get("local_sdp"),
-        audio_codec,
-        video_codec,
-        dtmf_method: row.get("dtmf_method"),
+        sip_status_code: row
+            .get::<Option<i64>, _>("sip_status_code")
+            .map(|c| c as u16),
+        sip_reason: row.get("sip_reason"),
+        route_id: row.get("route_id"),
+        gateway_id: row.get("gateway_id"),
+        media_anchored: row.get("media_anchored"),
+        codec_a_leg: row.get("codec_a_leg"),
+        codec_b_leg: row.get("codec_b_leg"),
         rtp_packets_sent: row
             .get::<Option<i64>, _>("rtp_packets_sent")
             .map(|p| p as u64),
