@@ -31,9 +31,15 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
-    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration, UserId,
-    RegistrationStore, Tenant, TenantId, TenantStore, User,
+    storage::{
+        CdrStore, CredentialStore, DeviceStore, ExtensionStore,
+        LineBindingStore, PhoneNumberStore, RegistrationStore, TenantStore,
+    },
+    AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery,
+    Device, DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension,
+    ExtensionId, ExtensionTarget, HangupCause, HangupParty, LineBinding, LineBindingId,
+    MediaPreferences, NumberState, PhoneNumber, PhoneNumberId, Registration,
+    RegistrationState, RingStrategy, Tenant, TenantId, User, UserId,
 };
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{MySql, Pool, Row};
@@ -163,6 +169,62 @@ impl MysqlStorage {
     /// Close the connection pool.
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+
+    /// Helper method to get device bindings for a line binding
+    async fn get_device_bindings(&self, line_binding_id: &LineBindingId) -> Result<Vec<DeviceBinding>> {
+        let rows = sqlx::query(
+            "SELECT line_binding_id, device_id, priority, line_appearance, shared_line, enabled
+             FROM device_bindings
+             WHERE line_binding_id = ?
+             ORDER BY priority",
+        )
+        .bind(line_binding_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let bindings = rows
+            .into_iter()
+            .filter_map(|row| {
+                let device_id = DeviceId::from_str(&row.get::<String, _>("device_id")).ok()?;
+                Some(DeviceBinding {
+                    device_id,
+                    priority: row.get::<i32, _>("priority") as u8,
+                    line_appearance: row.get::<i32, _>("line_appearance") as u8,
+                    shared_line: row.get("shared_line"),
+                    enabled: row.get("enabled"),
+                })
+            })
+            .collect();
+
+        Ok(bindings)
+    }
+
+    /// Helper method to store a device binding
+    async fn put_device_binding(
+        &self,
+        line_binding_id: &LineBindingId,
+        binding: &DeviceBinding,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO device_bindings (line_binding_id, device_id, priority, line_appearance, shared_line, enabled)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                 priority = priority,
+                 line_appearance = line_appearance,
+                 shared_line = shared_line,
+                 enabled = enabled",
+        )
+        .bind(line_binding_id.to_string())
+        .bind(binding.device_id.to_string())
+        .bind(binding.priority as i32)
+        .bind(binding.line_appearance as i32)
+        .bind(binding.shared_line)
+        .bind(binding.enabled)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 }
 
@@ -871,6 +933,938 @@ fn row_to_cdr(row: sqlx::mysql::MySqlRow) -> Result<CallDetailRecord> {
 // ============================================================================
 // Tests
 // ============================================================================
+
+
+// ============================================================================
+// Phone Number, Line Binding, Extension, and Device Store Implementations
+// ============================================================================
+
+#[async_trait]
+impl PhoneNumberStore for MysqlStorage {
+    async fn get_phone_number(&self, id: &PhoneNumberId) -> Result<Option<PhoneNumber>> {
+        let row = sqlx::query(
+            "SELECT id, e164, country_code, npa, nxx, line, state, tenant_id,
+                    e911_address_json, e911_callback, cnam, spam_score,
+                    carrier, lrn, ocn, rate_center, lata,
+                    acquired_at, activated_at, ported_at, loa_date, foc_date,
+                    recording_enabled, block_anonymous, allow_list, block_list, tags,
+                    created_at, updated_at
+             FROM phone_numbers
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_phone_number(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_phone_number_by_e164(&self, e164: &str) -> Result<Option<PhoneNumber>> {
+        let row = sqlx::query(
+            "SELECT id, e164, country_code, npa, nxx, line, state, tenant_id,
+                    e911_address_json, e911_callback, cnam, spam_score,
+                    carrier, lrn, ocn, rate_center, lata,
+                    acquired_at, activated_at, ported_at, loa_date, foc_date,
+                    recording_enabled, block_anonymous, allow_list, block_list, tags,
+                    created_at, updated_at
+             FROM phone_numbers
+             WHERE e164 = ?",
+        )
+        .bind(e164)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_phone_number(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_phone_numbers(&self, tenant_id: &TenantId) -> Result<Vec<PhoneNumber>> {
+        let rows = sqlx::query(
+            "SELECT id, e164, country_code, npa, nxx, line, state, tenant_id,
+                    e911_address_json, e911_callback, cnam, spam_score,
+                    carrier, lrn, ocn, rate_center, lata,
+                    acquired_at, activated_at, ported_at, loa_date, foc_date,
+                    recording_enabled, block_anonymous, allow_list, block_list, tags,
+                    created_at, updated_at
+             FROM phone_numbers
+             WHERE tenant_id = $1
+             ORDER BY e164",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let numbers = rows
+            .into_iter()
+            .filter_map(|row| row_to_phone_number(row).ok())
+            .collect();
+
+        Ok(numbers)
+    }
+
+    async fn put_phone_number(&self, phone_number: PhoneNumber) -> Result<()> {
+        let id = phone_number.id.to_string();
+        let tenant_id = phone_number.tenant_id.to_string();
+        let state = phone_number.state.to_string();
+        let e911_address_json = phone_number
+            .e911_address
+            .map(|a| serde_json::to_value(&a))
+            .transpose()?;
+        let allow_list = serde_json::to_value(&phone_number.allow_list)?;
+        let block_list = serde_json::to_value(&phone_number.block_list)?;
+        let tags = serde_json::to_value(&phone_number.tags)?;
+        let acquired_at = system_time_to_datetime(phone_number.acquired_at);
+        let activated_at = phone_number.activated_at.map(system_time_to_datetime);
+        let ported_at = phone_number.ported_at.map(system_time_to_datetime);
+        let loa_date = phone_number.loa_date.map(system_time_to_datetime);
+        let foc_date = phone_number.foc_date.map(system_time_to_datetime);
+        let created_at = system_time_to_datetime(phone_number.created_at);
+        let updated_at = system_time_to_datetime(phone_number.updated_at);
+
+        sqlx::query(
+            "INSERT INTO phone_numbers (
+                id, e164, country_code, npa, nxx, line, state, tenant_id,
+                e911_address_json, e911_callback, cnam, spam_score,
+                carrier, lrn, ocn, rate_center, lata,
+                acquired_at, activated_at, ported_at, loa_date, foc_date,
+                recording_enabled, block_anonymous, allow_list, block_list, tags,
+                created_at, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+             ON DUPLICATE KEY UPDATE
+                 state = state,
+                 e911_address_json = e911_address_json,
+                 e911_callback = e911_callback,
+                 cnam = cnam,
+                 spam_score = spam_score,
+                 carrier = carrier,
+                 lrn = lrn,
+                 ocn = ocn,
+                 rate_center = rate_center,
+                 lata = lata,
+                 activated_at = activated_at,
+                 ported_at = ported_at,
+                 loa_date = loa_date,
+                 foc_date = foc_date,
+                 recording_enabled = recording_enabled,
+                 block_anonymous = block_anonymous,
+                 allow_list = allow_list,
+                 block_list = block_list,
+                 tags = tags,
+                 updated_at = updated_at",
+        )
+        .bind(&id)
+        .bind(&phone_number.e164)
+        .bind(&phone_number.country_code)
+        .bind(&phone_number.npa)
+        .bind(&phone_number.nxx)
+        .bind(&phone_number.line)
+        .bind(&state)
+        .bind(&tenant_id)
+        .bind(&e911_address_json)
+        .bind(&phone_number.e911_callback)
+        .bind(&phone_number.cnam)
+        .bind(phone_number.spam_score)
+        .bind(&phone_number.carrier)
+        .bind(&phone_number.lrn)
+        .bind(&phone_number.ocn)
+        .bind(&phone_number.rate_center)
+        .bind(&phone_number.lata)
+        .bind(&acquired_at)
+        .bind(&activated_at)
+        .bind(&ported_at)
+        .bind(loa_date)
+        .bind(foc_date)
+        .bind(phone_number.recording_enabled)
+        .bind(phone_number.block_anonymous)
+        .bind(&allow_list)
+        .bind(&block_list)
+        .bind(&tags)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(id = %phone_number.id, e164 = %phone_number.e164, "Phone number stored");
+        Ok(())
+    }
+
+    async fn delete_phone_number(&self, id: &PhoneNumberId) -> Result<()> {
+        sqlx::query("DELETE FROM phone_numbers WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Phone number deleted");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// LineBindingStore Implementation
+// ============================================================================
+
+#[async_trait]
+
+
+#[async_trait]
+impl LineBindingStore for MysqlStorage {
+    async fn get_line_binding(&self, id: &LineBindingId) -> Result<Option<LineBinding>> {
+        let row = sqlx::query(
+            "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
+                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
+                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    created_at, updated_at
+             FROM line_bindings
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let binding = row_to_line_binding(row)?;
+                // Fetch device bindings
+                let devices = self.get_device_bindings(id).await?;
+                Ok(Some(LineBinding { devices, ..binding }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_line_binding_by_phone_number(
+        &self,
+        phone_number_id: &PhoneNumberId,
+    ) -> Result<Option<LineBinding>> {
+        let row = sqlx::query(
+            "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
+                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
+                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    created_at, updated_at
+             FROM line_bindings
+             WHERE phone_number_id = ?",
+        )
+        .bind(phone_number_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let binding = row_to_line_binding(row)?;
+                let devices = self.get_device_bindings(&binding.id).await?;
+                Ok(Some(LineBinding { devices, ..binding }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_line_bindings(&self, tenant_id: &TenantId) -> Result<Vec<LineBinding>> {
+        let rows = sqlx::query(
+            "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
+                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
+                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    created_at, updated_at
+             FROM line_bindings
+             WHERE tenant_id = $1
+             ORDER BY created_at",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut bindings = Vec::new();
+        for row in rows {
+            let binding = row_to_line_binding(row)?;
+            let devices = self.get_device_bindings(&binding.id).await?;
+            bindings.push(LineBinding { devices, ..binding });
+        }
+
+        Ok(bindings)
+    }
+
+    async fn list_line_bindings_by_user(&self, user_id: &UserId) -> Result<Vec<LineBinding>> {
+        let rows = sqlx::query(
+            "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
+                    no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
+                    forward_unconditional, outbound_caller_id, outbound_cnam,
+                    created_at, updated_at
+             FROM line_bindings
+             WHERE owner_user_id = $1
+             ORDER BY created_at",
+        )
+        .bind(user_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut bindings = Vec::new();
+        for row in rows {
+            let binding = row_to_line_binding(row)?;
+            let devices = self.get_device_bindings(&binding.id).await?;
+            bindings.push(LineBinding { devices, ..binding });
+        }
+
+        Ok(bindings)
+    }
+
+    async fn list_line_bindings_by_device(
+        &self,
+        device_id: &DeviceId,
+    ) -> Result<Vec<LineBinding>> {
+        let rows = sqlx::query(
+            "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
+                    lb.no_answer_timeout_secs, lb.forward_on_busy, lb.forward_on_no_answer,
+                    lb.forward_unconditional, lb.outbound_caller_id, lb.outbound_cnam,
+                    lb.created_at, lb.updated_at
+             FROM line_bindings lb
+             INNER JOIN device_bindings db ON lb.id = db.line_binding_id
+             WHERE db.device_id = $1
+             ORDER BY lb.created_at",
+        )
+        .bind(device_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut bindings = Vec::new();
+        for row in rows {
+            let binding = row_to_line_binding(row)?;
+            let devices = self.get_device_bindings(&binding.id).await?;
+            bindings.push(LineBinding { devices, ..binding });
+        }
+
+        Ok(bindings)
+    }
+
+    async fn put_line_binding(&self, binding: LineBinding) -> Result<()> {
+        let id = binding.id.to_string();
+        let phone_number_id = binding.phone_number_id.to_string();
+        let owner_user_id = binding.owner_user_id.map(|u| u.to_string());
+        let binding_type = binding.binding_type.to_string();
+        let ring_strategy = binding.ring_strategy.to_string();
+        let tenant_id = binding.tenant_id.to_string();
+        let created_at = system_time_to_datetime(binding.created_at);
+        let updated_at = system_time_to_datetime(binding.updated_at);
+
+        sqlx::query(
+            "INSERT INTO line_bindings (
+                id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
+                no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
+                forward_unconditional, outbound_caller_id, outbound_cnam,
+                created_at, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             ON DUPLICATE KEY UPDATE
+                 ring_strategy = ring_strategy,
+                 no_answer_timeout_secs = no_answer_timeout_secs,
+                 forward_on_busy = forward_on_busy,
+                 forward_on_no_answer = forward_on_no_answer,
+                 forward_unconditional = forward_unconditional,
+                 outbound_caller_id = outbound_caller_id,
+                 outbound_cnam = outbound_cnam,
+                 updated_at = updated_at",
+        )
+        .bind(&id)
+        .bind(&phone_number_id)
+        .bind(&owner_user_id)
+        .bind(&binding_type)
+        .bind(&ring_strategy)
+        .bind(&tenant_id)
+        .bind(binding.no_answer_timeout.as_secs() as i32)
+        .bind(&binding.forward_on_busy)
+        .bind(&binding.forward_on_no_answer)
+        .bind(&binding.forward_unconditional)
+        .bind(&binding.outbound_caller_id)
+        .bind(&binding.outbound_cnam)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete existing device bindings
+        sqlx::query("DELETE FROM device_bindings WHERE line_binding_id = ?")
+            .bind(&id)
+            .execute(&self.pool)
+            .await?;
+
+        // Insert new device bindings
+        for device in &binding.devices {
+            self.put_device_binding(&binding.id, device).await?;
+        }
+
+        debug!(id = %binding.id, "Line binding stored");
+        Ok(())
+    }
+
+    async fn delete_line_binding(&self, id: &LineBindingId) -> Result<()> {
+        sqlx::query("DELETE FROM line_bindings WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Line binding deleted");
+        Ok(())
+    }
+}
+
+
+
+#[async_trait]
+impl ExtensionStore for MysqlStorage {
+    async fn get_extension(&self, id: &ExtensionId) -> Result<Option<Extension>> {
+        let row = sqlx::query(
+            "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
+                    created_at, updated_at
+             FROM extensions
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_extension(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_extension_by_number(
+        &self,
+        tenant_id: &TenantId,
+        number: &str,
+    ) -> Result<Option<Extension>> {
+        let row = sqlx::query(
+            "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
+                    created_at, updated_at
+             FROM extensions
+             WHERE tenant_id = ? AND number = ?",
+        )
+        .bind(tenant_id.to_string())
+        .bind(number)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_extension(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_extensions(&self, tenant_id: &TenantId) -> Result<Vec<Extension>> {
+        let rows = sqlx::query(
+            "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
+                    created_at, updated_at
+             FROM extensions
+             WHERE tenant_id = $1
+             ORDER BY number",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let extensions = rows
+            .into_iter()
+            .filter_map(|row| row_to_extension(row).ok())
+            .collect();
+
+        Ok(extensions)
+    }
+
+    async fn put_extension(&self, extension: Extension) -> Result<()> {
+        let id = extension.id.to_string();
+        let tenant_id = extension.tenant_id.to_string();
+        let (target_type, target_id) = match &extension.target {
+            ExtensionTarget::User(user_id) => ("user", user_id.to_string()),
+            ExtensionTarget::PhoneNumber(num_id) => ("phone_number", num_id.to_string()),
+            ExtensionTarget::Device(dev_id) => ("device", dev_id.to_string()),
+            ExtensionTarget::Service(svc_id) => ("service", svc_id.to_string()),
+        };
+        let created_at = system_time_to_datetime(extension.created_at);
+        let updated_at = system_time_to_datetime(extension.updated_at);
+
+        sqlx::query(
+            "INSERT INTO extensions (
+                id, number, target_type, target_id, tenant_id, description, enabled,
+                created_at, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON DUPLICATE KEY UPDATE
+                 target_type = target_type,
+                 target_id = target_id,
+                 description = description,
+                 enabled = enabled,
+                 updated_at = updated_at",
+        )
+        .bind(&id)
+        .bind(&extension.number)
+        .bind(target_type)
+        .bind(&target_id)
+        .bind(&tenant_id)
+        .bind(&extension.description)
+        .bind(extension.enabled)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(id = %extension.id, number = %extension.number, "Extension stored");
+        Ok(())
+    }
+
+    async fn delete_extension(&self, id: &ExtensionId) -> Result<()> {
+        sqlx::query("DELETE FROM extensions WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Extension deleted");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// DeviceStore Implementation
+// ============================================================================
+
+
+fn row_to_phone_number(row: sqlx::mysql::MySqlRow) -> Result<PhoneNumber> {
+    let id = PhoneNumberId::from_str(&row.get::<String, _>("id"))?;
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+    let state_str: String = row.get("state");
+    let state = NumberState::from_str(&state_str).unwrap_or(NumberState::Unassigned);
+
+    let e911_address = row
+        .get::<Option<String>, _>("e911_address_json")
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let allow_list: Vec<String> = row
+        .get::<Option<String>, _>("allow_list")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let block_list: Vec<String> = row
+        .get::<Option<String>, _>("block_list")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let tags: Vec<String> = row
+        .get::<Option<String>, _>("tags")
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let acquired_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("acquired_at"));
+    let activated_at = row
+        .get::<Option<i64>, _>("activated_at")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+    let ported_at = row
+        .get::<Option<i64>, _>("ported_at")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+    let loa_date = row
+        .get::<Option<i64>, _>("loa_date")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+    let foc_date = row
+        .get::<Option<i64>, _>("foc_date")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+
+    Ok(PhoneNumber {
+        id,
+        e164: row.get("e164"),
+        country_code: row.get("country_code"),
+        npa: row.get("npa"),
+        nxx: row.get("nxx"),
+        line: row.get("line"),
+        state,
+        tenant_id,
+        e911_address,
+        e911_callback: row.get("e911_callback"),
+        cnam: row.get("cnam"),
+        spam_score: row.get("spam_score"),
+        carrier: row.get("carrier"),
+        lrn: row.get("lrn"),
+        ocn: row.get("ocn"),
+        rate_center: row.get("rate_center"),
+        lata: row.get("lata"),
+        acquired_at,
+        activated_at,
+        ported_at,
+        loa_date,
+        foc_date,
+        recording_enabled: row.get::<bool, _>("recording_enabled"),
+        block_anonymous: row.get::<bool, _>("block_anonymous"),
+        allow_list,
+        block_list,
+        tags,
+        created_at,
+        updated_at,
+    })
+}
+
+/// Convert SQLite row to LineBinding
+fn row_to_line_binding(row: sqlx::mysql::MySqlRow) -> Result<LineBinding> {
+    let id = LineBindingId::from_str(&row.get::<String, _>("id"))?;
+    let phone_number_id = PhoneNumberId::from_str(&row.get::<String, _>("phone_number_id"))?;
+    let owner_user_id = row
+        .get::<Option<String>, _>("owner_user_id")
+        .and_then(|s| UserId::from_str(&s).ok());
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+
+    let binding_type_str: String = row.get("binding_type");
+    let binding_type = match binding_type_str.as_str() {
+        "user" => BindingType::User,
+        "ivr" => BindingType::Ivr,
+        "queue" => BindingType::Queue,
+        "hunt_group" => BindingType::HuntGroup,
+        "conference_bridge" => BindingType::ConferenceBridge,
+        "voicemail" => BindingType::Voicemail,
+        "parking" => BindingType::Parking,
+        "paging" => BindingType::Paging,
+        "fax" => BindingType::Fax,
+        "emergency" => BindingType::Emergency,
+        _ => BindingType::User,
+    };
+
+    let ring_strategy_str: String = row.get("ring_strategy");
+    let ring_strategy = match ring_strategy_str.as_str() {
+        "simultaneous" => RingStrategy::Simultaneous,
+        "sequential" => RingStrategy::Sequential,
+        "round_robin" => RingStrategy::RoundRobin,
+        "longest_idle" => RingStrategy::LongestIdle,
+        "primary" => RingStrategy::Primary,
+        _ => RingStrategy::Simultaneous,
+    };
+
+    let no_answer_timeout =
+        Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+
+    Ok(LineBinding {
+        id,
+        phone_number_id,
+        owner_user_id,
+        binding_type,
+        devices: Vec::new(), // Will be populated by caller
+        ring_strategy,
+        tenant_id,
+        no_answer_timeout,
+        forward_on_busy: row.get("forward_on_busy"),
+        forward_on_no_answer: row.get("forward_on_no_answer"),
+        forward_unconditional: row.get("forward_unconditional"),
+        outbound_caller_id: row.get("outbound_caller_id"),
+        outbound_cnam: row.get("outbound_cnam"),
+        created_at,
+        updated_at,
+    })
+}
+
+/// Convert SQLite row to Extension
+fn row_to_extension(row: sqlx::mysql::MySqlRow) -> Result<Extension> {
+    let id = ExtensionId::from_str(&row.get::<String, _>("id"))?;
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+    let target_type: String = row.get("target_type");
+    let target_id: String = row.get("target_id");
+
+    let target = match target_type.as_str() {
+        "user" => ExtensionTarget::User(UserId::from_str(&target_id)?),
+        "phone_number" => ExtensionTarget::PhoneNumber(PhoneNumberId::from_str(&target_id)?),
+        "device" => ExtensionTarget::Device(DeviceId::from_str(&target_id)?),
+        "service" => {
+            ExtensionTarget::Service(fcp_core::ServiceId::from_str(&target_id).unwrap_or_else(
+                |_| fcp_core::ServiceId::new(),
+            ))
+        }
+        _ => {
+            return Err(anyhow::anyhow!("Unknown extension target type: {}", target_type));
+        }
+    };
+
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+
+    Ok(Extension {
+        id,
+        number: row.get("number"),
+        target,
+        tenant_id,
+        description: row.get("description"),
+        enabled: row.get::<bool, _>("enabled"),
+        created_at,
+        updated_at,
+    })
+}
+
+/// Convert SQLite row to Device
+fn row_to_device(row: sqlx::mysql::MySqlRow) -> Result<Device> {
+    let id = DeviceId::from_str(&row.get::<String, _>("id"))?;
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+    let owner_user_id = row
+        .get::<Option<String>, _>("owner_user_id")
+        .and_then(|s| UserId::from_str(&s).ok());
+
+    let device_type_str: String = row.get("device_type");
+    let device_type = match device_type_str.as_str() {
+        "desk_phone" => DeviceType::DeskPhone,
+        "softphone" => DeviceType::Softphone,
+        "webrtc" => DeviceType::WebRtc,
+        "conference_room" => DeviceType::ConferenceRoom,
+        "ata" => DeviceType::Ata,
+        "gateway" => DeviceType::Gateway,
+        "mobile" => DeviceType::Mobile,
+        _ => DeviceType::Other,
+    };
+
+    let registration_state_str: String = row.get("registration_state");
+    let registration_state = match registration_state_str.as_str() {
+        "unregistered" => RegistrationState::Unregistered,
+        "registered" => RegistrationState::Registered,
+        "failed" => RegistrationState::Failed,
+        "expired" => RegistrationState::Expired,
+        _ => RegistrationState::Unregistered,
+    };
+
+    let last_registration = row
+        .get::<Option<i64>, _>("last_registration")
+        .map(|t| UNIX_EPOCH + Duration::from_secs(t as u64));
+
+    let codec_support_json: String = row.get("codec_support");
+    let codec_names: Vec<String> = serde_json::from_str(&codec_support_json).unwrap_or_default();
+    let codec_support: Vec<AudioCodec> = codec_names
+        .into_iter()
+        .filter_map(|name| match name.as_str() {
+            "Pcmu" => Some(AudioCodec::Pcmu),
+            "Pcma" => Some(AudioCodec::Pcma),
+            "G722" => Some(AudioCodec::G722),
+            "G729" => Some(AudioCodec::G729),
+            "Opus" => Some(AudioCodec::Opus),
+            "Ilbc" => Some(AudioCodec::Ilbc),
+            _ => None,
+        })
+        .collect();
+
+    let e911_override = row
+        .get::<Option<String>, _>("e911_override_json")
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+
+    Ok(Device {
+        id,
+        name: row.get("name"),
+        device_type,
+        mac_address: row.get("mac_address"),
+        model: row.get("model"),
+        firmware_version: row.get("firmware_version"),
+        tenant_id,
+        owner_user_id,
+        sip_uri: row.get("sip_uri"),
+        registration_state,
+        last_registration,
+        last_ip_address: row.get("last_ip_address"),
+        user_agent: row.get("user_agent"),
+        max_lines: row.get::<i64, _>("max_lines") as u8,
+        supports_video: row.get::<bool, _>("supports_video"),
+        supports_blf: row.get::<bool, _>("supports_blf"),
+        codec_support,
+        location: row.get("location"),
+        e911_override,
+        provisioning_url: row.get("provisioning_url"),
+        config_template_id: row.get("config_template_id"),
+        enabled: row.get::<bool, _>("enabled"),
+        created_at,
+        updated_at,
+    })
+}
+
+// ============================================================================
+// DeviceStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl DeviceStore for MysqlStorage {
+    async fn get_device(&self, id: &DeviceId) -> Result<Option<Device>> {
+        let row = sqlx::query(
+            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+                    max_lines, supports_video, supports_blf, codec_support,
+                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    created_at, updated_at
+             FROM devices
+             WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_device(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_device_by_sip_uri(&self, sip_uri: &str) -> Result<Option<Device>> {
+        let row = sqlx::query(
+            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+                    max_lines, supports_video, supports_blf, codec_support,
+                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    created_at, updated_at
+             FROM devices
+             WHERE sip_uri = ?",
+        )
+        .bind(sip_uri)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_device(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_devices(&self, tenant_id: &TenantId) -> Result<Vec<Device>> {
+        let rows = sqlx::query(
+            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+                    max_lines, supports_video, supports_blf, codec_support,
+                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    created_at, updated_at
+             FROM devices
+             WHERE tenant_id = $1
+             ORDER BY name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let devices = rows
+            .into_iter()
+            .filter_map(|row| row_to_device(row).ok())
+            .collect();
+
+        Ok(devices)
+    }
+
+    async fn list_devices_by_user(&self, user_id: &UserId) -> Result<Vec<Device>> {
+        let rows = sqlx::query(
+            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+                    max_lines, supports_video, supports_blf, codec_support,
+                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    created_at, updated_at
+             FROM devices
+             WHERE owner_user_id = $1
+             ORDER BY name",
+        )
+        .bind(user_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let devices = rows
+            .into_iter()
+            .filter_map(|row| row_to_device(row).ok())
+            .collect();
+
+        Ok(devices)
+    }
+
+    async fn put_device(&self, device: Device) -> Result<()> {
+        let id = device.id.to_string();
+        let device_type = device.device_type.to_string();
+        let tenant_id = device.tenant_id.to_string();
+        let owner_user_id = device.owner_user_id.map(|u| u.to_string());
+        let registration_state = device.registration_state.to_string();
+        let last_registration = device.last_registration.map(system_time_to_datetime);
+        let codec_support = serde_json::to_value(
+            &device
+                .codec_support
+                .into_iter()
+                .map(|c| format!("{:?}", c))
+                .collect::<Vec<_>>(),
+        )?;
+        let e911_override_json = device.e911_override.map(|a| serde_json::to_value(&a))
+            .transpose()?;
+        let created_at = system_time_to_datetime(device.created_at);
+        let updated_at = system_time_to_datetime(device.updated_at);
+
+        sqlx::query(
+            "INSERT INTO devices (
+                id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+                max_lines, supports_video, supports_blf, codec_support,
+                location, e911_override_json, provisioning_url, config_template_id, enabled,
+                created_at, updated_at
+             )
+             VALUES ($24, $23, $22, $21, $20, $19, $18, $17, $16, $15, $14, $13, $12, $11, $10, $9, $8, $7, $6, $5, $4, $3, $2, $1)
+             ON DUPLICATE KEY UPDATE
+                 name = name,
+                 mac_address = mac_address,
+                 model = model,
+                 firmware_version = firmware_version,
+                 owner_user_id = owner_user_id,
+                 sip_uri = sip_uri,
+                 registration_state = registration_state,
+                 last_registration = last_registration,
+                 last_ip_address = last_ip_address,
+                 user_agent = user_agent,
+                 max_lines = max_lines,
+                 supports_video = supports_video,
+                 supports_blf = supports_blf,
+                 codec_support = codec_support,
+                 location = location,
+                 e911_override_json = e911_override_json,
+                 provisioning_url = provisioning_url,
+                 config_template_id = config_template_id,
+                 enabled = enabled,
+                 updated_at = updated_at",
+        )
+        .bind(&id)
+        .bind(&device.name)
+        .bind(&device_type)
+        .bind(&device.mac_address)
+        .bind(&device.model)
+        .bind(&device.firmware_version)
+        .bind(&tenant_id)
+        .bind(&owner_user_id)
+        .bind(&device.sip_uri)
+        .bind(&registration_state)
+        .bind(last_registration)
+        .bind(&device.last_ip_address)
+        .bind(&device.user_agent)
+        .bind(device.max_lines as i64)
+        .bind(device.supports_video)
+        .bind(device.supports_blf)
+        .bind(&codec_support)
+        .bind(&device.location)
+        .bind(&e911_override_json)
+        .bind(&device.provisioning_url)
+        .bind(&device.config_template_id)
+        .bind(device.enabled)
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(id = %device.id, name = %device.name, "Device stored");
+        Ok(())
+    }
+
+    async fn delete_device(&self, id: &DeviceId) -> Result<()> {
+        sqlx::query("DELETE FROM devices WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Device deleted");
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {

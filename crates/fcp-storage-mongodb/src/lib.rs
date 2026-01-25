@@ -26,10 +26,15 @@ use async_trait::async_trait;
 use bson::{doc, DateTime as BsonDateTime, Document};
 use fcp_core::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    EmergencyContact, HangupCause, HangupParty, MediaPreferences, Registration, RegistrationStore,
-    TenantStore, User,
+    DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty, LineBindingStore,
+    MediaPreferences, PhoneNumberStore, Registration, RegistrationStore, TenantStore, User,
 };
-use fcp_core::{CallId, Tenant, TenantId};
+use fcp_core::{
+    AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
+    ExtensionTarget, LineBinding, LineBindingId, PhoneNumber, PhoneNumberId, RegistrationState,
+    RingStrategy, ServiceId, Tenant, TenantId, UserId,
+};
+use fcp_core::{BindingType, NumberState};
 use mongodb::{
     options::{ClientOptions, IndexOptions},
     Client, Collection, Database, IndexModel,
@@ -105,6 +110,11 @@ pub struct MongodbStorage {
     registrations: Collection<Document>,
     cdrs: Collection<Document>,
     tenants: Collection<Document>,
+    phone_numbers: Collection<Document>,
+    line_bindings: Collection<Document>,
+    extensions: Collection<Document>,
+    devices: Collection<Document>,
+    device_bindings: Collection<Document>,
 }
 
 impl MongodbStorage {
@@ -137,6 +147,11 @@ impl MongodbStorage {
         let registrations = db.collection::<Document>("registrations");
         let cdrs = db.collection::<Document>("cdrs");
         let tenants = db.collection::<Document>("tenants");
+        let phone_numbers = db.collection::<Document>("phone_numbers");
+        let line_bindings = db.collection::<Document>("line_bindings");
+        let extensions = db.collection::<Document>("extensions");
+        let devices = db.collection::<Document>("devices");
+        let device_bindings = db.collection::<Document>("device_bindings");
 
         let storage = Self {
             client,
@@ -145,6 +160,11 @@ impl MongodbStorage {
             registrations,
             cdrs,
             tenants,
+            phone_numbers,
+            line_bindings,
+            extensions,
+            devices,
+            device_bindings,
         };
 
         // Create indexes
@@ -219,6 +239,93 @@ impl MongodbStorage {
             .create_indexes(tenants_indexes)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create tenants indexes: {}", e))?;
+
+        // Phone numbers indexes
+        let phone_numbers_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "e164": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder().keys(doc! { "tenant_id": 1 }).build(),
+        ];
+        self.phone_numbers
+            .create_indexes(phone_numbers_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create phone_numbers indexes: {}", e))?;
+
+        // Line bindings indexes
+        let line_bindings_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "phone_number_id": 1 })
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "tenant_id": 1 })
+                .build(),
+        ];
+        self.line_bindings
+            .create_indexes(line_bindings_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create line_bindings indexes: {}", e))?;
+
+        // Extensions indexes
+        let extensions_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "number": 1, "tenant_id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder().keys(doc! { "tenant_id": 1 }).build(),
+        ];
+        self.extensions
+            .create_indexes(extensions_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create extensions indexes: {}", e))?;
+
+        // Devices indexes
+        let devices_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "sip_uri": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "owner_user_id": 1 })
+                .build(),
+            IndexModel::builder().keys(doc! { "tenant_id": 1 }).build(),
+        ];
+        self.devices
+            .create_indexes(devices_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create devices indexes: {}", e))?;
+
+        // Device bindings indexes
+        let device_bindings_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "line_binding_id": 1, "device_id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "line_binding_id": 1 })
+                .build(),
+        ];
+        self.device_bindings
+            .create_indexes(device_bindings_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create device_bindings indexes: {}", e))?;
 
         debug!("MongoDB indexes created successfully");
         Ok(())
@@ -1186,6 +1293,1282 @@ fn document_to_cdr(doc: Document) -> Result<CallDetailRecord> {
         cost: doc.get_f64("cost").ok(),
         currency: doc.get_str("currency").ok().map(String::from),
         custom_data,
+    })
+}
+
+// ============================================================================
+// PhoneNumberStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl PhoneNumberStore for MongodbStorage {
+    async fn get_phone_number(&self, id: &PhoneNumberId) -> Result<Option<PhoneNumber>> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        let doc = self
+            .phone_numbers
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query phone number: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let phone_number = document_to_phone_number(doc)?;
+                debug!(id = %id, "Phone number retrieved from MongoDB");
+                Ok(Some(phone_number))
+            }
+            None => {
+                debug!(id = %id, "Phone number not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn get_phone_number_by_e164(&self, e164: &str) -> Result<Option<PhoneNumber>> {
+        let filter = doc! {
+            "e164": e164,
+        };
+
+        let doc = self
+            .phone_numbers
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query phone number by e164: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let phone_number = document_to_phone_number(doc)?;
+                debug!(e164 = %e164, "Phone number retrieved from MongoDB");
+                Ok(Some(phone_number))
+            }
+            None => {
+                debug!(e164 = %e164, "Phone number not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn list_phone_numbers(&self, tenant_id: &TenantId) -> Result<Vec<PhoneNumber>> {
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+        };
+
+        let mut cursor = self
+            .phone_numbers
+            .find(filter)
+            .sort(doc! { "e164": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list phone numbers: {}", e))?;
+
+        let mut phone_numbers = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate phone numbers cursor: {}", e))?
+        {
+            let doc = cursor.deserialize_current().map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize phone number document: {}", e)
+            })?;
+            phone_numbers.push(document_to_phone_number(doc)?);
+        }
+
+        debug!(
+            tenant_id = %tenant_id,
+            count = phone_numbers.len(),
+            "Phone numbers listed from MongoDB"
+        );
+        Ok(phone_numbers)
+    }
+
+    async fn put_phone_number(&self, phone_number: PhoneNumber) -> Result<()> {
+        // Serialize state to snake_case string
+        let state_str = match phone_number.state {
+            NumberState::Unassigned => "unassigned",
+            NumberState::Reserved => "reserved",
+            NumberState::Active => "active",
+            NumberState::Quarantine => "quarantine",
+            NumberState::Ported => "ported",
+        };
+
+        // Serialize e911_address as nested document
+        let e911_address = if let Some(addr) = &phone_number.e911_address {
+            bson::to_bson(addr)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize e911_address: {}", e))?
+        } else {
+            bson::Bson::Null
+        };
+
+        // Serialize lists
+        let allow_list = bson::to_bson(&phone_number.allow_list)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize allow_list: {}", e))?;
+        let block_list = bson::to_bson(&phone_number.block_list)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize block_list: {}", e))?;
+        let tags = bson::to_bson(&phone_number.tags)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize tags: {}", e))?;
+
+        let doc = doc! {
+            "id": phone_number.id.to_string(),
+            "e164": &phone_number.e164,
+            "country_code": &phone_number.country_code,
+            "npa": &phone_number.npa,
+            "nxx": &phone_number.nxx,
+            "line": &phone_number.line,
+            "state": state_str,
+            "tenant_id": phone_number.tenant_id.to_string(),
+            "e911_address": e911_address,
+            "e911_callback": phone_number.e911_callback.as_ref(),
+            "cnam": phone_number.cnam.as_ref(),
+            "spam_score": phone_number.spam_score,
+            "carrier": phone_number.carrier.as_ref(),
+            "lrn": phone_number.lrn.as_ref(),
+            "ocn": phone_number.ocn.as_ref(),
+            "rate_center": phone_number.rate_center.as_ref(),
+            "lata": phone_number.lata.as_ref(),
+            "acquired_at": system_time_to_bson_datetime(phone_number.acquired_at),
+            "activated_at": phone_number.activated_at.map(system_time_to_bson_datetime),
+            "ported_at": phone_number.ported_at.map(system_time_to_bson_datetime),
+            "loa_date": phone_number.loa_date.map(system_time_to_bson_datetime),
+            "foc_date": phone_number.foc_date.map(system_time_to_bson_datetime),
+            "recording_enabled": phone_number.recording_enabled,
+            "block_anonymous": phone_number.block_anonymous,
+            "allow_list": allow_list,
+            "block_list": block_list,
+            "tags": tags,
+            "created_at": system_time_to_bson_datetime(phone_number.created_at),
+            "updated_at": system_time_to_bson_datetime(phone_number.updated_at),
+        };
+
+        let filter = doc! {
+            "id": phone_number.id.to_string(),
+        };
+
+        self.phone_numbers
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update phone number: {}", e))?;
+
+        debug!(id = %phone_number.id, e164 = %phone_number.e164, "Phone number stored in MongoDB");
+        Ok(())
+    }
+
+    async fn delete_phone_number(&self, id: &PhoneNumberId) -> Result<()> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        self.phone_numbers
+            .delete_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete phone number: {}", e))?;
+
+        debug!(id = %id, "Phone number deleted from MongoDB");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// LineBindingStore Implementation
+// ============================================================================
+
+impl MongodbStorage {
+    /// Get device bindings for a line binding
+    async fn get_device_bindings(&self, line_binding_id: &LineBindingId) -> Result<Vec<DeviceBinding>> {
+        let filter = doc! {
+            "line_binding_id": line_binding_id.to_string(),
+        };
+
+        let mut cursor = self
+            .device_bindings
+            .find(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query device bindings: {}", e))?;
+
+        let mut bindings = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate device bindings cursor: {}", e))?
+        {
+            let doc = cursor.deserialize_current().map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize device binding document: {}", e)
+            })?;
+            bindings.push(document_to_device_binding(doc)?);
+        }
+
+        Ok(bindings)
+    }
+
+    /// Store a device binding
+    async fn put_device_binding(
+        &self,
+        line_binding_id: &LineBindingId,
+        binding: &DeviceBinding,
+    ) -> Result<()> {
+        let doc = doc! {
+            "line_binding_id": line_binding_id.to_string(),
+            "device_id": binding.device_id.to_string(),
+            "priority": binding.priority as i32,
+            "line_appearance": binding.line_appearance as i32,
+            "shared_line": binding.shared_line,
+            "enabled": binding.enabled,
+        };
+
+        let filter = doc! {
+            "line_binding_id": line_binding_id.to_string(),
+            "device_id": binding.device_id.to_string(),
+        };
+
+        self.device_bindings
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update device binding: {}", e))?;
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl LineBindingStore for MongodbStorage {
+    async fn get_line_binding(&self, id: &LineBindingId) -> Result<Option<LineBinding>> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        let doc = self
+            .line_bindings
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query line binding: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let mut binding = document_to_line_binding(doc)?;
+                binding.devices = self.get_device_bindings(id).await?;
+                debug!(id = %id, "Line binding retrieved from MongoDB");
+                Ok(Some(binding))
+            }
+            None => {
+                debug!(id = %id, "Line binding not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn get_line_binding_by_phone_number(
+        &self,
+        phone_number_id: &PhoneNumberId,
+    ) -> Result<Option<LineBinding>> {
+        let filter = doc! {
+            "phone_number_id": phone_number_id.to_string(),
+        };
+
+        let doc = self
+            .line_bindings
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query line binding by phone number: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let mut binding = document_to_line_binding(doc)?;
+                binding.devices = self.get_device_bindings(&binding.id).await?;
+                debug!(phone_number_id = %phone_number_id, "Line binding retrieved from MongoDB");
+                Ok(Some(binding))
+            }
+            None => {
+                debug!(phone_number_id = %phone_number_id, "Line binding not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn list_line_bindings(&self, tenant_id: &TenantId) -> Result<Vec<LineBinding>> {
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+        };
+
+        let mut cursor = self
+            .line_bindings
+            .find(filter)
+            .sort(doc! { "created_at": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list line bindings: {}", e))?;
+
+        let mut bindings = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate line bindings cursor: {}", e))?
+        {
+            let doc = cursor.deserialize_current().map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize line binding document: {}", e)
+            })?;
+            let mut binding = document_to_line_binding(doc)?;
+            binding.devices = self.get_device_bindings(&binding.id).await?;
+            bindings.push(binding);
+        }
+
+        debug!(
+            tenant_id = %tenant_id,
+            count = bindings.len(),
+            "Line bindings listed from MongoDB"
+        );
+        Ok(bindings)
+    }
+
+    async fn list_line_bindings_by_user(&self, user_id: &UserId) -> Result<Vec<LineBinding>> {
+        let filter = doc! {
+            "owner_user_id": user_id.to_string(),
+        };
+
+        let mut cursor = self
+            .line_bindings
+            .find(filter)
+            .sort(doc! { "created_at": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list line bindings by user: {}", e))?;
+
+        let mut bindings = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate line bindings cursor: {}", e))?
+        {
+            let doc = cursor.deserialize_current().map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize line binding document: {}", e)
+            })?;
+            let mut binding = document_to_line_binding(doc)?;
+            binding.devices = self.get_device_bindings(&binding.id).await?;
+            bindings.push(binding);
+        }
+
+        debug!(
+            user_id = %user_id,
+            count = bindings.len(),
+            "Line bindings listed from MongoDB"
+        );
+        Ok(bindings)
+    }
+
+    async fn list_line_bindings_by_device(&self, device_id: &DeviceId) -> Result<Vec<LineBinding>> {
+        // First find all line_binding_ids that have this device
+        let filter = doc! {
+            "device_id": device_id.to_string(),
+        };
+
+        let mut cursor = self
+            .device_bindings
+            .find(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query device bindings: {}", e))?;
+
+        let mut line_binding_ids = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate device bindings cursor: {}", e))?
+        {
+            let doc = cursor.deserialize_current().map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize device binding document: {}", e)
+            })?;
+            if let Ok(line_binding_id) = doc.get_str("line_binding_id") {
+                line_binding_ids.push(line_binding_id.to_string());
+            }
+        }
+
+        // Now fetch all line bindings
+        let mut bindings = Vec::new();
+        for line_binding_id_str in line_binding_ids {
+            if let Ok(line_binding_id) = LineBindingId::from_str(&line_binding_id_str) {
+                if let Some(binding) = self.get_line_binding(&line_binding_id).await? {
+                    bindings.push(binding);
+                }
+            }
+        }
+
+        debug!(
+            device_id = %device_id,
+            count = bindings.len(),
+            "Line bindings listed from MongoDB"
+        );
+        Ok(bindings)
+    }
+
+    async fn put_line_binding(&self, binding: LineBinding) -> Result<()> {
+        // Serialize binding_type to snake_case string
+        let binding_type_str = match binding.binding_type {
+            BindingType::User => "user",
+            BindingType::Ivr => "ivr",
+            BindingType::Queue => "queue",
+            BindingType::HuntGroup => "hunt_group",
+            BindingType::ConferenceBridge => "conference_bridge",
+            BindingType::Voicemail => "voicemail",
+            BindingType::Parking => "parking",
+            BindingType::Paging => "paging",
+            BindingType::Fax => "fax",
+            BindingType::Emergency => "emergency",
+        };
+
+        // Serialize ring_strategy to snake_case string
+        let ring_strategy_str = match binding.ring_strategy {
+            RingStrategy::Simultaneous => "simultaneous",
+            RingStrategy::Sequential => "sequential",
+            RingStrategy::RoundRobin => "round_robin",
+            RingStrategy::LongestIdle => "longest_idle",
+            RingStrategy::Primary => "primary",
+        };
+
+        let doc = doc! {
+            "id": binding.id.to_string(),
+            "phone_number_id": binding.phone_number_id.to_string(),
+            "owner_user_id": binding.owner_user_id.as_ref().map(|u| u.to_string()),
+            "binding_type": binding_type_str,
+            "ring_strategy": ring_strategy_str,
+            "tenant_id": binding.tenant_id.to_string(),
+            "no_answer_timeout_secs": binding.no_answer_timeout.as_secs() as i64,
+            "forward_on_busy": binding.forward_on_busy.as_ref(),
+            "forward_on_no_answer": binding.forward_on_no_answer.as_ref(),
+            "forward_unconditional": binding.forward_unconditional.as_ref(),
+            "outbound_caller_id": binding.outbound_caller_id.as_ref(),
+            "outbound_cnam": binding.outbound_cnam.as_ref(),
+            "created_at": system_time_to_bson_datetime(binding.created_at),
+            "updated_at": system_time_to_bson_datetime(binding.updated_at),
+        };
+
+        let filter = doc! {
+            "id": binding.id.to_string(),
+        };
+
+        self.line_bindings
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update line binding: {}", e))?;
+
+        // Delete existing device bindings
+        let delete_filter = doc! {
+            "line_binding_id": binding.id.to_string(),
+        };
+        self.device_bindings
+            .delete_many(delete_filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete old device bindings: {}", e))?;
+
+        // Insert new device bindings
+        for device in &binding.devices {
+            self.put_device_binding(&binding.id, device).await?;
+        }
+
+        debug!(id = %binding.id, "Line binding stored in MongoDB");
+        Ok(())
+    }
+
+    async fn delete_line_binding(&self, id: &LineBindingId) -> Result<()> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        self.line_bindings
+            .delete_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete line binding: {}", e))?;
+
+        // Also delete device bindings
+        let device_filter = doc! {
+            "line_binding_id": id.to_string(),
+        };
+        self.device_bindings
+            .delete_many(device_filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete device bindings: {}", e))?;
+
+        debug!(id = %id, "Line binding deleted from MongoDB");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// ExtensionStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl ExtensionStore for MongodbStorage {
+    async fn get_extension(&self, id: &ExtensionId) -> Result<Option<Extension>> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        let doc = self
+            .extensions
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query extension: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let extension = document_to_extension(doc)?;
+                debug!(id = %id, "Extension retrieved from MongoDB");
+                Ok(Some(extension))
+            }
+            None => {
+                debug!(id = %id, "Extension not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn get_extension_by_number(
+        &self,
+        tenant_id: &TenantId,
+        number: &str,
+    ) -> Result<Option<Extension>> {
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+            "number": number,
+        };
+
+        let doc = self
+            .extensions
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query extension by number: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let extension = document_to_extension(doc)?;
+                debug!(tenant_id = %tenant_id, number = %number, "Extension retrieved from MongoDB");
+                Ok(Some(extension))
+            }
+            None => {
+                debug!(tenant_id = %tenant_id, number = %number, "Extension not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn list_extensions(&self, tenant_id: &TenantId) -> Result<Vec<Extension>> {
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+        };
+
+        let mut cursor = self
+            .extensions
+            .find(filter)
+            .sort(doc! { "number": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list extensions: {}", e))?;
+
+        let mut extensions = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate extensions cursor: {}", e))?
+        {
+            let doc = cursor.deserialize_current().map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize extension document: {}", e)
+            })?;
+            extensions.push(document_to_extension(doc)?);
+        }
+
+        debug!(
+            tenant_id = %tenant_id,
+            count = extensions.len(),
+            "Extensions listed from MongoDB"
+        );
+        Ok(extensions)
+    }
+
+    async fn put_extension(&self, extension: Extension) -> Result<()> {
+        let (target_type, target_id) = match &extension.target {
+            ExtensionTarget::User(user_id) => ("user", user_id.to_string()),
+            ExtensionTarget::PhoneNumber(num_id) => ("phone_number", num_id.to_string()),
+            ExtensionTarget::Device(dev_id) => ("device", dev_id.to_string()),
+            ExtensionTarget::Service(svc_id) => ("service", svc_id.to_string()),
+        };
+
+        let doc = doc! {
+            "id": extension.id.to_string(),
+            "number": &extension.number,
+            "target_type": target_type,
+            "target_id": &target_id,
+            "tenant_id": extension.tenant_id.to_string(),
+            "description": extension.description.as_ref(),
+            "enabled": extension.enabled,
+            "created_at": system_time_to_bson_datetime(extension.created_at),
+            "updated_at": system_time_to_bson_datetime(extension.updated_at),
+        };
+
+        let filter = doc! {
+            "id": extension.id.to_string(),
+        };
+
+        self.extensions
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update extension: {}", e))?;
+
+        debug!(id = %extension.id, number = %extension.number, "Extension stored in MongoDB");
+        Ok(())
+    }
+
+    async fn delete_extension(&self, id: &ExtensionId) -> Result<()> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        self.extensions
+            .delete_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete extension: {}", e))?;
+
+        debug!(id = %id, "Extension deleted from MongoDB");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// DeviceStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl DeviceStore for MongodbStorage {
+    async fn get_device(&self, id: &DeviceId) -> Result<Option<Device>> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        let doc = self
+            .devices
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query device: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let device = document_to_device(doc)?;
+                debug!(id = %id, "Device retrieved from MongoDB");
+                Ok(Some(device))
+            }
+            None => {
+                debug!(id = %id, "Device not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn get_device_by_sip_uri(&self, sip_uri: &str) -> Result<Option<Device>> {
+        let filter = doc! {
+            "sip_uri": sip_uri,
+        };
+
+        let doc = self
+            .devices
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query device by sip_uri: {}", e))?;
+
+        match doc {
+            Some(doc) => {
+                let device = document_to_device(doc)?;
+                debug!(sip_uri = %sip_uri, "Device retrieved from MongoDB");
+                Ok(Some(device))
+            }
+            None => {
+                debug!(sip_uri = %sip_uri, "Device not found in MongoDB");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn list_devices(&self, tenant_id: &TenantId) -> Result<Vec<Device>> {
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+        };
+
+        let mut cursor = self
+            .devices
+            .find(filter)
+            .sort(doc! { "name": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list devices: {}", e))?;
+
+        let mut devices = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate devices cursor: {}", e))?
+        {
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize device document: {}", e))?;
+            devices.push(document_to_device(doc)?);
+        }
+
+        debug!(
+            tenant_id = %tenant_id,
+            count = devices.len(),
+            "Devices listed from MongoDB"
+        );
+        Ok(devices)
+    }
+
+    async fn list_devices_by_user(&self, user_id: &UserId) -> Result<Vec<Device>> {
+        let filter = doc! {
+            "owner_user_id": user_id.to_string(),
+        };
+
+        let mut cursor = self
+            .devices
+            .find(filter)
+            .sort(doc! { "name": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list devices by user: {}", e))?;
+
+        let mut devices = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate devices cursor: {}", e))?
+        {
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize device document: {}", e))?;
+            devices.push(document_to_device(doc)?);
+        }
+
+        debug!(
+            user_id = %user_id,
+            count = devices.len(),
+            "Devices listed from MongoDB"
+        );
+        Ok(devices)
+    }
+
+    async fn put_device(&self, device: Device) -> Result<()> {
+        // Serialize device_type to snake_case string
+        let device_type_str = match device.device_type {
+            DeviceType::DeskPhone => "desk_phone",
+            DeviceType::Softphone => "softphone",
+            DeviceType::WebRtc => "webrtc",
+            DeviceType::ConferenceRoom => "conference_room",
+            DeviceType::Ata => "ata",
+            DeviceType::Gateway => "gateway",
+            DeviceType::Mobile => "mobile",
+            DeviceType::Other => "other",
+        };
+
+        // Serialize registration_state to snake_case string
+        let registration_state_str = match device.registration_state {
+            RegistrationState::Unregistered => "unregistered",
+            RegistrationState::Registered => "registered",
+            RegistrationState::Failed => "failed",
+            RegistrationState::Expired => "expired",
+        };
+
+        // Serialize codec_support as array of strings
+        let codec_support: Vec<String> = device
+            .codec_support
+            .iter()
+            .map(|codec| match codec {
+                AudioCodec::Pcmu => "pcmu".to_string(),
+                AudioCodec::Pcma => "pcma".to_string(),
+                AudioCodec::G722 => "g722".to_string(),
+                AudioCodec::G729 => "g729".to_string(),
+                AudioCodec::Opus => "opus".to_string(),
+                AudioCodec::Ilbc => "ilbc".to_string(),
+                AudioCodec::Gsm => "gsm".to_string(),
+                AudioCodec::Speex => "speex".to_string(),
+            })
+            .collect();
+
+        let codec_support_bson = bson::to_bson(&codec_support)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize codec_support: {}", e))?;
+
+        // Serialize e911_override as nested document
+        let e911_override = if let Some(addr) = &device.e911_override {
+            bson::to_bson(addr)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize e911_override: {}", e))?
+        } else {
+            bson::Bson::Null
+        };
+
+        let doc = doc! {
+            "id": device.id.to_string(),
+            "name": &device.name,
+            "device_type": device_type_str,
+            "mac_address": device.mac_address.as_ref(),
+            "model": device.model.as_ref(),
+            "firmware_version": device.firmware_version.as_ref(),
+            "tenant_id": device.tenant_id.to_string(),
+            "owner_user_id": device.owner_user_id.as_ref().map(|u| u.to_string()),
+            "sip_uri": device.sip_uri.as_ref(),
+            "registration_state": registration_state_str,
+            "last_registration": device.last_registration.map(system_time_to_bson_datetime),
+            "last_ip_address": device.last_ip_address.as_ref(),
+            "user_agent": device.user_agent.as_ref(),
+            "max_lines": device.max_lines as i32,
+            "supports_video": device.supports_video,
+            "supports_blf": device.supports_blf,
+            "codec_support": codec_support_bson,
+            "location": device.location.as_ref(),
+            "e911_override": e911_override,
+            "provisioning_url": device.provisioning_url.as_ref(),
+            "config_template_id": device.config_template_id.as_ref(),
+            "enabled": device.enabled,
+            "created_at": system_time_to_bson_datetime(device.created_at),
+            "updated_at": system_time_to_bson_datetime(device.updated_at),
+        };
+
+        let filter = doc! {
+            "id": device.id.to_string(),
+        };
+
+        self.devices
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to insert/update device: {}", e))?;
+
+        debug!(id = %device.id, name = %device.name, "Device stored in MongoDB");
+        Ok(())
+    }
+
+    async fn delete_device(&self, id: &DeviceId) -> Result<()> {
+        let filter = doc! {
+            "id": id.to_string(),
+        };
+
+        self.devices
+            .delete_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete device: {}", e))?;
+
+        debug!(id = %id, "Device deleted from MongoDB");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Document Conversion Helpers for New Types
+// ============================================================================
+
+fn document_to_phone_number(doc: Document) -> Result<PhoneNumber> {
+    let id = PhoneNumberId::from_str(
+        doc.get_str("id")
+            .map_err(|_| anyhow::anyhow!("Missing id field"))?,
+    )?;
+    let tenant_id = TenantId::from_str(
+        doc.get_str("tenant_id")
+            .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+    )?;
+
+    let state_str = doc
+        .get_str("state")
+        .map_err(|_| anyhow::anyhow!("Missing state field"))?;
+    let state = match state_str {
+        "unassigned" => NumberState::Unassigned,
+        "reserved" => NumberState::Reserved,
+        "active" => NumberState::Active,
+        "quarantine" => NumberState::Quarantine,
+        "ported" => NumberState::Ported,
+        _ => NumberState::Unassigned,
+    };
+
+    let e911_address = doc
+        .get("e911_address")
+        .and_then(|v| {
+            if v.as_null().is_some() {
+                None
+            } else {
+                bson::from_bson(v.clone()).ok()
+            }
+        });
+
+    let allow_list: Vec<String> = doc
+        .get("allow_list")
+        .and_then(|v| bson::from_bson(v.clone()).ok())
+        .unwrap_or_default();
+
+    let block_list: Vec<String> = doc
+        .get("block_list")
+        .and_then(|v| bson::from_bson(v.clone()).ok())
+        .unwrap_or_default();
+
+    let tags: Vec<String> = doc
+        .get("tags")
+        .and_then(|v| bson::from_bson(v.clone()).ok())
+        .unwrap_or_default();
+
+    let created_at = doc
+        .get_datetime("created_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let updated_at = doc
+        .get_datetime("updated_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let acquired_at = doc
+        .get_datetime("acquired_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let activated_at = doc
+        .get_datetime("activated_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    let ported_at = doc
+        .get_datetime("ported_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    let loa_date = doc
+        .get_datetime("loa_date")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    let foc_date = doc
+        .get_datetime("foc_date")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    Ok(PhoneNumber {
+        id,
+        e164: doc
+            .get_str("e164")
+            .map_err(|_| anyhow::anyhow!("Missing e164 field"))?
+            .to_string(),
+        country_code: doc
+            .get_str("country_code")
+            .map_err(|_| anyhow::anyhow!("Missing country_code field"))?
+            .to_string(),
+        npa: doc
+            .get_str("npa")
+            .map_err(|_| anyhow::anyhow!("Missing npa field"))?
+            .to_string(),
+        nxx: doc
+            .get_str("nxx")
+            .map_err(|_| anyhow::anyhow!("Missing nxx field"))?
+            .to_string(),
+        line: doc
+            .get_str("line")
+            .map_err(|_| anyhow::anyhow!("Missing line field"))?
+            .to_string(),
+        state,
+        tenant_id,
+        e911_address,
+        e911_callback: doc.get_str("e911_callback").ok().map(String::from),
+        cnam: doc.get_str("cnam").ok().map(String::from),
+        spam_score: doc.get_f64("spam_score").ok().map(|v| v as f32),
+        carrier: doc.get_str("carrier").ok().map(String::from),
+        lrn: doc.get_str("lrn").ok().map(String::from),
+        ocn: doc.get_str("ocn").ok().map(String::from),
+        rate_center: doc.get_str("rate_center").ok().map(String::from),
+        lata: doc.get_str("lata").ok().map(String::from),
+        acquired_at,
+        activated_at,
+        ported_at,
+        loa_date,
+        foc_date,
+        recording_enabled: doc.get_bool("recording_enabled").unwrap_or(false),
+        block_anonymous: doc.get_bool("block_anonymous").unwrap_or(false),
+        allow_list,
+        block_list,
+        tags,
+        created_at,
+        updated_at,
+    })
+}
+
+fn document_to_line_binding(doc: Document) -> Result<LineBinding> {
+    let id = LineBindingId::from_str(
+        doc.get_str("id")
+            .map_err(|_| anyhow::anyhow!("Missing id field"))?,
+    )?;
+    let phone_number_id = PhoneNumberId::from_str(
+        doc.get_str("phone_number_id")
+            .map_err(|_| anyhow::anyhow!("Missing phone_number_id field"))?,
+    )?;
+    let tenant_id = TenantId::from_str(
+        doc.get_str("tenant_id")
+            .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+    )?;
+
+    let owner_user_id = doc
+        .get_str("owner_user_id")
+        .ok()
+        .and_then(|s| UserId::from_str(s).ok());
+
+    let binding_type_str = doc
+        .get_str("binding_type")
+        .map_err(|_| anyhow::anyhow!("Missing binding_type field"))?;
+    let binding_type = match binding_type_str {
+        "user" => BindingType::User,
+        "ivr" => BindingType::Ivr,
+        "queue" => BindingType::Queue,
+        "hunt_group" => BindingType::HuntGroup,
+        "conference_bridge" => BindingType::ConferenceBridge,
+        "voicemail" => BindingType::Voicemail,
+        "parking" => BindingType::Parking,
+        "paging" => BindingType::Paging,
+        "fax" => BindingType::Fax,
+        "emergency" => BindingType::Emergency,
+        _ => BindingType::User,
+    };
+
+    let ring_strategy_str = doc
+        .get_str("ring_strategy")
+        .map_err(|_| anyhow::anyhow!("Missing ring_strategy field"))?;
+    let ring_strategy = match ring_strategy_str {
+        "simultaneous" => RingStrategy::Simultaneous,
+        "sequential" => RingStrategy::Sequential,
+        "round_robin" => RingStrategy::RoundRobin,
+        "longest_idle" => RingStrategy::LongestIdle,
+        "primary" => RingStrategy::Primary,
+        _ => RingStrategy::Simultaneous,
+    };
+
+    let no_answer_timeout_secs = doc
+        .get_i64("no_answer_timeout_secs")
+        .unwrap_or(30);
+    let no_answer_timeout = Duration::from_secs(no_answer_timeout_secs as u64);
+
+    let created_at = doc
+        .get_datetime("created_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let updated_at = doc
+        .get_datetime("updated_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    Ok(LineBinding {
+        id,
+        phone_number_id,
+        owner_user_id,
+        binding_type,
+        devices: Vec::new(), // Will be populated by caller
+        ring_strategy,
+        tenant_id,
+        no_answer_timeout,
+        forward_on_busy: doc.get_str("forward_on_busy").ok().map(String::from),
+        forward_on_no_answer: doc.get_str("forward_on_no_answer").ok().map(String::from),
+        forward_unconditional: doc.get_str("forward_unconditional").ok().map(String::from),
+        outbound_caller_id: doc.get_str("outbound_caller_id").ok().map(String::from),
+        outbound_cnam: doc.get_str("outbound_cnam").ok().map(String::from),
+        created_at,
+        updated_at,
+    })
+}
+
+fn document_to_device_binding(doc: Document) -> Result<DeviceBinding> {
+    let device_id = DeviceId::from_str(
+        doc.get_str("device_id")
+            .map_err(|_| anyhow::anyhow!("Missing device_id field"))?,
+    )?;
+
+    let priority = doc
+        .get_i32("priority")
+        .unwrap_or(1) as u8;
+
+    let line_appearance = doc
+        .get_i32("line_appearance")
+        .unwrap_or(1) as u8;
+
+    let shared_line = doc.get_bool("shared_line").unwrap_or(false);
+    let enabled = doc.get_bool("enabled").unwrap_or(true);
+
+    Ok(DeviceBinding {
+        device_id,
+        priority,
+        line_appearance,
+        shared_line,
+        enabled,
+    })
+}
+
+fn document_to_extension(doc: Document) -> Result<Extension> {
+    let id = ExtensionId::from_str(
+        doc.get_str("id")
+            .map_err(|_| anyhow::anyhow!("Missing id field"))?,
+    )?;
+    let tenant_id = TenantId::from_str(
+        doc.get_str("tenant_id")
+            .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+    )?;
+
+    let target_type = doc
+        .get_str("target_type")
+        .map_err(|_| anyhow::anyhow!("Missing target_type field"))?;
+    let target_id = doc
+        .get_str("target_id")
+        .map_err(|_| anyhow::anyhow!("Missing target_id field"))?;
+
+    let target = match target_type {
+        "user" => ExtensionTarget::User(UserId::from_str(target_id)?),
+        "phone_number" => ExtensionTarget::PhoneNumber(PhoneNumberId::from_str(target_id)?),
+        "device" => ExtensionTarget::Device(DeviceId::from_str(target_id)?),
+        "service" => ExtensionTarget::Service(
+            ServiceId::from_str(target_id).unwrap_or_else(|_| ServiceId::new()),
+        ),
+        _ => return Err(anyhow::anyhow!("Unknown extension target type: {}", target_type)),
+    };
+
+    let created_at = doc
+        .get_datetime("created_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let updated_at = doc
+        .get_datetime("updated_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    Ok(Extension {
+        id,
+        number: doc
+            .get_str("number")
+            .map_err(|_| anyhow::anyhow!("Missing number field"))?
+            .to_string(),
+        target,
+        tenant_id,
+        description: doc.get_str("description").ok().map(String::from),
+        enabled: doc.get_bool("enabled").unwrap_or(true),
+        created_at,
+        updated_at,
+    })
+}
+
+fn document_to_device(doc: Document) -> Result<Device> {
+    let id = DeviceId::from_str(
+        doc.get_str("id")
+            .map_err(|_| anyhow::anyhow!("Missing id field"))?,
+    )?;
+    let tenant_id = TenantId::from_str(
+        doc.get_str("tenant_id")
+            .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+    )?;
+
+    let owner_user_id = doc
+        .get_str("owner_user_id")
+        .ok()
+        .and_then(|s| UserId::from_str(s).ok());
+
+    let device_type_str = doc
+        .get_str("device_type")
+        .map_err(|_| anyhow::anyhow!("Missing device_type field"))?;
+    let device_type = match device_type_str {
+        "desk_phone" => DeviceType::DeskPhone,
+        "softphone" => DeviceType::Softphone,
+        "webrtc" => DeviceType::WebRtc,
+        "conference_room" => DeviceType::ConferenceRoom,
+        "ata" => DeviceType::Ata,
+        "gateway" => DeviceType::Gateway,
+        "mobile" => DeviceType::Mobile,
+        _ => DeviceType::Other,
+    };
+
+    let registration_state_str = doc
+        .get_str("registration_state")
+        .map_err(|_| anyhow::anyhow!("Missing registration_state field"))?;
+    let registration_state = match registration_state_str {
+        "unregistered" => RegistrationState::Unregistered,
+        "registered" => RegistrationState::Registered,
+        "failed" => RegistrationState::Failed,
+        "expired" => RegistrationState::Expired,
+        _ => RegistrationState::Unregistered,
+    };
+
+    let last_registration = doc
+        .get_datetime("last_registration")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt));
+
+    let codec_support_strings: Vec<String> = doc
+        .get("codec_support")
+        .and_then(|v| bson::from_bson(v.clone()).ok())
+        .unwrap_or_default();
+
+    let codec_support: Vec<AudioCodec> = codec_support_strings
+        .into_iter()
+        .filter_map(|s| match s.to_lowercase().as_str() {
+            "pcmu" => Some(AudioCodec::Pcmu),
+            "pcma" => Some(AudioCodec::Pcma),
+            "g722" => Some(AudioCodec::G722),
+            "g729" => Some(AudioCodec::G729),
+            "opus" => Some(AudioCodec::Opus),
+            "ilbc" => Some(AudioCodec::Ilbc),
+            "gsm" => Some(AudioCodec::Gsm),
+            "speex" => Some(AudioCodec::Speex),
+            _ => None,
+        })
+        .collect();
+
+    let e911_override = doc
+        .get("e911_override")
+        .and_then(|v| {
+            if v.as_null().is_some() {
+                None
+            } else {
+                bson::from_bson(v.clone()).ok()
+            }
+        });
+
+    let created_at = doc
+        .get_datetime("created_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    let updated_at = doc
+        .get_datetime("updated_at")
+        .ok()
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or_else(SystemTime::now);
+
+    Ok(Device {
+        id,
+        name: doc
+            .get_str("name")
+            .map_err(|_| anyhow::anyhow!("Missing name field"))?
+            .to_string(),
+        device_type,
+        mac_address: doc.get_str("mac_address").ok().map(String::from),
+        model: doc.get_str("model").ok().map(String::from),
+        firmware_version: doc.get_str("firmware_version").ok().map(String::from),
+        tenant_id,
+        owner_user_id,
+        sip_uri: doc.get_str("sip_uri").ok().map(String::from),
+        registration_state,
+        last_registration,
+        last_ip_address: doc.get_str("last_ip_address").ok().map(String::from),
+        user_agent: doc.get_str("user_agent").ok().map(String::from),
+        max_lines: doc.get_i32("max_lines").unwrap_or(1) as u8,
+        supports_video: doc.get_bool("supports_video").unwrap_or(false),
+        supports_blf: doc.get_bool("supports_blf").unwrap_or(false),
+        codec_support,
+        location: doc.get_str("location").ok().map(String::from),
+        e911_override,
+        provisioning_url: doc.get_str("provisioning_url").ok().map(String::from),
+        config_template_id: doc.get_str("config_template_id").ok().map(String::from),
+        enabled: doc.get_bool("enabled").unwrap_or(true),
+        created_at,
+        updated_at,
     })
 }
 
