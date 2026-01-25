@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libsqlite3-dev \
+    libpq-dev \
     ca-certificates \
     git \
     && rm -rf /var/lib/apt/lists/*
@@ -19,8 +20,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY external/ ./external/
 
-# Build the application
-RUN cargo build --release --bin fcp-server --bin fcp-cli
+# Build the application with all storage backends
+RUN cargo build --release --bin fcp-server --bin fcp-cli \
+    --features storage-postgres,storage-mysql,storage-mongodb
 
 # Stage 2: Runtime stage
 FROM debian:trixie-slim
@@ -30,6 +32,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3t64 \
     libsqlite3-0 \
+    libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
