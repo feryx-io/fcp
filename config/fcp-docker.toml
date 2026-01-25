@@ -27,6 +27,7 @@ session_expires = 1800
 [registrar]
 # Registration settings
 enabled = true
+auth_enabled = true
 max_contacts = 5
 default_expiry = 3600
 min_expiry = 60
