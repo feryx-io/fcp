@@ -72,29 +72,225 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
          └─────────────────────┘
 ```
 
+## Core Architecture: B2BUA as Shared Foundation
+
+### Why B2BUA is a Library, Not a Service
+
+**B2BUA (Back-to-Back User Agent)** functionality is fundamental to multiple FCP services. Rather than creating a separate B2BUA service, we implement it as a **shared library** (`fcp-b2bua-core`) that multiple services use.
+
+### Services That Use B2BUA Core
+
+```
+                    ┌─────────────────────┐
+                    │   fcp-b2bua-core    │
+                    │   (Shared Library)  │
+                    └──────────┬──────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+         ┌────▼────┐      ┌────▼────┐     ┌────▼────┐
+         │fcp-sbc  │      │fcp-pbx  │     │fcp-     │
+         │         │      │         │     │session- │
+         │         │      │         │     │manager  │
+         └─────────┘      └─────────┘     └─────────┘
+```
+
+### B2BUA Core Responsibilities
+
+1. **Dialog Manipulation**
+   - Create back-to-back dialogs (A-leg ↔ B-leg)
+   - Maintain dialog state for both legs
+   - Handle early/confirmed/terminated states
+   - CSeq tracking and validation
+
+2. **Media Control**
+   - SDP offer/answer negotiation
+   - Media anchoring (RTP proxy mode)
+   - Hold/resume (re-INVITE with sendonly/recvonly)
+   - Codec transcoding coordination
+
+3. **Topology Hiding**
+   - Via header manipulation
+   - Record-Route rewriting
+   - Contact header manipulation
+   - Private IP address masking
+
+4. **Call Forking**
+   - Parallel forking (ring multiple targets simultaneously)
+   - Sequential forking (try targets one by one)
+   - Early media handling (180 with SDP)
+   - CANCEL propagation
+
+5. **Call Transfer Primitives**
+   - REFER handling (blind transfer)
+   - Replaces header support (attended transfer)
+   - Consultative transfer coordination
+   - Transfer loop detection
+
+6. **Mid-Call Modifications**
+   - re-INVITE handling (codec change, hold)
+   - UPDATE support (RFC 3311)
+   - Session refresh (timer-based)
+   - Codec renegotiation
+
+### How Different Services Use B2BUA
+
+#### SBC Use Case
+```rust
+use fcp_b2bua_core::{B2buaSession, TopologyHiding, MediaAnchoring};
+
+// SBC uses B2BUA primarily for:
+// 1. Topology hiding (protect internal network)
+// 2. Media anchoring (NAT traversal)
+// 3. DoS protection (rate limiting, validation)
+
+let mut b2bua = B2buaSession::new(a_leg_dialog);
+b2bua.enable_topology_hiding(TopologyHiding::Full); // Hide all internal headers
+b2bua.enable_media_anchoring(MediaAnchoring::Always); // Always proxy RTP
+b2bua.set_max_forwards(10); // Limit loop potential
+
+let b_leg = b2bua.create_b_leg(upstream_uri).await?;
+```
+
+#### PBX Use Case
+```rust
+use fcp_b2bua_core::{B2buaSession, CallForking, CallTransfer};
+
+// PBX uses B2BUA for:
+// 1. Call forking (ring multiple devices)
+// 2. Call transfers
+// 3. Call parking/pickup
+// 4. Feature implementation (hold, mute, etc.)
+
+let mut b2bua = B2buaSession::new(a_leg_dialog);
+b2bua.enable_forking(CallForking::Parallel); // Ring all devices
+
+// Ring all devices registered to this extension
+let targets = extension.get_device_targets().await?;
+let results = b2bua.fork_call(targets).await?;
+
+// Handle blind transfer
+let transfer = b2bua.handle_refer(refer_request).await?;
+transfer.execute().await?;
+```
+
+#### Session Manager Use Case
+```rust
+use fcp_b2bua_core::{B2buaSession, RoutingMode};
+
+// Session Manager uses B2BUA for:
+// 1. Call routing (LCR, failover)
+// 2. Load balancing across PBX nodes
+// 3. Carrier failover
+
+let mut b2bua = B2buaSession::new(a_leg_dialog);
+b2bua.set_routing_mode(RoutingMode::LeastCost);
+
+// Try carriers in order of cost
+for carrier in carriers_by_cost {
+    match b2bua.try_carrier(&carrier).await {
+        Ok(result) => return Ok(result),
+        Err(e) if e.should_failover() => continue,
+        Err(e) => return Err(e),
+    }
+}
+```
+
+### B2BUA Core API Design
+
+```rust
+/// B2BUA session represents a back-to-back call
+pub struct B2buaSession {
+    a_leg: Dialog,           // Incoming call leg
+    b_legs: Vec<Dialog>,     // Outgoing call leg(s)
+    media_proxy: Option<MediaProxy>,
+    config: B2buaConfig,
+}
+
+impl B2buaSession {
+    /// Create new B2BUA session from A-leg dialog
+    pub fn new(a_leg: Dialog) -> Self;
+
+    /// Create outbound B-leg
+    pub async fn create_b_leg(&mut self, target: Uri) -> Result<Dialog>;
+
+    /// Fork call to multiple targets
+    pub async fn fork_call(&mut self, targets: Vec<Uri>) -> Result<ForkingResult>;
+
+    /// Handle mid-call REFER (transfer)
+    pub async fn handle_refer(&mut self, refer: Request) -> Result<Transfer>;
+
+    /// Enable/disable topology hiding
+    pub fn enable_topology_hiding(&mut self, mode: TopologyHiding);
+
+    /// Enable/disable media anchoring
+    pub fn enable_media_anchoring(&mut self, mode: MediaAnchoring);
+
+    /// Handle A-leg re-INVITE (hold, resume, codec change)
+    pub async fn handle_a_leg_reinvite(&mut self, invite: Request) -> Result<Response>;
+
+    /// Handle B-leg response
+    pub async fn handle_b_leg_response(&mut self, response: Response) -> Result<()>;
+
+    /// Terminate both legs
+    pub async fn terminate(&mut self) -> Result<()>;
+}
+
+pub enum TopologyHiding {
+    None,          // Pass through all headers
+    Partial,       // Hide private IPs only
+    Full,          // Rewrite all topology headers
+}
+
+pub enum MediaAnchoring {
+    Never,         // Pass through SDP (proxy mode)
+    Always,        // Always anchor media (B2BUA mode)
+    Conditional,   // Anchor only for NAT traversal
+}
+```
+
+### Benefits of Shared B2BUA Library
+
+1. **Code Reuse**: Single implementation of complex B2BUA logic
+2. **Consistency**: All services handle dialogs the same way
+3. **Testing**: Test B2BUA logic once, use everywhere
+4. **Performance**: No inter-process communication overhead
+5. **Flexibility**: Each service configures B2BUA for its needs
+
+---
+
 ## Binary Definitions
 
 ### 1. `fcp-sbc` (Session Border Controller)
 
-**Purpose:** Edge security, NAT traversal, topology hiding
+**Purpose:** Edge security, NAT traversal, topology hiding, carrier interconnection
 
 **Includes:**
-- SIP transport (UDP/TCP/TLS)
-- Transaction layer
-- Basic authentication (to reject invalid traffic)
-- Topology hiding (Via header manipulation)
-- NAT traversal (ICE, STUN, TURN)
-- Rate limiting
-- DOS protection
-- Metrics/logging
+- **B2BUA core** (from `fcp-b2bua-core` library)
+  - Topology hiding (Via/Record-Route manipulation)
+  - Media anchoring (optional)
+  - Call admission control
+- **SIP transport** (UDP/TCP/TLS)
+- **Transaction layer**
+- **Authentication** (Digest for trunk registration)
+- **NAT traversal** (ICE, STUN, TURN integration)
+- **Rate limiting** (CPS limits, burst protection)
+- **DOS protection** (SYN flood, malformed SIP)
+- **Database access** (limited scope):
+  - CDR writing (edge CDRs for billing)
+  - Whitelist/blacklist (number filtering)
+  - SIPREC configuration (which calls to record)
+  - Trunk configuration (carrier credentials)
+- **SIPREC** (SIP Recording)
+  - Recording metadata generation
+  - Forward to recording servers
+- **Metrics/logging**
 
 **Excludes:**
-- Voicemail
-- IVR/Flow engine
-- Conference
-- Call detail records (just forwards to session manager)
+- Voicemail/IVR/Conference (application logic)
+- User registration (not carrier trunks)
 - Admin API (read-only health check only)
-- Database access (optional Redis for rate limiting)
+- Full database access (only CDR, blacklist, SIPREC tables)
 
 **Configuration:**
 ```toml
@@ -102,9 +298,37 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
 bind_addresses = ["0.0.0.0:5060", "0.0.0.0:5061"]
 protocols = ["udp", "tcp", "tls"]
 upstream_session_manager = "sip:sm.internal.example.com:5060"
-topology_hiding = true
-nat_traversal = true
+
+[sbc.topology_hiding]
+enabled = true
+hide_via = true
+hide_record_route = true
+local_domain = "sbc.example.com"
+
+[sbc.media]
+anchor_media = true  # B2BUA mode
+rtp_port_range = "10000-20000"
+
+[sbc.admission_control]
 max_calls_per_second = 1000
+max_concurrent_calls = 10000
+
+[sbc.security]
+enable_whitelist = true
+enable_blacklist = true
+rate_limit_per_ip = 100  # CPS per source IP
+
+[database]
+# Limited schema access: cdrs, blacklist, whitelist, siprec_config, trunks
+url = "postgres://sbc_user:password@db:5432/fcp"
+# SBC user has INSERT on cdrs, SELECT on blacklist/whitelist/siprec_config/trunks
+
+[siprec]
+enabled = true
+recording_servers = [
+    "sip:recorder1.internal:5060",
+    "sip:recorder2.internal:5060"
+]
 ```
 
 ---
@@ -179,21 +403,34 @@ max_contacts = 10
 **Purpose:** Feature-rich call handling (B2BUA, transfers, call parking, etc.)
 
 **Includes:**
-- Full B2BUA
-- Call forking (parallel/sequential)
-- Call transfer (blind/attended)
-- Call parking/pickup
-- Do Not Disturb
-- Call forwarding rules
-- Extension-to-extension calls
-- Integration with voicemail/IVR (via SIP REFER/INVITE)
-- Call detail records
-- Full database access
-- REST API client (for webhooks)
+- **B2BUA core** (from `fcp-b2bua-core` library)
+  - Call forking (parallel/sequential)
+  - Call transfer (blind/attended/consultative)
+  - Call parking/pickup
+  - Call recording (on-demand)
+  - Media manipulation (hold music, announcements)
+- **PBX features**
+  - Extension-to-extension calls
+  - Do Not Disturb
+  - Call forwarding (busy/no-answer/always)
+  - Find Me/Follow Me
+  - Call screening
+  - Call waiting
+  - Speed dial
+- **Integration** with applications
+  - Voicemail (via SIP REFER/INVITE)
+  - IVR (via SIP INVITE)
+  - Conference (via SIP INVITE)
+  - Queue (ACD routing)
+- **Call detail records** (detailed CDRs with all call legs)
+- **Full database access** (users, extensions, devices, call history)
+- **REST API client** (for webhooks, CRM integration)
+- **Event bus publisher** (call events for analytics)
 
 **Excludes:**
-- SBC functionality (no edge security)
-- Registrar (queries it via API/Redis)
+- SBC functionality (no edge security, no carrier trunks)
+- Registrar (queries it via API/Redis for location)
+- Media processing (delegates to fcp-media for transcoding)
 
 **Configuration:**
 ```toml
@@ -354,6 +591,10 @@ enable_swagger = true
 #### 1.1 Audit Current Code
 - [x] `fcp-sip` - SIP handling (✓ already a library)
 - [x] `fcp-core` - Core types (✓ already a library)
+- [ ] **CRITICAL:** Extract B2BUA core → `fcp-b2bua-core` library
+  - B2BUA is used by multiple services (SBC, PBX, Session Manager)
+  - Must be extracted FIRST before other services
+  - Includes: dialog manipulation, media control, topology hiding primitives
 - [ ] Extract SBC-specific code from `fcp-server` → `fcp-sbc-core` library
 - [ ] Extract registrar code → `fcp-registrar-core` library
 - [ ] Extract voicemail logic → `fcp-voicemail-core` library
@@ -385,9 +626,17 @@ fcp/
 │   ├── fcp-sip/            # ✓ Already exists
 │   ├── fcp-storage-*/      # ✓ Already exists
 │   │
-│   ├── fcp-sbc-core/       # NEW: SBC library
+│   ├── fcp-b2bua-core/     # NEW: B2BUA library (SHARED by SBC, PBX, Session Manager)
+│   │                       #      - Dialog manipulation (forking, serial hunting)
+│   │                       #      - Media anchoring and manipulation
+│   │                       #      - Topology hiding (Via/Record-Route rewriting)
+│   │                       #      - Call transfer primitives (REFER handling)
+│   │                       #      - Call parking/pickup
+│   │                       #      - Mid-call modifications (hold, unhold, reinvite)
+│   │
+│   ├── fcp-sbc-core/       # NEW: SBC library (depends on fcp-b2bua-core)
 │   ├── fcp-registrar-core/ # NEW: Registrar library
-│   ├── fcp-pbx-core/       # NEW: PBX/B2BUA library
+│   ├── fcp-pbx-core/       # NEW: PBX library (depends on fcp-b2bua-core)
 │   ├── fcp-voicemail-core/ # NEW: Voicemail library
 │   ├── fcp-conference-core/# NEW: Conference library
 │   ├── fcp-media-core/     # NEW: Media library
