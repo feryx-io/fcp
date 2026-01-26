@@ -13,7 +13,6 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 /// Unique identifier for a call.

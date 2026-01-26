@@ -474,7 +474,7 @@ async fn create_and_insert_cdr(
     storage: &fcp_core::DynStorage,
     call: &Call,
 ) -> Result<()> {
-    use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, HangupCause};
+    use fcp_core::storage::{CallDetailRecord, CdrStore};
 
     // Map CallState to CallDisposition
     let (disposition, hangup_cause) = map_call_state_to_disposition(call);

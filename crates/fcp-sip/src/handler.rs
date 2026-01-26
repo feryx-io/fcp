@@ -314,7 +314,7 @@ fn add_response_headers(
                 let tag = Uuid::new_v4().simple().to_string();
                 let new_to = SmolStr::new(format!("{};tag={}", to, tag));
                 response.headers_mut().remove("To");
-                response.headers_mut().push(SmolStr::new("To"), new_to);
+                let _ = response.headers_mut().push(SmolStr::new("To"), new_to);
             }
         }
     }
@@ -322,13 +322,13 @@ fn add_response_headers(
     // INVITE-related responses should carry Contact/Record-Route
     if request.method() == &sip_core::Method::Invite {
         if response.headers().get("Contact").is_none() {
-            response.headers_mut().push(
+            let _ = response.headers_mut().push(
                 SmolStr::new("Contact"),
                 SmolStr::new(format!("<{}>", uas.contact_uri.as_str())),
             );
         }
         if response.headers().get("Record-Route").is_none() {
-            response.headers_mut().push(
+            let _ = response.headers_mut().push(
                 SmolStr::new("Record-Route"),
                 SmolStr::new(format!("<{};lr>", uas.contact_uri.as_str())),
             );
@@ -337,12 +337,12 @@ fn add_response_headers(
 
     // Capability headers
     if response.headers().get("Allow").is_none() {
-        response
+        let _ = response
             .headers_mut()
             .push(SmolStr::new("Allow"), SmolStr::new(ALLOW));
     }
     if response.headers().get("Supported").is_none() {
-        response
+        let _ = response
             .headers_mut()
             .push(SmolStr::new("Supported"), SmolStr::new(SUPPORTED));
     }
@@ -350,7 +350,7 @@ fn add_response_headers(
     // Ensure Content-Length matches body
     let body_len = response.body().len();
     response.headers_mut().remove("Content-Length");
-    response.headers_mut().push(
+    let _ = response.headers_mut().push(
         SmolStr::new("Content-Length"),
         SmolStr::new(body_len.to_string()),
     );
@@ -1011,11 +1011,11 @@ impl SipMessageHandler {
 
                                                         // Clone headers and add Content-Type and Content-Length
                                                         let mut headers = response.headers().clone();
-                                                        headers.push(
+                                                        let _ = headers.push(
                                                             smol_str::SmolStr::new("Content-Type"),
                                                             smol_str::SmolStr::new("application/sdp"),
                                                         );
-                                                        headers.push(
+                                                        let _ = headers.push(
                                                             smol_str::SmolStr::new("Content-Length"),
                                                             smol_str::SmolStr::new(&sdp_bytes.len().to_string()),
                                                         );
@@ -1053,7 +1053,7 @@ impl SipMessageHandler {
                                     info!(call_id = %call_id, dialog_id = %dialog_id_str, "Created A-leg dialog");
 
                                     // Insert dialog into dialog manager
-                                    dialog_manager.insert(a_leg_dialog.clone());
+                                    let _ = dialog_manager.insert(a_leg_dialog.clone());
 
                                     // Update call with dialog
                                     let _ = call_manager.update_call(&call_id, |call| {
@@ -1110,7 +1110,7 @@ impl SipMessageHandler {
                                 }
 
                                 // Terminate the call
-                                call_manager.terminate_call(&call_id, reason);
+                                let _ = call_manager.terminate_call(&call_id, reason);
                                 Ok(())
                             })
                         });
@@ -1325,7 +1325,7 @@ impl SipMessageHandler {
                     let tag = Uuid::new_v4().simple().to_string();
                     let new_to = SmolStr::new(format!("{};tag={}", to, tag));
                     response.headers_mut().remove("To");
-                    response.headers_mut().push(SmolStr::new("To"), new_to);
+                    let _ = response.headers_mut().push(SmolStr::new("To"), new_to);
                 }
             }
         }
@@ -1333,13 +1333,13 @@ impl SipMessageHandler {
         // INVITE-related responses should carry Contact/Record-Route
         if request.method() == &sip_core::Method::Invite {
             if response.headers().get("Contact").is_none() {
-                response.headers_mut().push(
+                let _ = response.headers_mut().push(
                     SmolStr::new("Contact"),
                     SmolStr::new(format!("<{}>", self.uas.contact_uri.as_str())),
                 );
             }
             if response.headers().get("Record-Route").is_none() {
-                response.headers_mut().push(
+                let _ = response.headers_mut().push(
                     SmolStr::new("Record-Route"),
                     SmolStr::new(format!("<{};lr>", self.uas.contact_uri.as_str())),
                 );
@@ -1348,12 +1348,12 @@ impl SipMessageHandler {
 
         // Capability headers
         if response.headers().get("Allow").is_none() {
-            response
+            let _ = response
                 .headers_mut()
                 .push(SmolStr::new("Allow"), SmolStr::new(ALLOW));
         }
         if response.headers().get("Supported").is_none() {
-            response
+            let _ = response
                 .headers_mut()
                 .push(SmolStr::new("Supported"), SmolStr::new(SUPPORTED));
         }
@@ -1361,7 +1361,7 @@ impl SipMessageHandler {
         // Ensure Content-Length matches body
         let body_len = response.body().len();
         response.headers_mut().remove("Content-Length");
-        response.headers_mut().push(
+        let _ = response.headers_mut().push(
             SmolStr::new("Content-Length"),
             SmolStr::new(body_len.to_string()),
         );
@@ -2239,6 +2239,7 @@ impl SipMessageHandler {
     }
 
     /// Handle B-leg responses in background task (spawned from forward_invite_to_b_leg)
+    #[allow(dead_code)] // TODO: Integrate with B2BUA call flow
     async fn handle_b_leg_responses(
         &self,
         request: sip_core::Request,
@@ -2318,17 +2319,17 @@ impl SipMessageHandler {
                     // Build headers from initial response
                     let mut headers = sip_core::Headers::new();
                     for header in initial_resp.headers().iter() {
-                        headers.push(header.name_smol().clone(), header.value_smol().clone());
+                        let _ = headers.push(header.name_smol().clone(), header.value_smol().clone());
                     }
 
                     // Add Content-Type if we have a body from B-leg
                     if !provisional.body().is_empty() {
                         if let Some(ct) = provisional.headers().get("Content-Type") {
-                            headers.push(SmolStr::new("Content-Type"), ct.clone());
+                            let _ = headers.push(SmolStr::new("Content-Type"), ct);
                         }
                         // Update Content-Length
                         headers.remove("Content-Length");
-                        headers.push(
+                        let _ = headers.push(
                             SmolStr::new("Content-Length"),
                             SmolStr::new(&final_body.len().to_string()),
                         );
@@ -2487,7 +2488,7 @@ impl SipMessageHandler {
             );
 
             // Register confirmed B-leg dialog in dialog_manager for in-dialog request routing
-            self.dialog_manager.insert(b_leg_dialog.clone());
+            let _ = self.dialog_manager.insert(b_leg_dialog.clone());
             self.start_session_timer(&b_leg_dialog);
             debug!(
                 call_id = %call_id,
@@ -2505,7 +2506,7 @@ impl SipMessageHandler {
                     let to_with_tag = format!("{};tag={}", to, saved_tag);
                     // Remove old To header and add new one with correct tag
                     resp.headers_mut().retain(|h| h.name() != "To");
-                    resp.headers_mut()
+                    let _ = resp.headers_mut()
                         .push(SmolStr::new("To"), SmolStr::new(to_with_tag));
                     debug!(call_id = %call_id, a_leg_to_tag = %saved_tag, "Reused To-tag in 200 OK for dialog consistency");
                 }
@@ -2545,7 +2546,7 @@ impl SipMessageHandler {
             );
 
             // Register A-leg dialog in dialog_manager for in-dialog request routing
-            self.dialog_manager.insert(a_leg_dialog.clone());
+            let _ = self.dialog_manager.insert(a_leg_dialog.clone());
             self.start_session_timer(&a_leg_dialog);
             debug!(
                 call_id = %call_id,
@@ -2935,7 +2936,7 @@ impl SipMessageHandler {
                     let to_with_tag = format!("{};tag={}", to, tag);
                     // Remove old To header and add new one with correct tag
                     resp.headers_mut().retain(|h| h.name() != "To");
-                    resp.headers_mut()
+                    let _ = resp.headers_mut()
                         .push(SmolStr::new("To"), SmolStr::new(to_with_tag));
                     debug!(
                         call_id = %call_id,
@@ -2993,7 +2994,7 @@ impl SipMessageHandler {
             );
 
             // Register A-leg dialog in dialog_manager
-            self.dialog_manager.insert(a_leg_dialog.clone());
+            let _ = self.dialog_manager.insert(a_leg_dialog.clone());
             self.start_session_timer(&a_leg_dialog);
 
             // Update call with both dialogs
@@ -3496,7 +3497,7 @@ impl SipMessageHandler {
         ) {
             warn!(call_id = %call.id, "re-INVITE rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            resp.headers_mut().push(
+            let _ = resp.headers_mut().push(
                 SmolStr::new("Retry-After"),
                 SmolStr::new(self.settings.rate_window.as_secs().to_string()),
             );
@@ -3692,7 +3693,7 @@ impl SipMessageHandler {
                 .and_then(|b| b.dialog.clone())
                 .map(|d| (d, false))
         } {
-            if let Some((se, refresher)) = extract_session_timer(&peer_resp) {
+            if let Some((se, _refresher)) = extract_session_timer(&peer_resp) {
                 let _ = src_dialog.set_session_expires(se);
                 self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
                 self.start_session_timer(&src_dialog);
@@ -3751,7 +3752,7 @@ impl SipMessageHandler {
         ) {
             warn!(call_id = %call.id, "SUBSCRIBE rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            resp.headers_mut().push(
+            let _ = resp.headers_mut().push(
                 SmolStr::new("Retry-After"),
                 SmolStr::new(self.settings.rate_window.as_secs().to_string()),
             );
@@ -3833,7 +3834,7 @@ impl SipMessageHandler {
 
         if let Some(sub) = subscription {
             let sub_clone = sub.clone();
-            self.subscription_manager.insert(sub);
+            let _ = self.subscription_manager.insert(sub);
             self.index_subscription(sub_clone);
         }
 
@@ -3913,7 +3914,7 @@ impl SipMessageHandler {
             ) {
                 warn!(call_id = %call.id, "NOTIFY rate limited");
                 let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-                resp.headers_mut().push(
+                let _ = resp.headers_mut().push(
                     SmolStr::new("Retry-After"),
                     SmolStr::new(self.settings.rate_window.as_secs().to_string()),
                 );
@@ -4001,7 +4002,7 @@ impl SipMessageHandler {
             ) {
                 warn!(call_id = %call.id, "NOTIFY rate limited");
                 let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-                resp.headers_mut().push(
+                let _ = resp.headers_mut().push(
                     SmolStr::new("Retry-After"),
                     SmolStr::new(self.settings.rate_window.as_secs().to_string()),
                 );
@@ -4116,7 +4117,7 @@ impl SipMessageHandler {
         ) {
             warn!(call_id = %call.id, "UPDATE rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            resp.headers_mut().push(
+            let _ = resp.headers_mut().push(
                 SmolStr::new("Retry-After"),
                 SmolStr::new(self.settings.rate_window.as_secs().to_string()),
             );
@@ -4207,7 +4208,7 @@ impl SipMessageHandler {
                 .and_then(|b| b.dialog.clone())
                 .map(|d| (d, false))
         } {
-            if let Some((se, refresher)) = extract_session_timer(&peer_resp) {
+            if let Some((se, _refresher)) = extract_session_timer(&peer_resp) {
                 let _ = src_dialog.set_session_expires(se);
                 self.persist_updated_dialog(&call.id, is_a_leg_src, src_dialog.clone());
                 self.start_session_timer(&src_dialog);
@@ -4266,7 +4267,7 @@ impl SipMessageHandler {
         ) {
             warn!(call_id = %call.id, "PRACK rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            resp.headers_mut().push(
+            let _ = resp.headers_mut().push(
                 SmolStr::new("Retry-After"),
                 SmolStr::new(self.settings.rate_window.as_secs().to_string()),
             );
@@ -4424,7 +4425,7 @@ impl SipMessageHandler {
         ) {
             warn!(call_id = %call.id, "INFO rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            resp.headers_mut().push(
+            let _ = resp.headers_mut().push(
                 SmolStr::new("Retry-After"),
                 SmolStr::new(self.settings.rate_window.as_secs().to_string()),
             );
@@ -4558,7 +4559,7 @@ impl SipMessageHandler {
         ) {
             warn!(call_id = %call.id, "REFER rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
-            resp.headers_mut().push(
+            let _ = resp.headers_mut().push(
                 SmolStr::new("Retry-After"),
                 SmolStr::new(self.settings.rate_window.as_secs().to_string()),
             );
@@ -4682,10 +4683,10 @@ impl SipMessageHandler {
 
         // Copy mandatory headers from request (RFC 3261 §8.2.6)
         if let Some(via) = request.headers().get("Via") {
-            headers.push(SmolStr::new("Via"), via.clone());
+            let _ = headers.push(SmolStr::new("Via"), via);
         }
         if let Some(from) = request.headers().get("From") {
-            headers.push(SmolStr::new("From"), from.clone());
+            let _ = headers.push(SmolStr::new("From"), from);
         }
         if let Some(to) = request.headers().get("To") {
             let to_val = if !to.contains(";tag=") {
@@ -4694,25 +4695,25 @@ impl SipMessageHandler {
             } else {
                 SmolStr::new(to)
             };
-            headers.push(SmolStr::new("To"), to_val);
+            let _ = headers.push(SmolStr::new("To"), to_val);
         }
         if let Some(call_id) = request.headers().get("Call-ID") {
-            headers.push(SmolStr::new("Call-ID"), call_id.clone());
+            let _ = headers.push(SmolStr::new("Call-ID"), call_id);
         }
         if let Some(cseq) = request.headers().get("CSeq") {
-            headers.push(SmolStr::new("CSeq"), cseq.clone());
+            let _ = headers.push(SmolStr::new("CSeq"), cseq);
         }
 
         // Add Contact for INVITE/dialog forming responses if absent
         if request.method() == &sip_core::Method::Invite && headers.get("Contact").is_none() {
-            headers.push(
+            let _ = headers.push(
                 SmolStr::new("Contact"),
                 SmolStr::new(format!("<{}>", self.uas.contact_uri.as_str())),
             );
         }
 
         // Content-Length: 0 (no body)
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let mut resp = sip_core::Response::new(
             StatusLine::new(code, reason).expect("Failed to create status line"),
@@ -4844,7 +4845,7 @@ impl SipMessageHandler {
 
         // Ensure Contact header is present
         if response.headers().get("Contact").is_none() {
-            response.headers_mut().push(
+            let _ = response.headers_mut().push(
                 SmolStr::new("Contact"),
                 SmolStr::new(format!("<{}>", self.uas.contact_uri.as_str())),
             );
@@ -4853,7 +4854,7 @@ impl SipMessageHandler {
         // Copy Allow/Supported if present on the INVITE so capabilities are preserved
         for name in ["Allow", "Supported"] {
             if let Some(val) = invite_req.headers().get(name) {
-                response.headers_mut().push(SmolStr::new(name), val.clone());
+                let _ = response.headers_mut().push(SmolStr::new(name), val);
             }
         }
 
@@ -4869,9 +4870,9 @@ impl SipMessageHandler {
                 let mut new_headers = sip_core::Headers::new();
                 for header in response.headers().iter() {
                     if header.name_smol() == "To" {
-                        new_headers.push(SmolStr::new("To"), new_to.clone());
+                        let _ = new_headers.push(SmolStr::new("To"), new_to.clone());
                     } else {
-                        new_headers.push(header.name_smol().clone(), header.value_smol().clone());
+                        let _ = new_headers.push(header.name_smol().clone(), header.value_smol().clone());
                     }
                 }
 
@@ -4900,14 +4901,14 @@ impl SipMessageHandler {
 
         // Mandatory dialog-forming headers from A-leg INVITE
         if let Some(via) = a_leg_invite.headers().get("Via") {
-            headers.push(SmolStr::new("Via"), via.clone());
+            let _ = headers.push(SmolStr::new("Via"), via);
         }
         if let Some(from) = a_leg_invite.headers().get("From") {
-            headers.push(SmolStr::new("From"), from.clone());
+            let _ = headers.push(SmolStr::new("From"), from);
         }
         if let Some(to) = a_leg_invite.headers().get("To") {
             // Preserve the To-tag from B-leg provisional if present
-            let to_smol = SmolStr::new(to);
+            let _to_smol = SmolStr::new(to);
             let to_with_tag = if let Some(to_header) = b_leg_resp.headers().get("To") {
                 let to_header_smol = SmolStr::new(to_header);
                 if let Some(tag) = extract_tag_value(Some(&to_header_smol)) {
@@ -4918,23 +4919,23 @@ impl SipMessageHandler {
             } else {
                 to.to_string()
             };
-            headers.push(SmolStr::new("To"), SmolStr::new(to_with_tag));
+            let _ = headers.push(SmolStr::new("To"), SmolStr::new(to_with_tag));
         }
         if let Some(call_id) = a_leg_invite.headers().get("Call-ID") {
-            headers.push(SmolStr::new("Call-ID"), call_id.clone());
+            let _ = headers.push(SmolStr::new("Call-ID"), call_id);
         }
         if let Some(cseq) = a_leg_invite.headers().get("CSeq") {
-            headers.push(SmolStr::new("CSeq"), cseq.clone());
+            let _ = headers.push(SmolStr::new("CSeq"), cseq);
         }
 
         // Copy Contact from B-leg provisional (remote target)
         if let Some(contact) = b_leg_resp.headers().get("Contact") {
-            headers.push(SmolStr::new("Contact"), contact.clone());
+            let _ = headers.push(SmolStr::new("Contact"), contact);
         }
 
         // Propagate Record-Route for correct route set
         for rr in b_leg_resp.headers().get_all("Record-Route") {
-            headers.push(SmolStr::new("Record-Route"), rr.clone());
+            let _ = headers.push(SmolStr::new("Record-Route"), rr);
         }
 
         // Propagate capability/signaling headers
@@ -4947,13 +4948,13 @@ impl SipMessageHandler {
             "Content-Type",
         ] {
             for val in b_leg_resp.headers().get_all(name) {
-                headers.push(SmolStr::new(name), val.clone());
+                let _ = headers.push(SmolStr::new(name), val);
             }
         }
 
         // Body (e.g., SDP for early media)
         let body = b_leg_resp.body().clone();
-        headers.push(
+        let _ = headers.push(
             SmolStr::new("Content-Length"),
             SmolStr::new(body.len().to_string()),
         );
@@ -4996,13 +4997,13 @@ impl SipMessageHandler {
             if !peer_response.body().is_empty() {
                 let mut headers = sip_core::Headers::new();
                 for header in r.headers().iter() {
-                    headers.push(header.name_smol().clone(), header.value_smol().clone());
+                    let _ = headers.push(header.name_smol().clone(), header.value_smol().clone());
                 }
                 if let Some(ct) = peer_response.headers().get("Content-Type") {
-                    headers.push(SmolStr::new("Content-Type"), ct.clone());
+                    let _ = headers.push(SmolStr::new("Content-Type"), ct);
                 }
                 let body = peer_response.body().clone();
-                headers.push(
+                let _ = headers.push(
                     SmolStr::new("Content-Length"),
                     SmolStr::new(body.len().to_string()),
                 );
@@ -5017,26 +5018,26 @@ impl SipMessageHandler {
         // Propagate capability headers from peer
         for name in ["Supported", "Allow", "Session-Expires", "Require"] {
             for val in peer_response.headers().get_all(name) {
-                response.headers_mut().push(SmolStr::new(name), val.clone());
+                let _ = response.headers_mut().push(SmolStr::new(name), val);
             }
         }
         // Propagate Record-Route/Contact from peer if present
         for val in peer_response.headers().get_all("Record-Route") {
-            response
+            let _ = response
                 .headers_mut()
-                .push(SmolStr::new("Record-Route"), val.clone());
+                .push(SmolStr::new("Record-Route"), val);
         }
         if response.headers().get("Contact").is_none() {
             if let Some(ct) = peer_response.headers().get("Contact") {
-                response
+                let _ = response
                     .headers_mut()
-                    .push(SmolStr::new("Contact"), ct.clone());
+                    .push(SmolStr::new("Contact"), ct);
             }
         }
 
         // Ensure Content-Length matches body
         let body_len = response.body().len();
-        response.headers_mut().push(
+        let _ = response.headers_mut().push(
             SmolStr::new("Content-Length"),
             SmolStr::new(body_len.to_string()),
         );
@@ -5139,7 +5140,7 @@ impl SipMessageHandler {
             warn!(call_id = %call_id, error = %e, "Failed to persist updated dialog");
         }
 
-        self.dialog_manager.insert(dialog_clone);
+        let _ = self.dialog_manager.insert(dialog_clone);
     }
 
     fn log_sip_message(
@@ -5434,15 +5435,15 @@ impl SipMessageHandler {
     fn index_subscription(&self, sub: sip_dialog::Subscription) {
         let key = (
             sip_dialog::DialogId::new(
-                sub.id().call_id().clone(),
-                sub.id().from_tag().clone(),
-                sub.id().to_tag().clone(),
+                sub.id().call_id(),
+                sub.id().from_tag(),
+                sub.id().to_tag(),
             )
             .expect("Failed to create DialogId from subscription"),
             smol_str::SmolStr::new(sub.id().event().to_string()),
         );
-        self.subscription_manager.insert(sub.clone());
-        self.subscription_index.insert(key, sub.id().clone());
+        let _ = self.subscription_manager.insert(sub.clone());
+        let _ = self.subscription_index.insert(key, sub.id().clone());
     }
 
     fn dialog_is_refresher(dialog: &sip_dialog::Dialog) -> bool {
@@ -5933,7 +5934,7 @@ async fn handle_refresh_needed(
             b.dialog = Some(dialog.clone());
         }
     });
-    dialog_manager.insert(dialog);
+    let _ = dialog_manager.insert(dialog);
     Ok(())
 }
 
@@ -6213,6 +6214,7 @@ fn extract_from_display_name(request: &sip_core::Request) -> Option<String> {
 ///
 /// # Returns
 /// The bare URI string without brackets or parameters
+#[allow(dead_code)] // TODO: Use for URI extraction from headers
 fn extract_uri_from_header(header_value: &str) -> &str {
     header_value
         .split('<')
@@ -6272,22 +6274,22 @@ mod tests {
 
         // Create a REGISTER request
         let mut headers = Headers::new();
-        headers.push(
+        let _ = headers.push(
             SmolStr::new("Via"),
             SmolStr::new("SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123"),
         );
-        headers.push(
+        let _ = headers.push(
             SmolStr::new("From"),
             SmolStr::new("<sip:alice@example.com>;tag=abc123"),
         );
-        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
-        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers.push(
+        let _ = headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
+        let _ = headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
+        let _ = headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        let _ = headers.push(
             SmolStr::new("Contact"),
             SmolStr::new("<sip:alice@127.0.0.1:5060>"),
         );
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = sip_core::Request::new(
             RequestLine::new(Method::Register, SipUri::parse("sip:example.com").unwrap()),

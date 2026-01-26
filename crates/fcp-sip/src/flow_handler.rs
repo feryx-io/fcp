@@ -14,7 +14,7 @@ use fcp_media::{AudioTarget, MediaManager};
 use sip_core::{Request, Response};
 use sip_dialog::DialogManager;
 use sip_transaction::{
-    fsm::TransportKind, ClientTransactionUser, TransactionKey, TransactionManager, TransportContext,
+    ClientTransactionUser, TransactionKey, TransactionManager, TransportContext,
 };
 use sip_uac::UserAgentClient;
 use std::collections::HashMap;
@@ -633,7 +633,7 @@ impl FlowCallHandler {
                                                             if let Some(entry) = context_entry {
                                                                 let context = Arc::clone(entry.value());
                                                                 drop(entry);
-                                                                let mut context_guard = context.write().await;
+                                                                let context_guard = context.write().await;
                                                                 context_guard.set_variable("b_leg_call_id".to_string(), b_leg_call_id_media.to_string());
                                                                 drop(context_guard);
                                                             }
@@ -1476,7 +1476,7 @@ impl FlowCallHandler {
         let context = Arc::clone(context_entry.value());
         drop(context_entry);
 
-        let mut context_guard = context.write().await;
+        let context_guard = context.write().await;
 
         // TODO: Process DTMF input based on current Gather node
         // For now, just store the digits as a variable
@@ -1540,6 +1540,7 @@ struct DialTransactionUser {
     /// Original INVITE request (for creating ACK)
     request: Request,
     /// Transport context for sending ACK
+    #[allow(dead_code)] // TODO: Use for sending ACK in transaction layer
     ctx: TransportContext,
 }
 

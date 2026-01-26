@@ -211,9 +211,9 @@ impl SipUserAgentClient {
         body: Option<&str>,
     ) -> Result<sip_core::Response> {
         let dialog_id = sip_dialog::DialogId::new(
-            subscription.id().call_id().clone(),
-            subscription.id().from_tag().clone(),
-            subscription.id().to_tag().clone(),
+            subscription.id().call_id(),
+            subscription.id().from_tag(),
+            subscription.id().to_tag(),
         );
         self.log_outbound("NOTIFY", Some(&dialog_id.unwrap()));
         self.inner.notify(subscription, state, body).await
