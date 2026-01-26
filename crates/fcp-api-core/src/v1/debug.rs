@@ -3,7 +3,7 @@
 //! These endpoints are intended for development and debugging purposes.
 //! In production, these should be restricted via authentication/authorization.
 
-use crate::api::state::ApiState;
+use crate::state::ApiState;
 use axum::{extract::State, Json};
 use serde::Serialize;
 use std::collections::HashMap;

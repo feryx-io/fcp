@@ -1,6 +1,6 @@
 //! Registration viewing API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState, validation};
+use crate::{error::ApiError, state::ApiState, validation};
 use axum::{
     extract::{Path, State},
     http::StatusCode,

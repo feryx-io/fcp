@@ -1,6 +1,6 @@
 //! API endpoints for tenant management
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,

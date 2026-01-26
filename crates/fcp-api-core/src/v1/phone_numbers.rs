@@ -1,6 +1,6 @@
 //! Phone number management API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use fcp_core::storage::PhoneNumberStore;
 use axum::{
     extract::{Path, State},

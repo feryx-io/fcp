@@ -1,4 +1,14 @@
-//! REST API module.
+//! FCP REST API core functionality.
+//!
+//! This crate provides the REST API implementation used by FCP services.
+//! It includes:
+//!
+//! - Authentication and authorization
+//! - API error handling
+//! - State management
+//! - v1 API endpoints
+//! - Request validation
+//! - Router creation and server startup
 
 pub mod auth;
 pub mod error;
@@ -6,12 +16,15 @@ pub mod state;
 pub mod v1;
 pub mod validation;
 
+// Re-export commonly used types
+pub use error::ApiError;
+pub use state::ApiState;
+
 use axum::{
     http::{header, Method},
     middleware, Router,
 };
 use fcp_core::ApiConfig;
-use state::ApiState;
 use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,

@@ -1,6 +1,6 @@
 //! Prometheus metrics endpoint
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use axum::{extract::State, http::header, response::IntoResponse};
 
 /// GET /metrics

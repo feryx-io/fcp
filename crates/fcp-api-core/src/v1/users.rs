@@ -1,6 +1,6 @@
 //! User management API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState, validation};
+use crate::{error::ApiError, state::ApiState, validation};
 use tracing::{info, warn};
 
 /// Helper macro to get storage or return error.

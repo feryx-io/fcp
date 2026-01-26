@@ -1,0 +1,37 @@
+[package]
+name = "fcp-api-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-sip = { path = "../fcp-sip" }
+fcp-media = { path = "../fcp-media" }
+fcp-events = { path = "../fcp-events" }
+fcp-flow = { path = "../fcp-flow" }
+
+# REST API framework
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Async runtime
+tokio = { workspace = true }
+futures-util = "0.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

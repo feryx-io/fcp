@@ -3,7 +3,7 @@
 //! Provides a WebSocket endpoint that streams platform events in real-time.
 //! Clients can subscribe to events filtered by tenant_id, call_id, or event types.
 
-use crate::api::state::ApiState;
+use crate::state::ApiState;
 use axum::{
     extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Query, State},
     response::IntoResponse,

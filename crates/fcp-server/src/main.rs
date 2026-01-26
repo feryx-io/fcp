@@ -10,7 +10,6 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::info;
 
-mod api;
 mod cli;
 mod config;
 mod storage;
@@ -83,7 +82,7 @@ async fn main() -> Result<()> {
             "Starting API server"
         );
 
-        let api_state = api::state::ApiState::new(
+        let api_state = fcp_api_core::ApiState::new(
             storage,
             flow_store,
             dialog_manager,
@@ -98,7 +97,7 @@ async fn main() -> Result<()> {
         let api_config_clone = api_config.clone();
 
         Some(tokio::spawn(async move {
-            api::serve(bind_addr, api_state, &api_config_clone).await
+            fcp_api_core::serve(bind_addr, api_state, &api_config_clone).await
         }))
     } else {
         None

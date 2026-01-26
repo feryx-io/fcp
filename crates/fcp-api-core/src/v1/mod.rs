@@ -16,7 +16,7 @@ pub mod tenants;
 pub mod users;
 pub mod voicemail;
 
-use crate::api::state::ApiState;
+use crate::state::ApiState;
 use axum::{
     routing::{delete, get, post, put},
     Router,

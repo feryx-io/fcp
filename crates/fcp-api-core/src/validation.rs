@@ -3,7 +3,7 @@
 //! This module provides reusable validation functions to ensure API inputs
 //! meet security and correctness requirements.
 
-use crate::api::error::ApiError;
+use crate::error::ApiError;
 
 /// Maximum allowed username length
 const MAX_USERNAME_LENGTH: usize = 255;

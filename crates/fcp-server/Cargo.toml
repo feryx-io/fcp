@@ -28,6 +28,7 @@ fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
 fcp-flow = { path = "../fcp-flow" }
+fcp-api-core = { path = "../fcp-api-core" }
 
 # Storage backends (optional)
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }

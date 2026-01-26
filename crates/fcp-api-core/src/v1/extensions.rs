@@ -1,6 +1,6 @@
 //! Extension management API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use fcp_core::storage::ExtensionStore;
 use axum::{
     extract::{Path, State},

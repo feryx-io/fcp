@@ -1,6 +1,6 @@
 //! Media and recording control API endpoints
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,

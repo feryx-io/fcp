@@ -1,6 +1,6 @@
 //! System status API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use axum::{extract::State, Json};
 use fcp_core::CredentialStore;
 use serde::Serialize;

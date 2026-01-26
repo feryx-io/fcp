@@ -1,6 +1,6 @@
 //! CDR (Call Detail Record) API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState};
+use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, Query, State},
     response::IntoResponse,

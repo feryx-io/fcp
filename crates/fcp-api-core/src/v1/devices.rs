@@ -1,6 +1,6 @@
 //! Device management API endpoints.
 
-use crate::api::{error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse};
+use crate::{error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse};
 use fcp_core::storage::DeviceStore;
 use axum::{
     extract::{Path, State},
