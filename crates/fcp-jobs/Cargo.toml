@@ -1,0 +1,46 @@
+[package]
+name = "fcp-jobs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "FCP Jobs - Async job processing service"
+
+[[bin]]
+name = "fcp-jobs"
+path = "src/main.rs"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+
+# HTTP server for health checks
+axum = { version = "0.7" }
+tower-http = { version = "0.5", features = ["trace"] }
+
+# Redis for job queue
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full", "signal"] }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+num_cpus = "1.16"
+rand = "0.8"

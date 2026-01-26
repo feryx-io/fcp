@@ -1,0 +1,152 @@
+# FCP Jobs Configuration Example
+# Copy to fcp-jobs.toml and customize for your environment
+
+[service]
+# Service type (always "jobs")
+service_type = "jobs"
+
+# Unique node identifier (auto-generated if not specified)
+# node_id = "jobs-01"
+
+[redis]
+# Redis connection URL
+# For Redis Cluster: redis://node1:6379,node2:6379,node3:6379
+url = "redis://127.0.0.1:6379"
+
+# Connection pool size
+# Increase for high-throughput workloads
+pool_size = 20
+
+# Connection timeout (seconds)
+connection_timeout = 5
+
+# Queue key prefix in Redis
+# Change if running multiple job services
+queue_prefix = "fcp:jobs"
+
+[workers]
+# Number of concurrent workers
+# Default: CPU cores
+# Recommendation: CPU cores for CPU-bound jobs, more for I/O-bound
+count = 4
+
+# Poll interval when queue is empty (seconds)
+# Lower for lower latency, higher for less Redis load
+poll_interval = 5
+
+# Job processing timeout (seconds)
+# Jobs exceeding this timeout are marked as failed
+job_timeout = 300  # 5 minutes
+
+# Graceful shutdown timeout (seconds)
+# Time to wait for workers to finish current jobs
+shutdown_timeout = 30
+
+[retry]
+# Maximum retry attempts
+# After this, jobs are marked as permanently failed
+max_retries = 5
+
+# Initial retry delay (seconds)
+# First retry waits this long
+initial_delay = 10
+
+# Maximum retry delay (seconds)
+# Caps exponential backoff
+max_delay = 3600  # 1 hour
+
+# Backoff multiplier
+# Each retry waits initial_delay * multiplier^attempt
+backoff_multiplier = 2.0
+
+[health]
+# Enable health check HTTP endpoint
+enabled = true
+
+# Health check bind address
+bind_address = "0.0.0.0:8082"
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+
+# Log format: "json", "pretty", "compact"
+# Use "json" for production (machine-parseable)
+# Use "pretty" for development (human-readable)
+format = "json"
+
+# ============================================================
+# Example Configurations for Different Deployment Scenarios
+# ============================================================
+
+# --- Development (Local Testing) ---
+# [redis]
+# url = "redis://127.0.0.1:6379"
+# [workers]
+# count = 2
+# poll_interval = 1  # Fast polling
+# [retry]
+# max_retries = 2
+# initial_delay = 5
+# [logging]
+# level = "debug"
+# format = "pretty"
+
+# --- Production (High Availability) ---
+# [redis]
+# url = "redis://redis-cluster:6379"
+# pool_size = 50
+# [workers]
+# count = 8  # 8 CPU cores
+# job_timeout = 600  # 10 minutes for long jobs
+# shutdown_timeout = 60  # Wait longer for graceful shutdown
+# [retry]
+# max_retries = 10  # More aggressive retry
+# initial_delay = 30  # Wait longer between retries
+# max_delay = 7200  # 2 hour max
+# [logging]
+# level = "info"
+# format = "json"
+
+# --- High-Volume (Maximum Throughput) ---
+# [redis]
+# url = "redis://redis-cluster:6379"
+# pool_size = 100  # Large pool
+# [workers]
+# count = 16  # Many workers
+# poll_interval = 1  # Fast polling
+# job_timeout = 300
+# [retry]
+# max_retries = 3  # Fail fast
+# initial_delay = 5  # Quick retry
+# backoff_multiplier = 1.5  # Slower backoff growth
+
+# --- Critical Jobs (Reliability Over Speed) ---
+# [redis]
+# url = "redis://redis-cluster:6379"
+# [workers]
+# count = 4
+# job_timeout = 1800  # 30 minutes
+# shutdown_timeout = 300  # 5 minutes
+# [retry]
+# max_retries = 20  # Very aggressive retry
+# initial_delay = 60  # Wait longer
+# max_delay = 86400  # 24 hours max
+# backoff_multiplier = 1.5
+
+# --- I/O-Bound Jobs (Webhook Delivery, API Calls) ---
+# [workers]
+# count = 32  # Many workers for I/O-bound work
+# job_timeout = 30  # Short timeout for API calls
+# [retry]
+# max_retries = 5
+# initial_delay = 10
+# backoff_multiplier = 2.0
+
+# --- CPU-Bound Jobs (Transcoding, Processing) ---
+# [workers]
+# count = 4  # Match CPU cores
+# job_timeout = 3600  # 1 hour for heavy processing
+# [retry]
+# max_retries = 2  # CPU jobs usually don't benefit from retry
+# initial_delay = 60
