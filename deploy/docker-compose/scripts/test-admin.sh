@@ -15,11 +15,11 @@ echo
 
 # Test 2: Create tenant
 echo "2. Creating tenant..."
-TIMESTAMP=$(date +%s)
+UNIQUE_ID=$(cat /proc/sys/kernel/random/uuid | cut -d'-' -f1)
 TENANT_RESPONSE=$(curl -s -X POST "${BASE_URL}/tenants" \
   -H "Content-Type: application/json" \
   -d "{
-    \"name\": \"Test Company ${TIMESTAMP}\",
+    \"name\": \"Test Company ${UNIQUE_ID}\",
     \"enabled\": true
   }")
 echo "$TENANT_RESPONSE" | jq '.'
@@ -43,8 +43,8 @@ USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
   -H "Content-Type: application/json" \
   -d "{
     \"tenant_id\": \"${TENANT_ID}\",
-    \"username\": \"alice${TIMESTAMP}\",
-    \"email\": \"alice${TIMESTAMP}@example.com\",
+    \"username\": \"alice${UNIQUE_ID}\",
+    \"email\": \"alice${UNIQUE_ID}@example.com\",
     \"enabled\": true
   }")
 echo "$USER_RESPONSE" | jq '.'
@@ -68,8 +68,8 @@ curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
   -H "Content-Type: application/json" \
   -d "{
     \"tenant_id\": \"${TENANT_ID}\",
-    \"username\": \"alice${TIMESTAMP}\",
-    \"email\": \"alice${TIMESTAMP}.updated@example.com\",
+    \"username\": \"alice${UNIQUE_ID}\",
+    \"email\": \"alice${UNIQUE_ID}.updated@example.com\",
     \"enabled\": true
   }" | jq '.'
 echo
