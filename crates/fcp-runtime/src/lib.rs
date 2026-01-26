@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
 use fcp_events::EventBus;
 use fcp_media::MediaManager;
-use fcp_sip::call_manager::CallManager;
+use fcp_sip::CallManager;
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::prelude::*;
 use std::sync::Arc;

@@ -3,8 +3,7 @@
 //! This module integrates the flow engine with call management, allowing
 //! calls to execute programmable flows (IVR, call routing, etc.).
 
-use crate::call::{Call, CallId};
-use crate::call_manager::CallManager;
+use fcp_b2bua_core::{Call, CallId, CallManager};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;

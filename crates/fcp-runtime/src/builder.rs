@@ -559,14 +559,14 @@ fn create_transport_listener(
     let call_manager = match &storage {
         Some(storage) => {
             // Both storage and events available
-            Arc::new(fcp_sip::call_manager::CallManager::with_storage_and_events(
+            Arc::new(fcp_sip::CallManager::with_storage_and_events(
                 Arc::clone(storage),
                 Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
             ))
         }
         None => {
             // Only events available
-            Arc::new(fcp_sip::call_manager::CallManager::with_events(
+            Arc::new(fcp_sip::CallManager::with_events(
                 Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
             ))
         }

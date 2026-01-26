@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_sip::call::CallId;
+use fcp_sip::CallId;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -110,7 +110,7 @@ pub struct CallInfo {
 }
 
 impl CallInfo {
-    fn from_call(call: &fcp_sip::call::Call) -> Self {
+    fn from_call(call: &fcp_sip::Call) -> Self {
         Self {
             id: call.id.to_string(),
             state: format!("{:?}", call.state),

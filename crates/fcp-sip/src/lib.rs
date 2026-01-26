@@ -10,8 +10,6 @@
 
 pub mod adapters;
 pub mod auth;
-pub mod call;
-pub mod call_manager;
 pub mod exports;
 pub mod flow_handler;
 pub mod handler;
@@ -23,14 +21,15 @@ pub mod settings;
 pub mod transport;
 pub mod uac;
 
+// Re-export B2BUA types from fcp-b2bua-core
+pub use fcp_b2bua_core::{Call, CallDirection, CallId, CallLeg, CallManager, CallState, CallStats};
+
 // Re-export commonly used types for convenience
 pub use exports::*;
 
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::adapters::*;
-    pub use crate::call::{Call, CallId, CallLeg, CallState};
-    pub use crate::call_manager::CallManager;
     pub use crate::exports::*;
     pub use crate::handler::SipMessageHandler;
     pub use crate::listener::{InboundMessageHandler, ListenerConfig, TransportListener};
@@ -40,4 +39,7 @@ pub mod prelude {
         to_fcp_transport_type, to_sip_transport_kind, ConnectionPool, RealTransportDispatcher,
     };
     pub use crate::uac::{OutboundCall, SipUserAgentClient};
+
+    // B2BUA types from fcp-b2bua-core
+    pub use fcp_b2bua_core::{Call, CallDirection, CallId, CallLeg, CallManager, CallState, CallStats};
 }

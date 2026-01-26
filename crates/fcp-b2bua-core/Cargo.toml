@@ -1,0 +1,43 @@
+[package]
+name = "fcp-b2bua-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# FCP dependencies
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+
+# SIP stack dependencies (from siphon-rs)
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
+sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+
+# Async runtime
+tokio.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Data structures
+dashmap = "6"
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Utility
+uuid.workspace = true
+bytes.workspace = true
+smol_str = "0.3"
+
+# Logging
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

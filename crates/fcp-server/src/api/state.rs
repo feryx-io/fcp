@@ -4,7 +4,7 @@ use fcp_core::DynStorage;
 use fcp_events::EventBus;
 use fcp_flow::FlowStore;
 use fcp_media::MediaManager;
-use fcp_sip::call_manager::CallManager;
+use fcp_sip::CallManager;
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::prelude::{DialogManager, SubscriptionManager};
 use std::sync::Arc;

@@ -1308,8 +1308,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "fcp-b2bua-core"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "dashmap 6.1.0",
+ "fcp-core",
+ "fcp-events",
+ "serde",
+ "serde_json",
+ "sip-core",
+ "sip-dialog",
+ "sip-parse",
+ "sip-transaction",
+ "sip-uac",
+ "smol_str",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1360,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1457,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1517,6 +1539,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap 6.1.0",
+ "fcp-b2bua-core",
  "fcp-core",
  "fcp-events",
  "fcp-flow",
@@ -1553,7 +1576,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1572,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1590,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1608,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",

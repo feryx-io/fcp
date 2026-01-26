@@ -225,7 +225,7 @@ pub struct SipMessageHandler {
     routing_service: Option<Arc<fcp_routing::RoutingService>>,
 
     /// Call manager for B2BUA functionality
-    call_manager: Arc<crate::call_manager::CallManager>,
+    call_manager: Arc<fcp_b2bua_core::CallManager>,
 
     /// User Agent Client for making outbound calls (B-leg)
     uac: Option<Arc<SipUserAgentClient>>,
@@ -382,7 +382,7 @@ impl SipMessageHandler {
         rtp_port: u16,
         registrar: Option<Arc<FcpRegistrar>>,
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
-        call_manager: Arc<crate::call_manager::CallManager>,
+        call_manager: Arc<fcp_b2bua_core::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
         storage: Option<Arc<fcp_core::DynStorage>>,
         media_manager: Option<Arc<fcp_media::MediaManager>>,
@@ -418,7 +418,7 @@ impl SipMessageHandler {
         rtp_port: u16,
         registrar: Option<Arc<FcpRegistrar>>,
         routing_service: Option<Arc<fcp_routing::RoutingService>>,
-        call_manager: Arc<crate::call_manager::CallManager>,
+        call_manager: Arc<fcp_b2bua_core::CallManager>,
         uac: Option<Arc<SipUserAgentClient>>,
         storage: Option<Arc<fcp_core::DynStorage>>,
         media_manager: Option<Arc<fcp_media::MediaManager>>,
@@ -908,8 +908,8 @@ impl SipMessageHandler {
         };
 
         // Create Call object from the incoming INVITE with tenant context
-        let mut call = crate::call::Call::from_invite(request.clone(), peer, tenant_id);
-        call.state = crate::call::CallState::RoutingPending;
+        let mut call = fcp_b2bua_core::Call::from_invite(request.clone(), peer, tenant_id);
+        call.state = fcp_b2bua_core::CallState::RoutingPending;
         call.a_leg_invite_tx = Some(handle.key().clone());
 
         // Store call in CallManager
@@ -1058,7 +1058,7 @@ impl SipMessageHandler {
                                     // Update call with dialog
                                     let _ = call_manager.update_call(&call_id, |call| {
                                         call.a_leg.dialog = Some(a_leg_dialog.clone());
-                                        call.state = crate::call::CallState::Established;
+                                        call.state = fcp_b2bua_core::CallState::Established;
                                     });
 
                                     info!(call_id = %call_id, "A-leg dialog stored in call");
@@ -1167,7 +1167,7 @@ impl SipMessageHandler {
     async fn evaluate_media_anchoring(
         &self,
         request: &sip_core::Request,
-        call_id: &crate::call::CallId,
+        call_id: &fcp_b2bua_core::CallId,
     ) {
         // Check if media manager and config are available
         let (media_manager, media_config) = match (&self.media_manager, &self.media_config) {
@@ -1379,7 +1379,7 @@ impl SipMessageHandler {
         &self,
         request: &sip_core::Request,
         a_leg_handle: &ServerTransactionHandle,
-        call_id: crate::call::CallId,
+        call_id: fcp_b2bua_core::CallId,
         uac: Arc<SipUserAgentClient>,
     ) -> Result<()> {
         // Extract To header to get destination AOR
@@ -1415,7 +1415,7 @@ impl SipMessageHandler {
 
         // Update call state to LookingUpDestination
         let _ = self.call_manager.update_call(&call_id, |call| {
-            call.state = crate::call::CallState::LookingUpDestination;
+            call.state = fcp_b2bua_core::CallState::LookingUpDestination;
         });
 
         // Check if destination is a phone number (E.164 format)
@@ -2042,7 +2042,7 @@ impl SipMessageHandler {
 
         // Update call state to Inviting and create B-leg
         let _ = self.call_manager.update_call(&call_id, |call| {
-            call.state = crate::call::CallState::Inviting;
+            call.state = fcp_b2bua_core::CallState::Inviting;
 
             // Create B-leg CallLeg if it doesn't exist
             if call.b_leg.is_none() {
@@ -2070,7 +2070,7 @@ impl SipMessageHandler {
                     }
                 };
 
-                call.b_leg = Some(crate::call::CallLeg::new_outbound(
+                call.b_leg = Some(fcp_b2bua_core::CallLeg::new_outbound(
                     callee_uri.clone(),
                     callee_display_name.clone(),
                 ));
@@ -2210,7 +2210,7 @@ impl SipMessageHandler {
 
         // Update call state to Proceeding
         let _ = self.call_manager.update_call(&call_id, |call| {
-            call.state = crate::call::CallState::Proceeding;
+            call.state = fcp_b2bua_core::CallState::Proceeding;
         });
 
         // Spawn background task to race all B-legs
@@ -2245,7 +2245,7 @@ impl SipMessageHandler {
         request: sip_core::Request,
         a_leg_handle: Arc<ServerTransactionHandle>,
         b_leg_handle: Arc<crate::uac::OutboundCall>,
-        call_id: crate::call::CallId,
+        call_id: fcp_b2bua_core::CallId,
     ) -> Result<()> {
         // Track A-leg To-tag for dialog consistency (RFC 3261 §12.1.1)
         // Once we send a provisional with a To-tag, we must use the SAME tag for 200 OK
@@ -2566,7 +2566,7 @@ impl SipMessageHandler {
                         "Stored confirmed B-leg dialog in CallManager"
                     );
                 }
-                call.state = crate::call::CallState::Established;
+                call.state = fcp_b2bua_core::CallState::Established;
                 call.establish();
             }) {
                 Ok(_) => debug!(call_id = %call_id, "Successfully updated call in CallManager"),
@@ -2616,7 +2616,7 @@ impl SipMessageHandler {
         request: sip_core::Request,
         a_leg_handle: Arc<ServerTransactionHandle>,
         b_leg_calls: Vec<(String, Arc<crate::uac::OutboundCall>)>,
-        call_id: crate::call::CallId,
+        call_id: fcp_b2bua_core::CallId,
     ) -> Result<()> {
         info!(
             call_id = %call_id,
@@ -2862,7 +2862,7 @@ impl SipMessageHandler {
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.outbound_handle = Some(Arc::clone(&handle));
                 }
-                call.state = crate::call::CallState::Established;
+                call.state = fcp_b2bua_core::CallState::Established;
             });
 
             // Extract SDP from winning B-leg response
@@ -3003,7 +3003,7 @@ impl SipMessageHandler {
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.dialog = b_leg_dialog.clone();
                 }
-                call.state = crate::call::CallState::Established;
+                call.state = fcp_b2bua_core::CallState::Established;
                 call.establish();
             }) {
                 Ok(_) => debug!(call_id = %call_id, "Successfully stored dialogs in CallManager"),
@@ -3033,7 +3033,7 @@ impl SipMessageHandler {
         &self,
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
-        call_id: crate::call::CallId,
+        call_id: fcp_b2bua_core::CallId,
     ) -> Result<()> {
         debug!(
             call_id = %call_id,
@@ -3065,7 +3065,7 @@ impl SipMessageHandler {
                 // Update call with A-leg dialog
                 let _ = self.call_manager.update_call(&call_id, |call| {
                     call.a_leg.dialog = Some(dialog.clone());
-                    call.state = crate::call::CallState::Established;
+                    call.state = fcp_b2bua_core::CallState::Established;
                     call.establish();
                 });
                 self.start_session_timer(&dialog);
@@ -4741,7 +4741,7 @@ impl SipMessageHandler {
         &self,
         uac: Arc<SipUserAgentClient>,
         dialog: sip_dialog::Dialog,
-        call_id: crate::call::CallId,
+        call_id: fcp_b2bua_core::CallId,
         is_a_leg: bool,
     ) {
         let dialog_manager = Arc::clone(&self.dialog_manager);
@@ -5062,7 +5062,7 @@ impl SipMessageHandler {
     fn lookup_call_for_in_dialog(
         &self,
         request: &sip_core::Request,
-    ) -> Result<(crate::call::Call, bool)> {
+    ) -> Result<(fcp_b2bua_core::Call, bool)> {
         let dialog_call_id = sip_parse::header(request.headers(), "Call-ID")
             .ok_or_else(|| anyhow::anyhow!("Missing Call-ID"))?;
 
@@ -5084,7 +5084,7 @@ impl SipMessageHandler {
     /// Get the opposite dialog (target leg) for forwarding.
     fn get_opposite_dialog<'a>(
         &self,
-        call: &'a crate::call::Call,
+        call: &'a fcp_b2bua_core::Call,
         is_a_leg: bool,
     ) -> Result<&'a sip_dialog::Dialog> {
         if is_a_leg {
@@ -5103,7 +5103,7 @@ impl SipMessageHandler {
     /// Get the opposite leg's last reliable provisional.
     fn get_opposite_reliable_provisional(
         &self,
-        call: &crate::call::Call,
+        call: &fcp_b2bua_core::Call,
         is_a_leg: bool,
     ) -> Option<sip_core::Response> {
         let list = if is_a_leg {
@@ -5125,7 +5125,7 @@ impl SipMessageHandler {
     /// Persist updated dialog to CallManager and dialog_manager.
     fn persist_updated_dialog(
         &self,
-        call_id: &crate::call::CallId,
+        call_id: &fcp_b2bua_core::CallId,
         is_a_leg: bool,
         dialog: sip_dialog::Dialog,
     ) {
@@ -5801,8 +5801,8 @@ fn validate_sdp_body_static(
 
 /// Store SDP on the appropriate leg.
 fn store_leg_sdp(
-    call_manager: &crate::call_manager::CallManager,
-    call_id: &crate::call::CallId,
+    call_manager: &fcp_b2bua_core::CallManager,
+    call_id: &fcp_b2bua_core::CallId,
     is_a_leg: bool,
     sdp: String,
 ) {
@@ -5834,7 +5834,7 @@ fn extract_min_se(resp: &sip_core::Response) -> Option<Duration> {
 }
 
 async fn handle_refresh_needed(
-    call_manager: &crate::call_manager::CallManager,
+    call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
     session_timer_manager: &SessionTimerManager,
     uac: Option<Arc<SipUserAgentClient>>,
@@ -5939,7 +5939,7 @@ async fn handle_refresh_needed(
 }
 
 async fn handle_session_expired(
-    call_manager: &crate::call_manager::CallManager,
+    call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
     session_timer_manager: &SessionTimerManager,
     uac: Option<Arc<SipUserAgentClient>>,
@@ -5962,10 +5962,10 @@ async fn handle_session_expired(
 }
 
 fn terminate_dialog(
-    call_manager: &crate::call_manager::CallManager,
+    call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
     session_timer_manager: &SessionTimerManager,
-    call_id: &crate::call::CallId,
+    call_id: &fcp_b2bua_core::CallId,
     dialog_id: &sip_dialog::DialogId,
 ) {
     session_timer_manager.stop_timer(dialog_id);
@@ -5988,7 +5988,7 @@ fn terminate_dialog(
 }
 
 fn terminate_dialog_with_cleanup(
-    call_manager: &crate::call_manager::CallManager,
+    call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
     session_timer_manager: &SessionTimerManager,
     rate_limits: &dashmap::DashMap<sip_dialog::DialogId, RateWindow>,
@@ -5997,7 +5997,7 @@ fn terminate_dialog_with_cleanup(
         (sip_dialog::DialogId, smol_str::SmolStr),
         sip_dialog::SubscriptionId,
     >,
-    call_id: &crate::call::CallId,
+    call_id: &fcp_b2bua_core::CallId,
     dialog_id: &sip_dialog::DialogId,
 ) {
     // Perform standard dialog termination
@@ -6027,7 +6027,7 @@ fn terminate_dialog_with_cleanup(
 }
 
 fn cleanup_after_forward_failure(
-    call_manager: &crate::call_manager::CallManager,
+    call_manager: &fcp_b2bua_core::CallManager,
     dialog_manager: &sip_dialog::DialogManager,
     session_timer_manager: &SessionTimerManager,
     rate_limits: &dashmap::DashMap<sip_dialog::DialogId, RateWindow>,
@@ -6036,7 +6036,7 @@ fn cleanup_after_forward_failure(
         (sip_dialog::DialogId, smol_str::SmolStr),
         sip_dialog::SubscriptionId,
     >,
-    call_id: &crate::call::CallId,
+    call_id: &fcp_b2bua_core::CallId,
     dialog_id: &sip_dialog::DialogId,
     reason: &str,
 ) {
@@ -6054,9 +6054,9 @@ fn cleanup_after_forward_failure(
 }
 
 fn find_call_and_dialog(
-    call_manager: &crate::call_manager::CallManager,
+    call_manager: &fcp_b2bua_core::CallManager,
     dialog_id: &sip_dialog::DialogId,
-) -> Option<(sip_dialog::Dialog, crate::call::CallId, bool)> {
+) -> Option<(sip_dialog::Dialog, fcp_b2bua_core::CallId, bool)> {
     for call in call_manager.all_calls() {
         if let Some(a) = &call.a_leg.dialog {
             if *a.id() == *dialog_id {
@@ -6074,7 +6074,7 @@ fn find_call_and_dialog(
     None
 }
 
-fn stop_timers_for_call(session_timer_manager: &SessionTimerManager, call: &crate::call::Call) {
+fn stop_timers_for_call(session_timer_manager: &SessionTimerManager, call: &fcp_b2bua_core::Call) {
     if let Some(a) = &call.a_leg.dialog {
         session_timer_manager.stop_timer(a.id());
     }
@@ -6252,7 +6252,7 @@ mod tests {
         let local_uri = SipUri::parse("sip:test@localhost").unwrap();
 
         // Create CallManager for tests
-        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+        let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
 
         // Create handler WITHOUT registrar
         let handler = SipMessageHandler::new(
@@ -6316,7 +6316,7 @@ mod tests {
         let transaction_manager = Arc::new(TransactionManager::new(dispatcher));
         let dialog_manager = Arc::new(DialogManager::new());
         let local_uri = SipUri::parse("sip:test@localhost").unwrap();
-        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+        let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
 
         let handler = SipMessageHandler::new(
             transaction_manager,
@@ -6379,7 +6379,7 @@ mod tests {
         let transaction_manager = Arc::new(TransactionManager::new(dispatcher));
         let dialog_manager = Arc::new(DialogManager::new());
         let local_uri = SipUri::parse("sip:test@localhost").unwrap();
-        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+        let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
 
         let handler = SipMessageHandler::new(
             transaction_manager,
@@ -6544,7 +6544,7 @@ mod tests {
         let local_uri = SipUri::parse("sip:test@localhost").unwrap();
 
         // Create CallManager for tests
-        let call_manager = Arc::new(crate::call_manager::CallManager::new());
+        let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
 
         // Create handler WITH registrar
         let handler = SipMessageHandler::new(
@@ -6659,13 +6659,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_sdp_on_reinvite() {
-        let call = crate::call::Call::from_invite(
+        let call = fcp_b2bua_core::Call::from_invite(
             build_invite_with_sdp("call-a", true),
             "127.0.0.1:5060".parse().unwrap(),
             fcp_core::TenantId::nil(), // Use default tenant for test
         );
         let call_id = call.id;
-        let cm = crate::call_manager::CallManager::new();
+        let cm = fcp_b2bua_core::CallManager::new();
         cm.create_call(call.clone());
 
         store_leg_sdp(&cm, &call_id, true, "test-sdp".to_string());
