@@ -10,17 +10,18 @@ echo
 
 # Test 1: Health check
 echo "1. Health check..."
-curl -s "${BASE_URL}/system/health" | jq '.'
+curl -s "${BASE_URL}/health" | jq '.'
 echo
 
 # Test 2: Create tenant
 echo "2. Creating tenant..."
+TIMESTAMP=$(date +%s)
 TENANT_RESPONSE=$(curl -s -X POST "${BASE_URL}/tenants" \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "Test Company",
-    "enabled": true
-  }')
+  -d "{
+    \"name\": \"Test Company ${TIMESTAMP}\",
+    \"enabled\": true
+  }")
 echo "$TENANT_RESPONSE" | jq '.'
 TENANT_ID=$(echo "$TENANT_RESPONSE" | jq -r '.id')
 echo "Created tenant: $TENANT_ID"
@@ -42,8 +43,8 @@ USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
   -H "Content-Type: application/json" \
   -d "{
     \"tenant_id\": \"${TENANT_ID}\",
-    \"username\": \"alice\",
-    \"email\": \"alice@example.com\",
+    \"username\": \"alice${TIMESTAMP}\",
+    \"email\": \"alice${TIMESTAMP}@example.com\",
     \"enabled\": true
   }")
 echo "$USER_RESPONSE" | jq '.'
@@ -67,8 +68,8 @@ curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
   -H "Content-Type: application/json" \
   -d "{
     \"tenant_id\": \"${TENANT_ID}\",
-    \"username\": \"alice\",
-    \"email\": \"alice.updated@example.com\",
+    \"username\": \"alice${TIMESTAMP}\",
+    \"email\": \"alice${TIMESTAMP}.updated@example.com\",
     \"enabled\": true
   }" | jq '.'
 echo
