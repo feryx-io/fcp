@@ -38,7 +38,7 @@ USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
   -d "{
     \"tenant_id\": \"${TENANT_UUID}\",
     \"username\": \"alice${UNIQUE_ID}\",
-    \"password\": \"testpass123\",
+    \"password\": \"TestPass123!\",
     \"email\": \"alice${UNIQUE_ID}@example.com\",
     \"enabled\": true
   }")
@@ -64,7 +64,7 @@ curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
   -d "{
     \"tenant_id\": \"${TENANT_UUID}\",
     \"username\": \"alice${UNIQUE_ID}\",
-    \"password\": \"testpass123\",
+    \"password\": \"TestPass123!\",
     \"email\": \"alice${UNIQUE_ID}.updated@example.com\",
     \"enabled\": true
   }" | jq '.'
