@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-admin
-FROM rust:nightly-slim-bookworm as builder
+FROM rust:nightly-slim-trixie as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -19,7 +19,7 @@ COPY external ./external
 RUN cargo build --release -p fcp-admin
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
