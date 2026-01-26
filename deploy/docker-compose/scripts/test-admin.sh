@@ -1,11 +1,11 @@
 #!/bin/bash
-# Test script for fcp-admin
+# Test script for fcp-admin (MVP single-tenant mode)
 
 set -e
 
 BASE_URL="http://localhost:8080/api/v1"
 
-echo "=== Testing fcp-admin ==="
+echo "=== Testing fcp-admin (MVP Single-Tenant Mode) ==="
 echo
 
 # Test 1: Health check
@@ -13,32 +13,24 @@ echo "1. Health check..."
 curl -s "${BASE_URL}/health" | jq '.'
 echo
 
-# Test 2: Create tenant
-echo "2. Creating tenant..."
-UNIQUE_ID=$(cat /proc/sys/kernel/random/uuid | cut -d'-' -f1)
-TENANT_RESPONSE=$(curl -s -X POST "${BASE_URL}/tenants" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"name\": \"Test Company ${UNIQUE_ID}\",
-    \"enabled\": true
-  }")
+# Test 2: List tenants (MVP returns only default tenant)
+echo "2. Listing tenants..."
+TENANT_RESPONSE=$(curl -s "${BASE_URL}/tenants")
 echo "$TENANT_RESPONSE" | jq '.'
-TENANT_ID=$(echo "$TENANT_RESPONSE" | jq -r '.id')
-echo "Created tenant: $TENANT_ID"
+TENANT_ID=$(echo "$TENANT_RESPONSE" | jq -r '.[0].id')
+echo "Using default tenant ID: $TENANT_ID"
 echo
 
-# Test 3: List tenants
-echo "3. Listing tenants..."
-curl -s "${BASE_URL}/tenants" | jq '.'
-echo
-
-# Test 4: Get tenant
-echo "4. Getting tenant..."
+# Test 3: Get default tenant
+echo "3. Getting default tenant..."
 curl -s "${BASE_URL}/tenants/${TENANT_ID}" | jq '.'
 echo
 
-# Test 5: Create user
-echo "5. Creating user..."
+# NOTE: Tenant creation/deletion not supported in MVP single-tenant mode
+
+# Test 4: Create user
+echo "4. Creating user..."
+UNIQUE_ID=$(cat /proc/sys/kernel/random/uuid | cut -d'-' -f1)
 USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
   -H "Content-Type: application/json" \
   -d "{
@@ -52,18 +44,18 @@ USER_ID=$(echo "$USER_RESPONSE" | jq -r '.id')
 echo "Created user: $USER_ID"
 echo
 
-# Test 6: List users
-echo "6. Listing users..."
+# Test 5: List users
+echo "5. Listing users..."
 curl -s "${BASE_URL}/users" | jq '.'
 echo
 
-# Test 7: Get user
-echo "7. Getting user..."
+# Test 6: Get user
+echo "6. Getting user..."
 curl -s "${BASE_URL}/users/${USER_ID}" | jq '.'
 echo
 
-# Test 8: Update user
-echo "8. Updating user..."
+# Test 7: Update user
+echo "7. Updating user..."
 curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
   -H "Content-Type: application/json" \
   -d "{
@@ -74,16 +66,17 @@ curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
   }" | jq '.'
 echo
 
-# Test 9: Delete user
-echo "9. Deleting user..."
+# Test 8: Delete user
+echo "8. Deleting user..."
 curl -s -X DELETE "${BASE_URL}/users/${USER_ID}"
 echo "User deleted"
 echo
 
-# Test 10: Delete tenant
-echo "10. Deleting tenant..."
-curl -s -X DELETE "${BASE_URL}/tenants/${TENANT_ID}"
-echo "Tenant deleted"
+# Test 9: Verify user deleted
+echo "9. Verifying user deleted..."
+DELETE_CHECK=$(curl -s "${BASE_URL}/users/${USER_ID}")
+echo "$DELETE_CHECK" | jq '.'
 echo
 
-echo "=== fcp-admin tests completed ==="
+echo "=== fcp-admin tests completed (MVP mode) ==="
+echo "Note: Multi-tenant operations (create/update/delete tenants) are not supported in MVP mode"
