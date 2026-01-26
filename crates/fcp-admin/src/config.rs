@@ -1,0 +1,256 @@
+//! Configuration loading and management for fcp-admin.
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
+use tracing::info;
+
+/// Admin API configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AdminConfig {
+    /// Service configuration
+    #[serde(default)]
+    pub service: ServiceConfig,
+
+    /// API configuration
+    #[serde(default)]
+    pub api: ApiConfig,
+
+    /// Storage configuration
+    #[serde(default)]
+    pub storage: StorageConfig,
+
+    /// Logging configuration
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            service: ServiceConfig::default(),
+            api: ApiConfig::default(),
+            storage: StorageConfig::default(),
+            logging: LoggingConfig::default(),
+        }
+    }
+}
+
+/// Service configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ServiceConfig {
+    /// Service type (always "admin")
+    #[serde(default = "default_service_type")]
+    pub service_type: String,
+
+    /// Node identifier
+    #[serde(default = "default_node_id")]
+    pub node_id: String,
+}
+
+fn default_service_type() -> String {
+    "admin".to_string()
+}
+
+fn default_node_id() -> String {
+    format!("admin-{}", uuid::Uuid::new_v4())
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            service_type: default_service_type(),
+            node_id: default_node_id(),
+        }
+    }
+}
+
+/// API configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ApiConfig {
+    /// Bind address (internal only, behind gateway)
+    #[serde(default = "default_bind_address")]
+    pub bind_address: SocketAddr,
+
+    /// Enable authentication
+    #[serde(default = "default_true")]
+    pub auth_enabled: bool,
+
+    /// Bearer authentication token
+    #[serde(default)]
+    pub auth_token: Option<String>,
+}
+
+fn default_bind_address() -> SocketAddr {
+    "0.0.0.0:8080".parse().unwrap()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: default_bind_address(),
+            auth_enabled: true,
+            auth_token: None,
+        }
+    }
+}
+
+/// Storage configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StorageConfig {
+    /// Storage backend type (sqlite, postgres, mysql, mongodb)
+    #[serde(default = "default_storage_type")]
+    pub storage_type: String,
+
+    /// SQLite database path
+    #[serde(default = "default_sqlite_path")]
+    pub sqlite_path: String,
+
+    /// PostgreSQL connection URL
+    #[serde(default)]
+    pub postgres_url: Option<String>,
+
+    /// MySQL connection URL
+    #[serde(default)]
+    pub mysql_url: Option<String>,
+
+    /// MongoDB connection URL
+    #[serde(default)]
+    pub mongodb_url: Option<String>,
+
+    /// Maximum database connections
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
+
+    /// Minimum database connections
+    #[serde(default = "default_min_connections")]
+    pub min_connections: u32,
+}
+
+fn default_storage_type() -> String {
+    "sqlite".to_string()
+}
+
+fn default_sqlite_path() -> String {
+    "fcp-admin.db".to_string()
+}
+
+fn default_max_connections() -> u32 {
+    50
+}
+
+fn default_min_connections() -> u32 {
+    10
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            storage_type: default_storage_type(),
+            sqlite_path: default_sqlite_path(),
+            postgres_url: None,
+            mysql_url: None,
+            mongodb_url: None,
+            max_connections: default_max_connections(),
+            min_connections: default_min_connections(),
+        }
+    }
+}
+
+/// Logging configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LoggingConfig {
+    /// Log level
+    #[serde(default = "default_log_level")]
+    pub level: String,
+
+    /// Log format (json, pretty, compact)
+    #[serde(default = "default_log_format")]
+    pub format: String,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_log_format() -> String {
+    "json".to_string()
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+        }
+    }
+}
+
+/// Load configuration from file or use defaults.
+///
+/// Configuration priority:
+/// 1. File specified via --config or FCP_ADMIN_CONFIG
+/// 2. ./fcp-admin.toml in current directory
+/// 3. Default configuration
+pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
+    let config = if let Some(path) = config_path {
+        load_config_from_file(path)?
+    } else {
+        let default_path = Path::new("fcp-admin.toml");
+        if default_path.exists() {
+            info!("Loading configuration from {}", default_path.display());
+            load_config_from_file(default_path)?
+        } else {
+            info!("No configuration file found, using defaults");
+            AdminConfig::default()
+        }
+    };
+
+    info!(
+        bind_address = %config.api.bind_address,
+        auth_enabled = config.api.auth_enabled,
+        storage_type = %config.storage.storage_type,
+        "Configuration loaded successfully"
+    );
+
+    Ok(config)
+}
+
+/// Load configuration from a specific file.
+fn load_config_from_file(path: &Path) -> Result<AdminConfig> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+
+    let config: AdminConfig = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+
+    info!("Configuration loaded from {}", path.display());
+    Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AdminConfig::default();
+        assert_eq!(config.service.service_type, "admin");
+        assert_eq!(config.api.bind_address.port(), 8080);
+        assert_eq!(config.storage.storage_type, "sqlite");
+        assert_eq!(config.logging.level, "info");
+    }
+
+    #[test]
+    fn test_load_default_config() {
+        // Should not fail when no config file exists
+        let result = load_config(None);
+        assert!(result.is_ok());
+    }
+}

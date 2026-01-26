@@ -1,0 +1,79 @@
+# FCP Admin API Configuration Example
+# Copy to fcp-admin.toml and customize for your environment
+
+[service]
+# Service type (always "admin")
+service_type = "admin"
+
+# Unique node identifier (auto-generated if not specified)
+# node_id = "admin-01"
+
+[api]
+# API bind address (internal only, behind gateway)
+bind_address = "0.0.0.0:8080"
+
+# Enable bearer token authentication
+auth_enabled = true
+
+# Bearer authentication token
+# IMPORTANT: Use a strong, randomly generated token in production!
+# You can also set this via environment variable: FCP_ADMIN_AUTH_TOKEN
+auth_token = "change-this-to-a-secure-random-token"
+
+[storage]
+# Storage backend type: "sqlite", "postgres", "mysql", "mongodb"
+storage_type = "sqlite"
+
+# SQLite database path (only for sqlite backend)
+sqlite_path = "fcp-admin.db"
+
+# PostgreSQL connection string (only for postgres backend)
+# postgres_url = "postgres://fcp_user:password@localhost:5432/fcp"
+
+# MySQL connection string (only for mysql backend)
+# mysql_url = "mysql://fcp_user:password@localhost:3306/fcp"
+
+# MongoDB connection string (only for mongodb backend)
+# mongodb_url = "mongodb://fcp_user:password@localhost:27017/fcp"
+
+# Maximum database connections per instance
+max_connections = 50
+
+# Minimum database connections per instance
+min_connections = 10
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+
+# Log format: "json", "pretty", "compact"
+# Use "json" for production (easier to parse), "pretty" for development
+format = "json"
+
+# ============================================================
+# Example Configurations for Different Deployment Scenarios
+# ============================================================
+
+# --- Development (SQLite) ---
+# [storage]
+# storage_type = "sqlite"
+# sqlite_path = "dev-admin.db"
+# [logging]
+# level = "debug"
+# format = "pretty"
+
+# --- Production (PostgreSQL with PgBouncer) ---
+# [storage]
+# storage_type = "postgres"
+# postgres_url = "postgres://api_user:secure_password@pgbouncer:6432/fcp"
+# max_connections = 50
+# min_connections = 10
+# [logging]
+# level = "info"
+# format = "json"
+
+# --- High Availability (Multiple Admin Instances) ---
+# Deploy 3+ instances with load balancer
+# Each instance connects to same database
+# Use PgBouncer for connection pooling
+# Configure health checks: GET /api/v1/system/health

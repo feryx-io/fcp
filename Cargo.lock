@@ -1308,6 +1308,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "fcp-admin"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dashmap 6.1.0",
+ "fcp-api-core",
+ "fcp-core",
+ "fcp-events",
+ "fcp-runtime",
+ "fcp-storage-mongodb",
+ "fcp-storage-mysql",
+ "fcp-storage-postgres",
+ "fcp-storage-sqlite",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-api-core"
 version = "0.11.0"
 dependencies = [
