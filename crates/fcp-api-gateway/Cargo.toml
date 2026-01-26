@@ -1,0 +1,53 @@
+[package]
+name = "fcp-api-gateway"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "FCP API Gateway - Public-facing API with caching and rate limiting"
+
+[[bin]]
+name = "fcp-api-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server and middleware
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.4", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+hyper = { version = "1.0", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+
+# HTTP client for proxying
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Redis for caching
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+# Rate limiting
+governor = "0.6"
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full", "signal"] }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+dashmap = "6"
+bytes = { workspace = true }
+futures-util = "0.3"
+uuid = { workspace = true }

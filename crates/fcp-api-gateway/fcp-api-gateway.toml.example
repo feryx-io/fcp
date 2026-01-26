@@ -1,0 +1,139 @@
+# FCP API Gateway Configuration Example
+# Copy to fcp-api-gateway.toml and customize for your environment
+
+[service]
+# Service type (always "gateway")
+service_type = "gateway"
+
+# Unique node identifier (auto-generated if not specified)
+# node_id = "gateway-01"
+
+[gateway]
+# Public-facing bind address
+# IMPORTANT: Use 0.0.0.0:443 for production with TLS termination
+bind_address = "0.0.0.0:8000"
+
+# Request timeout (seconds)
+request_timeout = 30
+
+# Enable gzip compression for responses
+compression_enabled = true
+
+[backends]
+# Admin API backend (primary CRUD operations)
+[backends.admin]
+url = "http://localhost:8080"
+health_check_path = "/api/v1/system/health"
+health_check_interval = 10  # seconds
+connection_timeout = 5      # seconds
+
+# Events API backend (optional, for WebSocket event streaming)
+# [backends.events]
+# url = "http://localhost:8081"
+# health_check_path = "/health"
+# health_check_interval = 10
+# connection_timeout = 5
+
+# Jobs API backend (optional, for async operations)
+# [backends.jobs]
+# url = "http://localhost:8082"
+# health_check_path = "/health"
+# health_check_interval = 10
+# connection_timeout = 5
+
+[redis]
+# Redis connection URL for caching
+url = "redis://127.0.0.1:6379"
+
+# Connection pool size
+pool_size = 100
+
+# Connection timeout (seconds)
+connection_timeout = 5
+
+[rate_limit]
+# Enable rate limiting
+enabled = true
+
+# Default requests per minute per client
+# Adjust based on expected traffic and backend capacity
+default_requests_per_minute = 1000
+
+# Burst size (max requests in burst)
+burst_size = 50
+
+[cache]
+# Enable response caching
+enabled = true
+
+# Default TTL for cached responses (seconds)
+# GET requests are cached for this duration
+default_ttl = 60
+
+# Cache GET requests only (recommended)
+get_only = true
+
+[cors]
+# Enable CORS headers
+enabled = true
+
+# Allow all origins (for development)
+# IMPORTANT: Set to false in production and configure allowed_origins
+allow_all_origins = true
+
+# Allowed origins (when allow_all_origins = false)
+# allowed_origins = [
+#     "https://app.example.com",
+#     "https://dashboard.example.com"
+# ]
+
+# Allow credentials (cookies, auth headers)
+allow_credentials = false
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+
+# Log format: "json", "pretty", "compact"
+# Use "json" for production (easier to parse), "pretty" for development
+format = "json"
+
+# ============================================================
+# Example Configurations for Different Deployment Scenarios
+# ============================================================
+
+# --- Development (No Redis, Rate Limiting Disabled) ---
+# [redis]
+# url = "redis://127.0.0.1:6379"
+# [rate_limit]
+# enabled = false
+# [cache]
+# enabled = false
+# [logging]
+# level = "debug"
+# format = "pretty"
+
+# --- Production (Multiple Admin Instances, Redis Cluster) ---
+# [gateway]
+# bind_address = "0.0.0.0:443"  # TLS termination at load balancer
+# [backends.admin]
+# url = "http://admin-service:8080"  # Internal service discovery
+# [redis]
+# url = "redis://redis-cluster:6379"
+# pool_size = 200
+# [rate_limit]
+# default_requests_per_minute = 10000  # Higher limit for production
+# burst_size = 100
+# [cache]
+# default_ttl = 120  # Longer TTL for production
+# [cors]
+# allow_all_origins = false
+# allowed_origins = ["https://app.production.com"]
+# [logging]
+# level = "info"
+# format = "json"
+
+# --- High Traffic (Multiple Backends with Load Balancing) ---
+# For very high traffic, deploy multiple gateway instances behind HAProxy/nginx
+# Each gateway connects to same Redis cluster for shared cache
+# Backend services should also be load balanced (handled by service URLs above)
