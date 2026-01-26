@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-api-gateway
-FROM rust:1.83 as builder
+FROM rust:1.92 as builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
