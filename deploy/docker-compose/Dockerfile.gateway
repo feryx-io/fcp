@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-api-gateway
-FROM rust:nightly-slim as builder
+FROM rust:nightly as builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
