@@ -1538,6 +1538,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-events-server"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dashmap 6.1.0",
+ "fcp-core",
+ "fcp-events",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.21.0",
+ "toml",
+ "tower 0.4.13",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-flow"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,47 @@
+[package]
+name = "fcp-events-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "FCP Events Server - WebSocket event streaming service"
+
+[[bin]]
+name = "fcp-events-server"
+path = "src/main.rs"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+
+# WebSocket and HTTP server
+axum = { version = "0.7", features = ["ws"] }
+tower = { version = "0.4" }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# WebSocket utilities
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full", "signal"] }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Utilities
+dashmap = "6"
+uuid = { workspace = true }

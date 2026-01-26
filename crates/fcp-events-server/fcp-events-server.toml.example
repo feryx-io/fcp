@@ -1,0 +1,109 @@
+# FCP Events Server Configuration Example
+# Copy to fcp-events-server.toml and customize for your environment
+
+[service]
+# Service type (always "events")
+service_type = "events"
+
+# Unique node identifier (auto-generated if not specified)
+# node_id = "events-01"
+
+[websocket]
+# WebSocket bind address
+# Use 0.0.0.0:8081 to accept connections from all interfaces
+bind_address = "0.0.0.0:8081"
+
+# Heartbeat interval (seconds)
+# Server sends ping frames at this interval to keep connections alive
+heartbeat_interval = 30
+
+# Client timeout (seconds)
+# Connections are closed after this period of inactivity
+client_timeout = 60
+
+# Maximum message size (bytes)
+# Messages larger than this are rejected
+max_message_size = 1048576  # 1MB
+
+# Event batch size
+# Maximum number of events to send in a single message
+# Larger batches reduce overhead but increase latency
+batch_size = 10
+
+# Event batch timeout (milliseconds)
+# Send partial batch after this timeout even if batch_size not reached
+# Lower values improve real-time delivery
+batch_timeout = 100
+
+[event_bus]
+# Event bus type
+# Currently only "in-memory" is supported
+# Future: "redis", "nats", "kafka"
+bus_type = "in-memory"
+
+# Buffer size for event streams
+# Number of events buffered per subscription
+buffer_size = 1000
+
+[limits]
+# Maximum concurrent connections across all tenants
+# Adjust based on server resources and expected load
+max_connections = 10000
+
+# Maximum connections per tenant
+# Prevents a single tenant from consuming all resources
+max_connections_per_tenant = 100
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+
+# Log format: "json", "pretty", "compact"
+# Use "json" for production (machine-parseable)
+# Use "pretty" for development (human-readable)
+format = "json"
+
+# ============================================================
+# Example Configurations for Different Deployment Scenarios
+# ============================================================
+
+# --- Development (Local Testing) ---
+# [websocket]
+# bind_address = "127.0.0.1:8081"
+# [limits]
+# max_connections = 100
+# max_connections_per_tenant = 10
+# [logging]
+# level = "debug"
+# format = "pretty"
+
+# --- Production (High Availability) ---
+# [websocket]
+# bind_address = "0.0.0.0:8081"
+# heartbeat_interval = 30
+# client_timeout = 120  # Longer timeout for flaky networks
+# batch_size = 20       # Larger batches for efficiency
+# batch_timeout = 200   # Balance between latency and throughput
+# [event_bus]
+# buffer_size = 2000    # Larger buffer for high throughput
+# [limits]
+# max_connections = 50000
+# max_connections_per_tenant = 500
+# [logging]
+# level = "info"
+# format = "json"
+
+# --- High-Frequency Trading (Low Latency) ---
+# [websocket]
+# batch_size = 1        # Send events immediately
+# batch_timeout = 10    # Very low latency
+# heartbeat_interval = 15  # More frequent heartbeats
+# [event_bus]
+# buffer_size = 5000    # Large buffer to avoid drops
+
+# --- Mobile/Flaky Networks (Connection Stability) ---
+# [websocket]
+# heartbeat_interval = 60  # Less frequent to save bandwidth
+# client_timeout = 300     # Longer timeout for reconnects
+# batch_size = 5           # Smaller batches
+# batch_timeout = 500      # More batching tolerance
