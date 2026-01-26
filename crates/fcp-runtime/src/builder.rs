@@ -896,6 +896,7 @@ fn mask_connection_string(conn_str: &str) -> String {
 /// 3. Hangs up
 ///
 /// The flow is accessible by calling +15551234567
+#[allow(dead_code)] // TODO: Enable for development/testing
 async fn load_test_ivr_flow(
     flow_store: &Arc<dyn fcp_flow::FlowStore>,
     handler: &Arc<fcp_sip::flow_handler::FlowCallHandler>,

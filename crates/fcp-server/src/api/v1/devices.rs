@@ -8,11 +8,11 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::{AudioCodec, Device, DeviceId, DeviceType, RegistrationState, TenantId, UserId};
+use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {

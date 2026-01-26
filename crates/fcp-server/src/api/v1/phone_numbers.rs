@@ -8,11 +8,11 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::{E911Address, NumberState, PhoneNumber, PhoneNumberId, TenantId};
+use fcp_core::{E911Address, PhoneNumber, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {

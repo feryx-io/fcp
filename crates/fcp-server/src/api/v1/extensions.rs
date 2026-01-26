@@ -9,12 +9,12 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    DeviceId, Extension, ExtensionId, ExtensionTarget, PhoneNumberId, ServiceId, TenantId, UserId,
+    DeviceId, Extension, ExtensionTarget, PhoneNumberId, ServiceId, TenantId, UserId,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {

@@ -14,7 +14,7 @@ use fcp_core::{
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -113,10 +113,13 @@ pub struct CreateMailboxRequest {
     pub extension: String,
     pub pin: String,
     #[serde(default = "default_true")]
+    #[allow(dead_code)] // TODO: Implement mailbox enable/disable
     pub enabled: bool,
     #[serde(default = "default_max_duration")]
+    #[allow(dead_code)] // TODO: Implement message duration limits
     pub max_message_duration: u32,
     #[serde(default = "default_max_messages")]
+    #[allow(dead_code)] // TODO: Implement message count limits
     pub max_messages: u32,
 }
 
@@ -162,7 +165,7 @@ pub async fn list_mailboxes(
     // For now, using a default tenant
     let tenant_id = TenantId::nil();
 
-    let mailboxes = storage
+    let _mailboxes = storage
         .get_mailbox_by_extension(&tenant_id, "")
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;

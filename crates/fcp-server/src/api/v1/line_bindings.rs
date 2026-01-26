@@ -15,7 +15,7 @@ use fcp_core::{
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
-use tracing::{info, warn};
+use tracing::info;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {

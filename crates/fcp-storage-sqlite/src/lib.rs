@@ -27,7 +27,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{TimeZone, Utc};
+use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,

@@ -162,6 +162,7 @@ pub async fn get_call(
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // TODO: Implement call origination endpoint
 pub struct OriginateCallRequest {
     pub from: String,
     pub to: String,

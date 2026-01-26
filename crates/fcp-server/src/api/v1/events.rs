@@ -106,7 +106,7 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
                     debug!("Client sent close frame");
                     break;
                 }
-                Message::Ping(data) => {
+                Message::Ping(_data) => {
                     debug!("Received ping from client");
                     // Pongs are automatically sent by axum
                 }
