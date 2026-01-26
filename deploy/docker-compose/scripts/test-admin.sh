@@ -18,7 +18,9 @@ echo "2. Listing tenants..."
 TENANT_RESPONSE=$(curl -s "${BASE_URL}/tenants")
 echo "$TENANT_RESPONSE" | jq '.'
 TENANT_ID=$(echo "$TENANT_RESPONSE" | jq -r '.[0].id')
-echo "Using default tenant ID: $TENANT_ID"
+# Extract UUID without "tenant-" prefix for API calls
+TENANT_UUID="${TENANT_ID#tenant-}"
+echo "Using default tenant ID: $TENANT_ID (UUID: $TENANT_UUID)"
 echo
 
 # Test 3: Get default tenant
@@ -34,8 +36,9 @@ UNIQUE_ID=$(cat /proc/sys/kernel/random/uuid | cut -d'-' -f1)
 USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
   -H "Content-Type: application/json" \
   -d "{
-    \"tenant_id\": \"${TENANT_ID}\",
+    \"tenant_id\": \"${TENANT_UUID}\",
     \"username\": \"alice${UNIQUE_ID}\",
+    \"password\": \"testpass123\",
     \"email\": \"alice${UNIQUE_ID}@example.com\",
     \"enabled\": true
   }")
@@ -59,8 +62,9 @@ echo "7. Updating user..."
 curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
   -H "Content-Type: application/json" \
   -d "{
-    \"tenant_id\": \"${TENANT_ID}\",
+    \"tenant_id\": \"${TENANT_UUID}\",
     \"username\": \"alice${UNIQUE_ID}\",
+    \"password\": \"testpass123\",
     \"email\": \"alice${UNIQUE_ID}.updated@example.com\",
     \"enabled\": true
   }" | jq '.'
