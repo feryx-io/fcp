@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-events-server
-FROM rust:nightly-slim-trixie as builder
+FROM rust:nightly-slim-bookworm as builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
