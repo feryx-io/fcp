@@ -25,7 +25,7 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
 - Voicemail servers don't need SBC code
 - SBC nodes don't need voicemail/IVR code
 - Larger binary size and memory footprint
-- Security: edge nodes shouldn't have admin API access
+- Security: edge nodes shouldn't have admin API access publicly but access on internal management ips
 
 ## Proposed Architecture
 
@@ -40,8 +40,8 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
           │                     │
      ┌────▼────┐           ┌────▼────┐
      │ fcp-sbc │           │ fcp-sbc │          Edge (DMZ)
-     │  :5060  │           │  :5060  │          - No DB access
-     └────┬────┘           └────┬────┘          - No admin API
+     │  :5060  │           │  :5060  │          - No DB access publicly
+     └────┬────┘           └────┬────┘          - No admin API publicly
           │                     │               - NAT/Topology hiding
           └──────────┬──────────┘
                      │
