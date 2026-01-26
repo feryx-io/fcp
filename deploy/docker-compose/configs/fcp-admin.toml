@@ -1,0 +1,18 @@
+# fcp-admin configuration for Docker Compose
+
+[service]
+service_type = "admin"
+node_id = "admin-docker-01"
+
+[api]
+bind_address = "0.0.0.0:8080"
+auth_enabled = false  # Disabled for testing
+cors_enabled = true
+
+[storage]
+backend = "sqlite"
+sqlite_path = "/app/data/fcp.db"
+
+[logging]
+level = "info"
+format = "pretty"

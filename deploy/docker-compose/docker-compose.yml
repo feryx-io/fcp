@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # Redis - Used by both fcp-api-gateway (cache) and fcp-jobs (queue)
+  redis:
+    image: redis:7-alpine
+    container_name: fcp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # fcp-admin - Management API (CRUD operations)
+  fcp-admin:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.admin
+    container_name: fcp-admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
+      - admin-data:/app/data
+    environment:
+      - RUST_LOG=info
+      - FCP_ADMIN_LOG_FORMAT=pretty
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/system/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # fcp-api-gateway - Public-facing gateway with caching and rate limiting
+  fcp-api-gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.gateway
+    container_name: fcp-api-gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./configs/fcp-api-gateway.toml:/app/fcp-api-gateway.toml:ro
+    environment:
+      - RUST_LOG=info
+      - FCP_GATEWAY_LOG_FORMAT=pretty
+    depends_on:
+      - redis
+      - fcp-admin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # fcp-events-server - WebSocket event streaming
+  fcp-events-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.events
+    container_name: fcp-events-server
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./configs/fcp-events-server.toml:/app/fcp-events-server.toml:ro
+    environment:
+      - RUST_LOG=info
+      - FCP_EVENTS_LOG_FORMAT=pretty
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # fcp-jobs - Async job processing workers
+  fcp-jobs:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.jobs
+    container_name: fcp-jobs
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./configs/fcp-jobs.toml:/app/fcp-jobs.toml:ro
+    environment:
+      - RUST_LOG=info
+      - FCP_JOBS_LOG_FORMAT=pretty
+      - FCP_JOBS_WORKERS=4
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+    driver: local
+  admin-data:
+    driver: local
+
+networks:
+  default:
+    name: fcp-network

@@ -1,0 +1,42 @@
+# Multi-stage build for fcp-admin
+FROM rust:1.75-slim-bookworm as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+
+# Build fcp-admin in release mode
+RUN cargo build --release -p fcp-admin
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/fcp-admin /app/fcp-admin
+
+# Create data directory
+RUN mkdir -p /app/data
+
+# Expose port
+EXPOSE 8080
+
+# Run the binary
+CMD ["/app/fcp-admin"]

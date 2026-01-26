@@ -1,0 +1,25 @@
+# fcp-events-server configuration for Docker Compose
+
+[service]
+service_type = "events"
+node_id = "events-docker-01"
+
+[websocket]
+bind_address = "0.0.0.0:8081"
+heartbeat_interval = 30
+client_timeout = 60
+max_message_size = 1048576
+batch_size = 10
+batch_timeout = 100
+
+[event_bus]
+bus_type = "in-memory"
+buffer_size = 1000
+
+[limits]
+max_connections = 1000
+max_connections_per_tenant = 50
+
+[logging]
+level = "info"
+format = "pretty"

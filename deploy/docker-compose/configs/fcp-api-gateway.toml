@@ -1,0 +1,39 @@
+# fcp-api-gateway configuration for Docker Compose
+
+[service]
+service_type = "gateway"
+node_id = "gateway-docker-01"
+
+[gateway]
+bind_address = "0.0.0.0:8000"
+request_timeout = 30
+compression_enabled = true
+
+[backends.admin]
+url = "http://fcp-admin:8080"
+health_check_path = "/api/v1/system/health"
+health_check_interval = 10
+connection_timeout = 5
+
+[redis]
+url = "redis://redis:6379"
+pool_size = 20
+connection_timeout = 5
+
+[rate_limit]
+enabled = true
+default_requests_per_minute = 1000
+burst_size = 50
+
+[cache]
+enabled = true
+default_ttl = 60
+get_only = true
+
+[cors]
+enabled = true
+allow_all_origins = true
+
+[logging]
+level = "info"
+format = "pretty"
