@@ -1,5 +1,5 @@
 # Multi-stage build for fcp-admin
-FROM rust:nightly as builder
+FROM rust:1.83 as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
