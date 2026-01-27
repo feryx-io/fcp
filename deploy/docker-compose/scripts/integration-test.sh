@@ -21,7 +21,7 @@ while [ $WAIT_TIME -lt $MAX_WAIT ]; do
     ALL_HEALTHY=true
 
     # Check each service
-    for SERVICE in redis fcp-admin fcp-api-gateway fcp-events-server fcp-jobs; do
+    for SERVICE in redis fcp-admin fcp-api-gateway fcp-events-server fcp-jobs fcp-registrar; do
         if ! docker compose ps --format json | jq -e ".[] | select(.Service == \"$SERVICE\" and .Health == \"healthy\")" > /dev/null 2>&1; then
             ALL_HEALTHY=false
             break
@@ -69,6 +69,12 @@ echo "======================================"
 echo "Test 4: fcp-jobs"
 echo "======================================"
 bash "${SCRIPT_DIR}/test-jobs.sh"
+
+echo
+echo "======================================"
+echo "Test 5: fcp-registrar"
+echo "======================================"
+bash "${SCRIPT_DIR}/test-registrar.sh"
 
 echo
 echo "======================================"

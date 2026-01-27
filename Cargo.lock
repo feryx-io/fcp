@@ -1376,7 +1376,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1400,7 +1400,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1449,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1586,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1641,6 +1641,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-registrar"
+version = "0.12.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "clap",
+ "fcp-core",
+ "fcp-sip",
+ "fcp-storage-mongodb",
+ "fcp-storage-mysql",
+ "fcp-storage-postgres",
+ "fcp-storage-sqlite",
+ "serde",
+ "serde_json",
+ "sip-auth",
+ "sip-core",
+ "sip-observe",
+ "sip-parse",
+ "sip-transaction",
+ "sip-transport",
+ "smol_str",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-routing"
 version = "0.2.2"
 dependencies = [
@@ -1666,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1764,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1783,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1801,7 +1832,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1819,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "async-trait",

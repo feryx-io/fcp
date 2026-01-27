@@ -83,6 +83,33 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # fcp-registrar - Standalone SIP registration server
+  fcp-registrar:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.registrar
+    container_name: fcp-registrar
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "8083:8083"
+    volumes:
+      - ./configs/fcp-registrar.toml:/app/fcp-registrar.toml:ro
+      - admin-data:/app/data
+    environment:
+      - RUST_LOG=info
+      - FCP_REGISTRAR_LOG_FORMAT=pretty
+    depends_on:
+      fcp-admin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
   # fcp-jobs - Async job processing workers
   fcp-jobs:
     build:
