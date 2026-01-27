@@ -176,6 +176,10 @@ impl SqliteStorage {
         let migration_006 = include_str!("../migrations/006_add_voicemail_support.sql");
         Self::execute_migration(pool, migration_006, "006").await?;
 
+        // Migration 007: User ID and RBAC fields
+        let migration_007 = include_str!("../migrations/007_add_user_id_and_rbac.sql");
+        Self::execute_migration(pool, migration_007, "007").await?;
+
         info!("SQLite migrations completed successfully");
         Ok(())
     }
@@ -285,11 +289,12 @@ impl SqliteStorage {
 impl CredentialStore for SqliteStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let row = sqlx::query(
-            "SELECT username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
                     created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
-                    account_status, last_login, emergency_contact_name, emergency_contact_phone
+                    account_status, last_login, emergency_contact_name, emergency_contact_phone,
+                    role, department_id
              FROM users
              WHERE username = ?",
         )
@@ -325,17 +330,21 @@ impl CredentialStore for SqliteStorage {
             t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
         });
         let account_status = user.account_status.to_string();
+        let id = user.id.to_string();
+        let role = serde_json::to_string(&user.role)?.trim_matches('"').to_string();
 
         sqlx::query(
             "INSERT INTO users (
-                username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
+                id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
                 created_at, updated_at, media_preferences,
                 email, password_last_reset, phone_number, mobile_number, pin,
                 extension, department, job_title, location, language, timezone,
-                account_status, last_login, emergency_contact_name, emergency_contact_phone
+                account_status, last_login, emergency_contact_name, emergency_contact_phone,
+                role, department_id
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tenant_id, username) DO UPDATE SET
+                 id = excluded.id,
                  password_hash = excluded.password_hash,
                  digest_password = excluded.digest_password,
                  sip_ha1_hash = excluded.sip_ha1_hash,
@@ -357,8 +366,11 @@ impl CredentialStore for SqliteStorage {
                  account_status = excluded.account_status,
                  last_login = excluded.last_login,
                  emergency_contact_name = excluded.emergency_contact_name,
-                 emergency_contact_phone = excluded.emergency_contact_phone",
+                 emergency_contact_phone = excluded.emergency_contact_phone,
+                 role = excluded.role,
+                 department_id = excluded.department_id",
         )
+        .bind(&id)
         .bind(&user.username)
         .bind(&user.password)
         .bind(&user.digest_password)
@@ -384,6 +396,8 @@ impl CredentialStore for SqliteStorage {
         .bind(last_login)
         .bind(&user.emergency_contact.name)
         .bind(&user.emergency_contact.phone)
+        .bind(&role)
+        .bind(&user.department_id)
         .execute(&self.pool)
         .await?;
 
@@ -403,11 +417,12 @@ impl CredentialStore for SqliteStorage {
 
     async fn list_users(&self) -> Result<Vec<User>> {
         let rows = sqlx::query(
-            "SELECT username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
                     created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
-                    account_status, last_login, emergency_contact_name, emergency_contact_phone
+                    account_status, last_login, emergency_contact_name, emergency_contact_phone,
+                    role, department_id
              FROM users
              ORDER BY username",
         )

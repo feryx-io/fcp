@@ -100,8 +100,8 @@ pub async fn cache_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Only cache GET requests
-    if !cache.config.enabled || !cache.config.get_only || req.method() != "GET" {
+    // Skip caching if disabled, or if get_only mode and request is not GET
+    if !cache.config.enabled || (cache.config.get_only && req.method() != "GET") {
         return Ok(next.run(req).await);
     }
 
