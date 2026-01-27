@@ -51,6 +51,10 @@ async fn main() -> Result<()> {
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid HTTP bind address '{}': {}", bind, e))?;
     }
+    if let Some(ref ip) = cli.public_ip {
+        config.sip.local_ip = Some(ip.clone());
+        config.media.public_ip = Some(ip.clone());
+    }
 
     // 3. Initialize tracing
     init_tracing(&config);
@@ -129,6 +133,7 @@ async fn main() -> Result<()> {
         .sip
         .local_ip
         .clone()
+        .or_else(|| config.media.public_ip.clone())
         .unwrap_or_else(|| derive_local_ip(&config.sip.udp_bind));
 
     let handler = Arc::new(SipMessageHandler::new(
@@ -148,6 +153,7 @@ async fn main() -> Result<()> {
             enabled: true,
             rtp_port_start: config.media.rtp_port_start,
             rtp_port_end: config.media.rtp_port_end,
+            public_ip: config.media.public_ip.clone(),
             ..Default::default()
         }),
         None, // flow_handler — add when flow config is present
@@ -407,6 +413,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
         backend: BackendType::Embedded,
         rtp_port_start: config.media.rtp_port_start,
         rtp_port_end: config.media.rtp_port_end,
+        public_ip: config.media.public_ip.clone(),
         ..Default::default()
     };
 

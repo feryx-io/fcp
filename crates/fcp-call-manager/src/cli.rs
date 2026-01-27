@@ -61,4 +61,13 @@ pub struct Cli {
         env = "FCP_CALL_MANAGER_HTTP_BIND"
     )]
     pub http_bind: Option<String>,
+
+    /// Public IP address for SIP Contact/Via headers and SDP media
+    #[arg(
+        long = "public-ip",
+        value_name = "IP",
+        help = "Public IP for SIP and RTP (required in Docker or behind NAT)",
+        env = "FCP_CALL_MANAGER_PUBLIC_IP"
+    )]
+    pub public_ip: Option<String>,
 }

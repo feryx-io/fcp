@@ -100,6 +100,8 @@ services:
     environment:
       - RUST_LOG=info
       - FCP_CALL_MANAGER_LOG_FORMAT=pretty
+      # Set to your Docker host's LAN IP (required for RTP/SDP to work)
+      - FCP_CALL_MANAGER_PUBLIC_IP=${HOST_IP:-}
     depends_on:
       fcp-admin:
         condition: service_healthy

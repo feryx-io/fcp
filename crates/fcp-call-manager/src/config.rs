@@ -295,6 +295,9 @@ pub struct MediaSection {
     /// Supported codecs
     #[serde(default = "default_codecs")]
     pub codecs: Vec<String>,
+
+    /// Public IP for SDP/RTP (required when behind NAT or in Docker)
+    pub public_ip: Option<String>,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -315,6 +318,7 @@ impl Default for MediaSection {
             rtp_port_start: default_rtp_port_start(),
             rtp_port_end: default_rtp_port_end(),
             codecs: default_codecs(),
+            public_ip: None,
         }
     }
 }
