@@ -33,11 +33,10 @@ async fn init_sqlite(config: &StorageSection) -> Result<Arc<DynStorage>> {
 
         let db_path = config
             .connection_string
-            .strip_prefix("sqlite:///")
-            .or_else(|| config.connection_string.strip_prefix("sqlite://"))
+            .strip_prefix("sqlite://")
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Invalid SQLite connection string format. Expected: sqlite://path/to/db.sqlite"
+                    "Invalid SQLite connection string format. Expected: sqlite:///absolute/path or sqlite://relative/path"
                 )
             })?;
 
