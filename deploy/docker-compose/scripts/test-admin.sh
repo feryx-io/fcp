@@ -44,7 +44,8 @@ USER_RESPONSE=$(curl -s -X POST "${BASE_URL}/users" \
   }")
 echo "$USER_RESPONSE" | jq '.'
 USER_ID=$(echo "$USER_RESPONSE" | jq -r '.id')
-echo "Created user: $USER_ID"
+USERNAME=$(echo "$USER_RESPONSE" | jq -r '.username')
+echo "Created user: $USER_ID (username: $USERNAME)"
 echo
 
 # Test 5: List users
@@ -52,19 +53,16 @@ echo "5. Listing users..."
 curl -s "${BASE_URL}/users" | jq '.'
 echo
 
-# Test 6: Get user
+# Test 6: Get user (API uses username in path, not user ID)
 echo "6. Getting user..."
-curl -s "${BASE_URL}/users/${USER_ID}" | jq '.'
+curl -s "${BASE_URL}/users/${USERNAME}" | jq '.'
 echo
 
 # Test 7: Update user
 echo "7. Updating user..."
-curl -s -X PUT "${BASE_URL}/users/${USER_ID}" \
+curl -s -X PUT "${BASE_URL}/users/${USERNAME}" \
   -H "Content-Type: application/json" \
   -d "{
-    \"tenant_id\": \"${TENANT_UUID}\",
-    \"username\": \"alice${UNIQUE_ID}\",
-    \"password\": \"TestPass123!\",
     \"email\": \"alice${UNIQUE_ID}.updated@example.com\",
     \"enabled\": true
   }" | jq '.'
@@ -72,13 +70,13 @@ echo
 
 # Test 8: Delete user
 echo "8. Deleting user..."
-curl -s -X DELETE "${BASE_URL}/users/${USER_ID}"
+curl -s -X DELETE "${BASE_URL}/users/${USERNAME}"
 echo "User deleted"
 echo
 
 # Test 9: Verify user deleted
 echo "9. Verifying user deleted..."
-DELETE_CHECK=$(curl -s "${BASE_URL}/users/${USER_ID}")
+DELETE_CHECK=$(curl -s "${BASE_URL}/users/${USERNAME}")
 echo "$DELETE_CHECK" | jq '.'
 echo
 
