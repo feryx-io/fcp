@@ -1,0 +1,48 @@
+[service]
+service_type = "call-manager"
+node_id = "cm-docker-01"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+
+[registrar]
+auth_enabled = false    # Disabled for testing; enable in production
+realm = "fcp.local"
+default_expires = 3600
+min_expires = 60
+max_expires = 86400
+
+[calls]
+max_concurrent_calls = 100
+call_timeout_seconds = 60
+enable_sdp = true
+enable_refer = true
+
+[media]
+rtp_port_start = 10000
+rtp_port_end = 10100
+codecs = ["PCMU", "PCMA", "G722"]
+
+[storage]
+backend = "sqlite"
+connection_string = "sqlite:///app/data/fcp.db"
+
+# Alternative backends (uncomment to use):
+# backend = "postgres"
+# connection_string = "postgresql://fcp:password@postgres:5432/fcp"
+# max_connections = 20
+
+# backend = "mysql"
+# connection_string = "mysql://fcp:password@mysql:3306/fcp"
+# max_connections = 20
+
+# backend = "mongodb"
+# connection_string = "mongodb://fcp:password@mongo:27017/fcp"
+
+[http]
+bind_address = "0.0.0.0:8084"
+
+[logging]
+level = "info"
+format = "pretty"

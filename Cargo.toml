@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-cli", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb", "crates/fcp-events", "crates/fcp-flow", "crates/fcp-voicemail", "crates/fcp-b2bua-core", "crates/fcp-api-core", "crates/fcp-admin", "crates/fcp-api-gateway", "crates/fcp-events-server", "crates/fcp-jobs", "crates/fcp-registrar",
+    "crates/fcp-core", "crates/fcp-runtime", "crates/fcp-sip", "crates/fcp-server", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-cli", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb", "crates/fcp-events", "crates/fcp-flow", "crates/fcp-voicemail", "crates/fcp-b2bua-core", "crates/fcp-api-core", "crates/fcp-admin", "crates/fcp-api-gateway", "crates/fcp-events-server", "crates/fcp-jobs", "crates/fcp-registrar", "crates/fcp-call-manager",
 ]
 exclude = [
     "external/siphon-rs",

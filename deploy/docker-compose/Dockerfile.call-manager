@@ -1,0 +1,45 @@
+# Multi-stage build for fcp-call-manager
+FROM rust:1.92 as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+
+# Build fcp-call-manager in release mode
+RUN cargo build --release -p fcp-call-manager
+
+# Runtime stage
+FROM debian:trixie-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/fcp-call-manager /app/fcp-call-manager
+
+# Create data directory
+RUN mkdir -p /app/data
+
+# Expose SIP ports (UDP + TCP), HTTP API, and RTP range
+EXPOSE 5060/udp
+EXPOSE 5060/tcp
+EXPOSE 8084
+EXPOSE 10000-10100/udp
+
+# Run the binary
+CMD ["/app/fcp-call-manager", "--config", "/app/fcp-call-manager.toml"]
