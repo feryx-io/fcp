@@ -1,6 +1,7 @@
 //! User management API endpoints.
 
 use crate::{error::ApiError, state::ApiState, validation};
+use fcp_events::{PlatformEvent, UserEvent};
 use tracing::{info, warn};
 
 /// Helper macro to get storage or return error.
@@ -308,6 +309,17 @@ pub async fn create_user(
 
     storage.put_user(user.clone()).await?;
 
+    // Publish user created event
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::User(UserEvent::Created {
+            user_id: user.id.to_string(),
+            username: user.username.clone(),
+            tenant_id: user.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
+
     // Security audit log
     info!(
         event = "user_created",
@@ -395,6 +407,18 @@ pub async fn update_user(
 
     // Save user
     require_storage!(state).put_user(user.clone()).await?;
+
+    // Publish user updated event
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::User(UserEvent::Updated {
+            user_id: user.id.to_string(),
+            username: user.username.clone(),
+            tenant_id: user.tenant_id,
+            changed_fields: vec![], // TODO: track which fields changed
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
 
     // Security audit log
     info!(
@@ -560,13 +584,26 @@ pub async fn delete_user(
 ) -> Result<StatusCode, ApiError> {
     validation::validate_username(&username)?;
 
-    // Check if user exists
-    if require_storage!(state).get_user(&username).await?.is_none() {
-        return Err(ApiError::NotFound(format!("User '{}' not found", username)));
-    }
+    // Get user before deletion for event data
+    let storage = require_storage!(state);
+    let user = storage
+        .get_user(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
 
     // Delete user
-    require_storage!(state).delete_user(&username).await?;
+    storage.delete_user(&username).await?;
+
+    // Publish user deleted event
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::User(UserEvent::Deleted {
+            user_id: user.id.to_string(),
+            username: user.username.clone(),
+            tenant_id: user.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
 
     // Security audit log
     warn!(

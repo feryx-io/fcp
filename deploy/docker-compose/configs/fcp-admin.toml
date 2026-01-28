@@ -16,3 +16,6 @@ sqlite_path = "/app/data/fcp.db"
 [logging]
 level = "info"
 format = "pretty"
+
+[events]
+server_url = "http://fcp-events-server:8081/ingest"

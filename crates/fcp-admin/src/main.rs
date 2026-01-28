@@ -13,9 +13,10 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use fcp_events::{EventFilter, EventSubscriber};
 use std::sync::Arc;
 use tokio::signal;
-use tracing::info;
+use tracing::{info, warn};
 
 mod cli;
 mod config;
@@ -143,6 +144,9 @@ async fn main() -> Result<()> {
     let media_manager = Some(Arc::clone(runtime.media_manager()));
     let event_bus = Arc::clone(runtime.event_bus());
 
+    // Clone event_bus for event forwarding before moving into api_state
+    let event_bus_for_forward = Arc::clone(&event_bus);
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -168,6 +172,17 @@ async fn main() -> Result<()> {
         fcp_api_core::serve(bind_addr, api_state, &api_config).await
     });
 
+    // Start event forwarding task (if configured)
+    if let Some(ref events_url) = config.events.server_url {
+        let events_url = events_url.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_event_forwarder(event_bus_for_forward, &events_url).await {
+                tracing::error!(%e, "Event forwarder task failed");
+            }
+        });
+        info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
+    }
+
     // Wait for shutdown signal
     info!("FCP Admin API running. Press Ctrl+C to shutdown.");
     signal::ctrl_c()
@@ -180,4 +195,63 @@ async fn main() -> Result<()> {
 
     info!("FCP Admin API shutdown complete");
     Ok(())
+}
+
+/// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
+async fn run_event_forwarder(
+    event_bus: Arc<dyn fcp_events::EventBus>,
+    events_url: &str,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("Failed to create HTTP client for event forwarding")?;
+
+    // Subscribe to all events
+    let mut stream = event_bus
+        .subscribe(EventFilter::new())
+        .await
+        .context("Failed to subscribe to event bus")?;
+
+    info!(url = %events_url, "Event forwarder started");
+
+    loop {
+        match stream.next().await {
+            Some(event) => {
+                // Fire-and-forget POST to events server
+                let client = client.clone();
+                let url = events_url.to_string();
+                tokio::spawn(async move {
+                    match client.post(&url).json(&event).send().await {
+                        Ok(resp) => {
+                            if !resp.status().is_success() {
+                                tracing::debug!(
+                                    status = %resp.status(),
+                                    "Event forward received non-2xx response"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(%e, "Failed to forward event to events server");
+                        }
+                    }
+                });
+            }
+            None => {
+                warn!("Event stream ended unexpectedly, resubscribing...");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Try to resubscribe
+                match event_bus.subscribe(EventFilter::new()).await {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        info!("Resubscribed to event bus");
+                    }
+                    Err(e) => {
+                        warn!(%e, "Failed to resubscribe to event bus");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    }
 }

@@ -25,6 +25,10 @@ pub struct AdminConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// Events configuration
+    #[serde(default)]
+    pub events: EventsConfig,
 }
 
 impl Default for AdminConfig {
@@ -34,6 +38,7 @@ impl Default for AdminConfig {
             api: ApiConfig::default(),
             storage: StorageConfig::default(),
             logging: LoggingConfig::default(),
+            events: EventsConfig::default(),
         }
     }
 }
@@ -189,6 +194,21 @@ impl Default for LoggingConfig {
             level: default_log_level(),
             format: default_log_format(),
         }
+    }
+}
+
+/// Events configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EventsConfig {
+    /// URL of fcp-events-server ingest endpoint (optional)
+    /// Example: "http://fcp-events-server:8081/ingest"
+    #[serde(default)]
+    pub server_url: Option<String>,
+}
+
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self { server_url: None }
     }
 }
 

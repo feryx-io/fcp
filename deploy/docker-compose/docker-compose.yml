@@ -33,6 +33,7 @@ services:
       - FCP_ADMIN_LOG_FORMAT=pretty
     depends_on:
       - redis
+      - fcp-events-server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
       interval: 10s

@@ -26,6 +26,12 @@ pub enum PlatformEvent {
 
     /// System-level event
     System(SystemEvent),
+
+    /// User lifecycle event
+    User(UserEvent),
+
+    /// Registration event
+    Registration(RegistrationEvent),
 }
 
 /// Call lifecycle events.
@@ -276,6 +282,92 @@ pub enum SystemEvent {
     },
 }
 
+/// User lifecycle events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UserEvent {
+    /// User created
+    Created {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// User updated
+    Updated {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        changed_fields: Vec<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// User deleted
+    Deleted {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// User enabled
+    Enabled {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// User disabled
+    Disabled {
+        user_id: String,
+        username: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+/// Registration events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RegistrationEvent {
+    /// User registered (SIP REGISTER success)
+    Registered {
+        aor: String,
+        contact: String,
+        tenant_id: TenantId,
+        expires_secs: u32,
+        user_agent: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// User unregistered (explicit or expired)
+    Unregistered {
+        aor: String,
+        contact: String,
+        tenant_id: TenantId,
+        reason: String, // "explicit", "expired", "replaced"
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Registration failed (auth failure, etc.)
+    Failed {
+        aor: String,
+        tenant_id: TenantId,
+        reason: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
 /// Call direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -329,6 +421,8 @@ impl PlatformEvent {
             PlatformEvent::Recording(event) => event.call_id(),
             PlatformEvent::Flow(event) => event.call_id(),
             PlatformEvent::System(_) => None,
+            PlatformEvent::User(_) => None,
+            PlatformEvent::Registration(_) => None,
         }
     }
 
@@ -341,6 +435,30 @@ impl PlatformEvent {
             PlatformEvent::Recording(event) => event.timestamp(),
             PlatformEvent::Flow(event) => event.timestamp(),
             PlatformEvent::System(event) => event.timestamp(),
+            PlatformEvent::User(event) => event.timestamp(),
+            PlatformEvent::Registration(event) => event.timestamp(),
+        }
+    }
+}
+
+impl UserEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            UserEvent::Created { timestamp, .. }
+            | UserEvent::Updated { timestamp, .. }
+            | UserEvent::Deleted { timestamp, .. }
+            | UserEvent::Enabled { timestamp, .. }
+            | UserEvent::Disabled { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl RegistrationEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            RegistrationEvent::Registered { timestamp, .. }
+            | RegistrationEvent::Unregistered { timestamp, .. }
+            | RegistrationEvent::Failed { timestamp, .. } => *timestamp,
         }
     }
 }

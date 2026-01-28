@@ -27,6 +27,8 @@ pub enum EventType {
     Recording,
     Flow,
     System,
+    User,
+    Registration,
 }
 
 impl EventFilter {
@@ -76,6 +78,8 @@ impl EventFilter {
                 PlatformEvent::Recording(_) => EventType::Recording,
                 PlatformEvent::Flow(_) => EventType::Flow,
                 PlatformEvent::System(_) => EventType::System,
+                PlatformEvent::User(_) => EventType::User,
+                PlatformEvent::Registration(_) => EventType::Registration,
             };
 
             if !types.contains(&event_type) {
