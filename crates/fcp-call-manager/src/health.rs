@@ -138,15 +138,21 @@ async fn registrations_handler(
 struct CdrQueryParams {
     /// Filter by call ID
     call_id: Option<String>,
-    /// Filter by caller URI
+    /// Filter by tenant ID
+    tenant_id: Option<String>,
+    /// Filter by caller URI (substring match)
     from_uri: Option<String>,
-    /// Filter by callee URI
+    /// Filter by callee URI (substring match)
     to_uri: Option<String>,
     /// Filter by disposition (answered, busy, no_answer, failed, cancelled)
     disposition: Option<String>,
-    /// Maximum number of records to return
+    /// Start time range begin (Unix timestamp in seconds)
+    start_time_from: Option<u64>,
+    /// Start time range end (Unix timestamp in seconds)
+    start_time_to: Option<u64>,
+    /// Maximum number of records to return (default: 100, max: 1000)
     limit: Option<usize>,
-    /// Number of records to skip
+    /// Number of records to skip (default: 0)
     offset: Option<usize>,
 }
 
@@ -154,6 +160,9 @@ async fn cdrs_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CdrQueryParams>,
 ) -> Json<serde_json::Value> {
+    use fcp_core::TenantId;
+    use std::time::{Duration, UNIX_EPOCH};
+
     // Build CDR query from parameters
     let mut query = CdrQuery::default();
 
@@ -170,10 +179,33 @@ async fn cdrs_handler(
         }
     }
 
+    // Parse tenant_id if provided
+    if let Some(ref tenant_id_str) = params.tenant_id {
+        match tenant_id_str.parse::<TenantId>() {
+            Ok(tenant_id) => query.tenant_id = Some(tenant_id),
+            Err(_) => {
+                return Json(serde_json::json!({
+                    "error": format!("Invalid tenant_id format: {}", tenant_id_str),
+                    "cdrs": []
+                }));
+            }
+        }
+    }
+
     query.from_uri = params.from_uri;
     query.to_uri = params.to_uri;
-    query.limit = params.limit;
+
+    // Apply limit with bounds (default 100, max 1000)
+    query.limit = Some(params.limit.unwrap_or(100).min(1000));
     query.offset = params.offset;
+
+    // Parse time range filters
+    if let Some(ts) = params.start_time_from {
+        query.start_time_from = Some(UNIX_EPOCH + Duration::from_secs(ts));
+    }
+    if let Some(ts) = params.start_time_to {
+        query.start_time_to = Some(UNIX_EPOCH + Duration::from_secs(ts));
+    }
 
     // Parse disposition if provided
     if let Some(ref disposition_str) = params.disposition {
@@ -193,9 +225,16 @@ async fn cdrs_handler(
         query.disposition = disposition;
     }
 
-    // Query CDRs from storage
-    match state.storage.query_cdrs(query).await {
+    // Query CDRs and count from storage (for pagination)
+    let count_query = query.clone();
+    let (cdrs_result, count_result) = tokio::join!(
+        state.storage.query_cdrs(query),
+        state.storage.count_cdrs(count_query)
+    );
+
+    match cdrs_result {
         Ok(cdrs) => {
+            let total = count_result.unwrap_or(cdrs.len());
             let cdr_list: Vec<serde_json::Value> = cdrs
                 .iter()
                 .map(|cdr| {
@@ -243,7 +282,10 @@ async fn cdrs_handler(
 
             Json(serde_json::json!({
                 "cdrs": cdr_list,
-                "count": cdr_list.len()
+                "count": cdr_list.len(),
+                "total": total,
+                "limit": params.limit.unwrap_or(100).min(1000),
+                "offset": params.offset.unwrap_or(0)
             }))
         }
         Err(e) => Json(serde_json::json!({
