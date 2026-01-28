@@ -53,9 +53,13 @@ async fn main() -> Result<()> {
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid HTTP bind address '{}': {}", bind, e))?;
     }
+    // Only apply public_ip override if it's non-empty
+    // (clap treats empty env vars as Some("") instead of None)
     if let Some(ref ip) = cli.public_ip {
-        config.sip.local_ip = Some(ip.clone());
-        config.media.public_ip = Some(ip.clone());
+        if !ip.is_empty() {
+            config.sip.local_ip = Some(ip.clone());
+            config.media.public_ip = Some(ip.clone());
+        }
     }
 
     // 3. Initialize tracing
@@ -424,7 +428,9 @@ fn create_local_uri(config: &CallManagerConfig) -> Result<SipUri> {
         config
             .sip
             .local_ip
-            .clone()
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .cloned()
             .unwrap_or_else(|| "127.0.0.1".to_string())
     } else {
         bind_addr.ip().to_string()
