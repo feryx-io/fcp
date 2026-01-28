@@ -535,21 +535,24 @@ async fn run_event_forwarder(
     loop {
         match stream.next().await {
             Some(event) => {
+                tracing::debug!(?event, "Forwarding event to events server");
                 // Fire-and-forget POST to events server
                 let client = client.clone();
                 let url = events_url.to_string();
                 tokio::spawn(async move {
                     match client.post(&url).json(&event).send().await {
                         Ok(resp) => {
-                            if !resp.status().is_success() {
-                                tracing::debug!(
+                            if resp.status().is_success() {
+                                tracing::debug!(status = %resp.status(), "Event forwarded");
+                            } else {
+                                tracing::warn!(
                                     status = %resp.status(),
                                     "Event forward received non-2xx response"
                                 );
                             }
                         }
                         Err(e) => {
-                            tracing::debug!(%e, "Failed to forward event to events server");
+                            tracing::warn!(%e, "Failed to forward event to events server");
                         }
                     }
                 });
