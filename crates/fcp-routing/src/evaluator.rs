@@ -203,28 +203,48 @@ impl PolicyEvaluator {
     }
 
     /// Build identity context from user information.
+    ///
+    /// If the user is not found in the routing store, creates a minimal context
+    /// with empty roles/groups. This allows `all_users: true` policies to still
+    /// match even when users are managed externally (e.g., via fcp-admin API).
     async fn build_identity_context(
         &self,
         user_id: &str,
         tenant_id: &TenantId,
         source_ip: IpAddr,
     ) -> Result<IdentityContext> {
-        let user = self
-            .store
-            .get_user(user_id, tenant_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("User not found: {}", user_id))?;
-        user.validate()
-            .map_err(|e| anyhow::anyhow!("Invalid user data for '{}': {}", user_id, e))?;
+        match self.store.get_user(user_id, tenant_id).await? {
+            Some(user) => {
+                user.validate()
+                    .map_err(|e| anyhow::anyhow!("Invalid user data for '{}': {}", user_id, e))?;
 
-        Ok(IdentityContext {
-            user_id: user.id.clone(),
-            tenant_id: *tenant_id,
-            roles: user.roles.clone(),
-            groups: user.groups.clone(),
-            source_ip,
-            user_agent: None,
-        })
+                Ok(IdentityContext {
+                    user_id: user.id.clone(),
+                    tenant_id: *tenant_id,
+                    roles: user.roles.clone(),
+                    groups: user.groups.clone(),
+                    source_ip,
+                    user_agent: None,
+                })
+            }
+            None => {
+                // User not found in routing store - create minimal context.
+                // This allows policies with `all_users: true` to match callers
+                // who are registered via fcp-admin but not defined in routing.yaml.
+                debug!(
+                    user_id = %user_id,
+                    "User not found in routing store, using minimal context"
+                );
+                Ok(IdentityContext {
+                    user_id: user_id.to_string(),
+                    tenant_id: *tenant_id,
+                    roles: std::collections::HashSet::new(),
+                    groups: std::collections::HashSet::new(),
+                    source_ip,
+                    user_agent: None,
+                })
+            }
+        }
     }
 
     /// Check if destination matches the regex pattern.
@@ -355,6 +375,7 @@ mod tests {
             priority: 100,
             enabled: true,
             applies_to: AppliesTo {
+                all_users: false,
                 users: None,
                 roles: Some(vec!["employee".to_string()]),
                 groups: None,

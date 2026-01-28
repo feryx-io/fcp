@@ -90,8 +90,16 @@ impl PolicyRule {
 ///
 /// Conditions within the same type use OR logic.
 /// Example: `users: ["alice", "bob"]` matches if user is alice OR bob
+///
+/// If `all_users: true`, the rule matches any authenticated caller regardless
+/// of roles or groups. This is useful for broad policies like "allow all internal calls".
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppliesTo {
+    /// If true, this rule applies to all authenticated users.
+    /// When set, users/roles/groups are ignored.
+    #[serde(default)]
+    pub all_users: bool,
+
     /// Specific user IDs (e.g., ["alice@company.com", "bob@company.com"])
     pub users: Option<Vec<String>>,
 
@@ -105,8 +113,15 @@ pub struct AppliesTo {
 impl AppliesTo {
     /// Check if this rule applies to the given identity context.
     ///
-    /// Returns true if ANY condition matches (OR logic within each type).
+    /// Returns true if:
+    /// - `all_users` is true, OR
+    /// - ANY condition matches (OR logic within each type)
     pub fn matches(&self, ctx: &IdentityContext) -> bool {
+        // If all_users is set, always match
+        if self.all_users {
+            return true;
+        }
+
         // If no conditions specified, matches nothing
         if self.users.is_none() && self.roles.is_none() && self.groups.is_none() {
             return false;
@@ -153,6 +168,17 @@ impl AppliesTo {
             }
         }
         Ok(())
+    }
+}
+
+impl Default for AppliesTo {
+    fn default() -> Self {
+        Self {
+            all_users: false,
+            users: None,
+            roles: None,
+            groups: None,
+        }
     }
 }
 
@@ -391,6 +417,7 @@ mod tests {
         };
 
         let applies_to = AppliesTo {
+            all_users: false,
             users: Some(vec!["alice@company.com".to_string()]),
             roles: None,
             groups: None,
@@ -415,6 +442,7 @@ mod tests {
         };
 
         let applies_to = AppliesTo {
+            all_users: false,
             users: None,
             roles: Some(vec!["sales".to_string(), "management".to_string()]),
             groups: None,
@@ -439,6 +467,7 @@ mod tests {
         };
 
         let applies_to = AppliesTo {
+            all_users: false,
             users: Some(vec!["alice@company.com".to_string()]),
             roles: Some(vec!["sales".to_string()]),
             groups: None,
@@ -446,6 +475,52 @@ mod tests {
 
         // Should not match - wrong user and no matching role
         assert!(!applies_to.matches(&ctx));
+    }
+
+    #[test]
+    fn test_applies_to_all_users() {
+        // Create a user with no matching roles or groups
+        let ctx = IdentityContext {
+            user_id: "unknown@company.com".to_string(),
+            tenant_id: TenantId::nil(),
+            roles: HashSet::new(),
+            groups: HashSet::new(),
+            source_ip: "10.0.1.100".parse().unwrap(),
+            user_agent: None,
+        };
+
+        // Policy with all_users: true should match any user
+        let applies_to = AppliesTo {
+            all_users: true,
+            users: None,
+            roles: None,
+            groups: None,
+        };
+        assert!(applies_to.matches(&ctx), "all_users: true should match any user");
+
+        // Policy with all_users: true should match even when other fields are set
+        let applies_to_with_roles = AppliesTo {
+            all_users: true,
+            users: Some(vec!["different@company.com".to_string()]),
+            roles: Some(vec!["admin".to_string()]),
+            groups: Some(vec!["managers".to_string()]),
+        };
+        assert!(
+            applies_to_with_roles.matches(&ctx),
+            "all_users: true should match regardless of other fields"
+        );
+
+        // Policy with all_users: false and no conditions should not match
+        let applies_to_empty = AppliesTo {
+            all_users: false,
+            users: None,
+            roles: None,
+            groups: None,
+        };
+        assert!(
+            !applies_to_empty.matches(&ctx),
+            "Empty applies_to should not match"
+        );
     }
 
     #[test]

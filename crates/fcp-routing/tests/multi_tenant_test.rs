@@ -167,7 +167,10 @@ policies: []
 
     let source_ip: IpAddr = "10.0.1.100".parse().unwrap();
 
-    // Test 1: Calling as Alice with wrong tenant ID should fail (user not found)
+    // Test 1: Calling as Alice with wrong tenant ID
+    // Since user is not found in tenant_b's routing store, a minimal identity context
+    // is created (to support all_users policies). With no matching policies, this
+    // results in a deny decision (default deny).
     let result = service
         .evaluate_call(
             "alice@tenant-a.com",
@@ -176,9 +179,11 @@ policies: []
             source_ip,
         )
         .await;
-    assert!(result.is_err());
-    // The error is wrapped with context, so check for the context message
-    assert!(result.unwrap_err().to_string().contains("identity context"));
+    assert!(result.is_ok());
+    let decision = result.unwrap();
+    // Should be denied because no policies match for tenant_b
+    assert!(decision.action.is_deny());
+    assert_eq!(decision.reason, "No policy rule matched (default deny)");
 
     // Test 2: Calling as Alice with correct tenant ID should work
     let result = service

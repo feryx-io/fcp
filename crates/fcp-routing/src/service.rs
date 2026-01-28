@@ -194,6 +194,7 @@ mod tests {
             priority: 100,
             enabled: true,
             applies_to: AppliesTo {
+                all_users: false,
                 users: None,
                 roles: Some(vec!["employee".to_string()]),
                 groups: None,

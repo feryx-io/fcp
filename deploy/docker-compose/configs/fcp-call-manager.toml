@@ -47,12 +47,11 @@ bind_address = "0.0.0.0:8084"
 level = "info"
 format = "pretty"
 
-# Routing configuration - DISABLED by default
-# The routing system requires users to be defined in routing.yaml before they can make calls.
-# Enable this once you've populated routing.yaml with your users and policies.
-# [routing]
-# rules_file = "/app/routing.yaml"
-# hot_reload = true
+# Routing configuration - call authorization policies
+# With `all_users: true` in routing.yaml, any authenticated caller can make calls.
+[routing]
+rules_file = "/app/routing.yaml"
+hot_reload = true
 
 [events]
 server_url = "http://fcp-events-server:8081/ingest"

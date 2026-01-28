@@ -227,6 +227,7 @@ fn test_policy_crlf_injection_in_name() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -251,6 +252,7 @@ fn test_policy_crlf_injection_in_reason() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -275,6 +277,7 @@ fn test_policy_empty_name() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -296,6 +299,7 @@ fn test_policy_negative_priority() {
         priority: -1,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -316,6 +320,7 @@ fn test_policy_negative_priority() {
 #[test]
 fn test_applies_to_crlf_in_users() {
     let applies_to = AppliesTo {
+        all_users: false,
         users: Some(vec!["alice\ninjection".to_string()]),
         roles: None,
         groups: None,
@@ -329,6 +334,7 @@ fn test_applies_to_crlf_in_users() {
 #[test]
 fn test_applies_to_crlf_in_roles() {
     let applies_to = AppliesTo {
+        all_users: false,
         users: None,
         roles: Some(vec!["admin\r\nevil".to_string()]),
         groups: None,
@@ -342,6 +348,7 @@ fn test_applies_to_crlf_in_roles() {
 #[test]
 fn test_applies_to_crlf_in_groups() {
     let applies_to = AppliesTo {
+        all_users: false,
         users: None,
         roles: None,
         groups: Some(vec!["sales\ninjection".to_string()]),
@@ -611,6 +618,7 @@ fn test_policy_with_invalid_destination_match() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -638,6 +646,7 @@ fn test_policy_with_invalid_time_window() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -667,6 +676,7 @@ fn test_policy_with_invalid_ip_range() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: None,
             roles: None,
             groups: None,
@@ -693,6 +703,7 @@ fn test_fully_valid_policy() {
         priority: 100,
         enabled: true,
         applies_to: AppliesTo {
+            all_users: false,
             users: Some(vec!["alice@company.com".to_string()]),
             roles: Some(vec!["employee".to_string()]),
             groups: Some(vec!["sales".to_string()]),
