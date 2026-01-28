@@ -4,7 +4,8 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use fcp_core::{CredentialStore, Registration, RegistrationStore};
+use fcp_core::{CredentialStore, Registration, RegistrationStore, TenantId};
+use fcp_events::{EventPublisher, PlatformEvent, RegistrationEvent};
 use sip_core::{Request, Response};
 use sip_registrar::{AsyncLocationStore, Binding};
 use smol_str::SmolStr;
@@ -211,6 +212,12 @@ pub struct FcpRegistrar {
 
     /// Maximum registration expiry in seconds
     max_expires: u32,
+
+    /// Event publisher for emitting registration events
+    event_publisher: Option<Arc<dyn EventPublisher>>,
+
+    /// Realm for extracting tenant context (used in events)
+    realm: String,
 }
 
 impl FcpRegistrar {
@@ -232,7 +239,7 @@ impl FcpRegistrar {
         let authenticator = if let Some(ref cred_store) = credential_store {
             let cred_adapter =
                 CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
-            Some(Ha1Authenticator::new(realm_str, cred_adapter))
+            Some(Ha1Authenticator::new(realm_str.clone(), cred_adapter))
         } else {
             None
         };
@@ -244,7 +251,46 @@ impl FcpRegistrar {
             default_expires: 3600,
             min_expires: 60,
             max_expires: 86400,
+            event_publisher: None,
+            realm: realm_str,
         }
+    }
+
+    /// Create a new registrar with event publishing support.
+    ///
+    /// # Arguments
+    /// * `registration_store` - Storage for SIP registrations
+    /// * `credential_store` - Storage for user credentials (optional, for auth)
+    /// * `realm` - Authentication realm (optional)
+    /// * `event_publisher` - Event publisher for emitting registration events
+    pub fn with_events(
+        registration_store: Arc<dyn RegistrationStore>,
+        credential_store: Option<Arc<dyn CredentialStore>>,
+        realm: Option<String>,
+        event_publisher: Arc<dyn EventPublisher>,
+    ) -> Self {
+        let mut registrar = Self::new(registration_store, credential_store, realm);
+        registrar.event_publisher = Some(event_publisher);
+        registrar
+    }
+
+    /// Publish a registration event (fire-and-forget).
+    fn publish_event(&self, event: RegistrationEvent) {
+        if let Some(ref publisher) = self.event_publisher {
+            let publisher = Arc::clone(publisher);
+            let platform_event = PlatformEvent::Registration(event);
+            tokio::spawn(async move {
+                if let Err(e) = publisher.publish(platform_event).await {
+                    tracing::debug!(%e, "Failed to publish registration event");
+                }
+            });
+        }
+    }
+
+    /// Get the realm for this registrar.
+    #[allow(dead_code)]
+    pub fn realm(&self) -> &str {
+        &self.realm
     }
 
     /// Handle a REGISTER request.
@@ -255,6 +301,9 @@ impl FcpRegistrar {
     /// # Returns
     /// The response to send (200 OK, 401 Unauthorized, etc.)
     pub async fn handle_register(&self, request: &Request) -> Response {
+        // Extract AOR early for event emission
+        let aor = self.extract_aor_from_request(request).unwrap_or_default();
+
         // Handle authentication manually if enabled
         if let Some(ref authenticator) = self.authenticator {
             debug!("Handling REGISTER with authentication");
@@ -267,7 +316,7 @@ impl FcpRegistrar {
                 .is_some();
 
             if !has_auth {
-                // No auth header - send challenge
+                // No auth header - send challenge (not a failure, just initial challenge)
                 debug!("No Authorization header, sending 401 challenge");
                 return match authenticator.challenge(request) {
                     Ok(response) => response,
@@ -286,6 +335,13 @@ impl FcpRegistrar {
                 }
                 Ok(false) => {
                     debug!("Authentication failed, sending 401 challenge");
+                    // Emit registration failed event
+                    self.publish_event(RegistrationEvent::Failed {
+                        aor: aor.clone(),
+                        tenant_id: TenantId::nil(), // Default tenant
+                        reason: "authentication_failed".to_string(),
+                        timestamp: SystemTime::now(),
+                    });
                     return match authenticator.challenge(request) {
                         Ok(response) => response,
                         Err(e) => {
@@ -297,6 +353,13 @@ impl FcpRegistrar {
                 }
                 Err(e) => {
                     tracing::error!("Authentication error: {}", e);
+                    // Emit registration failed event
+                    self.publish_event(RegistrationEvent::Failed {
+                        aor,
+                        tenant_id: TenantId::nil(),
+                        reason: format!("authentication_error: {}", e),
+                        timestamp: SystemTime::now(),
+                    });
                     return self.create_error_response(request, 500, "Internal Server Error");
                 }
             }
@@ -306,6 +369,16 @@ impl FcpRegistrar {
 
         // Authentication passed or not required - handle registration
         self.process_registration(request).await
+    }
+
+    /// Extract AOR from a REGISTER request's To header.
+    fn extract_aor_from_request(&self, request: &Request) -> Option<String> {
+        let to_header = request.headers().get_smol("To")?;
+        let to = sip_parse::parse_to_header(to_header)?;
+        Some(
+            sip_registrar::normalize_aor(to.inner().uri())
+                .unwrap_or_else(|_| to.inner().uri().to_string()),
+        )
     }
 
     /// Process the actual registration logic
@@ -332,6 +405,9 @@ impl FcpRegistrar {
         // Extract Contact header
         let contact_header = request.headers().get_smol("Contact");
 
+        // Extract User-Agent for event emission
+        let user_agent = request.headers().get("User-Agent").map(|s| s.to_string());
+
         // Handle deregistration (Contact: *)
         if let Some(contact) = contact_header {
             if contact.trim() == "*" {
@@ -339,6 +415,14 @@ impl FcpRegistrar {
                 match self.location_store.remove_all(&aor).await {
                     Ok(_) => {
                         info!(aor = %aor, "Deregistered all contacts");
+                        // Emit unregistration event for wildcard deregistration
+                        self.publish_event(RegistrationEvent::Unregistered {
+                            aor: aor.clone(),
+                            contact: "*".to_string(),
+                            tenant_id: TenantId::nil(),
+                            reason: "wildcard_deregistration".to_string(),
+                            timestamp: SystemTime::now(),
+                        });
                         return self.create_ok_response(request, vec![]);
                     }
                     Err(e) => {
@@ -362,6 +446,14 @@ impl FcpRegistrar {
                 match self.location_store.remove(&aor, contact_uri).await {
                     Ok(_) => {
                         info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
+                        // Emit unregistration event
+                        self.publish_event(RegistrationEvent::Unregistered {
+                            aor: aor.clone(),
+                            contact: contact_uri.to_string(),
+                            tenant_id: TenantId::nil(),
+                            reason: "explicit".to_string(),
+                            timestamp: SystemTime::now(),
+                        });
                         return self.create_ok_response(request, vec![]);
                     }
                     Err(e) => {
@@ -388,6 +480,15 @@ impl FcpRegistrar {
             match self.location_store.upsert(binding).await {
                 Ok(_) => {
                     info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
+                    // Emit registration event
+                    self.publish_event(RegistrationEvent::Registered {
+                        aor: aor.clone(),
+                        contact: contact_uri.to_string(),
+                        tenant_id: TenantId::nil(),
+                        expires_secs: expires,
+                        user_agent: user_agent.clone(),
+                        timestamp: SystemTime::now(),
+                    });
                 }
                 Err(e) => {
                     tracing::error!("Failed to store registration: {}", e);

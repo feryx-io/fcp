@@ -108,10 +108,14 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // 11. Create FcpRegistrar
-    let registrar = create_registrar(&config, &dyn_storage);
+    // 11. Create event bus (needed by registrar and call manager)
+    let event_bus = Arc::new(InMemoryEventBus::new());
+    info!("Event bus initialized (in-memory)");
 
-    // 12. Create routing service (if configured)
+    // 12. Create FcpRegistrar (with event publishing)
+    let registrar = create_registrar(&config, &dyn_storage, Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+
+    // 13. Create routing service (if configured)
     let routing_service = if let Some(ref rules_file) = config.routing.rules_file {
         match YamlRoutingStore::new(PathBuf::from(rules_file), config.routing.hot_reload).await {
             Ok(store) => {
@@ -128,14 +132,10 @@ async fn main() -> Result<()> {
         None
     };
 
-    // 13. Create event bus
-    let event_bus = Arc::new(InMemoryEventBus::new());
-    info!("Event bus initialized (in-memory)");
-
     // 14. Create media manager
     let media_manager = create_media_manager(&config).await?;
 
-    // 15. Create CallManager for B2BUA functionality
+    // 15. Create CallManager for B2BUA functionality (with event publishing)
     let call_manager = Arc::new(fcp_sip::CallManager::with_storage_and_events(
         Arc::clone(&dyn_storage),
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
@@ -310,6 +310,7 @@ async fn main() -> Result<()> {
 fn create_registrar(
     config: &CallManagerConfig,
     storage: &Arc<fcp_core::DynStorage>,
+    event_publisher: Arc<dyn fcp_events::EventPublisher>,
 ) -> Arc<fcp_sip::registrar::FcpRegistrar> {
     let registration_store: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(storage) as _;
     let credential_store: Option<Arc<dyn fcp_core::CredentialStore>> =
@@ -320,10 +321,11 @@ fn create_registrar(
         };
     let realm = Some(config.registrar.realm.clone());
 
-    Arc::new(fcp_sip::registrar::FcpRegistrar::new(
+    Arc::new(fcp_sip::registrar::FcpRegistrar::with_events(
         registration_store,
         credential_store,
         realm,
+        event_publisher,
     ))
 }
 
