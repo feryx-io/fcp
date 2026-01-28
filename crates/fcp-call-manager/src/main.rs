@@ -9,12 +9,14 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use fcp_events::{EventBus, InMemoryEventBus};
+use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
 use fcp_media::{BackendType, MediaConfig};
+use fcp_routing::{RoutingService, YamlRoutingStore};
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -109,20 +111,37 @@ async fn main() -> Result<()> {
     // 11. Create FcpRegistrar
     let registrar = create_registrar(&config, &dyn_storage);
 
-    // 12. Create event bus
-    let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
+    // 12. Create routing service (if configured)
+    let routing_service = if let Some(ref rules_file) = config.routing.rules_file {
+        match YamlRoutingStore::new(PathBuf::from(rules_file), config.routing.hot_reload).await {
+            Ok(store) => {
+                info!(rules_file = %rules_file, hot_reload = config.routing.hot_reload, "Routing service initialized");
+                Some(Arc::new(RoutingService::new(Arc::new(store))))
+            }
+            Err(e) => {
+                warn!(%e, rules_file = %rules_file, "Failed to load routing rules, routing disabled");
+                None
+            }
+        }
+    } else {
+        info!("No routing rules file configured, routing disabled");
+        None
+    };
+
+    // 13. Create event bus
+    let event_bus = Arc::new(InMemoryEventBus::new());
     info!("Event bus initialized (in-memory)");
 
-    // 13. Create media manager
+    // 14. Create media manager
     let media_manager = create_media_manager(&config).await?;
 
-    // 14. Create CallManager for B2BUA functionality
+    // 15. Create CallManager for B2BUA functionality
     let call_manager = Arc::new(fcp_sip::CallManager::with_storage_and_events(
         Arc::clone(&dyn_storage),
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
     ));
 
-    // 15. Create SipMessageHandler (wires all components together)
+    // 16. Create SipMessageHandler (wires all components together)
     let local_uri = create_local_uri(&config)?;
     let media_profile = if config.calls.enable_sdp {
         Some(MediaProfileBuilder::audio_only())
@@ -144,7 +163,7 @@ async fn main() -> Result<()> {
         local_addr,
         config.media.rtp_port_start,
         Some(Arc::clone(&registrar)),
-        None, // routing_service — add when routing config is present
+        routing_service, // routing service from config
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
         Some(Arc::clone(&dyn_storage)),
@@ -244,6 +263,18 @@ async fn main() -> Result<()> {
         }
     });
 
+    // 20. Spawn event forwarding task (if configured)
+    if let Some(ref events_url) = config.events.server_url {
+        let events_url = events_url.clone();
+        let event_bus_clone = Arc::clone(&event_bus);
+        tokio::spawn(async move {
+            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
+                tracing::error!(%e, "Event forwarder task failed");
+            }
+        });
+        info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
+    }
+
     info!(
         udp = %config.sip.udp_bind,
         tcp = %config.sip.tcp_bind,
@@ -251,10 +282,12 @@ async fn main() -> Result<()> {
         auth = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        routing = config.routing.rules_file.is_some(),
+        events_forwarding = config.events.server_url.is_some(),
         "fcp-call-manager ready — listening for SIP messages"
     );
 
-    // 20. Wait for shutdown signal
+    // 21. Wait for shutdown signal
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("Failed to register SIGTERM handler");
 
@@ -469,6 +502,65 @@ fn init_tracing(config: &CallManagerConfig) {
                 .with_level(true)
                 .with_env_filter(env_filter)
                 .init();
+        }
+    }
+}
+
+/// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
+async fn run_event_forwarder(
+    event_bus: Arc<InMemoryEventBus>,
+    events_url: &str,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("Failed to create HTTP client for event forwarding")?;
+
+    // Subscribe to all events
+    let mut stream = event_bus
+        .subscribe(EventFilter::new())
+        .await
+        .context("Failed to subscribe to event bus")?;
+
+    info!(url = %events_url, "Event forwarder started");
+
+    loop {
+        match stream.next().await {
+            Some(event) => {
+                // Fire-and-forget POST to events server
+                let client = client.clone();
+                let url = events_url.to_string();
+                tokio::spawn(async move {
+                    match client.post(&url).json(&event).send().await {
+                        Ok(resp) => {
+                            if !resp.status().is_success() {
+                                tracing::debug!(
+                                    status = %resp.status(),
+                                    "Event forward received non-2xx response"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(%e, "Failed to forward event to events server");
+                        }
+                    }
+                });
+            }
+            None => {
+                warn!("Event stream ended unexpectedly, resubscribing...");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Try to resubscribe
+                match event_bus.subscribe(EventFilter::new()).await {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        info!("Resubscribed to event bus");
+                    }
+                    Err(e) => {
+                        warn!(%e, "Failed to resubscribe to event bus");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
         }
     }
 }

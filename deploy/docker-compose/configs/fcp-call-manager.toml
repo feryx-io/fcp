@@ -7,7 +7,7 @@ udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
 
 [registrar]
-auth_enabled = false    # Disabled for testing; enable in production
+auth_enabled = true     # Enabled - users created via fcp-admin API can register
 realm = "fcp.local"
 default_expires = 3600
 min_expires = 60
@@ -46,3 +46,13 @@ bind_address = "0.0.0.0:8084"
 [logging]
 level = "info"
 format = "pretty"
+
+# Routing configuration - DISABLED by default
+# The routing system requires users to be defined in routing.yaml before they can make calls.
+# Enable this once you've populated routing.yaml with your users and policies.
+# [routing]
+# rules_file = "/app/routing.yaml"
+# hot_reload = true
+
+[events]
+server_url = "http://fcp-events-server:8081/ingest"

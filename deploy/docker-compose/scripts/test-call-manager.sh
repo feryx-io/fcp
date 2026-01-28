@@ -81,6 +81,51 @@ else
 fi
 echo
 
+echo "--- Test: CDRs endpoint ---"
+CDRS_RESP=$(curl -sf "$BASE_URL/cdrs")
+echo "$CDRS_RESP" | jq .
+CDRS_FIELD=$(echo "$CDRS_RESP" | jq -r '.cdrs')
+if [ "$CDRS_FIELD" = "null" ]; then
+    echo "FAIL: CDRs endpoint missing cdrs array"
+    exit 1
+fi
+CDR_COUNT=$(echo "$CDRS_RESP" | jq -r '.count')
+echo "PASS: CDRs endpoint returns cdr list (count=$CDR_COUNT)"
+echo
+
+echo "--- Test: CDRs endpoint with filters ---"
+CDRS_FILTERED=$(curl -sf "$BASE_URL/cdrs?disposition=answered&limit=10")
+echo "$CDRS_FILTERED" | jq .
+echo "PASS: CDRs endpoint accepts query filters"
+echo
+
+echo "--- Test: Admin integration (shared database) ---"
+ADMIN_URL="http://localhost:8080/api/v1"
+
+# Create a test user via admin API
+echo "Creating test user via admin API..."
+CREATE_USER_RESP=$(curl -sf -X POST "$ADMIN_URL/users" \
+    -H "Content-Type: application/json" \
+    -d '{"username":"testuser123","password":"Test1234!","display_name":"Test User"}' 2>/dev/null || echo '{"error":"request failed"}')
+echo "$CREATE_USER_RESP" | jq .
+
+# Check if user was created (ignore if exists)
+if echo "$CREATE_USER_RESP" | jq -e '.username' > /dev/null 2>&1; then
+    echo "PASS: Test user created via admin API"
+elif echo "$CREATE_USER_RESP" | jq -e '.error' | grep -qi "exists" > /dev/null 2>&1; then
+    echo "PASS: Test user already exists (expected in repeated tests)"
+else
+    echo "WARN: Could not verify user creation (admin API may be unavailable)"
+fi
+echo
+
+echo "--- Test: Registrations endpoint for test user ---"
+REG_TEST_RESP=$(curl -sf "$BASE_URL/registrations?aor=testuser123@fcp.local")
+echo "$REG_TEST_RESP" | jq .
+echo "PASS: Registrations endpoint accepts AOR query for test user"
+echo
+
 echo "Note: Full SIP call testing requires SIP clients (e.g., Ooh323, Zoiper, or softphones)"
+echo "      With auth_enabled=true, clients need credentials from the admin API."
 echo
 echo "All fcp-call-manager tests passed!"

@@ -96,6 +96,7 @@ services:
       - "10000-10100:10000-10100/udp"
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
+      - ./configs/routing.yaml:/app/routing.yaml:ro
       - admin-data:/app/data
     environment:
       - RUST_LOG=info
@@ -104,6 +105,8 @@ services:
       - FCP_CALL_MANAGER_PUBLIC_IP=${HOST_IP:-}
     depends_on:
       fcp-admin:
+        condition: service_healthy
+      fcp-events-server:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8084/health"]

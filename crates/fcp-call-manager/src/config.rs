@@ -41,6 +41,14 @@ pub struct CallManagerConfig {
     /// Media/RTP configuration
     #[serde(default)]
     pub media: MediaSection,
+
+    /// Routing configuration
+    #[serde(default)]
+    pub routing: RoutingSection,
+
+    /// Events configuration
+    #[serde(default)]
+    pub events: EventsSection,
 }
 
 /// Service identification.
@@ -323,6 +331,40 @@ impl Default for MediaSection {
     }
 }
 
+/// Routing configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RoutingSection {
+    /// Path to routing rules YAML file (optional)
+    pub rules_file: Option<String>,
+
+    /// Enable hot-reload of rules file
+    #[serde(default)]
+    pub hot_reload: bool,
+}
+
+impl Default for RoutingSection {
+    fn default() -> Self {
+        Self {
+            rules_file: None,
+            hot_reload: false,
+        }
+    }
+}
+
+/// Events configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EventsSection {
+    /// URL of fcp-events-server ingest endpoint (optional)
+    /// Example: "http://fcp-events-server:8081/ingest"
+    pub server_url: Option<String>,
+}
+
+impl Default for EventsSection {
+    fn default() -> Self {
+        Self { server_url: None }
+    }
+}
+
 /// Load configuration from file or use defaults.
 ///
 /// Priority:
@@ -391,6 +433,10 @@ mod tests {
         assert!(config.calls.enable_refer);
         assert_eq!(config.media.rtp_port_start, 10000);
         assert_eq!(config.media.rtp_port_end, 20000);
+        // New sections
+        assert!(config.routing.rules_file.is_none());
+        assert!(!config.routing.hot_reload);
+        assert!(config.events.server_url.is_none());
     }
 
     #[test]
@@ -431,6 +477,13 @@ codecs = ["PCMU", "PCMA", "G722"]
 [logging]
 level = "debug"
 format = "pretty"
+
+[routing]
+rules_file = "/app/routing.yaml"
+hot_reload = true
+
+[events]
+server_url = "http://fcp-events-server:8081/ingest"
 "#;
         let config: CallManagerConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.service.node_id, "cm-test-01");
@@ -443,5 +496,15 @@ format = "pretty"
         assert_eq!(config.media.rtp_port_start, 20000);
         assert_eq!(config.media.codecs.len(), 3);
         assert_eq!(config.sip.local_ip.as_deref(), Some("192.168.1.100"));
+        // New sections
+        assert_eq!(
+            config.routing.rules_file.as_deref(),
+            Some("/app/routing.yaml")
+        );
+        assert!(config.routing.hot_reload);
+        assert_eq!(
+            config.events.server_url.as_deref(),
+            Some("http://fcp-events-server:8081/ingest")
+        );
     }
 }

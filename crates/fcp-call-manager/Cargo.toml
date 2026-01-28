@@ -71,3 +71,6 @@ bytes = { workspace = true }
 dashmap = "6"
 socket2 = "0.5"
 uuid = { workspace = true }
+
+# HTTP client for event forwarding
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

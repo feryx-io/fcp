@@ -1490,6 +1490,7 @@ dependencies = [
  "fcp-storage-mysql",
  "fcp-storage-postgres",
  "fcp-storage-sqlite",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sip-core",

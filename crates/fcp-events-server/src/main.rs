@@ -16,12 +16,12 @@ use axum::{
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use clap::Parser;
 use fcp_core::TenantId;
-use fcp_events::InMemoryEventBus;
+use fcp_events::{EventPublisher, InMemoryEventBus, PlatformEvent};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
@@ -96,6 +96,8 @@ async fn main() -> Result<()> {
         .route("/health", get(health_handler))
         .route("/ws/:tenant_id", get(websocket_handler))
         .route("/status", get(status_handler))
+        .route("/ingest", post(ingest_handler))
+        .route("/ingest/batch", post(ingest_batch_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -235,6 +237,26 @@ async fn websocket_handler(
         )
     })
     .into_response()
+}
+
+/// Ingest a single event from another service (e.g., fcp-call-manager)
+async fn ingest_handler(
+    State(state): State<AppState>,
+    Json(event): Json<PlatformEvent>,
+) -> impl IntoResponse {
+    let _ = state.event_bus.publish(event).await;
+    StatusCode::ACCEPTED
+}
+
+/// Ingest a batch of events from another service
+async fn ingest_batch_handler(
+    State(state): State<AppState>,
+    Json(events): Json<Vec<PlatformEvent>>,
+) -> impl IntoResponse {
+    for event in events {
+        let _ = state.event_bus.publish(event).await;
+    }
+    StatusCode::ACCEPTED
 }
 
 /// Background task to broadcast events from event bus to connections

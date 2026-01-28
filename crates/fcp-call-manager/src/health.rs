@@ -2,7 +2,8 @@
 
 use axum::{extract::Query, extract::State, routing::get, Json, Router};
 use fcp_b2bua_core::CallManager;
-use fcp_core::DynStorage;
+use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
+use fcp_core::{CallId, DynStorage};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ pub async fn run_http_server(
         .route("/status", get(status_handler))
         .route("/calls", get(calls_handler))
         .route("/registrations", get(registrations_handler))
+        .route("/cdrs", get(cdrs_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -127,6 +129,126 @@ async fn registrations_handler(
         Err(e) => Json(serde_json::json!({
             "error": format!("Failed to get registrations: {}", e),
             "registrations": []
+        })),
+    }
+}
+
+/// CDR query parameters.
+#[derive(Deserialize)]
+struct CdrQueryParams {
+    /// Filter by call ID
+    call_id: Option<String>,
+    /// Filter by caller URI
+    from_uri: Option<String>,
+    /// Filter by callee URI
+    to_uri: Option<String>,
+    /// Filter by disposition (answered, busy, no_answer, failed, cancelled)
+    disposition: Option<String>,
+    /// Maximum number of records to return
+    limit: Option<usize>,
+    /// Number of records to skip
+    offset: Option<usize>,
+}
+
+async fn cdrs_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CdrQueryParams>,
+) -> Json<serde_json::Value> {
+    // Build CDR query from parameters
+    let mut query = CdrQuery::default();
+
+    // Parse call_id if provided
+    if let Some(ref call_id_str) = params.call_id {
+        match call_id_str.parse::<CallId>() {
+            Ok(call_id) => query.call_id = Some(call_id),
+            Err(_) => {
+                return Json(serde_json::json!({
+                    "error": format!("Invalid call_id format: {}", call_id_str),
+                    "cdrs": []
+                }));
+            }
+        }
+    }
+
+    query.from_uri = params.from_uri;
+    query.to_uri = params.to_uri;
+    query.limit = params.limit;
+    query.offset = params.offset;
+
+    // Parse disposition if provided
+    if let Some(ref disposition_str) = params.disposition {
+        let disposition = match disposition_str.to_lowercase().as_str() {
+            "answered" => Some(CallDisposition::Answered),
+            "busy" => Some(CallDisposition::Busy),
+            "no_answer" | "noanswer" => Some(CallDisposition::NoAnswer),
+            "failed" => Some(CallDisposition::Failed),
+            "cancelled" | "canceled" => Some(CallDisposition::Cancelled),
+            _ => {
+                return Json(serde_json::json!({
+                    "error": format!("Invalid disposition: {}. Valid values: answered, busy, no_answer, failed, cancelled", disposition_str),
+                    "cdrs": []
+                }));
+            }
+        };
+        query.disposition = disposition;
+    }
+
+    // Query CDRs from storage
+    match state.storage.query_cdrs(query).await {
+        Ok(cdrs) => {
+            let cdr_list: Vec<serde_json::Value> = cdrs
+                .iter()
+                .map(|cdr| {
+                    let start_time_epoch = cdr
+                        .start_time
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let answer_time_epoch = cdr.answer_time.and_then(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .ok()
+                    });
+                    let end_time_epoch = cdr.end_time.and_then(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .ok()
+                    });
+
+                    serde_json::json!({
+                        "call_id": cdr.call_id.to_string(),
+                        "tenant_id": cdr.tenant_id.to_string(),
+                        "sip_call_id": cdr.sip_call_id,
+                        "from_uri": cdr.from_uri,
+                        "from_display_name": cdr.from_display_name,
+                        "to_uri": cdr.to_uri,
+                        "to_display_name": cdr.to_display_name,
+                        "start_time_epoch": start_time_epoch,
+                        "answer_time_epoch": answer_time_epoch,
+                        "end_time_epoch": end_time_epoch,
+                        "setup_duration_ms": cdr.setup_duration_ms,
+                        "call_duration_ms": cdr.call_duration_ms,
+                        "total_duration_ms": cdr.total_duration_ms,
+                        "disposition": format!("{:?}", cdr.disposition),
+                        "hangup_cause": format!("{:?}", cdr.hangup_cause),
+                        "hangup_party": cdr.hangup_party.as_ref().map(|p| format!("{:?}", p)),
+                        "sip_status_code": cdr.sip_status_code,
+                        "sip_reason": cdr.sip_reason,
+                        "media_anchored": cdr.media_anchored,
+                        "codec_a_leg": cdr.codec_a_leg,
+                        "codec_b_leg": cdr.codec_b_leg,
+                    })
+                })
+                .collect();
+
+            Json(serde_json::json!({
+                "cdrs": cdr_list,
+                "count": cdr_list.len()
+            }))
+        }
+        Err(e) => Json(serde_json::json!({
+            "error": format!("Failed to query CDRs: {}", e),
+            "cdrs": []
         })),
     }
 }

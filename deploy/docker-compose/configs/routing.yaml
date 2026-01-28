@@ -1,0 +1,49 @@
+# FCP Routing Rules
+#
+# This file defines users and policies for the routing/authorization layer.
+# To use routing, enable it in fcp-call-manager.toml:
+#   [routing]
+#   rules_file = "/app/routing.yaml"
+#   hot_reload = true
+#
+# IMPORTANT: Users must be defined here to be authorized for calls.
+# This is separate from the user credentials in the admin API (for SIP registration).
+# A user must exist in BOTH places to register AND make calls.
+#
+# Example configuration below shows the expected format.
+
+# Define users who can make calls
+# The tenant_id should be: 00000000-0000-0000-0000-000000000000 for default tenant
+users:
+  # Example user - uncomment and modify for your setup
+  # - id: "alice@fcp.local"
+  #   tenant_id: "00000000-0000-0000-0000-000000000000"
+  #   display_name: "Alice"
+  #   roles: ["local-user"]
+  #   groups: []
+  #   endpoints: []
+  #   enabled: true
+  #
+  # - id: "bob@fcp.local"
+  #   tenant_id: "00000000-0000-0000-0000-000000000000"
+  #   display_name: "Bob"
+  #   roles: ["local-user"]
+  #   groups: []
+  #   endpoints: []
+  #   enabled: true
+
+# Define policies for call authorization
+policies:
+  # Example policy - uncomment and modify for your setup
+  # - name: allow-local-calls
+  #   tenant_id: "00000000-0000-0000-0000-000000000000"
+  #   priority: 100
+  #   enabled: true
+  #   applies_to:
+  #     roles: ["local-user"]
+  #   destination_match:
+  #     pattern: "^sip:.+@fcp\\.local$"  # Match calls to fcp.local domain
+  #   time_windows: []
+  #   source_ip_ranges: []
+  #   action: Allow
+  #   reason: "Local users can call other local users"
