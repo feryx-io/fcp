@@ -129,11 +129,13 @@ pub struct UpdateDeviceRequest {
 }
 
 /// List devices.
-pub async fn list_devices(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_devices(
+    State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     let devices = storage
         .list_devices(&tenant_id)

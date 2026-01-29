@@ -158,6 +158,7 @@ async fn main() -> Result<()> {
         media_manager,
         event_bus,
         realm,
+        fcp_core::TenantId::nil(),
     );
 
     // Start API server

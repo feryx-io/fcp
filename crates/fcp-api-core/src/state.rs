@@ -38,6 +38,12 @@ pub struct ApiState {
 
     /// SIP realm for authentication
     pub realm: String,
+
+    /// Default tenant ID (used when no tenant context is provided)
+    pub default_tenant_id: fcp_core::TenantId,
+
+    /// Server start time for uptime tracking
+    pub start_time: std::time::Instant,
 }
 
 impl ApiState {
@@ -51,6 +57,7 @@ impl ApiState {
         media_manager: Option<Arc<MediaManager>>,
         event_bus: Arc<dyn EventBus>,
         realm: String,
+        default_tenant_id: fcp_core::TenantId,
     ) -> Self {
         Self {
             storage,
@@ -62,6 +69,8 @@ impl ApiState {
             media_manager,
             event_bus,
             realm,
+            default_tenant_id,
+            start_time: std::time::Instant::now(),
         }
     }
 }

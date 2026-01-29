@@ -158,12 +158,11 @@ fn default_max_messages() -> u32 {
 /// List all mailboxes for a tenant.
 pub async fn list_mailboxes(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Extract tenant_id from authentication context
-    // For now, using a default tenant
-    let tenant_id = TenantId::nil();
+    let tenant_id = tenant.0;
 
     let _mailboxes = storage
         .get_mailbox_by_extension(&tenant_id, "")

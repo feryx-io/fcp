@@ -92,6 +92,7 @@ async fn main() -> Result<()> {
             media_manager,
             event_bus,
             realm,
+            fcp_core::TenantId::nil(),
         );
         let bind_addr = api_config.bind;
         let api_config_clone = api_config.clone();

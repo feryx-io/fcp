@@ -53,7 +53,7 @@ pub async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse
     Ok(Json(StatusResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        uptime_seconds: 0, // TODO: Track uptime
+        uptime_seconds: state.start_time.elapsed().as_secs(),
         users_count,
         active_registrations_count,
     }))

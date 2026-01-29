@@ -138,11 +138,11 @@ pub struct UpdateLineBindingRequest {
 /// List line bindings.
 pub async fn list_line_bindings(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     let bindings = storage
         .list_line_bindings(&tenant_id)

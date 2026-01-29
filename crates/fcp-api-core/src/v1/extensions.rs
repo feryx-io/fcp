@@ -137,11 +137,11 @@ pub struct UpdateExtensionRequest {
 /// List extensions.
 pub async fn list_extensions(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     let extensions = storage
         .list_extensions(&tenant_id)
@@ -158,11 +158,11 @@ pub async fn list_extensions(
 pub async fn get_extension(
     State(state): State<ApiState>,
     Path(number): Path<String>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<Json<ExtensionResponse>, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     let extension = storage
         .get_extension_by_number(&tenant_id, &number)
@@ -206,12 +206,12 @@ pub async fn create_extension(
 pub async fn update_extension(
     State(state): State<ApiState>,
     Path(number): Path<String>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<UpdateExtensionRequest>,
 ) -> Result<Json<ExtensionResponse>, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     // Get existing extension
     let mut extension = storage
@@ -253,11 +253,11 @@ pub async fn update_extension(
 pub async fn delete_extension(
     State(state): State<ApiState>,
     Path(number): Path<String>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     // Get the extension to find its ID
     let extension = storage

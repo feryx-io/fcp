@@ -40,12 +40,34 @@ pub async fn prometheus_metrics(State(state): State<ApiState>) -> Result<impl In
     buffer.push_str("# TYPE fcp_subscriptions_active gauge\n");
     buffer.push_str(&format!("fcp_subscriptions_active {}\n", active_subscriptions));
 
-    // TODO: Add more metrics:
-    // - Call duration histograms
-    // - SIP message counters (INVITE, BYE, etc.)
-    // - Error rates
-    // - Media session metrics
-    // - Registration counts
+    // Uptime metric
+    let uptime = state.start_time.elapsed().as_secs();
+    buffer.push_str("# HELP fcp_uptime_seconds Server uptime in seconds\n");
+    buffer.push_str("# TYPE fcp_uptime_seconds gauge\n");
+    buffer.push_str(&format!("fcp_uptime_seconds {}\n", uptime));
+
+    // Rate limit entries
+    let rate_limit_entries = state.handler.rate_limit_count();
+    buffer.push_str("# HELP fcp_rate_limit_entries Number of active rate limit entries\n");
+    buffer.push_str("# TYPE fcp_rate_limit_entries gauge\n");
+    buffer.push_str(&format!("fcp_rate_limit_entries {}\n", rate_limit_entries));
+
+    // Call statistics
+    let call_stats = state.call_manager.stats();
+    buffer.push_str("# HELP fcp_calls_established Total established calls\n");
+    buffer.push_str("# TYPE fcp_calls_established gauge\n");
+    buffer.push_str(&format!("fcp_calls_established {}\n", call_stats.established));
+
+    buffer.push_str("# HELP fcp_calls_terminated Total terminated calls\n");
+    buffer.push_str("# TYPE fcp_calls_terminated gauge\n");
+    buffer.push_str(&format!("fcp_calls_terminated {}\n", call_stats.terminated));
+
+    buffer.push_str("# HELP fcp_calls_failed Total failed calls\n");
+    buffer.push_str("# TYPE fcp_calls_failed gauge\n");
+    buffer.push_str(&format!("fcp_calls_failed {}\n", call_stats.failed));
+
+    // Remaining metrics (histograms, per-method SIP counters) require
+    // MetricsHandle -> Prometheus bridge, planned for Phase 2.
 
     Ok((
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],

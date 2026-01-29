@@ -70,7 +70,7 @@
 //!    - If Subscription-State: terminated
 //!    - Remove subscription from SubscriptionManager
 //!    - Remove from subscription_index
-//!    - No automatic cleanup yet (TODO: add subscription expiry monitoring)
+//!    - Automatic cleanup via `spawn_subscription_expiry_monitor()`
 //!
 //! 5. **Return 200 OK to B**
 //!    - NOTIFY always receives 200 OK if successfully processed
@@ -141,10 +141,10 @@
 //!    - Same cleanup as BYE
 //!    - Prevents memory leaks when peer dialog no longer exists
 //!
-//! 3. **Subscription expiry**: Not yet implemented (TODO)
-//!    - Should monitor `subscription.expires` timestamp
-//!    - Automatically remove expired subscriptions
-//!    - Similar to session timer monitoring task
+//! 3. **Subscription expiry**: Implemented via periodic expiry monitor task
+//!    - Monitors `subscription.expires` timestamp every 30 seconds
+//!    - Automatically removes expired subscriptions
+//!    - Also calls `cleanup_terminated()` for state-based cleanup
 //!
 //! ## Rate Limiting
 //!
@@ -248,6 +248,9 @@ pub struct SipMessageHandler {
     subscription_index: Arc<
         dashmap::DashMap<(sip_dialog::DialogId, smol_str::SmolStr), sip_dialog::SubscriptionId>,
     >,
+
+    /// Timestamps tracking when subscriptions were created, for expiry monitoring
+    subscription_created_at: Arc<dashmap::DashMap<sip_dialog::SubscriptionId, Instant>>,
 
     /// Session timer manager for RFC 4028 enforcement
     session_timer_manager: Arc<SessionTimerManager>,
@@ -549,6 +552,7 @@ impl SipMessageHandler {
             mid_dialog_lock: Arc::new(dashmap::DashMap::new()),
             subscription_manager,
             subscription_index: Arc::new(dashmap::DashMap::new()),
+            subscription_created_at: Arc::new(dashmap::DashMap::new()),
             session_timer_manager,
             metrics: settings.metrics.clone(),
             _transcript_dir: settings.transcript_dir.clone(),
@@ -564,6 +568,9 @@ impl SipMessageHandler {
         // Start session timer health monitor
         this.spawn_session_timer_monitor();
 
+        // Start subscription expiry monitor
+        this.spawn_subscription_expiry_monitor();
+
         this
     }
 
@@ -575,6 +582,13 @@ impl SipMessageHandler {
     /// Get the count of active rate limit entries.
     pub fn rate_limit_count(&self) -> usize {
         self.rate_limits.len()
+    }
+
+    /// Get a reference to the subscription creation timestamps.
+    pub fn subscription_created_at(
+        &self,
+    ) -> &Arc<dashmap::DashMap<sip_dialog::SubscriptionId, Instant>> {
+        &self.subscription_created_at
     }
 
     /// Extract DID (phone number) from a SIP URI.
@@ -3630,6 +3644,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "re-INVITE forward failed",
@@ -3650,6 +3665,7 @@ impl SipMessageHandler {
                 &self.rate_limits,
                 &self.mid_dialog_lock,
                 &self.subscription_index,
+                &self.subscription_created_at,
                 &call.id,
                 &target_dialog.id(),
                 "Peer returned 481 to re-INVITE",
@@ -3844,6 +3860,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "SUBSCRIBE forward failed",
@@ -3864,6 +3881,7 @@ impl SipMessageHandler {
                 &self.rate_limits,
                 &self.mid_dialog_lock,
                 &self.subscription_index,
+                &self.subscription_created_at,
                 &call.id,
                 &target_dialog.id(),
                 "Peer returned 481 to SUBSCRIBE",
@@ -3989,6 +4007,7 @@ impl SipMessageHandler {
                         &self.rate_limits,
                         &self.mid_dialog_lock,
                         &self.subscription_index,
+                        &self.subscription_created_at,
                         &call.id,
                         &target_dialog.id(),
                         "NOTIFY forward failed",
@@ -4009,6 +4028,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "Peer returned 481 to NOTIFY",
@@ -4080,6 +4100,7 @@ impl SipMessageHandler {
                         &self.rate_limits,
                         &self.mid_dialog_lock,
                         &self.subscription_index,
+                        &self.subscription_created_at,
                         &call.id,
                         &target_dialog.id(),
                         "NOTIFY forward failed",
@@ -4100,6 +4121,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "Peer returned 481 to NOTIFY",
@@ -4205,6 +4227,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "UPDATE forward failed",
@@ -4225,6 +4248,7 @@ impl SipMessageHandler {
                 &self.rate_limits,
                 &self.mid_dialog_lock,
                 &self.subscription_index,
+                &self.subscription_created_at,
                 &call.id,
                 &target_dialog.id(),
                 "Peer returned 481 to UPDATE",
@@ -4353,6 +4377,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "PRACK forward failed",
@@ -4373,6 +4398,7 @@ impl SipMessageHandler {
                 &self.rate_limits,
                 &self.mid_dialog_lock,
                 &self.subscription_index,
+                &self.subscription_created_at,
                 &call.id,
                 &target_dialog.id(),
                 "Peer returned 481 to PRACK",
@@ -4514,6 +4540,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "INFO forward failed",
@@ -4534,6 +4561,7 @@ impl SipMessageHandler {
                 &self.rate_limits,
                 &self.mid_dialog_lock,
                 &self.subscription_index,
+                &self.subscription_created_at,
                 &call.id,
                 &target_dialog.id(),
                 "Peer returned 481 to INFO",
@@ -4645,6 +4673,7 @@ impl SipMessageHandler {
                     &self.rate_limits,
                     &self.mid_dialog_lock,
                     &self.subscription_index,
+                    &self.subscription_created_at,
                     &call.id,
                     &target_dialog.id(),
                     "REFER forward failed",
@@ -4665,6 +4694,7 @@ impl SipMessageHandler {
                 &self.rate_limits,
                 &self.mid_dialog_lock,
                 &self.subscription_index,
+                &self.subscription_created_at,
                 &call.id,
                 &target_dialog.id(),
                 "Peer returned 481 to REFER",
@@ -5483,6 +5513,71 @@ impl SipMessageHandler {
         });
     }
 
+    fn spawn_subscription_expiry_monitor(&self) {
+        let sub_mgr = Arc::clone(&self.subscription_manager);
+        let sub_index = Arc::clone(&self.subscription_index);
+        let sub_created = Arc::clone(&self.subscription_created_at);
+        let metrics = self.metrics.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            loop {
+                interval.tick().await;
+
+                let now = Instant::now();
+                let mut expired_count: usize = 0;
+
+                // Check each tracked subscription for expiry
+                let entries: Vec<_> = sub_created
+                    .iter()
+                    .map(|e| (e.key().clone(), *e.value()))
+                    .collect();
+
+                for (sub_id, created_at) in entries {
+                    let expired = if let Some(sub) = sub_mgr.get(&sub_id) {
+                        now.duration_since(created_at) > sub.expires()
+                    } else {
+                        // Subscription already removed from manager; clean up timestamp
+                        true
+                    };
+
+                    if expired {
+                        sub_mgr.remove(&sub_id);
+                        sub_created.remove(&sub_id);
+
+                        // Remove matching subscription_index entries
+                        let keys: Vec<_> = sub_index
+                            .iter()
+                            .filter(|entry| *entry.value() == sub_id)
+                            .map(|entry| entry.key().clone())
+                            .collect();
+                        for key in keys {
+                            sub_index.remove(&key);
+                        }
+
+                        expired_count += 1;
+                    }
+                }
+
+                // Also clean up any terminated subscriptions
+                let terminated_count = sub_mgr.cleanup_terminated();
+
+                if expired_count > 0 || terminated_count > 0 {
+                    info!(
+                        expired = expired_count,
+                        terminated_cleaned = terminated_count,
+                        "Subscription expiry monitor cleanup"
+                    );
+                }
+
+                let active = sub_mgr.all().len();
+                metrics.set_gauge("fcp_sip_active_subscriptions", active as f64, &[]);
+            }
+        });
+    }
+
     fn find_subscription(
         &self,
         dialog_id: &sip_dialog::DialogId,
@@ -5511,6 +5606,7 @@ impl SipMessageHandler {
             .expect("Failed to create DialogId from subscription"),
             smol_str::SmolStr::new(sub.id().event().to_string()),
         );
+        self.subscription_created_at.insert(sub.id().clone(), Instant::now());
         let _ = self.subscription_manager.insert(sub.clone());
         let _ = self.subscription_index.insert(key, sub.id().clone());
     }
@@ -6112,6 +6208,7 @@ fn terminate_dialog_with_cleanup(
         (sip_dialog::DialogId, smol_str::SmolStr),
         sip_dialog::SubscriptionId,
     >,
+    subscription_created_at: &dashmap::DashMap<sip_dialog::SubscriptionId, Instant>,
     call_id: &fcp_b2bua_core::CallId,
     dialog_id: &sip_dialog::DialogId,
 ) {
@@ -6128,14 +6225,16 @@ fn terminate_dialog_with_cleanup(
     rate_limits.remove(dialog_id);
     mid_dialog_lock.remove(dialog_id);
 
-    // Clean subscription_index entries for this dialog
+    // Clean subscription_index entries and their created_at timestamps for this dialog
     let keys: Vec<_> = subscription_index
         .iter()
         .filter(|entry| entry.key().0 == *dialog_id)
         .map(|entry| entry.key().clone())
         .collect();
     for key in keys {
-        subscription_index.remove(&key);
+        if let Some((_, sub_id)) = subscription_index.remove(&key) {
+            subscription_created_at.remove(&sub_id);
+        }
     }
 
     debug!(dialog_id = ?dialog_id, "Cleaned up dialog state (rate limits, locks, subscriptions)");
@@ -6151,6 +6250,7 @@ fn cleanup_after_forward_failure(
         (sip_dialog::DialogId, smol_str::SmolStr),
         sip_dialog::SubscriptionId,
     >,
+    subscription_created_at: &dashmap::DashMap<sip_dialog::SubscriptionId, Instant>,
     call_id: &fcp_b2bua_core::CallId,
     dialog_id: &sip_dialog::DialogId,
     reason: &str,
@@ -6163,6 +6263,7 @@ fn cleanup_after_forward_failure(
         rate_limits,
         mid_dialog_lock,
         subscription_index,
+        subscription_created_at,
         call_id,
         dialog_id,
     );

@@ -183,8 +183,8 @@ impl Service for SubscriptionService {
     }
 
     async fn stop(&self) -> FcpResult<()> {
-        tracing::info!("Subscription manager service stopped");
-        // TODO: Clean up active subscriptions
+        let count = self.manager.cleanup_terminated();
+        tracing::info!(terminated_cleaned = count, "Subscription manager service stopped");
         Ok(())
     }
 

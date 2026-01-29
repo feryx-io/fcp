@@ -165,12 +165,11 @@ pub struct UpdatePhoneNumberRequest {
 /// List phone numbers.
 pub async fn list_phone_numbers(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // TODO: Get tenant_id from authentication context
-    // For now, use nil tenant (default tenant)
-    let tenant_id = fcp_core::TenantId::nil();
+    let tenant_id = tenant.0;
 
     let numbers = storage
         .list_phone_numbers(&tenant_id)
