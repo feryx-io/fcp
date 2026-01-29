@@ -635,7 +635,9 @@ impl SipMessageHandler {
         match request.method() {
             Method::Invite => {
                 // If this is an in-dialog re-INVITE, handle separately
-                if self.dialog_manager.find_by_request(request).is_some() {
+                if self.dialog_manager.find_by_request(request).is_some()
+                    || self.is_b_leg_reinvite(request)
+                {
                     let response = self.handle_reinvite(request).await?;
                     handle.send_final(response).await;
                 } else {
@@ -5096,6 +5098,33 @@ impl SipMessageHandler {
         );
 
         response
+    }
+
+    /// Check if this INVITE is a re-INVITE on a B-leg dialog.
+    ///
+    /// `dialog_manager.find_by_request()` only works for UAS (A-leg) dialogs
+    /// because it swaps From/To tags assuming UAS perspective. For UAC (B-leg)
+    /// dialogs, we fall back to checking call_manager by Call-ID + verifying
+    /// a To-tag exists (which indicates an in-dialog request per RFC 3261).
+    fn is_b_leg_reinvite(&self, request: &sip_core::Request) -> bool {
+        // A re-INVITE must have a To tag (in-dialog indicator per RFC 3261)
+        let to_header = match sip_parse::header(request.headers(), "To") {
+            Some(h) => h,
+            None => return false,
+        };
+        if !to_header.contains("tag=") {
+            return false;
+        }
+
+        // Check if call_manager has a call with this Call-ID
+        let call_id = match sip_parse::header(request.headers(), "Call-ID") {
+            Some(h) => h,
+            None => return false,
+        };
+
+        self.call_manager
+            .find_by_dialog_call_id(call_id.as_str())
+            .is_some()
     }
 
     /// Find call and which leg the request belongs to.
