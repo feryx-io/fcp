@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sip"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1807,8 +1807,10 @@ dependencies = [
  "futures",
  "md5",
  "rand 0.8.5",
+ "regex",
  "rustls-native-certs",
  "serde",
+ "serde_json",
  "sha2",
  "sip-auth",
  "sip-core",

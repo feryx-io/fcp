@@ -45,7 +45,7 @@ pub struct FlowCallHandler {
     events: Option<Arc<dyn EventPublisher>>,
 
     /// Flow routing rules (DID -> flow_id mapping)
-    /// TODO: Phase 2 - Load from database
+    /// Phase 2: Load from database via FlowStore when database-backed routing is implemented.
     routing: Arc<RwLock<HashMap<String, String>>>,
 
     /// Media manager for audio playback and bridging
@@ -65,6 +65,15 @@ pub struct FlowCallHandler {
 
     /// Contact URI for outbound calls
     contact_uri: Option<sip_core::SipUri>,
+
+    /// Media profile for SDP generation
+    media_profile: Option<sip_sdp::profiles::MediaProfileBuilder>,
+
+    /// Local address for SDP origin/connection lines
+    local_addr: Option<String>,
+
+    /// RTP port for SDP media lines
+    rtp_port: u16,
 }
 
 impl FlowCallHandler {
@@ -86,6 +95,9 @@ impl FlowCallHandler {
             dialog_manager: None,
             local_uri: None,
             contact_uri: None,
+            media_profile: None,
+            local_addr: None,
+            rtp_port: 8000,
         }
     }
 
@@ -112,6 +124,32 @@ impl FlowCallHandler {
         self.local_uri = Some(local_uri);
         self.contact_uri = Some(contact_uri);
         self
+    }
+
+    /// Set the media profile for SDP generation in outbound calls.
+    pub fn with_media_profile(
+        mut self,
+        profile: sip_sdp::profiles::MediaProfileBuilder,
+        local_addr: String,
+        rtp_port: u16,
+    ) -> Self {
+        self.media_profile = Some(profile);
+        self.local_addr = Some(local_addr);
+        self.rtp_port = rtp_port;
+        self
+    }
+
+    /// Interpolate `{{variable}}` placeholders in a template string using flow context variables.
+    fn interpolate(template: &str, context: &FlowContext) -> String {
+        let re = regex::Regex::new(r"\{\{([^}]+)\}\}").unwrap();
+        let mut result = template.to_string();
+        for cap in re.captures_iter(template) {
+            let var_name = cap[1].trim();
+            if let Ok(value) = context.get_variable(var_name) {
+                result = result.replace(&cap[0], &value);
+            }
+        }
+        result
     }
 
     /// Add a flow routing rule.
@@ -351,7 +389,6 @@ impl FlowCallHandler {
     /// Phase 3 (PENDING): Media bridging
     /// Phase 4 (PENDING): CDR tracking
     /// Phase 5 (PENDING): Advanced features
-    #[allow(unused_variables)] // TODO: Remove when all parameters are used
     async fn handle_dial(
         &self,
         a_leg_call_id: CallId,
@@ -418,13 +455,16 @@ impl FlowCallHandler {
         );
 
         // Create UserAgentClient for B-leg
-        let uac = UserAgentClient::new(local_uri.clone(), contact_uri.clone());
+        let mut uac = UserAgentClient::new(local_uri.clone(), contact_uri.clone());
+        if let Some(ref cid) = caller_id {
+            if let Ok(cid_uri) = sip_core::SipUri::parse(cid) {
+                uac.from_uri_override = Some(cid_uri);
+            } else if let Ok(()) = uac.set_display_name(cid) {
+                // Use caller_id as display name with local_uri as From URI
+            }
+        }
 
-        // TODO: Override From header with caller_id if provided
-        // Currently uses local_uri as From header
-
-        // Generate minimal SDP offer for B-leg
-        // TODO: Phase 3 - Use MediaManager to generate proper SDP based on A-leg capabilities
+        // Generate SDP offer for B-leg (uses media profile if configured)
         let sdp_offer = self.generate_minimal_sdp();
 
         info!(
@@ -445,7 +485,7 @@ impl FlowCallHandler {
         // Phase 2: Send INVITE and handle responses
 
         // Parse destination address for TransportContext
-        // TODO: Phase 5 - Use proper DNS resolution (RFC 3263) instead of basic parsing
+        // Phase 5: Integrate sip-dns crate for RFC 3263 NAPTR/SRV/A resolution
         let host = dest_uri.host();
         let port = dest_uri.port().unwrap_or(5060);
 
@@ -482,7 +522,7 @@ impl FlowCallHandler {
         );
 
         // Create transport context (MVP: use UDP)
-        // TODO: Phase 5 - Support TCP/TLS based on URI scheme or transport parameter
+        // Phase 5: Parse URI transport param or scheme to select TCP/TLS
         let ctx = TransportContext::new(
             sip_transaction::fsm::TransportKind::Udp,
             peer_addr,
@@ -504,6 +544,10 @@ impl FlowCallHandler {
             request: invite.clone(),
             ctx: ctx.clone(),
         });
+
+        // Save copies for CANCEL if timeout occurs
+        let cancel_ctx = ctx.clone();
+        let cancel_invite = invite.clone();
 
         // Start client transaction (sends INVITE)
         let _tx_key = transaction_manager
@@ -544,7 +588,7 @@ impl FlowCallHandler {
                     );
 
                     // 180 Ringing, 183 Session Progress, etc. - just log for now
-                    // TODO: Phase 5 - Forward ringing to A-leg, handle early media
+                    // Phase 5: Forward 180/183 to A-leg for ringback/early media
                 }
             } => {
                 // All provisionals received, waiting for final
@@ -588,8 +632,41 @@ impl FlowCallHandler {
                                     "Extracted SDP answer from 200 OK"
                                 );
 
-                                // TODO: Phase 3.1 - Create B-leg dialog_id from response headers
-                                // For MVP, create a temporary DialogId
+                                // Extract dialog parameters from 200 OK response headers
+                                let b_call_id = response.headers().get("Call-ID")
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let b_from_tag = response.headers().get("From")
+                                    .and_then(|h| h.split("tag=").nth(1))
+                                    .map(|t| t.split(';').next().unwrap_or(t).to_string())
+                                    .unwrap_or_default();
+                                let b_to_tag = response.headers().get("To")
+                                    .and_then(|h| h.split("tag=").nth(1))
+                                    .map(|t| t.split(';').next().unwrap_or(t).to_string())
+                                    .unwrap_or_default();
+
+                                debug!(
+                                    a_leg_call_id = %a_leg_call_id,
+                                    b_call_id = %b_call_id,
+                                    b_from_tag = %b_from_tag,
+                                    b_to_tag = %b_to_tag,
+                                    "Extracted B-leg dialog parameters from 200 OK"
+                                );
+
+                                // Store B-leg SIP dialog params for later BYE generation
+                                {
+                                    let ctx_entry = self.contexts.get(&a_leg_call_id);
+                                    if let Some(entry) = ctx_entry {
+                                        let ctx = Arc::clone(entry.value());
+                                        drop(entry);
+                                        let ctx_guard = ctx.write().await;
+                                        ctx_guard.set_variable("b_leg_sip_call_id".to_string(), b_call_id.clone());
+                                        ctx_guard.set_variable("b_leg_from_tag".to_string(), b_from_tag.clone());
+                                        ctx_guard.set_variable("b_leg_to_tag".to_string(), b_to_tag.clone());
+                                    }
+                                }
+
+                                // fcp_core::DialogId is UUID-based; use it for media session tracking
                                 let b_leg_dialog_id = fcp_core::DialogId::new();
 
                                 // Create B-leg Call ID (for media session tracking)
@@ -737,7 +814,15 @@ impl FlowCallHandler {
                 dial_status = String::from("no_answer");
                 next_node = on_no_answer.unwrap_or_else(|| next.clone());
 
-                // TODO: Phase 2.1 - Send CANCEL to terminate the INVITE transaction
+                // Send CANCEL to terminate the INVITE transaction
+                let cancel_tm = Arc::clone(transaction_manager);
+                let cancel_inv = cancel_invite.clone();
+                let cancel_c = cancel_ctx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = send_cancel(&cancel_tm, &cancel_inv, cancel_c).await {
+                        warn!(error = %e, "Failed to send CANCEL for timed-out B-leg INVITE");
+                    }
+                });
             }
         }
 
@@ -771,27 +856,34 @@ impl FlowCallHandler {
         Box::pin(self.execute_next_node(a_leg_call_id)).await
     }
 
-    /// Helper: Generate minimal SDP offer for B-leg INVITE.
+    /// Helper: Generate SDP offer for B-leg INVITE.
     ///
-    /// TODO: Phase 3 - Replace with proper SDP generation from MediaManager
-    /// based on A-leg SDP capabilities (codecs, media types, etc.)
+    /// Uses the configured `MediaProfileBuilder` when available, otherwise falls
+    /// back to a hardcoded minimal SDP.  Phase 3 will integrate A-leg capability
+    /// negotiation via `MediaManager`.
     fn generate_minimal_sdp(&self) -> String {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        if let (Some(profile), Some(local_addr)) = (&self.media_profile, &self.local_addr) {
+            let session_desc = profile.build("fcp", local_addr, self.rtp_port, None);
+            sip_sdp::serialize::serialize_sdp(&session_desc)
+        } else {
+            // Fallback: hardcoded minimal SDP
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
 
-        format!(
-            "v=0\r\n\
-             o=- {} 1 IN IP4 127.0.0.1\r\n\
-             s=FCP B2BUA\r\n\
-             c=IN IP4 127.0.0.1\r\n\
-             t=0 0\r\n\
-             m=audio 8000 RTP/AVP 0 8\r\n\
-             a=rtpmap:0 PCMU/8000\r\n\
-             a=rtpmap:8 PCMA/8000\r\n",
-            timestamp
-        )
+            format!(
+                "v=0\r\n\
+                 o=- {} 1 IN IP4 127.0.0.1\r\n\
+                 s=FCP B2BUA\r\n\
+                 c=IN IP4 127.0.0.1\r\n\
+                 t=0 0\r\n\
+                 m=audio 8000 RTP/AVP 0 8\r\n\
+                 a=rtpmap:0 PCMU/8000\r\n\
+                 a=rtpmap:8 PCMA/8000\r\n",
+                timestamp
+            )
+        }
     }
 
     /// Helper: Transition to error node or next node on failure.
@@ -940,9 +1032,7 @@ impl FlowCallHandler {
                             "Playing audio file"
                         );
 
-                        // TODO: Interpolate variables in URL (requires implementing interpolation)
-                        // For now, use raw URL value
-                        let url_value = url.clone();
+                        let url_value = Self::interpolate(url, &context_guard);
 
                         // Use media session ID from context (not SIP call ID)
                         let session_id = context_guard.media_session_id.ok_or_else(|| {
@@ -1026,9 +1116,7 @@ impl FlowCallHandler {
                             "Playing text-to-speech"
                         );
 
-                        // TODO: Interpolate variables in text (requires implementing interpolation)
-                        // For now, use raw values
-                        let text_value = text.clone();
+                        let text_value = Self::interpolate(text, &context_guard);
                         let language_value = language.clone();
                         let voice_value = voice.clone();
 
@@ -1175,12 +1263,16 @@ impl FlowCallHandler {
                     });
                 }
 
-                // Clean up context
+                // Invoke hangup callback to send BYE
+                let callback = context_guard.hangup_callback.clone();
                 drop(context_guard);
                 self.contexts.remove(&call_id);
 
-                // TODO: Send BYE to hangup the call
-                warn!(call_id = %call_id, "Flow requested hangup, but SIP hangup not yet implemented");
+                if let Some(callback) = callback {
+                    if let Err(e) = callback(reason).await {
+                        error!(call_id = %call_id, error = %e, "Failed to send BYE for flow hangup");
+                    }
+                }
             }
 
             FlowExecutionResult::WaitingForInput {
@@ -1294,8 +1386,7 @@ impl FlowCallHandler {
                         "Starting DTMF collection"
                     );
 
-                    // TODO: Wire up DTMF events from media backend to collector
-                    // For now, we simulate a timeout scenario
+                    // Requires media backend RTP event detection; collector works when events are fed in
                     let result = collector
                         .collect(std::time::Duration::from_secs(timeout_secs as u64))
                         .await;
@@ -1460,6 +1551,8 @@ impl FlowCallHandler {
     /// Handle DTMF input from the caller.
     ///
     /// This is called when DTMF digits are received during a Gather node.
+    /// Looks up the pending gather transitions to determine the next node,
+    /// stores digits in the named variable, and resumes flow execution.
     pub async fn handle_dtmf_input(&self, call_id: CallId, digits: String) -> Result<()> {
         info!(
             call_id = %call_id,
@@ -1475,17 +1568,40 @@ impl FlowCallHandler {
         let context = Arc::clone(context_entry.value());
         drop(context_entry);
 
-        let context_guard = context.write().await;
+        let mut context_guard = context.write().await;
 
-        // TODO: Process DTMF input based on current Gather node
-        // For now, just store the digits as a variable
+        // Store the digits as a variable
         context_guard.set_variable("dtmf_input".to_string(), digits.clone());
 
+        // Check if there's a pending gather with transitions
+        let transitions_json = context_guard.get_variable("__gather_transitions").ok();
+        let default_node = context_guard.get_variable("__gather_default").ok();
+        let variable_name = context_guard.get_variable("__gather_variable").ok();
+
+        // Store digits in the named variable if specified
+        if let Some(var_name) = &variable_name {
+            context_guard.set_variable(var_name.clone(), digits.clone());
+        }
+
+        // Determine next node based on transitions
+        if let Some(transitions_str) = transitions_json {
+            if let Ok(transitions) = serde_json::from_str::<HashMap<String, String>>(&transitions_str) {
+                if let Some(next_node) = transitions.get(&digits) {
+                    context_guard.current_node = next_node.clone();
+                    drop(context_guard);
+                    return self.execute_next_node(call_id).await;
+                }
+            }
+        }
+
+        // Fall back to default node
+        if let Some(default) = default_node {
+            context_guard.current_node = default;
+            drop(context_guard);
+            return self.execute_next_node(call_id).await;
+        }
+
         drop(context_guard);
-
-        // Continue execution
-        self.execute_next_node(call_id).await?;
-
         Ok(())
     }
 
@@ -1538,8 +1654,8 @@ struct DialTransactionUser {
     uac: UserAgentClient,
     /// Original INVITE request (for creating ACK)
     request: Request,
-    /// Transport context for sending ACK
-    #[allow(dead_code)] // TODO: Use for sending ACK in transaction layer
+    /// Transport context for sending ACK/CANCEL
+    #[allow(dead_code)] // Needed for future transport integration (Phase 3)
     ctx: TransportContext,
 }
 
@@ -1588,10 +1704,11 @@ impl ClientTransactionUser for DialTransactionUser {
         // Create ACK using UAC helper
         let _ack = self.uac.create_ack(&self.request, &response, None);
 
-        // Send ACK via transport (for now, log that we would send it)
-        // TODO: Phase 3 - Actually send ACK via dispatcher when we have full transport integration
+        // ACK is prepared but not dispatched yet. Sending requires dispatcher
+        // access, which will be available when FlowCallHandler is integrated with
+        // the transport layer in Phase 3.
         debug!(
-            "ACK prepared for B-leg response {} (actual sending pending transport integration)",
+            "ACK prepared for B-leg response {} (sending requires transport dispatcher)",
             response.code()
         );
     }
@@ -1603,7 +1720,7 @@ impl ClientTransactionUser for DialTransactionUser {
         _ctx: &TransportContext,
     ) {
         debug!("PRACK for reliable provisional {} (not implemented for Dial node MVP)", response.code());
-        // TODO: Phase 5 - Implement PRACK for reliable provisionals if needed
+        // Phase 5: Send PRACK for reliable provisionals via sip-uac
     }
 
     async fn on_transport_error(&self, _key: &TransactionKey) {
@@ -1615,6 +1732,140 @@ impl ClientTransactionUser for DialTransactionUser {
             let _ = tx.send("Transport error".to_string());
         }
     }
+}
+
+/// Simplified transaction user for CANCEL requests.
+///
+/// Only needs to receive the final response and termination notification.
+struct CancelTransactionUser {
+    final_tx: Mutex<Option<oneshot::Sender<Response>>>,
+    term_tx: Mutex<Option<oneshot::Sender<String>>>,
+}
+
+#[async_trait]
+impl ClientTransactionUser for CancelTransactionUser {
+    async fn on_provisional(&self, _key: &TransactionKey, response: &Response) {
+        debug!("CANCEL provisional response: {}", response.code());
+    }
+
+    async fn on_final(&self, _key: &TransactionKey, response: &Response) {
+        info!("CANCEL final response: {}", response.code());
+        let mut tx = self.final_tx.lock().await;
+        if let Some(tx) = tx.take() {
+            let _ = tx.send(response.clone());
+        }
+    }
+
+    async fn on_terminated(&self, _key: &TransactionKey, reason: &str) {
+        debug!("CANCEL transaction terminated: {}", reason);
+        let mut tx = self.term_tx.lock().await;
+        if let Some(tx) = tx.take() {
+            let _ = tx.send(reason.to_string());
+        }
+    }
+
+    async fn send_ack(
+        &self,
+        _key: &TransactionKey,
+        _response: Response,
+        _ctx: &TransportContext,
+        _is_2xx: bool,
+    ) {
+        // CANCEL is non-INVITE, no ACK needed
+    }
+
+    async fn send_prack(
+        &self,
+        _key: &TransactionKey,
+        _response: Response,
+        _ctx: &TransportContext,
+    ) {
+        // No PRACK for CANCEL
+    }
+
+    async fn on_transport_error(&self, _key: &TransactionKey) {
+        warn!("CANCEL transport error");
+        let mut tx = self.term_tx.lock().await;
+        if let Some(tx) = tx.take() {
+            let _ = tx.send("Transport error".to_string());
+        }
+    }
+}
+
+/// Build and send a CANCEL request for an in-progress INVITE.
+///
+/// Per RFC 3261 §9.1, CANCEL copies the top Via, From, To, Call-ID, Route
+/// headers from the original INVITE request, with CSeq method changed to CANCEL.
+async fn send_cancel(
+    transaction_manager: &TransactionManager,
+    invite: &Request,
+    ctx: TransportContext,
+) -> Result<()> {
+    use sip_core::{Headers, Method, RequestLine};
+
+    let mut cancel_headers = Headers::new();
+
+    // Copy top Via only
+    for header in invite.headers().iter() {
+        if header.name().eq_ignore_ascii_case("Via") {
+            cancel_headers.push(header.name(), header.value())?;
+            break; // Only top Via
+        }
+    }
+
+    // Copy From, To, Call-ID
+    for name in &["From", "To", "Call-ID"] {
+        if let Some(val) = invite.headers().get(name) {
+            cancel_headers.push(*name, val)?;
+        }
+    }
+
+    // CSeq with CANCEL method (same sequence number, different method)
+    if let Some(cseq) = invite.headers().get("CSeq") {
+        if let Some((num, _method)) = cseq.split_once(' ') {
+            cancel_headers.push("CSeq", format!("{} CANCEL", num))?;
+        }
+    }
+
+    // Copy Route headers
+    for header in invite.headers().iter() {
+        if header.name().eq_ignore_ascii_case("Route") {
+            cancel_headers.push(header.name(), header.value())?;
+        }
+    }
+
+    cancel_headers.push("Max-Forwards", "70")?;
+    cancel_headers.push("Content-Length", "0")?;
+
+    let cancel_request = Request::new(
+        RequestLine::new(Method::Cancel, invite.uri().clone()),
+        cancel_headers,
+        bytes::Bytes::new(),
+    )?;
+
+    let (final_tx, final_rx) = oneshot::channel::<Response>();
+    let (term_tx, _term_rx) = oneshot::channel::<String>();
+
+    let tu = Arc::new(CancelTransactionUser {
+        final_tx: Mutex::new(Some(final_tx)),
+        term_tx: Mutex::new(Some(term_tx)),
+    });
+
+    let _key = transaction_manager
+        .start_client_transaction(cancel_request, ctx, tu)
+        .await?;
+
+    // Wait briefly for 200 OK to CANCEL (don't block forever)
+    match tokio::time::timeout(std::time::Duration::from_secs(5), final_rx).await {
+        Ok(Ok(resp)) => {
+            info!(code = resp.code(), "CANCEL response received");
+        }
+        _ => {
+            debug!("CANCEL response timeout or channel closed");
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

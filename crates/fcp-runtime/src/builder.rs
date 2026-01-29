@@ -137,6 +137,7 @@ impl RuntimeBuilder {
                 flow_store,
                 &event_bus,
                 &media_manager,
+                &config,
             ).await?)
         } else {
             None
@@ -424,17 +425,34 @@ async fn create_flow_handler(
     flow_store: &Arc<dyn fcp_flow::FlowStore>,
     event_bus: &Arc<dyn EventBus>,
     media_manager: &Arc<fcp_media::MediaManager>,
+    config: &FcpConfig,
 ) -> Result<Arc<fcp_sip::flow_handler::FlowCallHandler>> {
     use fcp_sip::flow_handler::FlowCallHandler;
 
     info!("Creating flow handler with database-backed flow store");
 
     // Create flow handler with event publishing and media playback
-    let flow_handler = FlowCallHandler::new(
+    let mut flow_handler = FlowCallHandler::new(
         Arc::clone(&flow_store),
         Some(Arc::clone(event_bus) as Arc<dyn fcp_events::EventPublisher>),
         Some(Arc::clone(media_manager)),
     );
+
+    // Configure media profile for SDP generation in outbound calls
+    if config.transport.enable_sdp {
+        let local_addr = config.transport.local_ip.clone().unwrap_or_else(|| {
+            config
+                .transport
+                .udp_bind
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|| "127.0.0.1".to_string())
+        });
+        flow_handler = flow_handler.with_media_profile(
+            fcp_sip::prelude::MediaProfileBuilder::audio_only(),
+            local_addr,
+            config.transport.rtp_port,
+        );
+    }
 
     info!("Flow handler created successfully (using database-backed store)");
 
