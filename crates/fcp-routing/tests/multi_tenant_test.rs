@@ -246,8 +246,8 @@ policies: []
     let bob_tenant = service.get_user_tenant("bob@company.com").await.unwrap();
     assert_eq!(bob_tenant, default_tenant);
 
-    // Test: get_user_tenant fails for non-existent user
-    let result = service.get_user_tenant("nobody@nowhere.com").await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("User"));
+    // Test: get_user_tenant returns default tenant for non-existent user
+    // This supports all_users policies where users are managed via API
+    let unknown_tenant = service.get_user_tenant("nobody@nowhere.com").await.unwrap();
+    assert_eq!(unknown_tenant, default_tenant);
 }

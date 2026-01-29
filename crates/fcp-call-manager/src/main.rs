@@ -62,6 +62,26 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Auto-detect local IP if not explicitly configured and bind is 0.0.0.0
+    // This prevents using unroutable addresses (0.0.0.0, 127.0.0.1) in SIP
+    // messages when running inside Docker or binding to all interfaces.
+    if config.sip.local_ip.is_none() {
+        let bind_unspecified = config
+            .sip
+            .udp_bind
+            .parse::<std::net::SocketAddr>()
+            .map(|a| a.ip().is_unspecified())
+            .unwrap_or(true);
+        if bind_unspecified {
+            if let Some(detected_ip) = auto_detect_local_ip() {
+                config.sip.local_ip = Some(detected_ip.clone());
+                if config.media.public_ip.is_none() {
+                    config.media.public_ip = Some(detected_ip);
+                }
+            }
+        }
+    }
+
     // 3. Initialize tracing
     init_tracing(&config);
 
@@ -70,6 +90,14 @@ async fn main() -> Result<()> {
         node_id = %config.service.node_id,
         "fcp-call-manager starting"
     );
+
+    if let Some(ref ip) = config.sip.local_ip {
+        info!(
+            local_ip = %ip,
+            source = if cli.public_ip.as_ref().map_or(false, |p| !p.is_empty()) { "PUBLIC_IP env" } else { "auto-detected" },
+            "Using local IP for SIP signaling and media"
+        );
+    }
 
     // Set up observability
     if !set_transport_metrics(Arc::new(TracingTransportMetrics)) {
@@ -472,11 +500,32 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
 }
 
 /// Derive local IP from bind address string.
+///
+/// If the bind address is unspecified (0.0.0.0), falls back to auto-detection.
 fn derive_local_ip(bind_addr: &str) -> String {
-    bind_addr
-        .parse::<std::net::SocketAddr>()
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "127.0.0.1".to_string())
+    if let Ok(addr) = bind_addr.parse::<std::net::SocketAddr>() {
+        if !addr.ip().is_unspecified() {
+            return addr.ip().to_string();
+        }
+    }
+    auto_detect_local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+/// Auto-detect the local LAN IP by asking the OS which interface routes to the internet.
+///
+/// Opens a UDP socket to a well-known address (no actual traffic is sent) and checks
+/// which local address the OS selected. This is the standard technique for determining
+/// the machine's routable IP address.
+fn auto_detect_local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    // connect() on a UDP socket doesn't send anything — it just sets the
+    // default destination so the OS selects the appropriate source address.
+    socket.connect("8.8.8.8:53").ok()?;
+    let addr = socket.local_addr().ok()?;
+    if addr.ip().is_unspecified() || addr.ip().is_loopback() {
+        return None;
+    }
+    Some(addr.ip().to_string())
 }
 
 /// Initialize tracing subscriber based on configuration.

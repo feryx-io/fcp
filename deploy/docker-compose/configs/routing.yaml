@@ -24,8 +24,7 @@ policies:
     enabled: true
     applies_to:
       all_users: true  # Match any authenticated caller
-    destination_match:
-      pattern: "^sip:.+@fcp\\.local$"  # Match calls to fcp.local domain
+    destination_match: null  # No destination restriction - allow calls to any target
     time_windows: []
     source_ip_ranges: []
     action: Allow

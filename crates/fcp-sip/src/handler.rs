@@ -732,13 +732,21 @@ impl SipMessageHandler {
             {
                 info!(call_id = %call.id, "CANCEL matched call; marking as failed");
 
-                // Attempt to CANCEL the outbound B-leg transaction if it is still pending
+                // Signal the parallel forking task to cancel all B-legs immediately.
+                // This wakes up the select! in handle_parallel_forking which then
+                // CANCELs every B-leg it owns.
+                if let Some(notify) = &call.cancel_notify {
+                    info!(call_id = %call.id, "Signaling forking task to CANCEL all B-legs");
+                    notify.notify_one();
+                }
+
+                // Also try the direct outbound handle path (for established calls
+                // where the forking task has already completed and stored the handle)
                 let dialog_manager = Arc::clone(&self.dialog_manager);
                 if let Some(b_leg) = &call.b_leg {
-                    // Clone the outbound handle BEFORE clearing it to avoid race condition
                     let outbound_handle_clone = b_leg.outbound_handle.clone();
 
-                    // Clean any stored B-leg dialog in CallManager before removal
+                    // Clean any stored B-leg dialog in CallManager
                     let _ = self.call_manager.update_call(&call.id, |c| {
                         if let Some(b) = &mut c.b_leg {
                             if let Some(dialog) = b.dialog.take() {
@@ -757,11 +765,9 @@ impl SipMessageHandler {
                         }
                     });
 
-                    // Send CANCEL to B-leg using the outbound handle
-                    // Since cancel() takes &self, we can call it directly on the Arc
-                    // This works concurrently with await_final() which is likely running
+                    // Send CANCEL via direct outbound handle (works for established calls)
                     if let Some(outbound) = outbound_handle_clone {
-                        info!(call_id = %call.id, "Sending CANCEL to B-leg");
+                        info!(call_id = %call.id, "Sending CANCEL to B-leg via outbound handle");
                         let call_id_log = call.id;
 
                         tokio::spawn(async move {
@@ -774,8 +780,6 @@ impl SipMessageHandler {
                                 }
                             }
                         });
-                    } else {
-                        debug!(call_id = %call.id, "No B-leg outbound handle found for CANCEL");
                     }
                 }
 
@@ -2033,6 +2037,11 @@ impl SipMessageHandler {
             })
             .collect();
 
+        // Deduplicate contacts by host:port to avoid sending multiple INVITEs to
+        // the same physical device. Softphones like Zoiper register multiple
+        // contacts with different rinstance params but the same host:port.
+        let target_uris = dedup_target_uris_by_hostport(target_uris);
+
         info!(
             call_id = %call_id,
             target_count = target_uris.len(),
@@ -2208,9 +2217,14 @@ impl SipMessageHandler {
             "All B-leg INVITEs sent, racing for first answer"
         );
 
-        // Update call state to Proceeding
+        // Create cancel_notify so CANCEL handler can signal the forking task
+        let cancel_notify = Arc::new(tokio::sync::Notify::new());
+
+        // Update call state to Proceeding and store cancel_notify
+        let cancel_notify_clone = Arc::clone(&cancel_notify);
         let _ = self.call_manager.update_call(&call_id, |call| {
             call.state = fcp_b2bua_core::CallState::Proceeding;
+            call.cancel_notify = Some(cancel_notify_clone);
         });
 
         // Spawn background task to race all B-legs
@@ -2226,6 +2240,7 @@ impl SipMessageHandler {
                     a_leg_handle_arc,
                     b_leg_calls,
                     call_id_clone,
+                    cancel_notify,
                 )
                 .await
             {
@@ -2617,6 +2632,7 @@ impl SipMessageHandler {
         a_leg_handle: Arc<ServerTransactionHandle>,
         b_leg_calls: Vec<(String, Arc<crate::uac::OutboundCall>)>,
         call_id: fcp_b2bua_core::CallId,
+        cancel_notify: Arc<tokio::sync::Notify>,
     ) -> Result<()> {
         info!(
             call_id = %call_id,
@@ -2760,71 +2776,91 @@ impl SipMessageHandler {
             tasks.push(task);
         }
 
-        // Race all tasks and take the first successful 2xx response
+        // Race all tasks and take the first successful 2xx response.
+        // Also listen for A-leg cancellation so we can abort immediately.
         let mut winning_index = None;
         let mut winning_target = None;
         let mut winning_response = None;
         let mut winning_handle = None;
+        let mut cancelled_by_caller = false;
 
-        // Keep looping until we get a 2xx or all tasks complete
         debug!(call_id = %call_id, task_count = tasks.len(), "Starting race for first 2xx response");
-        while !tasks.is_empty() {
-            let (result, task_index, remaining) = futures::future::select_all(tasks).await;
-            tasks = remaining;
 
-            match result {
-                Ok(Some((i, target, code, response, handle))) => {
-                    debug!(
-                        call_id = %call_id,
-                        b_leg_index = i,
-                        target = %target,
-                        code = code,
-                        "B-leg {} completed with code {}", i, code
-                    );
+        // Wrap the B-leg race into a single future so we can select against cancel
+        let race_future = async {
+            while !tasks.is_empty() {
+                let (result, _task_index, remaining) = futures::future::select_all(tasks).await;
+                tasks = remaining;
 
-                    if code >= 200 && code < 300 {
-                        // Winner! This is the first 2xx
-                        info!(
-                            call_id = %call_id,
-                            winner = %target,
-                            code = code,
-                            "B-leg {} won the race with {}",
-                            i, code
-                        );
-                        winning_index = Some(i);
-                        winning_target = Some(target);
-                        winning_response = Some(response);
-                        winning_handle = Some(handle);
-                        break;
-                    } else {
+                match result {
+                    Ok(Some((i, target, code, response, handle))) => {
                         debug!(
                             call_id = %call_id,
+                            b_leg_index = i,
+                            target = %target,
                             code = code,
-                            "B-leg {} returned non-2xx {}, continuing race", i, code
+                            "B-leg {} completed with code {}", i, code
+                        );
+
+                        if code >= 200 && code < 300 {
+                            info!(
+                                call_id = %call_id,
+                                winner = %target,
+                                code = code,
+                                "B-leg {} won the race with {}",
+                                i, code
+                            );
+                            return Some((i, target, response, handle));
+                        } else {
+                            debug!(
+                                call_id = %call_id,
+                                code = code,
+                                "B-leg {} returned non-2xx {}, continuing race", i, code
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        debug!(
+                            call_id = %call_id,
+                            "B-leg task returned None (likely failed or terminated)"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            call_id = %call_id,
+                            error = ?e,
+                            "B-leg task panicked"
                         );
                     }
                 }
-                Ok(None) => {
-                    debug!(
-                        call_id = %call_id,
-                        task_index = task_index,
-                        "B-leg task returned None (likely failed or terminated)"
-                    );
+            }
+            None // No winner
+        };
+
+        tokio::pin!(race_future);
+
+        tokio::select! {
+            winner = &mut race_future => {
+                if let Some((i, target, response, handle)) = winner {
+                    winning_index = Some(i);
+                    winning_target = Some(target);
+                    winning_response = Some(response);
+                    winning_handle = Some(handle);
                 }
-                Err(e) => {
-                    warn!(
-                        call_id = %call_id,
-                        task_index = task_index,
-                        error = ?e,
-                        "B-leg task panicked"
-                    );
-                }
+            }
+            _ = cancel_notify.notified() => {
+                info!(
+                    call_id = %call_id,
+                    "Caller cancelled — aborting B-leg race to CANCEL all B-legs"
+                );
+                cancelled_by_caller = true;
             }
         }
 
         debug!(
             call_id = %call_id,
             has_winner = winning_index.is_some(),
+            cancelled = cancelled_by_caller,
             "Race complete"
         );
 
@@ -3014,8 +3050,12 @@ impl SipMessageHandler {
 
             info!(call_id = %call_id, "Sending 200 OK to A-leg with media anchoring");
             a_leg_handle.send_final(ok_response).await;
+        } else if cancelled_by_caller {
+            // Caller already cancelled — handle_cancel sent 487 and terminated the call.
+            // Just clean up; don't send another response to A-leg.
+            info!(call_id = %call_id, "Forking task exiting after caller cancellation");
         } else {
-            // All B-legs failed
+            // All B-legs failed (not due to cancellation)
             warn!(call_id = %call_id, "All B-legs failed, returning 480");
             let response = self.create_simple_response(&request, 480, "Temporarily Unavailable");
             a_leg_handle.send_final(response).await;
@@ -5760,6 +5800,52 @@ fn is_e164_number(uri: &str) -> bool {
 
     // E.164 numbers start with '+' and must have at least 7 digits (country code + minimal number)
     user_part.starts_with('+') && user_part.len() > 7 && user_part[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Deduplicate target URIs by host:port.
+///
+/// Softphones like Zoiper register multiple contacts with different `rinstance`
+/// parameters but the same host:port. Without deduplication, the B2BUA sends
+/// separate INVITEs to each registration, causing the same phone to ring
+/// multiple times for a single call.
+///
+/// Keeps the first URI encountered for each host:port (which is typically the
+/// one with the highest q-value since registrations are sorted by priority).
+fn dedup_target_uris_by_hostport(uris: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for uri in uris {
+        let key = extract_hostport_from_uri(&uri);
+        if seen.insert(key) {
+            result.push(uri);
+        }
+    }
+    result
+}
+
+/// Extract host:port from a SIP URI for deduplication purposes.
+///
+/// Given `sip:bob@192.168.1.80:59585;rinstance=abc;transport=tcp`,
+/// returns `"192.168.1.80:59585"`.
+fn extract_hostport_from_uri(uri: &str) -> String {
+    // Strip scheme
+    let without_scheme = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+        .unwrap_or(uri);
+
+    // Take everything after '@' (or the whole thing if no '@')
+    let hostpart = without_scheme
+        .split('@')
+        .nth(1)
+        .unwrap_or(without_scheme);
+
+    // Strip URI parameters (;rinstance=..., ;transport=..., etc.)
+    hostpart
+        .split(';')
+        .next()
+        .unwrap_or(hostpart)
+        .to_string()
 }
 
 /// SDP validation helper (exposed for tests).

@@ -78,7 +78,13 @@ impl LocationStoreAdapter {
 #[async_trait]
 impl AsyncLocationStore for LocationStoreAdapter {
     async fn upsert(&self, binding: Binding) -> Result<()> {
-        let registration = Self::from_binding(&binding);
+        let mut registration = Self::from_binding(&binding);
+        // Normalize the contact to strip transient parameters (rinstance, gr).
+        // This ensures re-registrations from the same device update the existing
+        // row via ON CONFLICT(aor, contact) rather than creating duplicates
+        // when rinstance changes between client restarts.
+        registration.contact =
+            crate::registrar::FcpRegistrar::normalize_contact_for_matching(&registration.contact);
         self.store.put_registration(registration).await
     }
 
@@ -467,7 +473,7 @@ impl FcpRegistrar {
 
         // Handle registration (Expires > 0)
         if let Some(contact_str) = contact_header {
-            // Strip contact-params (like ;expires=0) but KEEP rinstance for routing
+            // Strip contact-params (like ;expires=0)
             let contact_uri = Self::extract_contact_uri(contact_str.as_str());
             let binding = match Self::create_binding(&aor, contact_uri, expires, request) {
                 Ok(b) => b,
@@ -986,6 +992,191 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(regs.len(), 0);
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_reregister_different_rinstance_no_duplicates() {
+        let temp_dir = std::env::temp_dir().join("fcp-test-registrar-rinstance");
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await; // Clean up from previous runs
+        let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
+
+        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+
+        // First REGISTER with rinstance=aaa
+        let mut headers = sip_core::Headers::new();
+        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK001"));
+        headers.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t1"));
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("call-1@example.com"));
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=aaa111;transport=tcp>;expires=3600"));
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        let request = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        ).unwrap();
+
+        let response = registrar.handle_register(&request).await;
+        assert_eq!(response.start_line().code(), 200);
+
+        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
+        assert_eq!(regs.len(), 1, "Should have exactly 1 registration after first REGISTER");
+
+        // Second REGISTER with different rinstance=bbb (same device restarted)
+        let mut headers2 = sip_core::Headers::new();
+        headers2.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK002"));
+        headers2.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t2"));
+        headers2.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
+        headers2.push(SmolStr::new("Call-ID"), SmolStr::new("call-2@example.com"));
+        headers2.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        headers2.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=bbb222;transport=tcp>;expires=3600"));
+        headers2.push(SmolStr::new("Expires"), SmolStr::new("3600"));
+        headers2.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        let request2 = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            headers2,
+            bytes::Bytes::new(),
+        ).unwrap();
+
+        let response2 = registrar.handle_register(&request2).await;
+        assert_eq!(response2.start_line().code(), 200);
+
+        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
+        assert_eq!(regs.len(), 1, "Should still have exactly 1 registration after re-REGISTER with different rinstance");
+
+        // Verify the stored contact is normalized (no rinstance)
+        assert!(
+            !regs[0].contact.contains("rinstance"),
+            "Stored contact should not contain rinstance: {}",
+            regs[0].contact
+        );
+        assert!(
+            regs[0].contact.contains("transport=tcp"),
+            "Stored contact should keep transport param: {}",
+            regs[0].contact
+        );
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_unregister_removes_registration() {
+        let temp_dir = std::env::temp_dir().join("fcp-test-registrar-unreg");
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
+
+        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+
+        // Register first
+        let mut headers = sip_core::Headers::new();
+        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK001"));
+        headers.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t1"));
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("call-1@example.com"));
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=abc;transport=tcp>;expires=3600"));
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        let request = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        ).unwrap();
+
+        let response = registrar.handle_register(&request).await;
+        assert_eq!(response.start_line().code(), 200);
+
+        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
+        assert_eq!(regs.len(), 1);
+
+        // Now unregister with Expires: 0 and a different rinstance
+        let mut headers2 = sip_core::Headers::new();
+        headers2.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK002"));
+        headers2.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t2"));
+        headers2.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
+        headers2.push(SmolStr::new("Call-ID"), SmolStr::new("call-2@example.com"));
+        headers2.push(SmolStr::new("CSeq"), SmolStr::new("2 REGISTER"));
+        headers2.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=xyz;transport=tcp>;expires=0"));
+        headers2.push(SmolStr::new("Expires"), SmolStr::new("0"));
+        headers2.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        let request2 = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            headers2,
+            bytes::Bytes::new(),
+        ).unwrap();
+
+        let response2 = registrar.handle_register(&request2).await;
+        assert_eq!(response2.start_line().code(), 200);
+
+        // Verify registration was removed
+        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
+        assert_eq!(regs.len(), 0, "Registration should be removed after Expires: 0");
+
+        // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn test_wildcard_deregister_removes_all() {
+        let temp_dir = std::env::temp_dir().join("fcp-test-registrar-wildcard");
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
+
+        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+
+        // Register a contact
+        let mut headers = sip_core::Headers::new();
+        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK001"));
+        headers.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=t1"));
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("call-1@example.com"));
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"));
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        let request = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            headers,
+            bytes::Bytes::new(),
+        ).unwrap();
+
+        registrar.handle_register(&request).await;
+        let regs = storage.get_registrations("sip:alice@example.com").await.unwrap();
+        assert_eq!(regs.len(), 1);
+
+        // Wildcard deregister (Contact: *)
+        let mut headers2 = sip_core::Headers::new();
+        headers2.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK002"));
+        headers2.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=t2"));
+        headers2.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
+        headers2.push(SmolStr::new("Call-ID"), SmolStr::new("call-2@example.com"));
+        headers2.push(SmolStr::new("CSeq"), SmolStr::new("2 REGISTER"));
+        headers2.push(SmolStr::new("Contact"), SmolStr::new("*"));
+        headers2.push(SmolStr::new("Expires"), SmolStr::new("0"));
+        headers2.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+
+        let request2 = Request::new(
+            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            headers2,
+            bytes::Bytes::new(),
+        ).unwrap();
+
+        let response = registrar.handle_register(&request2).await;
+        assert_eq!(response.start_line().code(), 200);
+
+        let regs = storage.get_registrations("sip:alice@example.com").await.unwrap();
+        assert_eq!(regs.len(), 0, "All registrations should be removed after Contact: *");
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();

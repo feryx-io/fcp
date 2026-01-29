@@ -58,10 +58,10 @@ impl RoutingService {
             return Ok(user.tenant_id);
         }
 
-        // If not found in default tenant, we'd need to search other tenants
-        // For MVP, we only support default tenant
-        // TODO: Add tenant lookup across all tenants or use domain-based routing
-        anyhow::bail!("User '{}' not found", user_id)
+        // If not found in default tenant, return default tenant anyway
+        // This supports single-tenant deployments and all_users policies where
+        // users are managed via fcp-admin API rather than the YAML routing store
+        Ok(default_tenant)
     }
 
     /// Evaluate if a call is allowed.

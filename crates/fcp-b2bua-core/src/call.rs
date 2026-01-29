@@ -13,6 +13,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 /// Unique identifier for a call.
@@ -232,6 +233,11 @@ pub struct Call {
 
     /// Current node ID in the flow execution
     pub flow_current_node: Option<String>,
+
+    /// Notify handle to signal cancellation to the parallel forking task.
+    /// When the A-leg sends CANCEL before any B-leg answers, the CANCEL handler
+    /// notifies this to wake up the forking task so it can CANCEL all B-legs immediately.
+    pub cancel_notify: Option<Arc<Notify>>,
 }
 
 impl fmt::Debug for CallLeg {
@@ -297,6 +303,7 @@ impl Call {
             failure_reason: None,
             flow_id: None,
             flow_current_node: None,
+            cancel_notify: None,
         }
     }
 
