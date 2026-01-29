@@ -194,6 +194,7 @@ use crate::metrics::MetricsHandle;
 use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
+use fcp_b2bua_core::B2buaConfig;
 use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore};
 use sip_transaction::ServerTransactionHandle;
 
@@ -266,6 +267,9 @@ pub struct SipMessageHandler {
 
     /// Settings
     settings: ServerSettings,
+
+    /// B2BUA policy configuration (topology hiding, media anchoring, forking, transfer)
+    b2bua_config: B2buaConfig,
 
     /// Per-dialog rate limits
     rate_limits: Arc<dashmap::DashMap<sip_dialog::DialogId, RateWindow>>,
@@ -391,6 +395,7 @@ impl SipMessageHandler {
         media_manager: Option<Arc<fcp_media::MediaManager>>,
         media_config: Option<fcp_core::config::MediaConfig>,
         flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
+        b2bua_config: B2buaConfig,
     ) -> Self {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -409,6 +414,7 @@ impl SipMessageHandler {
             media_config,
             flow_handler,
             settings,
+            b2bua_config,
         )
     }
 
@@ -428,6 +434,7 @@ impl SipMessageHandler {
         media_config: Option<fcp_core::config::MediaConfig>,
         flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
         settings: ServerSettings,
+        b2bua_config: B2buaConfig,
     ) -> Self {
         // Validate settings early to catch configuration errors at startup
         if let Err(e) = settings.validate() {
@@ -558,6 +565,7 @@ impl SipMessageHandler {
             _transcript_dir: settings.transcript_dir.clone(),
             transcript_tx,
             settings,
+            b2bua_config,
             rate_limits: Arc::new(dashmap::DashMap::new()),
             flow_handler,
         };
@@ -572,6 +580,11 @@ impl SipMessageHandler {
         this.spawn_subscription_expiry_monitor();
 
         this
+    }
+
+    /// Get a reference to the B2BUA policy configuration.
+    pub fn b2bua_config(&self) -> &B2buaConfig {
+        &self.b2bua_config
     }
 
     /// Get a reference to the rate limits map for debugging/monitoring.
@@ -1189,6 +1202,45 @@ impl SipMessageHandler {
         request: &sip_core::Request,
         call_id: &fcp_b2bua_core::CallId,
     ) {
+        // Policy short-circuit: B2buaConfig media anchoring overrides
+        if self.b2bua_config.media_anchoring.force_anchor() {
+            info!(call_id = %call_id, "Media anchoring forced by B2BUA policy (Always mode)");
+            // Mark call as media-anchored and create a media session
+            if let (Some(media_manager), Some(_)) = (&self.media_manager, &self.media_config) {
+                let fcp_call_id = fcp_core::CallId::new();
+                let fcp_dialog_id = fcp_core::DialogId::new();
+                match media_manager
+                    .create_session_default(fcp_call_id.clone(), fcp_dialog_id)
+                    .await
+                {
+                    Ok(_session) => {
+                        let _ = self.call_manager.update_call(call_id, |call| {
+                            call.media_session_id = Some(fcp_call_id);
+                            call.media_anchored = true;
+                        });
+                    }
+                    Err(e) => {
+                        error!(
+                            call_id = %call_id,
+                            error = %e,
+                            "Failed to create media session for forced anchoring, falling back"
+                        );
+                    }
+                }
+            } else {
+                // No media manager — just mark call as anchored
+                let _ = self.call_manager.update_call(call_id, |call| {
+                    call.media_anchored = true;
+                });
+            }
+            return;
+        }
+        if self.b2bua_config.media_anchoring.force_passthrough() {
+            debug!(call_id = %call_id, "Media pass-through forced by B2BUA policy (Never mode)");
+            return;
+        }
+        // Conditional mode — fall through to existing logic
+
         // Check if media manager and config are available
         let (media_manager, media_config) = match (&self.media_manager, &self.media_config) {
             (Some(mm), Some(mc)) => (mm, mc),
@@ -1384,6 +1436,21 @@ impl SipMessageHandler {
         let _ = response.headers_mut().push(
             SmolStr::new("Content-Length"),
             SmolStr::new(body_len.to_string()),
+        );
+    }
+
+    /// Apply topology hiding transformations to a response.
+    ///
+    /// When active, rewrites or strips headers that reveal internal topology
+    /// (Via, Record-Route, Contact, User-Agent). Currently a stub — actual
+    /// header rewriting is deferred to a follow-up.
+    fn apply_topology_hiding(&self, _response: &mut sip_core::Response) {
+        if !self.b2bua_config.topology_hiding.is_active() {
+            return;
+        }
+        debug!(
+            mode = ?self.b2bua_config.topology_hiding.mode,
+            "Topology hiding active — header rewriting not yet implemented"
         );
     }
 
@@ -2056,7 +2123,7 @@ impl SipMessageHandler {
         // Deduplicate contacts by host:port to avoid sending multiple INVITEs to
         // the same physical device. Softphones like Zoiper register multiple
         // contacts with different rinstance params but the same host:port.
-        let target_uris = dedup_target_uris_by_hostport(target_uris);
+        let mut target_uris = dedup_target_uris_by_hostport(target_uris);
 
         info!(
             call_id = %call_id,
@@ -2180,6 +2247,18 @@ impl SipMessageHandler {
             .set_display_name(caller_display_name.clone())
             .await;
         uac.inner().set_from_uri(caller_from_uri.clone()).await;
+
+        // Cap target list to configured max_parallel_legs
+        let max_legs = self.b2bua_config.forking.max_parallel_legs;
+        if target_uris.len() > max_legs {
+            info!(
+                call_id = %call_id,
+                total_targets = target_uris.len(),
+                max_parallel_legs = max_legs,
+                "Capping parallel forking targets to configured maximum"
+            );
+            target_uris.truncate(max_legs);
+        }
 
         // Create outbound INVITEs to all target URIs (parallel forking)
         let mut b_leg_calls = Vec::new();
@@ -2662,15 +2741,30 @@ impl SipMessageHandler {
         let (provisional_tx, mut provisional_rx) = tokio::sync::mpsc::channel::<sip_core::Response>(10);
         let provisional_sent = Arc::new(tokio::sync::Mutex::new(false));
 
+        let early_media_policy = self.b2bua_config.forking.early_media_policy;
+        let dedup_provisionals = self.b2bua_config.forking.deduplicate_provisionals;
+
         for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
             let b_leg_handle_clone = Arc::clone(b_leg_handle);
             let target_clone = target.clone();
             let call_id_clone = call_id.clone();
             let provisional_tx_clone = provisional_tx.clone();
             let provisional_sent_clone = Arc::clone(&provisional_sent);
+            let task_early_media_policy = early_media_policy;
+            let task_dedup = dedup_provisionals;
 
             // Spawn provisional listener task (non-blocking, exits after first 180)
             tokio::spawn(async move {
+                // If early media is suppressed, skip provisional relay entirely
+                if task_early_media_policy == fcp_b2bua_core::EarlyMediaPolicy::None {
+                    debug!(
+                        call_id = %call_id_clone,
+                        target = %target_clone,
+                        "Early media suppressed by policy — skipping provisional relay for B-leg {}", i
+                    );
+                    return;
+                }
+
                 // Listen for FIRST provisional 180+ response only
                 if let Some(response) = b_leg_handle_clone.await_provisional().await {
                     let code = response.start_line().code();
@@ -2685,7 +2779,7 @@ impl SipMessageHandler {
                     // Signal if it's a ringing/progress response
                     if code >= 180 && code < 200 {
                         let mut sent = provisional_sent_clone.lock().await;
-                        if !*sent {
+                        if !*sent || !task_dedup {
                             info!(
                                 call_id = %call_id_clone,
                                 target = %target_clone,
@@ -2855,6 +2949,7 @@ impl SipMessageHandler {
 
         tokio::pin!(race_future);
 
+        let fork_timeout = self.b2bua_config.forking.timeout;
         tokio::select! {
             winner = &mut race_future => {
                 if let Some((i, target, response, handle)) = winner {
@@ -2870,6 +2965,13 @@ impl SipMessageHandler {
                     "Caller cancelled — aborting B-leg race to CANCEL all B-legs"
                 );
                 cancelled_by_caller = true;
+            }
+            _ = tokio::time::sleep(fork_timeout) => {
+                warn!(
+                    call_id = %call_id,
+                    timeout_secs = fork_timeout.as_secs(),
+                    "Forking timeout expired — no B-leg answered in time"
+                );
             }
         }
 
@@ -4618,14 +4720,24 @@ impl SipMessageHandler {
         let refer_uri = sip_core::SipUri::parse(refer_uri_str)
             .map_err(|_| anyhow::anyhow!("Invalid Refer-To URI"))?;
 
+        // B2BUA transfer policy check (primary gate)
+        if !self
+            .b2bua_config
+            .transfer
+            .is_allowed(fcp_b2bua_core::TransferType::Blind)
+        {
+            warn!(call_id = %call.id, "REFER denied by B2BUA transfer policy");
+            return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
+        }
+        // Legacy settings check (secondary gate for backward compatibility)
         if !self.settings.allow_refer {
-            warn!(call_id = %call.id, "REFER not allowed by policy");
+            warn!(call_id = %call.id, "REFER not allowed by legacy settings");
             return Ok(self.create_simple_response(request, 403, "Refer Not Allowed"));
         }
         if self.check_rate_limit(
             "REFER",
             src_dialog_id.as_ref().unwrap_or(&target_dialog.id()),
-            self.settings.reinvite_rate_limit,
+            self.b2bua_config.transfer.rate_limit_per_dialog,
         ) {
             warn!(call_id = %call.id, "REFER rate limited");
             let mut resp = self.create_simple_response(request, 429, "Too Many Requests");
@@ -5031,7 +5143,7 @@ impl SipMessageHandler {
             SmolStr::new(body.len().to_string()),
         );
 
-        sip_core::Response::new(
+        let mut response = sip_core::Response::new(
             StatusLine::new(
                 b_leg_resp.start_line().code(),
                 b_leg_resp.start_line().reason(),
@@ -5040,7 +5152,10 @@ impl SipMessageHandler {
             headers,
             body,
         )
-        .expect("Failed to create response")
+        .expect("Failed to create response");
+
+        self.apply_topology_hiding(&mut response);
+        response
     }
 
     /// Build an in-dialog response for the requester based on the peer response.
@@ -5114,6 +5229,7 @@ impl SipMessageHandler {
             SmolStr::new(body_len.to_string()),
         );
 
+        self.apply_topology_hiding(&mut response);
         self.ensure_response_hygiene(request, &mut response);
         self.log_sip_message(
             "outbound",
@@ -6486,6 +6602,7 @@ mod tests {
             None, // No media manager
             None, // No media config
             None, // No flow handler
+            B2buaConfig::default(),
         );
 
         // Create a REGISTER request
@@ -6549,6 +6666,7 @@ mod tests {
             None, // No media manager
             None, // No media config
             None, // No flow handler
+            B2buaConfig::default(),
         );
 
         let mut headers = Headers::new();
@@ -6612,6 +6730,7 @@ mod tests {
             None, // No media manager
             None, // No media config
             None, // No flow handler
+            B2buaConfig::default(),
         );
 
         let mut headers = Headers::new();
@@ -6778,6 +6897,7 @@ mod tests {
             None, // No media manager
             None, // No media config
             None, // No flow handler
+            B2buaConfig::default(),
         );
 
         // Create a REGISTER request

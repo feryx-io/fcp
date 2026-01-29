@@ -22,7 +22,9 @@ pub mod transport;
 pub mod uac;
 
 // Re-export B2BUA types from fcp-b2bua-core
-pub use fcp_b2bua_core::{Call, CallDirection, CallId, CallLeg, CallManager, CallState, CallStats};
+pub use fcp_b2bua_core::{
+    B2buaConfig, Call, CallDirection, CallId, CallLeg, CallManager, CallState, CallStats,
+};
 
 // Re-export commonly used types for convenience
 pub use exports::*;

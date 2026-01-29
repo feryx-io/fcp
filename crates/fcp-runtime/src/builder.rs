@@ -606,6 +606,7 @@ fn create_transport_listener(
         Some(media_manager),
         Some(config.media.clone()),
         flow_handler,
+        fcp_sip::B2buaConfig::default(),
     ));
 
     // Create listener (cast handler to trait object)
