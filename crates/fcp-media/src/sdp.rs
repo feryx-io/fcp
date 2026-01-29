@@ -64,7 +64,7 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
                 if parts.len() >= 3 {
                     let ip_version = parts[1]; // IP4 or IP6
-                    result.push_str(&format!("c=IN {} {}\n", ip_version, server_ip));
+                    result.push_str(&format!("c=IN {} {}\r\n", ip_version, server_ip));
                     audio_connection_replaced = true;
                     continue;
                 }
@@ -84,14 +84,14 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
                     result.push(' ');
                     result.push_str(part);
                 }
-                result.push('\n');
+                result.push_str("\r\n");
                 continue;
             }
         }
 
         // Keep all other lines unchanged
         result.push_str(line);
-        result.push('\n');
+        result.push_str("\r\n");
     }
 
     result
