@@ -8,7 +8,8 @@ repository.workspace = true
 description = "Combined SIP registrar and B2BUA call handler for the Ferrous Communications Platform"
 
 [features]
-default = ["storage-sqlite"]
+default = ["storage-sqlite", "tls"]
+tls = ["fcp-sip/tls"]
 storage-sqlite = ["dep:fcp-storage-sqlite"]
 storage-postgres = ["dep:fcp-storage-postgres"]
 storage-mysql = ["dep:fcp-storage-mysql"]

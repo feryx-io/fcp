@@ -225,6 +225,12 @@ async fn main() -> Result<()> {
     let listener_config = ListenerConfig {
         udp_bind: Some(udp_bind),
         tcp_bind: Some(tcp_bind),
+        #[cfg(feature = "tls")]
+        tls_bind: None,
+        #[cfg(feature = "tls")]
+        tls_cert: None,
+        #[cfg(feature = "tls")]
+        tls_key: None,
     };
 
 
