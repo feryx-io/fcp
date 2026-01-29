@@ -52,7 +52,17 @@
 
 pub mod call;
 pub mod call_manager;
+pub mod forking;
+pub mod media_anchoring;
+pub mod session;
+pub mod topology;
+pub mod transfer;
 
 // Re-export key types for convenience
 pub use call::{Call, CallDirection, CallId, CallLeg, CallState};
 pub use call_manager::{CallManager, CallStats};
+pub use forking::{EarlyMediaPolicy, ForkingConfig, ForkingMode};
+pub use media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
+pub use session::{B2buaConfig, B2buaSession};
+pub use topology::{TopologyHidingConfig, TopologyHidingMode};
+pub use transfer::{TransferConfig, TransferPolicy, TransferResult, TransferType};
