@@ -159,6 +159,7 @@ async fn main() -> Result<()> {
     let trunk_router = Arc::new(TrunkRouter::new(
         sbc_config.trunks.clone(),
         Arc::clone(&trunk_health),
+        Arc::clone(&admission),
     ));
 
     // 14. Create RateLimiterSet from sip-ratelimit config
