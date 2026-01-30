@@ -26,6 +26,7 @@ mod metrics;
 mod registration_store;
 mod topology;
 mod trunk_health;
+mod trunk_auth;
 mod trunk_router;
 
 use admission::AdmissionController;
@@ -116,6 +117,9 @@ async fn main() -> Result<()> {
     let local_uri = create_local_uri(&cli.bind)?;
 
     let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
+    let credential_provider = Arc::new(
+        trunk_auth::TrunkCredentialProvider::from_trunks(&sbc_config.trunks),
+    );
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
         .local_addr(&local_addr)?
@@ -123,6 +127,7 @@ async fn main() -> Result<()> {
         .transaction_manager(Arc::clone(&transaction_manager_ref))
         .resolver(resolver)
         .dispatcher(Arc::clone(&dispatcher) as Arc<dyn TransportDispatcher>)
+        .credential_provider(credential_provider)
         .build()
         .context("Failed to build IntegratedUAC")?;
     let uac = Arc::new(SipUserAgentClient::new(Arc::new(integrated_uac)));
