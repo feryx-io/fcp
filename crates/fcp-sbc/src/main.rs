@@ -19,6 +19,7 @@ mod cli;
 mod config;
 mod enforcement;
 mod health;
+mod hooks;
 mod metrics;
 mod topology;
 mod trunk_health;
@@ -28,6 +29,7 @@ use admission::AdmissionController;
 use cli::Cli;
 use enforcement::SbcEnforcementHandler;
 use health::HealthState;
+use hooks::SbcCallHooks;
 use metrics::SbcRuntimeMetrics;
 use trunk_health::TrunkHealthMonitor;
 use trunk_router::TrunkRouter;
@@ -61,14 +63,23 @@ async fn main() -> Result<()> {
         .parse()
         .context("Invalid bind address")?;
 
-    let socket = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )
-    .context("Failed to create UDP socket")?;
+    let domain = if bind_addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+
+    let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
+        .context("Failed to create UDP socket")?;
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
+
+    // For IPv6: dual-stack when binding to [::], v6-only for specific addresses
+    if bind_addr.is_ipv6() {
+        let v6_only = !bind_addr.ip().is_unspecified();
+        socket.set_only_v6(v6_only)?;
+    }
+
     socket.bind(&bind_addr.into())?;
     let std_socket: std::net::UdpSocket = socket.into();
     let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
@@ -120,28 +131,28 @@ async fn main() -> Result<()> {
         .context("Failed to build IntegratedUAC")?;
     let uac = Arc::new(SipUserAgentClient::new(Arc::new(integrated_uac)));
 
-    // 11. Create CallManager
-    let call_manager = Arc::new(fcp_sip::CallManager::new());
-
-    // 13. Create AdmissionController
+    // 11. Create AdmissionController, TrunkHealthMonitor, SbcRuntimeMetrics FIRST
     let admission = Arc::new(AdmissionController::new(sbc_config.admission.clone()));
-
-    // 14. Create TrunkHealthMonitor
     let trunk_health = Arc::new(TrunkHealthMonitor::new(&sbc_config.trunks));
-
-    // 15. Create SbcRuntimeMetrics
     let sbc_metrics = Arc::new(SbcRuntimeMetrics::new());
 
-    // 16. Create TrunkRouter (built but not integrated into handler in v1)
+    // 12. Create CallManager WITH event hooks so call lifecycle updates admission/metrics
+    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = Arc::new(SbcCallHooks::new(
+        Arc::clone(&admission),
+        Arc::clone(&sbc_metrics),
+    ));
+    let call_manager = Arc::new(fcp_sip::CallManager::with_events(sbc_hooks));
+
+    // 13. Create TrunkRouter (built but not integrated into handler in v1)
     let _trunk_router = TrunkRouter::new(
         sbc_config.trunks.clone(),
         Arc::clone(&trunk_health),
     );
 
-    // 17. Create RateLimiterSet from sip-ratelimit
+    // 14. Create RateLimiterSet from sip-ratelimit
     let rate_limiter = Arc::new(sip_ratelimit::RateLimiterSet::new());
 
-    // 18. Create SipMessageHandler (with B2buaConfig from SbcConfig)
+    // 15. Create SipMessageHandler (with B2buaConfig from SbcConfig)
     let local_ip = derive_local_ip(&cli.bind);
     let media_profile = Some(MediaProfileBuilder::audio_only());
     let handler = Arc::new(SipMessageHandler::new(

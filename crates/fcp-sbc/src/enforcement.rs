@@ -99,7 +99,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                 return Ok(());
             }
 
-            // 4. Admission control (only for INVITE — new call attempts)
+            // 4a. Admission control for INVITE (new call attempts)
             if method == "INVITE" {
                 self.metrics.record_call_attempt();
                 if !self.admission.try_admit_call() {
@@ -107,6 +107,13 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                     self.metrics.record_admission_rejection();
                     return Ok(());
                 }
+            }
+
+            // 4b. Admission control for REGISTER
+            if method == "REGISTER" && !self.admission.try_admit_registration() {
+                warn!(%peer, "SBC: registration admission rejected");
+                self.metrics.record_admission_rejection();
+                return Ok(());
             }
         }
 

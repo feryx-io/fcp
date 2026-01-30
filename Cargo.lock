@@ -1376,7 +1376,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1401,7 +1401,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1450,7 +1450,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1682,7 +1682,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-runtime"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1771,6 +1771,7 @@ dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
  "fcp-core",
+ "fcp-events",
  "fcp-sbc-core",
  "fcp-sip",
  "ipnetwork",
@@ -1797,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "fcp-b2bua-core",
  "fcp-core",
@@ -1887,7 +1888,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1906,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1924,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1942,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "anyhow",
  "async-trait",

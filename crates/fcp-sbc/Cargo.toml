@@ -21,6 +21,7 @@ fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip" }
 fcp-sbc-core = { path = "../fcp-sbc-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+fcp-events = { path = "../fcp-events" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

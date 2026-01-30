@@ -14,6 +14,7 @@ struct TrunkHealthState {
     status: TrunkHealthStatus,
     consecutive_failures: u32,
     max_failures: u32,
+    recovery_interval_secs: u64,
     last_failure: Option<Instant>,
     last_success: Option<Instant>,
     concurrent_calls: AtomicU64,
@@ -35,6 +36,7 @@ impl TrunkHealthMonitor {
                     status: TrunkHealthStatus::Unknown,
                     consecutive_failures: 0,
                     max_failures: trunk.failover.max_failures,
+                    recovery_interval_secs: trunk.failover.recovery_interval_secs,
                     last_failure: None,
                     last_success: None,
                     concurrent_calls: AtomicU64::new(0),
@@ -144,7 +146,7 @@ impl TrunkHealthMonitor {
                     return None;
                 }
                 if let Some(last_fail) = entry.last_failure {
-                    let recovery_secs = 30u64; // default; caller can pass config
+                    let recovery_secs = entry.recovery_interval_secs;
                     if now.duration_since(last_fail).as_secs() >= recovery_secs {
                         return Some(entry.key().clone());
                     }
