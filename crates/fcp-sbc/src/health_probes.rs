@@ -1,8 +1,10 @@
 //! Periodic OPTIONS health probes for SBC trunks.
 
 use crate::trunk_health::TrunkHealthMonitor;
+use fcp_core::transport::TransportType;
 use fcp_sbc_core::trunk::TrunkConfig;
 use fcp_sip::uac::SipUserAgentClient;
+use sip_dns::{DnsTarget, Transport as DnsTransport};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -57,30 +59,17 @@ pub async fn run_health_probes(
 /// Returns true on the first response indicating reachability: 2xx (success)
 /// or 401/407 (auth required — trunk is alive but demanding credentials).
 async fn probe_trunk_hosts(uac: &SipUserAgentClient, trunk: &TrunkConfig) -> bool {
-    use fcp_core::transport::TransportType;
-
-    let transport_param = match trunk.transport.protocol {
-        TransportType::Udp => None,
-        TransportType::Tcp => Some("tcp"),
-        TransportType::Tls => Some("tls"),
-        TransportType::Ws => Some("ws"),
-        TransportType::Wss => Some("wss"),
-    };
+    let transport = map_transport(trunk.transport.protocol);
+    let default_port = trunk.transport.protocol.default_port();
 
     for host in &trunk.hosts {
-        let uri = match (trunk.transport.port, transport_param) {
-            (Some(p), Some(t)) => format!("sip:{}:{};transport={}", host, p, t),
-            (Some(p), None) => format!("sip:{}:{}", host, p),
-            (None, Some(t)) => format!("sip:{};transport={}", host, t),
-            (None, None) => format!("sip:{}", host),
-        };
+        let target = DnsTarget::unchecked_new(
+            host.as_str(),
+            trunk.transport.port.unwrap_or(default_port),
+            transport,
+        );
 
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            uac.inner().ping_options(uri.as_str()),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_secs(5), uac.inner().ping_options(target)).await {
             Ok(Ok(response)) => {
                 let code = response.code();
                 // 2xx = success, 401/407 = trunk is reachable but requires auth
@@ -98,4 +87,14 @@ async fn probe_trunk_hosts(uac: &SipUserAgentClient, trunk: &TrunkConfig) -> boo
         }
     }
     false
+}
+
+fn map_transport(t: TransportType) -> DnsTransport {
+    match t {
+        TransportType::Udp => DnsTransport::Udp,
+        TransportType::Tcp => DnsTransport::Tcp,
+        TransportType::Tls => DnsTransport::Tls,
+        TransportType::Ws => DnsTransport::Ws,
+        TransportType::Wss => DnsTransport::Wss,
+    }
 }
