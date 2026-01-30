@@ -22,6 +22,7 @@ mod health;
 mod health_probes;
 mod hooks;
 mod metrics;
+mod registration_store;
 mod topology;
 mod trunk_health;
 mod trunk_router;
@@ -142,7 +143,18 @@ async fn main() -> Result<()> {
         Arc::clone(&admission),
         Arc::clone(&sbc_metrics),
     ));
-    let call_manager = Arc::new(fcp_sip::CallManager::with_events(sbc_hooks));
+    let call_manager = Arc::new(fcp_sip::CallManager::with_events(Arc::clone(&sbc_hooks)));
+
+    // 12b. Create registrar with event publishing so registration lifecycle
+    //      updates admission counters (registration_added / registration_removed)
+    let reg_store: Arc<dyn fcp_core::RegistrationStore> =
+        Arc::new(registration_store::InMemoryRegistrationStore::new());
+    let registrar = Arc::new(FcpRegistrar::with_events(
+        reg_store,
+        None, // no credential store — SBC does not authenticate registrations itself
+        None, // default realm
+        sbc_hooks,
+    ));
 
     // 13. Create TrunkRouter (built but not integrated into handler in v1)
     let _trunk_router = TrunkRouter::new(
@@ -163,7 +175,7 @@ async fn main() -> Result<()> {
         media_profile,
         local_ip,
         10000, // RTP port start
-        None, // no registrar (SBC doesn't manage registrations)
+        Some(registrar),
         None, // no routing service
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),

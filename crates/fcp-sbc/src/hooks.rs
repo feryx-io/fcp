@@ -9,7 +9,7 @@ use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use anyhow::Result;
 use async_trait::async_trait;
-use fcp_events::{CallEvent, EventPublisher, PlatformEvent};
+use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -45,6 +45,21 @@ impl EventPublisher for SbcCallHooks {
                 _ => {}
             }
         }
+
+        if let PlatformEvent::Registration(ref reg_event) = event {
+            match reg_event {
+                RegistrationEvent::Registered { .. } => {
+                    self.admission.registration_added();
+                    debug!("SBC: registration added, concurrent count incremented");
+                }
+                RegistrationEvent::Unregistered { .. } => {
+                    self.admission.registration_removed();
+                    debug!("SBC: registration removed, concurrent count decremented");
+                }
+                RegistrationEvent::Failed { .. } => {}
+            }
+        }
+
         Ok(())
     }
 }

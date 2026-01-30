@@ -39,8 +39,7 @@ pub async fn run_health_probes(
                 continue;
             }
 
-            let success =
-                probe_trunk_hosts(&uac, &trunk.hosts, trunk.transport.port).await;
+            let success = probe_trunk_hosts(&uac, trunk).await;
             monitor.mark_probed(&trunk.name);
 
             if success {
@@ -55,16 +54,25 @@ pub async fn run_health_probes(
 }
 
 /// Probe a trunk by sending OPTIONS to each host in order.
-/// Returns true on first successful (2xx) response.
-async fn probe_trunk_hosts(
-    uac: &SipUserAgentClient,
-    hosts: &[String],
-    port: Option<u16>,
-) -> bool {
-    for host in hosts {
-        let uri = match port {
-            Some(p) => format!("sip:{}:{}", host, p),
-            None => format!("sip:{}", host),
+/// Returns true on the first response indicating reachability: 2xx (success)
+/// or 401/407 (auth required — trunk is alive but demanding credentials).
+async fn probe_trunk_hosts(uac: &SipUserAgentClient, trunk: &TrunkConfig) -> bool {
+    use fcp_core::transport::TransportType;
+
+    let transport_param = match trunk.transport.protocol {
+        TransportType::Udp => None,
+        TransportType::Tcp => Some("tcp"),
+        TransportType::Tls => Some("tls"),
+        TransportType::Ws => Some("ws"),
+        TransportType::Wss => Some("wss"),
+    };
+
+    for host in &trunk.hosts {
+        let uri = match (trunk.transport.port, transport_param) {
+            (Some(p), Some(t)) => format!("sip:{}:{};transport={}", host, p, t),
+            (Some(p), None) => format!("sip:{}:{}", host, p),
+            (None, Some(t)) => format!("sip:{};transport={}", host, t),
+            (None, None) => format!("sip:{}", host),
         };
 
         match tokio::time::timeout(
@@ -75,10 +83,11 @@ async fn probe_trunk_hosts(
         {
             Ok(Ok(response)) => {
                 let code = response.code();
-                if (200..300).contains(&code) {
+                // 2xx = success, 401/407 = trunk is reachable but requires auth
+                if (200..300).contains(&code) || code == 401 || code == 407 {
                     return true;
                 }
-                debug!(host = %host, code, "OPTIONS probe got non-2xx response");
+                debug!(host = %host, code, "OPTIONS probe got non-success response");
             }
             Ok(Err(e)) => {
                 debug!(host = %host, error = %e, "OPTIONS probe error");
