@@ -1442,16 +1442,68 @@ impl SipMessageHandler {
     /// Apply topology hiding transformations to a response.
     ///
     /// When active, rewrites or strips headers that reveal internal topology
-    /// (Via, Record-Route, Contact, User-Agent). Currently a stub — actual
-    /// header rewriting is deferred to a follow-up.
-    fn apply_topology_hiding(&self, _response: &mut sip_core::Response) {
-        if !self.b2bua_config.topology_hiding.is_active() {
+    /// (Via, Record-Route, Contact, User-Agent) based on the `TopologyHidingConfig`.
+    fn apply_topology_hiding(&self, response: &mut sip_core::Response) {
+        let config = &self.b2bua_config.topology_hiding;
+        if !config.is_active() {
             return;
         }
+
+        let external_domain = config
+            .local_domain
+            .as_deref()
+            .unwrap_or(&self.local_addr);
+
         debug!(
-            mode = ?self.b2bua_config.topology_hiding.mode,
-            "Topology hiding active — header rewriting not yet implemented"
+            mode = ?config.mode,
+            domain = %external_domain,
+            "Applying topology hiding"
         );
+
+        let headers = response.headers_mut();
+
+        // Strip Via headers (keep only top Via for response routing)
+        if config.hide_via {
+            let via_values: Vec<String> = headers
+                .get_all("Via")
+                .map(|v| v.to_string())
+                .collect();
+            if via_values.len() > 1 {
+                headers.remove("Via");
+                // Re-add only the top Via (first one — the one for the outermost hop)
+                if let Some(top_via) = via_values.first() {
+                    let _ = headers.push("Via", top_via.as_str());
+                }
+            }
+        }
+
+        // Rewrite Record-Route headers with external domain
+        if config.hide_record_route {
+            let rr_count = headers.get_all("Record-Route").count();
+            if rr_count > 0 {
+                headers.remove("Record-Route");
+                let rr_value = format!("<sip:{};lr>", external_domain);
+                let _ = headers.push("Record-Route", &rr_value);
+            }
+        }
+
+        // Rewrite Contact header with external domain
+        if config.hide_contact {
+            if headers.get("Contact").is_some() {
+                headers.remove("Contact");
+                let contact_value = format!("<sip:{}>", external_domain);
+                let _ = headers.push("Contact", &contact_value);
+            }
+        }
+
+        // Strip or replace User-Agent/Server headers
+        if config.hide_user_agent {
+            headers.remove("User-Agent");
+            headers.remove("Server");
+            if let Some(ref custom_ua) = config.custom_user_agent {
+                let _ = headers.push("Server", custom_ua.as_str());
+            }
+        }
     }
 
     /// Forward INVITE to B-leg in full B2BUA mode.
