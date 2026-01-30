@@ -19,6 +19,7 @@ mod cli;
 mod config;
 mod enforcement;
 mod health;
+mod health_probes;
 mod hooks;
 mod metrics;
 mod topology;
@@ -255,6 +256,14 @@ async fn main() -> Result<()> {
             let regs = metrics_admission.concurrent_registrations();
             metrics_ref.update_snapshot(cps, calls, regs);
         }
+    });
+
+    // Spawn trunk health OPTIONS probe task
+    let probe_monitor = Arc::clone(&trunk_health);
+    let probe_uac = Arc::clone(&uac);
+    let probe_trunks = sbc_config.trunks.clone();
+    tokio::spawn(async move {
+        health_probes::run_health_probes(probe_monitor, probe_trunks, probe_uac).await;
     });
 
     info!(

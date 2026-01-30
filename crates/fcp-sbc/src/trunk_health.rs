@@ -18,6 +18,9 @@ struct TrunkHealthState {
     last_failure: Option<Instant>,
     last_success: Option<Instant>,
     concurrent_calls: AtomicU64,
+    health_check_enabled: bool,
+    health_check_interval_secs: u64,
+    last_probe: Option<Instant>,
 }
 
 /// Monitors trunk health, tracking failures and triggering status transitions.
@@ -40,6 +43,9 @@ impl TrunkHealthMonitor {
                     last_failure: None,
                     last_success: None,
                     concurrent_calls: AtomicU64::new(0),
+                    health_check_enabled: trunk.failover.health_check_enabled,
+                    health_check_interval_secs: trunk.failover.health_check_interval_secs,
+                    last_probe: None,
                 },
             );
         }
@@ -155,6 +161,39 @@ impl TrunkHealthMonitor {
             })
             .collect()
     }
+
+    /// Returns true if the trunk is due for a health probe based on its
+    /// state and configured interval.
+    ///
+    /// - Never-probed trunks: always due
+    /// - Down trunks: use `recovery_interval_secs` (less aggressive)
+    /// - Other trunks: use `health_check_interval_secs`
+    pub fn should_probe(&self, trunk: &str) -> bool {
+        if let Some(entry) = self.state.get(trunk) {
+            if !entry.health_check_enabled {
+                return false;
+            }
+            let interval = if entry.status == TrunkHealthStatus::Down {
+                entry.recovery_interval_secs
+            } else {
+                entry.health_check_interval_secs
+            };
+            match entry.last_probe {
+                Some(last) => Instant::now().duration_since(last).as_secs() >= interval,
+                None => true,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Record that a probe was sent for the trunk (updates `last_probe`
+    /// timestamp).
+    pub fn mark_probed(&self, trunk: &str) {
+        if let Some(mut entry) = self.state.get_mut(trunk) {
+            entry.last_probe = Some(Instant::now());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,5 +304,59 @@ mod tests {
     fn test_unknown_trunk_not_healthy() {
         let monitor = TrunkHealthMonitor::new(&[]);
         assert!(!monitor.is_healthy("nonexistent"));
+    }
+
+    #[test]
+    fn test_should_probe_never_probed() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        // Never-probed trunk with health_check_enabled=true should be due
+        assert!(monitor.should_probe("carrier-a"));
+    }
+
+    #[test]
+    fn test_should_probe_disabled() {
+        let trunks = vec![TrunkConfig {
+            name: "no-probe".into(),
+            hosts: vec!["h".into()],
+            failover: fcp_sbc_core::trunk::TrunkFailover {
+                health_check_enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        assert!(!monitor.should_probe("no-probe"));
+    }
+
+    #[test]
+    fn test_should_probe_not_due_yet() {
+        let trunks = vec![TrunkConfig {
+            name: "recent".into(),
+            hosts: vec!["h".into()],
+            failover: fcp_sbc_core::trunk::TrunkFailover {
+                health_check_interval_secs: 60,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        monitor.mark_probed("recent");
+        // Just probed — should not be due for another 60 seconds
+        assert!(!monitor.should_probe("recent"));
+    }
+
+    #[test]
+    fn test_should_probe_unknown_trunk() {
+        let monitor = TrunkHealthMonitor::new(&[]);
+        assert!(!monitor.should_probe("nonexistent"));
+    }
+
+    #[test]
+    fn test_mark_probed_updates_last_probe() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        assert!(monitor.should_probe("carrier-a")); // never probed
+        monitor.mark_probed("carrier-a");
+        // With default interval of 30s, just-probed trunk should not be due
+        assert!(!monitor.should_probe("carrier-a"));
     }
 }
