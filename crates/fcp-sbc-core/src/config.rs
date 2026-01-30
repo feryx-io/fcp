@@ -1,0 +1,318 @@
+//! Aggregate SBC configuration.
+//!
+//! `SbcConfig` combines the B2BUA config with all SBC-specific sub-configs
+//! (admission, rate limiting, security, trunks, NAT, SIPREC, metrics)
+//! into a single top-level struct.
+
+use std::collections::HashSet;
+
+use fcp_b2bua_core::session::B2buaConfig;
+use fcp_b2bua_core::forking::ForkingConfig;
+use fcp_b2bua_core::media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
+use fcp_b2bua_core::topology::{TopologyHidingConfig, TopologyHidingMode};
+use fcp_b2bua_core::transfer::TransferConfig;
+use fcp_core::transport::TransportType;
+use serde::{Deserialize, Serialize};
+
+use crate::admission::AdmissionConfig;
+use crate::metrics::SbcMetricsConfig;
+use crate::nat::NatConfig;
+use crate::rate_limit::RateLimitPolicyConfig;
+use crate::security::SecurityConfig;
+use crate::siprec::SiprecConfig;
+use crate::trunk::TrunkConfig;
+
+/// Top-level SBC configuration.
+///
+/// Aggregates the B2BUA config (from `fcp-b2bua-core`) with all SBC-specific
+/// sub-configurations. The default uses SBC-tuned B2BUA settings (full
+/// topology hiding, always anchor media, single forking, SBC transfer defaults).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SbcConfig {
+    /// B2BUA behavior configuration (topology hiding, media anchoring, etc.).
+    pub b2bua: B2buaConfig,
+
+    /// Call admission control.
+    pub admission: AdmissionConfig,
+
+    /// Rate limiting policy.
+    pub rate_limit: RateLimitPolicyConfig,
+
+    /// Security policy (IP ACLs, malformed SIP handling, size limits).
+    pub security: SecurityConfig,
+
+    /// Trunk/carrier definitions.
+    pub trunks: Vec<TrunkConfig>,
+
+    /// NAT traversal configuration.
+    pub nat: NatConfig,
+
+    /// SIPREC recording configuration.
+    pub siprec: SiprecConfig,
+
+    /// Metrics collection configuration.
+    pub metrics: SbcMetricsConfig,
+
+    /// External domain for the SBC (used in Via/Contact headers).
+    pub external_domain: String,
+
+    /// Enabled transport protocols.
+    pub transports: Vec<TransportType>,
+}
+
+impl Default for SbcConfig {
+    fn default() -> Self {
+        Self {
+            b2bua: B2buaConfig {
+                topology_hiding: TopologyHidingConfig {
+                    mode: TopologyHidingMode::Full,
+                    hide_via: true,
+                    hide_record_route: true,
+                    hide_contact: true,
+                    local_domain: None,
+                    hide_user_agent: true,
+                    custom_user_agent: None,
+                },
+                media_anchoring: MediaAnchoringConfig {
+                    mode: MediaAnchoringMode::Always,
+                    anchor_for_nat: true,
+                    anchor_for_recording: true,
+                    anchor_for_dtmf: true,
+                    anchor_for_transcoding: true,
+                    rewrite_sdp_connection: true,
+                },
+                forking: ForkingConfig::sbc_defaults(),
+                transfer: TransferConfig::sbc_defaults(),
+                max_forwards: 70,
+                relay_provisional_responses: true,
+                insert_record_route: true,
+            },
+            admission: AdmissionConfig::default(),
+            rate_limit: RateLimitPolicyConfig::default(),
+            security: SecurityConfig::default(),
+            trunks: Vec::new(),
+            nat: NatConfig::default(),
+            siprec: SiprecConfig::default(),
+            metrics: SbcMetricsConfig::default(),
+            external_domain: String::new(),
+            transports: vec![TransportType::Udp, TransportType::Tcp],
+        }
+    }
+}
+
+impl SbcConfig {
+    /// Validate the full SBC configuration.
+    ///
+    /// Delegates to all sub-config `validate()` methods and additionally
+    /// checks:
+    /// - `external_domain` is non-empty and contains no CR/LF
+    /// - `transports` is non-empty
+    /// - Trunk names are unique
+    pub fn validate(&self) -> Result<(), String> {
+        // B2BUA sub-configs
+        self.b2bua.topology_hiding.validate()?;
+        self.b2bua.forking.validate()?;
+        self.b2bua.transfer.validate()?;
+
+        // SBC sub-configs
+        self.admission.validate()?;
+        self.rate_limit.validate()?;
+        self.security.validate()?;
+        self.nat.validate()?;
+        self.siprec.validate()?;
+        self.metrics.validate()?;
+
+        for (i, trunk) in self.trunks.iter().enumerate() {
+            trunk
+                .validate()
+                .map_err(|e| format!("trunks[{i}]: {e}"))?;
+        }
+
+        // Check trunk name uniqueness
+        let mut seen_names = HashSet::new();
+        for trunk in &self.trunks {
+            if !seen_names.insert(&trunk.name) {
+                return Err(format!("duplicate trunk name: {:?}", trunk.name));
+            }
+        }
+
+        if self.external_domain.is_empty() {
+            return Err("external_domain must not be empty".into());
+        }
+        if self.external_domain.contains('\r') || self.external_domain.contains('\n') {
+            return Err("external_domain must not contain CR/LF characters".into());
+        }
+
+        if self.transports.is_empty() {
+            return Err("transports must not be empty".into());
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config() -> SbcConfig {
+        SbcConfig {
+            external_domain: "sbc.example.com".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_default() {
+        let cfg = SbcConfig::default();
+        // B2BUA is SBC-tuned
+        assert_eq!(
+            cfg.b2bua.topology_hiding.mode,
+            TopologyHidingMode::Full
+        );
+        assert!(cfg.b2bua.topology_hiding.hide_via);
+        assert_eq!(
+            cfg.b2bua.media_anchoring.mode,
+            MediaAnchoringMode::Always
+        );
+        assert_eq!(cfg.b2bua.max_forwards, 70);
+        assert!(cfg.b2bua.relay_provisional_responses);
+        assert!(cfg.b2bua.insert_record_route);
+
+        // SBC defaults
+        assert!(cfg.trunks.is_empty());
+        assert!(cfg.external_domain.is_empty());
+        assert_eq!(cfg.transports, vec![TransportType::Udp, TransportType::Tcp]);
+    }
+
+    #[test]
+    fn test_validate_valid() {
+        assert!(valid_config().validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_with_trunks() {
+        let mut cfg = valid_config();
+        cfg.trunks = vec![
+            TrunkConfig {
+                name: "carrier-a".into(),
+                hosts: vec!["sip.carrier-a.com".into()],
+                ..Default::default()
+            },
+            TrunkConfig {
+                name: "carrier-b".into(),
+                hosts: vec!["sip.carrier-b.com".into()],
+                ..Default::default()
+            },
+        ];
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_duplicate_trunk_names() {
+        let mut cfg = valid_config();
+        cfg.trunks = vec![
+            TrunkConfig {
+                name: "carrier-a".into(),
+                hosts: vec!["sip.carrier-a.com".into()],
+                ..Default::default()
+            },
+            TrunkConfig {
+                name: "carrier-a".into(),
+                hosts: vec!["sip2.carrier-a.com".into()],
+                ..Default::default()
+            },
+        ];
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("duplicate trunk name"));
+    }
+
+    #[test]
+    fn test_validate_empty_external_domain() {
+        let cfg = SbcConfig::default();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("external_domain"));
+    }
+
+    #[test]
+    fn test_validate_crlf_external_domain() {
+        let mut cfg = valid_config();
+        cfg.external_domain = "bad\r\ndomain".into();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("CR/LF"));
+    }
+
+    #[test]
+    fn test_validate_empty_transports() {
+        let mut cfg = valid_config();
+        cfg.transports.clear();
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("transports"));
+    }
+
+    #[test]
+    fn test_validate_propagates_admission_error() {
+        let mut cfg = valid_config();
+        cfg.admission.max_cps = 100_001;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("max_cps"));
+    }
+
+    #[test]
+    fn test_validate_propagates_trunk_error() {
+        let mut cfg = valid_config();
+        cfg.trunks = vec![TrunkConfig {
+            name: String::new(),
+            hosts: vec!["sip.example.com".into()],
+            ..Default::default()
+        }];
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("name"));
+    }
+
+    #[test]
+    fn test_validate_propagates_security_error() {
+        let mut cfg = valid_config();
+        cfg.security.max_message_size = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("max_message_size"));
+    }
+
+    #[test]
+    fn test_validate_propagates_nat_error() {
+        let mut cfg = valid_config();
+        cfg.nat.rtp_port_start = 20000;
+        cfg.nat.rtp_port_end = 10000;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("rtp_port"));
+    }
+
+    #[test]
+    fn test_validate_propagates_metrics_error() {
+        let mut cfg = valid_config();
+        cfg.metrics.snapshot_interval_secs = 1;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("snapshot_interval_secs"));
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let cfg = valid_config();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SbcConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_serde_roundtrip_with_trunks() {
+        let mut cfg = valid_config();
+        cfg.trunks = vec![TrunkConfig {
+            name: "carrier-a".into(),
+            hosts: vec!["sip.carrier.com".into()],
+            ..Default::default()
+        }];
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SbcConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+    }
+}

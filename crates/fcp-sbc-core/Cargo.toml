@@ -1,0 +1,28 @@
+[package]
+name = "fcp-sbc-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# FCP dependencies
+fcp-core = { path = "../fcp-core" }
+fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+
+# SIP stack dependencies (from siphon-rs)
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# IP network parsing
+ipnetwork = "0.20"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
