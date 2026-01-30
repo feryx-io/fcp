@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         .via_advertised_addr(&local_addr)?
         .transaction_manager(Arc::clone(&transaction_manager_ref))
         .resolver(resolver)
-        .dispatcher(dispatcher)
+        .dispatcher(Arc::clone(&dispatcher) as Arc<dyn TransportDispatcher>)
         .build()
         .context("Failed to build IntegratedUAC")?;
     let uac = Arc::new(SipUserAgentClient::new(Arc::new(integrated_uac)));
@@ -150,11 +150,14 @@ async fn main() -> Result<()> {
         sbc_hooks,
     ));
 
-    // 13. Create TrunkRouter (built but not integrated into handler in v1)
-    let _trunk_router = TrunkRouter::new(sbc_config.trunks.clone(), Arc::clone(&trunk_health));
+    // 13. Create TrunkRouter (provides outbound routing when registrar lookup fails)
+    let trunk_router = Arc::new(TrunkRouter::new(
+        sbc_config.trunks.clone(),
+        Arc::clone(&trunk_health),
+    ));
 
-    // 14. Create RateLimiterSet from sip-ratelimit
-    let rate_limiter = Arc::new(sip_ratelimit::RateLimiterSet::new());
+    // 14. Create RateLimiterSet from sip-ratelimit config
+    let rate_limiter = Arc::new(build_rate_limiter_set(&sbc_config.rate_limit));
 
     // 15. Create SipMessageHandler (with B2buaConfig from SbcConfig)
     let local_ip = derive_local_ip(&cli.bind);
@@ -175,6 +178,7 @@ async fn main() -> Result<()> {
         None, // no media config
         None, // no flow handler
         sbc_config.b2bua.clone(),
+        Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
     ));
 
     // 19. Create SbcEnforcementHandler (wraps SipMessageHandler)
@@ -184,6 +188,7 @@ async fn main() -> Result<()> {
         Arc::clone(&rate_limiter),
         Arc::clone(&admission),
         Arc::clone(&sbc_metrics),
+        Arc::clone(&dispatcher),
     ));
 
     // 20. Create TransportListener (wired to SbcEnforcementHandler)
@@ -197,6 +202,7 @@ async fn main() -> Result<()> {
         #[cfg(feature = "tls")]
         tls_key: None,
     };
+    let enforcement_for_tcp = Arc::clone(&enforcement_handler);
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         enforcement_handler as Arc<dyn InboundMessageHandler>;
     let mut listener = TransportListener::new(listener_config, handler_dyn);
@@ -205,8 +211,10 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to start transport listeners")?;
 
-    // Spawn TCP response routing task
-    let handler_clone = Arc::clone(&handler);
+    // Spawn TCP response routing task — routes through enforcement handler
+    // so that TCP inbound messages get ACL/rate-limit/admission checks.
+    // SIP responses bypass enforcement automatically (see enforcement.rs).
+    let enforcement_clone = enforcement_for_tcp;
     let mut client_rx = client_rx;
     tokio::spawn(async move {
         while let Some(packet) = client_rx.recv().await {
@@ -219,7 +227,7 @@ async fn main() -> Result<()> {
                 SipTransportKind::Sctp => SipTransactionTransportKind::Sctp,
                 SipTransportKind::TlsSctp => SipTransactionTransportKind::TlsSctp,
             };
-            if let Err(e) = handler_clone
+            if let Err(e) = enforcement_clone
                 .handle_inbound(
                     txn_transport,
                     packet.peer(),
@@ -228,7 +236,7 @@ async fn main() -> Result<()> {
                 )
                 .await
             {
-                tracing::error!("Failed to handle TCP response: {}", e);
+                tracing::error!("Failed to handle TCP message: {}", e);
             }
         }
     });
@@ -376,6 +384,39 @@ fn derive_local_ip(bind_str: &str) -> String {
         }
     }
     auto_detect_local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+/// Convert SBC rate limit policy config to sip-ratelimit's RateLimiterSet.
+fn build_rate_limiter_set(
+    config: &fcp_sbc_core::RateLimitPolicyConfig,
+) -> sip_ratelimit::RateLimiterSet {
+    use sip_ratelimit::{RateLimitConfig, RateLimiterSet};
+
+    if !config.enabled {
+        return RateLimiterSet::disabled();
+    }
+
+    let make_config = |entry: &fcp_sbc_core::RateLimitEntry| -> RateLimitConfig {
+        if !entry.enabled {
+            return RateLimitConfig::disabled();
+        }
+        let mut cfg = RateLimitConfig::new(entry.max_requests, entry.window_secs)
+            .expect("rate limit config already validated");
+        if let Some(burst) = entry.burst_capacity {
+            cfg = cfg
+                .with_burst_capacity(burst)
+                .expect("burst capacity already validated");
+        }
+        cfg = cfg.with_idle_timeout(config.idle_cleanup_secs);
+        cfg.with_enabled(true)
+    };
+
+    RateLimiterSet::with_configs(
+        make_config(&config.per_ip.auth_attempts),
+        make_config(&config.per_ip.register),
+        make_config(&config.per_ip.invite),
+        make_config(&config.per_ip.options), // connections bucket → use options config
+    )
 }
 
 /// Auto-detect the local LAN IP.

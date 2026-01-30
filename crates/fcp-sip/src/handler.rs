@@ -198,6 +198,17 @@ use fcp_b2bua_core::B2buaConfig;
 use fcp_core::storage::{
     DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
 };
+
+/// Provides fallback outbound routing when registrar lookup fails.
+///
+/// Used by the SBC to route calls to trunks when the destination
+/// is not locally registered.
+#[async_trait::async_trait]
+pub trait OutboundRouteProvider: Send + Sync {
+    /// Given a destination URI (e.g. "sip:+15551234@example.com"),
+    /// return an outbound target URI to INVITE, or None if no route available.
+    async fn resolve_outbound(&self, destination_uri: &str) -> Option<String>;
+}
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -278,6 +289,11 @@ pub struct SipMessageHandler {
 
     /// Flow call handler for executing programmable flows
     flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
+
+    /// Optional outbound route provider for trunk routing fallback.
+    /// When the registrar has no binding for the destination, this provider
+    /// is consulted before returning 480 Temporarily Unavailable.
+    outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
 }
 
 #[derive(Clone)]
@@ -398,6 +414,7 @@ impl SipMessageHandler {
         media_config: Option<fcp_core::config::MediaConfig>,
         flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
         b2bua_config: B2buaConfig,
+        outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
     ) -> Self {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -417,6 +434,7 @@ impl SipMessageHandler {
             flow_handler,
             settings,
             b2bua_config,
+            outbound_route_provider,
         )
     }
 
@@ -437,6 +455,7 @@ impl SipMessageHandler {
         flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
         settings: ServerSettings,
         b2bua_config: B2buaConfig,
+        outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
     ) -> Self {
         // Validate settings early to catch configuration errors at startup
         if let Err(e) = settings.validate() {
@@ -570,6 +589,7 @@ impl SipMessageHandler {
             b2bua_config,
             rate_limits: Arc::new(dashmap::DashMap::new()),
             flow_handler,
+            outbound_route_provider,
         };
 
         // Start session timer event loop
@@ -1872,18 +1892,56 @@ impl SipMessageHandler {
                     match registrar.get_registrations(destination_aor).await {
                         Ok(bindings) if !bindings.is_empty() => bindings,
                         _ => {
-                            info!(call_id = %call_id, destination = %destination_aor, "Destination not registered");
-                            let response = self.create_simple_response(
-                                request,
-                                480,
-                                "Temporarily Unavailable",
-                            );
-                            a_leg_handle.send_final(response).await;
-                            let _ = self.call_manager.terminate_call(
-                                &call_id,
-                                Some("Destination not registered".to_string()),
-                            );
-                            return Ok(());
+                            // Try outbound route provider before giving up
+                            if let Some(provider) = &self.outbound_route_provider {
+                                if let Some(target_uri) = provider.resolve_outbound(destination_aor).await {
+                                    info!(call_id = %call_id, target = %target_uri, "Routing via outbound trunk");
+                                    match sip_registrar::Binding::new(
+                                        SmolStr::new(destination_aor),
+                                        SmolStr::new(&target_uri),
+                                        Duration::from_secs(3600),
+                                    ) {
+                                        Ok(binding) => vec![binding],
+                                        Err(e) => {
+                                            error!(call_id = %call_id, error = %e, "Failed to create trunk binding");
+                                            let response = self.create_simple_response(
+                                                request, 500, "Internal Server Error",
+                                            );
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id, Some("Failed to create trunk binding".to_string()),
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
+                                } else {
+                                    info!(call_id = %call_id, destination = %destination_aor, "Destination not registered, no outbound route");
+                                    let response = self.create_simple_response(
+                                        request,
+                                        480,
+                                        "Temporarily Unavailable",
+                                    );
+                                    a_leg_handle.send_final(response).await;
+                                    let _ = self.call_manager.terminate_call(
+                                        &call_id,
+                                        Some("Destination not registered".to_string()),
+                                    );
+                                    return Ok(());
+                                }
+                            } else {
+                                info!(call_id = %call_id, destination = %destination_aor, "Destination not registered");
+                                let response = self.create_simple_response(
+                                    request,
+                                    480,
+                                    "Temporarily Unavailable",
+                                );
+                                a_leg_handle.send_final(response).await;
+                                let _ = self.call_manager.terminate_call(
+                                    &call_id,
+                                    Some("Destination not registered".to_string()),
+                                );
+                                return Ok(());
+                            }
                         }
                     }
                 } else {
@@ -2325,22 +2383,64 @@ impl SipMessageHandler {
                             bindings
                         }
                         Ok(_) => {
-                            info!(
-                                call_id = %call_id,
-                                destination = %destination_aor,
-                                "Destination not registered (no bindings)"
-                            );
-                            let response = self.create_simple_response(
-                                request,
-                                480,
-                                "Temporarily Unavailable",
-                            );
-                            a_leg_handle.send_final(response).await;
-                            let _ = self.call_manager.terminate_call(
-                                &call_id,
-                                Some("Destination not registered".to_string()),
-                            );
-                            return Ok(());
+                            // Try outbound route provider before giving up
+                            if let Some(provider) = &self.outbound_route_provider {
+                                if let Some(target_uri) = provider.resolve_outbound(destination_aor).await {
+                                    info!(call_id = %call_id, target = %target_uri, "Routing via outbound trunk (extension path)");
+                                    match sip_registrar::Binding::new(
+                                        SmolStr::new(destination_aor),
+                                        SmolStr::new(&target_uri),
+                                        Duration::from_secs(3600),
+                                    ) {
+                                        Ok(binding) => vec![binding],
+                                        Err(e) => {
+                                            error!(call_id = %call_id, error = %e, "Failed to create trunk binding");
+                                            let response = self.create_simple_response(
+                                                request, 500, "Internal Server Error",
+                                            );
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id, Some("Failed to create trunk binding".to_string()),
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
+                                } else {
+                                    info!(
+                                        call_id = %call_id,
+                                        destination = %destination_aor,
+                                        "Destination not registered (no bindings), no outbound route"
+                                    );
+                                    let response = self.create_simple_response(
+                                        request,
+                                        480,
+                                        "Temporarily Unavailable",
+                                    );
+                                    a_leg_handle.send_final(response).await;
+                                    let _ = self.call_manager.terminate_call(
+                                        &call_id,
+                                        Some("Destination not registered".to_string()),
+                                    );
+                                    return Ok(());
+                                }
+                            } else {
+                                info!(
+                                    call_id = %call_id,
+                                    destination = %destination_aor,
+                                    "Destination not registered (no bindings)"
+                                );
+                                let response = self.create_simple_response(
+                                    request,
+                                    480,
+                                    "Temporarily Unavailable",
+                                );
+                                a_leg_handle.send_final(response).await;
+                                let _ = self.call_manager.terminate_call(
+                                    &call_id,
+                                    Some("Destination not registered".to_string()),
+                                );
+                                return Ok(());
+                            }
                         }
                         Err(e) => {
                             error!(
@@ -6902,6 +7002,7 @@ mod tests {
             None, // No media config
             None, // No flow handler
             B2buaConfig::default(),
+            None, // No outbound route provider
         );
 
         // Create a REGISTER request
@@ -6966,6 +7067,7 @@ mod tests {
             None, // No media config
             None, // No flow handler
             B2buaConfig::default(),
+            None, // No outbound route provider
         );
 
         let mut headers = Headers::new();
@@ -7030,6 +7132,7 @@ mod tests {
             None, // No media config
             None, // No flow handler
             B2buaConfig::default(),
+            None, // No outbound route provider
         );
 
         let mut headers = Headers::new();
@@ -7197,6 +7300,7 @@ mod tests {
             None, // No media config
             None, // No flow handler
             B2buaConfig::default(),
+            None, // No outbound route provider
         );
 
         // Create a REGISTER request

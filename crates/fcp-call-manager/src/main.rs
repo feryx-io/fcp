@@ -208,6 +208,7 @@ async fn main() -> Result<()> {
         }),
         None, // flow_handler — add when flow config is present
         fcp_b2bua_core::B2buaConfig::default(),
+        None, // No outbound route provider
     ));
 
     // 16. Create and start TransportListener

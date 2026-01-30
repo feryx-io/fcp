@@ -9,6 +9,7 @@
 
 use crate::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk::{TrunkConfig, TrunkDirection};
+use fcp_sip::OutboundRouteProvider;
 use rand::Rng;
 use std::sync::Arc;
 
@@ -89,6 +90,35 @@ impl TrunkRouter {
 
         // Fallback (shouldn't reach here)
         best.first().copied()
+    }
+}
+
+#[async_trait::async_trait]
+impl OutboundRouteProvider for TrunkRouter {
+    async fn resolve_outbound(&self, destination_uri: &str) -> Option<String> {
+        // Select an upstream trunk for outbound calls
+        let trunk = self.select_trunk(TrunkDirection::Upstream)?;
+
+        // Extract user part from destination URI
+        let user_part = destination_uri
+            .strip_prefix("sip:")
+            .or_else(|| destination_uri.strip_prefix("sips:"))
+            .unwrap_or(destination_uri)
+            .split('@')
+            .next()
+            .unwrap_or(destination_uri);
+
+        let host = trunk.hosts.first()?;
+        let port = trunk
+            .transport
+            .port
+            .unwrap_or_else(|| trunk.transport.protocol.default_port());
+        let transport_param = match trunk.transport.protocol {
+            fcp_core::transport::TransportType::Udp => String::new(),
+            other => format!(";transport={}", other.as_str()),
+        };
+
+        Some(format!("sip:{}@{}:{}{}", user_part, host, port, transport_param))
     }
 }
 

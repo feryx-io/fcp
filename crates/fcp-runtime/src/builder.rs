@@ -612,6 +612,7 @@ fn create_transport_listener(
         Some(config.media.clone()),
         flow_handler,
         fcp_sip::B2buaConfig::default(),
+        None, // No outbound route provider
     ));
 
     // Create listener (cast handler to trait object)
