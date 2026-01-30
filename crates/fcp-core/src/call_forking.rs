@@ -49,9 +49,7 @@ pub struct CallForker {
 impl CallForker {
     /// Creates a new call forker.
     pub fn new(call_state_manager: Arc<CallStateManager>) -> Self {
-        Self {
-            call_state_manager,
-        }
+        Self { call_state_manager }
     }
 
     /// Forks a call according to the ring plan.
@@ -183,9 +181,7 @@ impl CallForker {
 
         // All groups failed
         warn!("All fork groups failed for call {}", call.call_id);
-        self.call_state_manager
-            .terminate_call(&call.call_id)
-            .await;
+        self.call_state_manager.terminate_call(&call.call_id).await;
 
         ForkResult::AllFailed
     }

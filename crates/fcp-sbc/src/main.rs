@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_sip::prelude::*;
+use fcp_sip::registrar::FcpRegistrar;
 use fcp_sip::service::{DialogService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
@@ -31,8 +32,9 @@ use admission::AdmissionController;
 use cli::Cli;
 use enforcement::SbcEnforcementHandler;
 use health::HealthState;
-use hooks::SbcCallHooks;
+use hooks::SbcEventHooks;
 use metrics::SbcRuntimeMetrics;
+use registration_store::InMemoryRegistrationStore;
 use trunk_health::TrunkHealthMonitor;
 use trunk_router::TrunkRouter;
 
@@ -60,10 +62,7 @@ async fn main() -> Result<()> {
     }
 
     // 5. Create UDP socket with SO_REUSEADDR
-    let bind_addr: std::net::SocketAddr = cli
-        .bind
-        .parse()
-        .context("Invalid bind address")?;
+    let bind_addr: std::net::SocketAddr = cli.bind.parse().context("Invalid bind address")?;
 
     let domain = if bind_addr.is_ipv4() {
         socket2::Domain::IPV4
@@ -92,12 +91,10 @@ async fn main() -> Result<()> {
     tcp_pool.set_inbound_tx(client_tx).await;
 
     // 7. Create RealTransportDispatcher
-    let dispatcher = Arc::new(
-        fcp_sip::transport::RealTransportDispatcher::new_with_pool(
-            Some(Arc::new(udp_socket)),
-            Arc::clone(&tcp_pool),
-        ),
-    );
+    let dispatcher = Arc::new(fcp_sip::transport::RealTransportDispatcher::new_with_pool(
+        Some(Arc::new(udp_socket)),
+        Arc::clone(&tcp_pool),
+    ));
 
     // Set up transport metrics
     if !set_transport_metrics(Arc::new(TracingTransportMetrics)) {
@@ -105,8 +102,7 @@ async fn main() -> Result<()> {
     }
 
     // 8. Create TransactionManager
-    let transaction_manager =
-        TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
+    let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
     let transaction_service = TransactionService::new(transaction_manager);
     let transaction_manager_ref = Arc::clone(transaction_service.manager());
 
@@ -119,9 +115,7 @@ async fn main() -> Result<()> {
     let local_addr = derive_local_addr(&cli.bind);
     let local_uri = create_local_uri(&cli.bind)?;
 
-    let resolver = Arc::new(
-        SipResolver::from_system().context("Failed to create DNS resolver")?,
-    );
+    let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
         .local_addr(&local_addr)?
@@ -138,8 +132,8 @@ async fn main() -> Result<()> {
     let trunk_health = Arc::new(TrunkHealthMonitor::new(&sbc_config.trunks));
     let sbc_metrics = Arc::new(SbcRuntimeMetrics::new());
 
-    // 12. Create CallManager WITH event hooks so call lifecycle updates admission/metrics
-    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = Arc::new(SbcCallHooks::new(
+    // 12. Create event hooks so call/registration lifecycle updates admission/metrics
+    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = Arc::new(SbcEventHooks::new(
         Arc::clone(&admission),
         Arc::clone(&sbc_metrics),
     ));
@@ -148,19 +142,16 @@ async fn main() -> Result<()> {
     // 12b. Create registrar with event publishing so registration lifecycle
     //      updates admission counters (registration_added / registration_removed)
     let reg_store: Arc<dyn fcp_core::RegistrationStore> =
-        Arc::new(registration_store::InMemoryRegistrationStore::new());
+        Arc::new(InMemoryRegistrationStore::default());
     let registrar = Arc::new(FcpRegistrar::with_events(
         reg_store,
         None, // no credential store — SBC does not authenticate registrations itself
-        None, // default realm
+        Some(sbc_config.external_domain.clone()),
         sbc_hooks,
     ));
 
     // 13. Create TrunkRouter (built but not integrated into handler in v1)
-    let _trunk_router = TrunkRouter::new(
-        sbc_config.trunks.clone(),
-        Arc::clone(&trunk_health),
-    );
+    let _trunk_router = TrunkRouter::new(sbc_config.trunks.clone(), Arc::clone(&trunk_health));
 
     // 14. Create RateLimiterSet from sip-ratelimit
     let rate_limiter = Arc::new(sip_ratelimit::RateLimiterSet::new());
@@ -209,7 +200,10 @@ async fn main() -> Result<()> {
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         enforcement_handler as Arc<dyn InboundMessageHandler>;
     let mut listener = TransportListener::new(listener_config, handler_dyn);
-    listener.start().await.context("Failed to start transport listeners")?;
+    listener
+        .start()
+        .await
+        .context("Failed to start transport listeners")?;
 
     // Spawn TCP response routing task
     let handler_clone = Arc::clone(&handler);
@@ -309,8 +303,7 @@ async fn main() -> Result<()> {
 fn init_tracing(level: &str, format: &str) {
     use tracing_subscriber::EnvFilter;
 
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     match format {
         "json" => {

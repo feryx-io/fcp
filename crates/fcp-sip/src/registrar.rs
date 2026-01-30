@@ -101,7 +101,8 @@ impl AsyncLocationStore for LocationStoreAdapter {
         );
 
         // Normalize the requested contact
-        let normalized_requested = crate::registrar::FcpRegistrar::normalize_contact_for_matching(contact);
+        let normalized_requested =
+            crate::registrar::FcpRegistrar::normalize_contact_for_matching(contact);
         debug!(
             aor = %aor,
             original_contact = %contact,
@@ -112,7 +113,8 @@ impl AsyncLocationStore for LocationStoreAdapter {
         // Find and remove registrations that match when normalized
         let mut removed_any = false;
         for reg in registrations {
-            let normalized_stored = crate::registrar::FcpRegistrar::normalize_contact_for_matching(&reg.contact);
+            let normalized_stored =
+                crate::registrar::FcpRegistrar::normalize_contact_for_matching(&reg.contact);
             debug!(
                 aor = %aor,
                 stored_contact = %reg.contact,
@@ -352,8 +354,11 @@ impl FcpRegistrar {
                         Ok(response) => response,
                         Err(e) => {
                             tracing::error!("Failed to create auth challenge: {}", e);
-                            return self
-                                .create_error_response(request, 500, "Internal Server Error");
+                            return self.create_error_response(
+                                request,
+                                500,
+                                "Internal Server Error",
+                            );
                         }
                     };
                 }
@@ -400,8 +405,7 @@ impl FcpRegistrar {
         let to = match sip_parse::parse_to_header(to_header) {
             Some(t) => t,
             None => {
-                return self
-                    .create_error_response(request, 400, "Bad Request - Invalid To header");
+                return self.create_error_response(request, 400, "Bad Request - Invalid To header");
             }
         };
 
@@ -433,8 +437,7 @@ impl FcpRegistrar {
                     }
                     Err(e) => {
                         tracing::error!("Failed to deregister: {}", e);
-                        return self
-                            .create_error_response(request, 500, "Internal Server Error");
+                        return self.create_error_response(request, 500, "Internal Server Error");
                     }
                 }
             }
@@ -464,8 +467,7 @@ impl FcpRegistrar {
                     }
                     Err(e) => {
                         tracing::error!("Failed to deregister contact: {}", e);
-                        return self
-                            .create_error_response(request, 500, "Internal Server Error");
+                        return self.create_error_response(request, 500, "Internal Server Error");
                     }
                 }
             }
@@ -1007,49 +1009,93 @@ mod tests {
 
         // First REGISTER with rinstance=aaa
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK001"));
-        headers.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t1"));
+        headers.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK001"),
+        );
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:bob@example.com>;tag=t1"),
+        );
         headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
         headers.push(SmolStr::new("Call-ID"), SmolStr::new("call-1@example.com"));
         headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=aaa111;transport=tcp>;expires=3600"));
+        headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new(
+                "<sip:bob@192.168.1.206:60312;rinstance=aaa111;transport=tcp>;expires=3600",
+            ),
+        );
         headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(
-            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
             headers,
             bytes::Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let response = registrar.handle_register(&request).await;
         assert_eq!(response.start_line().code(), 200);
 
-        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
-        assert_eq!(regs.len(), 1, "Should have exactly 1 registration after first REGISTER");
+        let regs = storage
+            .get_registrations("sip:bob@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            regs.len(),
+            1,
+            "Should have exactly 1 registration after first REGISTER"
+        );
 
         // Second REGISTER with different rinstance=bbb (same device restarted)
         let mut headers2 = sip_core::Headers::new();
-        headers2.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK002"));
-        headers2.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t2"));
+        headers2.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK002"),
+        );
+        headers2.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:bob@example.com>;tag=t2"),
+        );
         headers2.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
         headers2.push(SmolStr::new("Call-ID"), SmolStr::new("call-2@example.com"));
         headers2.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers2.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=bbb222;transport=tcp>;expires=3600"));
+        headers2.push(
+            SmolStr::new("Contact"),
+            SmolStr::new(
+                "<sip:bob@192.168.1.206:60312;rinstance=bbb222;transport=tcp>;expires=3600",
+            ),
+        );
         headers2.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers2.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request2 = Request::new(
-            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
             headers2,
             bytes::Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let response2 = registrar.handle_register(&request2).await;
         assert_eq!(response2.start_line().code(), 200);
 
-        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
-        assert_eq!(regs.len(), 1, "Should still have exactly 1 registration after re-REGISTER with different rinstance");
+        let regs = storage
+            .get_registrations("sip:bob@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            regs.len(),
+            1,
+            "Should still have exactly 1 registration after re-REGISTER with different rinstance"
+        );
 
         // Verify the stored contact is normalized (no rinstance)
         assert!(
@@ -1077,50 +1123,86 @@ mod tests {
 
         // Register first
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK001"));
-        headers.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t1"));
+        headers.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK001"),
+        );
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:bob@example.com>;tag=t1"),
+        );
         headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
         headers.push(SmolStr::new("Call-ID"), SmolStr::new("call-1@example.com"));
         headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=abc;transport=tcp>;expires=3600"));
+        headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=abc;transport=tcp>;expires=3600"),
+        );
         headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(
-            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
             headers,
             bytes::Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let response = registrar.handle_register(&request).await;
         assert_eq!(response.start_line().code(), 200);
 
-        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
+        let regs = storage
+            .get_registrations("sip:bob@example.com")
+            .await
+            .unwrap();
         assert_eq!(regs.len(), 1);
 
         // Now unregister with Expires: 0 and a different rinstance
         let mut headers2 = sip_core::Headers::new();
-        headers2.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK002"));
-        headers2.push(SmolStr::new("From"), SmolStr::new("<sip:bob@example.com>;tag=t2"));
+        headers2.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/TCP 192.168.1.206:60312;branch=z9hG4bK002"),
+        );
+        headers2.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:bob@example.com>;tag=t2"),
+        );
         headers2.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
         headers2.push(SmolStr::new("Call-ID"), SmolStr::new("call-2@example.com"));
         headers2.push(SmolStr::new("CSeq"), SmolStr::new("2 REGISTER"));
-        headers2.push(SmolStr::new("Contact"), SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=xyz;transport=tcp>;expires=0"));
+        headers2.push(
+            SmolStr::new("Contact"),
+            SmolStr::new("<sip:bob@192.168.1.206:60312;rinstance=xyz;transport=tcp>;expires=0"),
+        );
         headers2.push(SmolStr::new("Expires"), SmolStr::new("0"));
         headers2.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request2 = Request::new(
-            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
             headers2,
             bytes::Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let response2 = registrar.handle_register(&request2).await;
         assert_eq!(response2.start_line().code(), 200);
 
         // Verify registration was removed
-        let regs = storage.get_registrations("sip:bob@example.com").await.unwrap();
-        assert_eq!(regs.len(), 0, "Registration should be removed after Expires: 0");
+        let regs = storage
+            .get_registrations("sip:bob@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            regs.len(),
+            0,
+            "Registration should be removed after Expires: 0"
+        );
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
@@ -1136,29 +1218,51 @@ mod tests {
 
         // Register a contact
         let mut headers = sip_core::Headers::new();
-        headers.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK001"));
-        headers.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=t1"));
+        headers.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK001"),
+        );
+        headers.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:alice@example.com>;tag=t1"),
+        );
         headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
         headers.push(SmolStr::new("Call-ID"), SmolStr::new("call-1@example.com"));
         headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
-        headers.push(SmolStr::new("Contact"), SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"));
+        headers.push(
+            SmolStr::new("Contact"),
+            SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"),
+        );
         headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
         headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request = Request::new(
-            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
             headers,
             bytes::Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         registrar.handle_register(&request).await;
-        let regs = storage.get_registrations("sip:alice@example.com").await.unwrap();
+        let regs = storage
+            .get_registrations("sip:alice@example.com")
+            .await
+            .unwrap();
         assert_eq!(regs.len(), 1);
 
         // Wildcard deregister (Contact: *)
         let mut headers2 = sip_core::Headers::new();
-        headers2.push(SmolStr::new("Via"), SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK002"));
-        headers2.push(SmolStr::new("From"), SmolStr::new("<sip:alice@example.com>;tag=t2"));
+        headers2.push(
+            SmolStr::new("Via"),
+            SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK002"),
+        );
+        headers2.push(
+            SmolStr::new("From"),
+            SmolStr::new("<sip:alice@example.com>;tag=t2"),
+        );
         headers2.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
         headers2.push(SmolStr::new("Call-ID"), SmolStr::new("call-2@example.com"));
         headers2.push(SmolStr::new("CSeq"), SmolStr::new("2 REGISTER"));
@@ -1167,16 +1271,27 @@ mod tests {
         headers2.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
         let request2 = Request::new(
-            sip_core::RequestLine::new(sip_core::Method::Register, sip_core::SipUri::parse("sip:example.com").unwrap()),
+            sip_core::RequestLine::new(
+                sip_core::Method::Register,
+                sip_core::SipUri::parse("sip:example.com").unwrap(),
+            ),
             headers2,
             bytes::Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let response = registrar.handle_register(&request2).await;
         assert_eq!(response.start_line().code(), 200);
 
-        let regs = storage.get_registrations("sip:alice@example.com").await.unwrap();
-        assert_eq!(regs.len(), 0, "All registrations should be removed after Contact: *");
+        let regs = storage
+            .get_registrations("sip:alice@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            regs.len(),
+            0,
+            "All registrations should be removed after Contact: *"
+        );
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
@@ -1192,7 +1307,9 @@ mod tests {
 
         // With angle brackets, rinstance, and expires
         assert_eq!(
-            FcpRegistrar::extract_contact_uri("<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>;expires=0"),
+            FcpRegistrar::extract_contact_uri(
+                "<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>;expires=0"
+            ),
             "<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>"
         );
 
@@ -1225,19 +1342,25 @@ mod tests {
     fn test_normalize_contact_for_matching() {
         // Strip rinstance but keep transport
         assert_eq!(
-            FcpRegistrar::normalize_contact_for_matching("<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>"),
+            FcpRegistrar::normalize_contact_for_matching(
+                "<sip:bob@192.168.1.206:60312;rinstance=f4d3c22d28a963ab;transport=tcp>"
+            ),
             "<sip:bob@192.168.1.206:60312;transport=tcp>"
         );
 
         // Different rinstance should normalize to same result
         assert_eq!(
-            FcpRegistrar::normalize_contact_for_matching("<sip:bob@192.168.1.206:60312;rinstance=5c6c24656fccfc49;transport=tcp>"),
+            FcpRegistrar::normalize_contact_for_matching(
+                "<sip:bob@192.168.1.206:60312;rinstance=5c6c24656fccfc49;transport=tcp>"
+            ),
             "<sip:bob@192.168.1.206:60312;transport=tcp>"
         );
 
         // Strip gr parameter (GRUU instance ID) but keep transport
         assert_eq!(
-            FcpRegistrar::normalize_contact_for_matching("<sip:bob@example.com;gr=abc123;transport=tls>"),
+            FcpRegistrar::normalize_contact_for_matching(
+                "<sip:bob@example.com;gr=abc123;transport=tls>"
+            ),
             "<sip:bob@example.com;transport=tls>"
         );
 
@@ -1255,13 +1378,17 @@ mod tests {
 
         // Without angle brackets
         assert_eq!(
-            FcpRegistrar::normalize_contact_for_matching("sip:bob@host;rinstance=xyz;transport=tcp"),
+            FcpRegistrar::normalize_contact_for_matching(
+                "sip:bob@host;rinstance=xyz;transport=tcp"
+            ),
             "sip:bob@host;transport=tcp"
         );
 
         // Multiple stable parameters
         assert_eq!(
-            FcpRegistrar::normalize_contact_for_matching("<sip:user@host;user=phone;transport=tcp;rinstance=abc>"),
+            FcpRegistrar::normalize_contact_for_matching(
+                "<sip:user@host;user=phone;transport=tcp;rinstance=abc>"
+            ),
             "<sip:user@host;user=phone;transport=tcp>"
         );
     }

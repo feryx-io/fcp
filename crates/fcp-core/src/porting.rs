@@ -18,11 +18,7 @@
 //! - **Cancelled** - Customer cancelled
 //! - **Failed** - Port failed during cutover
 
-use crate::{
-    geographic::Address,
-    identifiers::TenantId,
-    Error,
-};
+use crate::{geographic::Address, identifiers::TenantId, Error};
 use anyhow::Result as AnyhowResult;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -120,7 +116,10 @@ impl PortStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            PortStatus::Completed | PortStatus::Rejected | PortStatus::Cancelled | PortStatus::Failed
+            PortStatus::Completed
+                | PortStatus::Rejected
+                | PortStatus::Cancelled
+                | PortStatus::Failed
         )
     }
 
@@ -453,7 +452,9 @@ impl PortRequest {
     pub fn validate(&self) -> Result<()> {
         // Validate phone numbers
         if self.phone_numbers.is_empty() {
-            return Err(Error::Config("Port request must include at least one phone number".to_string()));
+            return Err(Error::Config(
+                "Port request must include at least one phone number".to_string(),
+            ));
         }
 
         for number in &self.phone_numbers {
@@ -477,15 +478,21 @@ impl PortRequest {
         // Validate contact info (required for submission)
         if self.status != PortStatus::Draft {
             if self.authorized_contact_name.trim().is_empty() {
-                return Err(Error::Config("Authorized contact name is required".to_string()));
+                return Err(Error::Config(
+                    "Authorized contact name is required".to_string(),
+                ));
             }
 
             if self.authorized_contact_phone.trim().is_empty() {
-                return Err(Error::Config("Authorized contact phone is required".to_string()));
+                return Err(Error::Config(
+                    "Authorized contact phone is required".to_string(),
+                ));
             }
 
             if self.authorized_contact_email.trim().is_empty() {
-                return Err(Error::Config("Authorized contact email is required".to_string()));
+                return Err(Error::Config(
+                    "Authorized contact email is required".to_string(),
+                ));
             }
         }
 
@@ -906,9 +913,7 @@ mod tests {
         assert!(!PortRejectionReason::InvalidAccountNumber
             .description()
             .is_empty());
-        assert!(!PortRejectionReason::InvalidAddress
-            .description()
-            .is_empty());
+        assert!(!PortRejectionReason::InvalidAddress.description().is_empty());
         assert_eq!(
             PortRejectionReason::Other("Custom reason".to_string()).description(),
             "Custom reason"

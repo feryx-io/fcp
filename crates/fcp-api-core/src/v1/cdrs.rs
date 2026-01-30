@@ -52,11 +52,8 @@ pub struct CdrResponse {
 impl From<fcp_core::storage::CallDetailRecord> for CdrResponse {
     fn from(cdr: fcp_core::storage::CallDetailRecord) -> Self {
         // Convert SystemTime to Unix timestamp (seconds since epoch)
-        let to_timestamp = |st: SystemTime| -> u64 {
-            st.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-        };
+        let to_timestamp =
+            |st: SystemTime| -> u64 { st.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() };
 
         // Serialize disposition and hangup_cause using serde
         let disposition = serde_json::to_string(&cdr.disposition)
@@ -218,20 +215,22 @@ pub async fn list_cdrs(
 
     // Parse optional timestamps (Unix timestamps in seconds)
     if let Some(ref start_from_str) = params.start_time_from {
-        let timestamp = start_from_str
-            .parse::<u64>()
-            .map_err(|e| {
-                ApiError::BadRequest(format!("Invalid start_time_from (expected Unix timestamp): {}", e))
-            })?;
+        let timestamp = start_from_str.parse::<u64>().map_err(|e| {
+            ApiError::BadRequest(format!(
+                "Invalid start_time_from (expected Unix timestamp): {}",
+                e
+            ))
+        })?;
         query.start_time_from = Some(UNIX_EPOCH + std::time::Duration::from_secs(timestamp));
     }
 
     if let Some(ref start_to_str) = params.start_time_to {
-        let timestamp = start_to_str
-            .parse::<u64>()
-            .map_err(|e| {
-                ApiError::BadRequest(format!("Invalid start_time_to (expected Unix timestamp): {}", e))
-            })?;
+        let timestamp = start_to_str.parse::<u64>().map_err(|e| {
+            ApiError::BadRequest(format!(
+                "Invalid start_time_to (expected Unix timestamp): {}",
+                e
+            ))
+        })?;
         query.start_time_to = Some(UNIX_EPOCH + std::time::Duration::from_secs(timestamp));
     }
 

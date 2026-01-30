@@ -151,7 +151,10 @@ impl ActiveCall {
 
     /// Returns the number of active forks.
     pub fn active_fork_count(&self) -> usize {
-        self.forks.iter().filter(|f| f.state != CallState::Terminated).count()
+        self.forks
+            .iter()
+            .filter(|f| f.state != CallState::Terminated)
+            .count()
     }
 
     /// Returns the answered fork, if any.
@@ -219,9 +222,8 @@ impl DeviceStatus {
 
     /// Returns how long the device has been idle.
     pub fn idle_duration(&self) -> Option<Duration> {
-        self.last_idle_time.and_then(|idle_time| {
-            SystemTime::now().duration_since(idle_time).ok()
-        })
+        self.last_idle_time
+            .and_then(|idle_time| SystemTime::now().duration_since(idle_time).ok())
     }
 }
 
@@ -270,7 +272,8 @@ impl CallStateManager {
 
             // Update device states based on call state
             for fork in &call.forks {
-                self.update_device_state_from_call(&fork.device_id, state).await;
+                self.update_device_state_from_call(&fork.device_id, state)
+                    .await;
             }
         }
     }
@@ -282,13 +285,16 @@ impl CallStateManager {
             call.forks.push(fork);
 
             // Track this device is involved in this call
-            self.device_calls.write().await
+            self.device_calls
+                .write()
+                .await
                 .entry(device_id)
                 .or_insert_with(Vec::new)
                 .push(*call_id);
 
             // Update device state
-            self.update_device_state(&device_id, DeviceState::Ringing).await;
+            self.update_device_state(&device_id, DeviceState::Ringing)
+                .await;
         }
     }
 
@@ -304,7 +310,8 @@ impl CallStateManager {
                 fork.answer_time = Some(SystemTime::now());
 
                 // Update device state
-                self.update_device_state(&fork.device_id, DeviceState::Busy).await;
+                self.update_device_state(&fork.device_id, DeviceState::Busy)
+                    .await;
 
                 // Increment call counter for round-robin
                 if let Some(status) = self.device_states.write().await.get_mut(&fork.device_id) {
@@ -316,7 +323,8 @@ impl CallStateManager {
             for (i, fork) in call.forks.iter_mut().enumerate() {
                 if i != fork_index && fork.state != CallState::Terminated {
                     fork.state = CallState::Terminated;
-                    self.update_device_state(&fork.device_id, DeviceState::Idle).await;
+                    self.update_device_state(&fork.device_id, DeviceState::Idle)
+                        .await;
                 }
             }
         }
@@ -332,7 +340,8 @@ impl CallStateManager {
             for fork in &mut call.forks {
                 if fork.state != CallState::Terminated {
                     fork.state = CallState::Terminated;
-                    self.update_device_state(&fork.device_id, DeviceState::Idle).await;
+                    self.update_device_state(&fork.device_id, DeviceState::Idle)
+                        .await;
                 }
             }
 
@@ -348,7 +357,9 @@ impl CallStateManager {
 
     /// Gets the device state.
     pub async fn get_device_state(&self, device_id: &DeviceId) -> DeviceState {
-        self.device_states.read().await
+        self.device_states
+            .read()
+            .await
             .get(device_id)
             .map(|s| s.state)
             .unwrap_or(DeviceState::Offline)
@@ -362,7 +373,8 @@ impl CallStateManager {
     /// Updates device state.
     async fn update_device_state(&self, device_id: &DeviceId, state: DeviceState) {
         let mut states = self.device_states.write().await;
-        let status = states.entry(*device_id)
+        let status = states
+            .entry(*device_id)
             .or_insert_with(|| DeviceStatus::new(*device_id));
 
         status.state = state;
@@ -404,7 +416,8 @@ impl CallStateManager {
         let calls = self.calls.read().await;
 
         if let Some(call_ids) = device_calls.get(device_id) {
-            call_ids.iter()
+            call_ids
+                .iter()
                 .filter_map(|id| calls.get(id).cloned())
                 .collect()
         } else {
@@ -435,7 +448,8 @@ impl CallStateManager {
     pub async fn get_longest_idle_device(&self, device_ids: &[DeviceId]) -> Option<DeviceId> {
         let states = self.device_states.read().await;
 
-        device_ids.iter()
+        device_ids
+            .iter()
             .filter_map(|id| states.get(id))
             .filter(|status| status.is_available())
             .max_by_key(|status| status.idle_duration().unwrap_or(Duration::from_secs(0)))
@@ -444,7 +458,9 @@ impl CallStateManager {
 
     /// Gets all active calls for a tenant.
     pub async fn get_tenant_calls(&self, tenant_id: &TenantId) -> Vec<ActiveCall> {
-        self.calls.read().await
+        self.calls
+            .read()
+            .await
             .values()
             .filter(|call| &call.tenant_id == tenant_id && call.is_active())
             .cloned()
@@ -459,7 +475,8 @@ impl CallStateManager {
         let total_calls = calls.len();
         let active_calls = calls.values().filter(|c| c.is_active()).count();
         let total_devices = device_states.len();
-        let busy_devices = device_states.values()
+        let busy_devices = device_states
+            .values()
             .filter(|s| s.state == DeviceState::Busy || s.state == DeviceState::Ringing)
             .count();
 
@@ -518,15 +535,28 @@ mod tests {
         let device_id = DeviceId::new();
 
         // Initially offline
-        assert_eq!(manager.get_device_state(&device_id).await, DeviceState::Offline);
+        assert_eq!(
+            manager.get_device_state(&device_id).await,
+            DeviceState::Offline
+        );
 
         // Update to ringing
-        manager.update_device_state(&device_id, DeviceState::Ringing).await;
-        assert_eq!(manager.get_device_state(&device_id).await, DeviceState::Ringing);
+        manager
+            .update_device_state(&device_id, DeviceState::Ringing)
+            .await;
+        assert_eq!(
+            manager.get_device_state(&device_id).await,
+            DeviceState::Ringing
+        );
 
         // Update to busy
-        manager.update_device_state(&device_id, DeviceState::Busy).await;
-        assert_eq!(manager.get_device_state(&device_id).await, DeviceState::Busy);
+        manager
+            .update_device_state(&device_id, DeviceState::Busy)
+            .await;
+        assert_eq!(
+            manager.get_device_state(&device_id).await,
+            DeviceState::Busy
+        );
     }
 
     #[tokio::test]
@@ -536,10 +566,18 @@ mod tests {
         let devices = vec![DeviceId::new(), DeviceId::new(), DeviceId::new()];
 
         // Should cycle through devices
-        let d1 = manager.get_next_round_robin_device(&line_binding_id, &devices).await;
-        let d2 = manager.get_next_round_robin_device(&line_binding_id, &devices).await;
-        let d3 = manager.get_next_round_robin_device(&line_binding_id, &devices).await;
-        let d4 = manager.get_next_round_robin_device(&line_binding_id, &devices).await;
+        let d1 = manager
+            .get_next_round_robin_device(&line_binding_id, &devices)
+            .await;
+        let d2 = manager
+            .get_next_round_robin_device(&line_binding_id, &devices)
+            .await;
+        let d3 = manager
+            .get_next_round_robin_device(&line_binding_id, &devices)
+            .await;
+        let d4 = manager
+            .get_next_round_robin_device(&line_binding_id, &devices)
+            .await;
 
         assert_eq!(d1, Some(devices[0]));
         assert_eq!(d2, Some(devices[1]));

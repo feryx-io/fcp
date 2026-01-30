@@ -19,23 +19,21 @@ pub async fn handle(cmd: ConfigCommands, _output_format: OutputFormat) -> Result
             println!("      Use 'fcp config set' to change values (in-memory only for now)");
         }
 
-        ConfigCommands::Set { key, value } => {
-            match key.as_str() {
-                "deployment.mode" | "deployment_mode" => {
-                    let mode = parse_deployment_mode(&value)?;
-                    println!("Would set deployment mode to: {}", mode.name());
-                    println!();
-                    println!("Note: Configuration persistence not yet implemented");
-                    println!("      This change would only affect the current session");
-                }
-                _ => {
-                    anyhow::bail!(
-                        "Unknown configuration key '{}'. Valid keys: deployment.mode",
-                        key
-                    );
-                }
+        ConfigCommands::Set { key, value } => match key.as_str() {
+            "deployment.mode" | "deployment_mode" => {
+                let mode = parse_deployment_mode(&value)?;
+                println!("Would set deployment mode to: {}", mode.name());
+                println!();
+                println!("Note: Configuration persistence not yet implemented");
+                println!("      This change would only affect the current session");
             }
-        }
+            _ => {
+                anyhow::bail!(
+                    "Unknown configuration key '{}'. Valid keys: deployment.mode",
+                    key
+                );
+            }
+        },
 
         ConfigCommands::Get { key } => {
             match key.as_str() {

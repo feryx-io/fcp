@@ -163,9 +163,9 @@ pub async fn create_tenant(
         TenantStatus::Active
     };
 
-    let trial_expires_at = req.trial_expires_at.map(|secs| {
-        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
-    });
+    let trial_expires_at = req
+        .trial_expires_at
+        .map(|secs| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs));
 
     let tenant = Tenant {
         id: TenantId::new(),
@@ -264,9 +264,8 @@ pub async fn update_tenant(
     }
 
     if let Some(trial_expires_at_secs) = req.trial_expires_at {
-        tenant.trial_expires_at = Some(
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(trial_expires_at_secs),
-        );
+        tenant.trial_expires_at =
+            Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(trial_expires_at_secs));
     }
 
     if let Some(metadata) = req.metadata {

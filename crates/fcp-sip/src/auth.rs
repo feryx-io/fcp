@@ -58,7 +58,15 @@ impl<S: AsyncCredentialStore> Ha1Authenticator<S> {
         let ha2 = self.compute_ha2(method, uri, body);
 
         let final_input = if let (Some(qop), Some(nc), Some(cnonce)) = (qop, nc, cnonce) {
-            format!("{}:{}:{}:{}:{}:{}", ha1, nonce, nc, cnonce, qop.as_str(), ha2)
+            format!(
+                "{}:{}:{}:{}:{}:{}",
+                ha1,
+                nonce,
+                nc,
+                cnonce,
+                qop.as_str(),
+                ha2
+            )
         } else {
             format!("{}:{}:{}", ha1, nonce, ha2)
         };
@@ -128,8 +136,12 @@ impl<S: AsyncCredentialStore> Ha1Authenticator<S> {
         let username = auth
             .param("username")
             .ok_or_else(|| anyhow!("Missing username"))?;
-        let realm = auth.param("realm").ok_or_else(|| anyhow!("Missing realm"))?;
-        let nonce = auth.param("nonce").ok_or_else(|| anyhow!("Missing nonce"))?;
+        let realm = auth
+            .param("realm")
+            .ok_or_else(|| anyhow!("Missing realm"))?;
+        let nonce = auth
+            .param("nonce")
+            .ok_or_else(|| anyhow!("Missing nonce"))?;
         let uri = auth.param("uri").ok_or_else(|| anyhow!("Missing URI"))?;
         let response = auth
             .param("response")

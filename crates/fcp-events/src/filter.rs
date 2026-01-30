@@ -95,7 +95,7 @@ impl EventFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CallEvent, CallDirection};
+    use crate::{CallDirection, CallEvent};
     use std::time::SystemTime;
 
     #[test]

@@ -110,17 +110,11 @@ pub mod password {
     /// - Only numeric characters (0-9)
     pub fn validate_pin(pin: &str) -> Result<()> {
         if pin.len() < MIN_PIN_LENGTH {
-            bail!(
-                "PIN must be at least {} digits long",
-                MIN_PIN_LENGTH
-            );
+            bail!("PIN must be at least {} digits long", MIN_PIN_LENGTH);
         }
 
         if pin.len() > MAX_PIN_LENGTH {
-            bail!(
-                "PIN must not exceed {} digits",
-                MAX_PIN_LENGTH
-            );
+            bail!("PIN must not exceed {} digits", MAX_PIN_LENGTH);
         }
 
         // Ensure PIN contains only digits
@@ -137,14 +131,12 @@ pub mod password {
     /// PINs are typically 4-8 digit numeric codes used for voicemail access.
     pub fn hash_pin(pin: &str) -> Result<String> {
         validate_pin(pin)?;
-        bcrypt::hash(pin, BCRYPT_COST)
-            .map_err(|e| anyhow::anyhow!("Failed to hash PIN: {}", e))
+        bcrypt::hash(pin, BCRYPT_COST).map_err(|e| anyhow::anyhow!("Failed to hash PIN: {}", e))
     }
 
     /// Verify a plaintext PIN against a bcrypt hash.
     pub fn verify_pin(pin: &str, hash: &str) -> Result<bool> {
-        bcrypt::verify(pin, hash)
-            .map_err(|e| anyhow::anyhow!("Failed to verify PIN: {}", e))
+        bcrypt::verify(pin, hash).map_err(|e| anyhow::anyhow!("Failed to verify PIN: {}", e))
     }
 
     /// Compute SIP Digest HA1 hash for authentication.
@@ -296,7 +288,6 @@ pub struct User {
     pub media_preferences: MediaPreferences,
 
     // ===== Enterprise-grade fields =====
-
     /// Email address
     pub email: Option<String>,
 
@@ -453,7 +444,11 @@ fn default_codecs() -> Vec<String> {
 
 impl User {
     /// Check if user has a specific permission in the given deployment mode
-    pub fn has_permission(&self, permission: crate::Permission, mode: crate::DeploymentMode) -> bool {
+    pub fn has_permission(
+        &self,
+        permission: crate::Permission,
+        mode: crate::DeploymentMode,
+    ) -> bool {
         self.role.has_permission(permission, mode)
     }
 
@@ -468,7 +463,9 @@ impl User {
     /// Check if user can access a specific department
     pub fn can_access_department(&self, dept_id: &str) -> bool {
         match self.role {
-            crate::UserRole::SuperAdmin | crate::UserRole::TelecomAdmin | crate::UserRole::UserAdmin => true,
+            crate::UserRole::SuperAdmin
+            | crate::UserRole::TelecomAdmin
+            | crate::UserRole::UserAdmin => true,
             crate::UserRole::DepartmentAdmin => self.department_id.as_deref() == Some(dept_id),
             _ => false,
         }
@@ -517,7 +514,6 @@ pub struct UserFileEntry {
     pub media_preferences: MediaPreferences,
 
     // ===== Enterprise-grade fields =====
-
     /// Email address
     pub email: Option<String>,
 
@@ -1018,10 +1014,7 @@ pub trait VoicemailStore: Send + Sync {
     async fn get_message(&self, id: &str) -> Result<Option<crate::VoicemailMessage>>;
 
     /// List messages for a mailbox
-    async fn list_messages(
-        &self,
-        mailbox_id: &str,
-    ) -> Result<Vec<crate::VoicemailMessage>>;
+    async fn list_messages(&self, mailbox_id: &str) -> Result<Vec<crate::VoicemailMessage>>;
 
     /// List messages by status
     async fn list_messages_by_status(
@@ -1074,10 +1067,7 @@ pub trait GeoRoutingStore: Send + Sync {
     ) -> Result<Vec<crate::PhoneNumberLocation>>;
 
     /// Create or update phone number location
-    async fn put_phone_number_location(
-        &self,
-        location: crate::PhoneNumberLocation,
-    ) -> Result<()>;
+    async fn put_phone_number_location(&self, location: crate::PhoneNumberLocation) -> Result<()>;
 
     /// Delete phone number location
     async fn delete_phone_number_location(
@@ -1483,9 +1473,7 @@ impl RegistrationStore for DynStorage {
     }
 
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
-        self.registration_store
-            .delete_all_registrations(aor)
-            .await
+        self.registration_store.delete_all_registrations(aor).await
     }
 
     async fn cleanup_expired(&self) -> Result<usize> {
@@ -1770,10 +1758,7 @@ impl GeoRoutingStore for DynStorage {
             .await
     }
 
-    async fn put_phone_number_location(
-        &self,
-        location: crate::PhoneNumberLocation,
-    ) -> Result<()> {
+    async fn put_phone_number_location(&self, location: crate::PhoneNumberLocation) -> Result<()> {
         self.geo_routing_store
             .put_phone_number_location(location)
             .await

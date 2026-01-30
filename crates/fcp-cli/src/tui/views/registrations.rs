@@ -170,7 +170,12 @@ fn render_registrations_table(
     let title = if state.loading {
         " Registrations (Loading...) "
     } else if let Some(aor) = &state.aor_filter {
-        format!(" Registrations for {} ({}) ", aor, state.registrations.len()).leak() as &str
+        format!(
+            " Registrations for {} ({}) ",
+            aor,
+            state.registrations.len()
+        )
+        .leak() as &str
     } else {
         format!(" Registrations ({}) ", state.registrations.len()).leak() as &str
     };
@@ -196,8 +201,11 @@ fn render_registrations_table(
             Span::raw(error),
         ])];
 
-        let error_para = Paragraph::new(error_text)
-            .block(Block::default().borders(Borders::ALL).border_style(theme.error()));
+        let error_para = Paragraph::new(error_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.error()),
+        );
 
         // Show error in a small area at the bottom
         let error_area = Rect {
@@ -311,10 +319,7 @@ fn render_details_panel(
                 theme.info(),
             )]),
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Press 'r' to refresh",
-                theme.info(),
-            )]),
+            Line::from(vec![Span::styled("  Press 'r' to refresh", theme.info())]),
         ]
     } else {
         vec![
@@ -397,7 +402,7 @@ pub async fn fetch_registrations(
     // Build list of domains to try
     let mut domains = vec![
         server_host.clone(),
-        "fcp.local".to_string(),    // Default realm from config
+        "fcp.local".to_string(), // Default realm from config
         "localhost".to_string(),
         "127.0.0.1".to_string(),
         // Common local IPs that might be used for SIP when API is on localhost

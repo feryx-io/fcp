@@ -123,9 +123,7 @@ async fn main() -> Result<()> {
         config.logging.format = log_format;
     }
     if let Some(bind_addr) = cli.bind_addr {
-        config.gateway.bind_address = bind_addr
-            .parse()
-            .context("Invalid bind address format")?;
+        config.gateway.bind_address = bind_addr.parse().context("Invalid bind address format")?;
     }
     if let Some(redis_url) = cli.redis_url {
         config.redis.url = redis_url;
@@ -151,19 +149,37 @@ async fn main() -> Result<()> {
         if config.cors.allow_all_origins {
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH])
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::DELETE,
+                    Method::PATCH,
+                ])
                 .allow_headers(Any)
         } else {
             // TODO: Implement specific origin handling
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH])
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::DELETE,
+                    Method::PATCH,
+                ])
                 .allow_headers(Any)
         }
     } else {
         CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::PATCH,
+            ])
             .allow_headers(Any)
     };
 
@@ -175,13 +191,22 @@ async fn main() -> Result<()> {
         // All other routes go through proxy
         .fallback(proxy::proxy_handler)
         // Add middleware (executed in reverse order)
-        .layer(middleware::from_fn_with_state(cache_state, cache::cache_middleware))
-        .layer(middleware::from_fn_with_state(rate_limiter_state, rate_limit::rate_limit_middleware))
-        .layer(if config.gateway.compression_enabled {
-            Some(CompressionLayer::new())
-        } else {
-            None
-        }.unwrap_or_else(|| CompressionLayer::new()))
+        .layer(middleware::from_fn_with_state(
+            cache_state,
+            cache::cache_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            rate_limiter_state,
+            rate_limit::rate_limit_middleware,
+        ))
+        .layer(
+            if config.gateway.compression_enabled {
+                Some(CompressionLayer::new())
+            } else {
+                None
+            }
+            .unwrap_or_else(|| CompressionLayer::new()),
+        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(proxy_state.clone());
@@ -200,9 +225,7 @@ async fn main() -> Result<()> {
     info!("API Gateway listening on {}", bind_addr);
 
     // Spawn server task
-    let server_handle = tokio::spawn(async move {
-        axum::serve(listener, app).await
-    });
+    let server_handle = tokio::spawn(async move { axum::serve(listener, app).await });
 
     // Wait for shutdown signal
     info!("FCP API Gateway running. Press Ctrl+C to shutdown.");

@@ -358,13 +358,31 @@ impl App {
         match tab {
             Tab::Dashboard => true, // Everyone can see dashboard
             Tab::Tenants => self.current_user.role == UserRole::SuperAdmin, // Only SuperAdmin can manage tenants
-            Tab::Users => self.current_user.has_permission(Permission::UserRead, self.deployment_mode),
-            Tab::PhoneNumbers => self.current_user.has_permission(Permission::PhoneNumberRead, self.deployment_mode),
-            Tab::Devices => self.current_user.has_permission(Permission::DeviceRead, self.deployment_mode),
-            Tab::LineBindings => self.current_user.has_permission(Permission::PhoneNumberRead, self.deployment_mode) && self.current_user.has_permission(Permission::DeviceRead, self.deployment_mode),
-            Tab::Calls => self.current_user.has_permission(Permission::CallView, self.deployment_mode),
-            Tab::Registrations => self.current_user.has_permission(Permission::RegistrationView, self.deployment_mode),
-            Tab::Debug => self.current_user.has_permission(Permission::DebugView, self.deployment_mode),
+            Tab::Users => self
+                .current_user
+                .has_permission(Permission::UserRead, self.deployment_mode),
+            Tab::PhoneNumbers => self
+                .current_user
+                .has_permission(Permission::PhoneNumberRead, self.deployment_mode),
+            Tab::Devices => self
+                .current_user
+                .has_permission(Permission::DeviceRead, self.deployment_mode),
+            Tab::LineBindings => {
+                self.current_user
+                    .has_permission(Permission::PhoneNumberRead, self.deployment_mode)
+                    && self
+                        .current_user
+                        .has_permission(Permission::DeviceRead, self.deployment_mode)
+            }
+            Tab::Calls => self
+                .current_user
+                .has_permission(Permission::CallView, self.deployment_mode),
+            Tab::Registrations => self
+                .current_user
+                .has_permission(Permission::RegistrationView, self.deployment_mode),
+            Tab::Debug => self
+                .current_user
+                .has_permission(Permission::DebugView, self.deployment_mode),
         }
     }
 }

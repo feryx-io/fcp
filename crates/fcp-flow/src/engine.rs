@@ -202,16 +202,28 @@ impl FlowEngine {
                     match gather_prompt {
                         GatherPrompt::Play { url } => {
                             // Store Play prompt information for flow handler
-                            context.set_variable("__gather_prompt_type".to_string(), "play".to_string());
+                            context.set_variable(
+                                "__gather_prompt_type".to_string(),
+                                "play".to_string(),
+                            );
                             context.set_variable("__gather_prompt_url".to_string(), url.clone());
                         }
-                        GatherPrompt::Say { text, voice, language } => {
+                        GatherPrompt::Say {
+                            text,
+                            voice,
+                            language,
+                        } => {
                             // If TTS service is available, synthesize the prompt
                             if let Some(tts_service) = &self.tts_service {
-                                let interpolated_text = self.interpolate_variables(text, context)?;
+                                let interpolated_text =
+                                    self.interpolate_variables(text, context)?;
 
                                 match tts_service
-                                    .synthesize(&interpolated_text, Some(language), voice.as_deref())
+                                    .synthesize(
+                                        &interpolated_text,
+                                        Some(language),
+                                        voice.as_deref(),
+                                    )
                                     .await
                                 {
                                     Ok(audio_path) => {
@@ -340,7 +352,17 @@ impl FlowEngine {
                     "Making HTTP request"
                 );
 
-                match self.execute_http_request(method, &interpolated_url, body.as_deref(), headers, *timeout, context).await {
+                match self
+                    .execute_http_request(
+                        method,
+                        &interpolated_url,
+                        body.as_deref(),
+                        headers,
+                        *timeout,
+                        context,
+                    )
+                    .await
+                {
                     Ok(response_body) => {
                         context.set_variable(response_variable.clone(), response_body);
                         Ok(FlowExecutionResult::Continue(next.clone()))
@@ -366,11 +388,8 @@ impl FlowEngine {
                 let var_value = context.get_variable(variable)?;
                 let interpolated_compare_value = self.interpolate_variables(value, context)?;
 
-                let condition_met = self.evaluate_condition(
-                    &var_value,
-                    *operator,
-                    &interpolated_compare_value,
-                );
+                let condition_met =
+                    self.evaluate_condition(&var_value, *operator, &interpolated_compare_value);
 
                 debug!(
                     call_id = %context.call_id,
@@ -457,10 +476,18 @@ impl FlowEngine {
             } => {
                 let interpolated_message = self.interpolate_variables(message, context)?;
                 match level {
-                    crate::schema::LogLevel::Debug => debug!(call_id = %context.call_id, "{}", interpolated_message),
-                    crate::schema::LogLevel::Info => info!(call_id = %context.call_id, "{}", interpolated_message),
-                    crate::schema::LogLevel::Warn => warn!(call_id = %context.call_id, "{}", interpolated_message),
-                    crate::schema::LogLevel::Error => error!(call_id = %context.call_id, "{}", interpolated_message),
+                    crate::schema::LogLevel::Debug => {
+                        debug!(call_id = %context.call_id, "{}", interpolated_message)
+                    }
+                    crate::schema::LogLevel::Info => {
+                        info!(call_id = %context.call_id, "{}", interpolated_message)
+                    }
+                    crate::schema::LogLevel::Warn => {
+                        warn!(call_id = %context.call_id, "{}", interpolated_message)
+                    }
+                    crate::schema::LogLevel::Error => {
+                        error!(call_id = %context.call_id, "{}", interpolated_message)
+                    }
                 }
                 Ok(FlowExecutionResult::Continue(next.clone()))
             }
@@ -484,13 +511,23 @@ impl FlowEngine {
                 );
 
                 // Store voicemail configuration in context
-                context.set_variable("__voicemail_mailbox".to_string(), interpolated_mailbox.clone());
+                context.set_variable(
+                    "__voicemail_mailbox".to_string(),
+                    interpolated_mailbox.clone(),
+                );
                 context.set_variable("__voicemail_is_busy".to_string(), is_busy.to_string());
-                context.set_variable("__voicemail_max_duration".to_string(), max_duration.to_string());
+                context.set_variable(
+                    "__voicemail_max_duration".to_string(),
+                    max_duration.to_string(),
+                );
                 context.set_variable("__voicemail_play_beep".to_string(), play_beep.to_string());
-                context.set_variable("__voicemail_next_on_success".to_string(), next_on_success.clone());
+                context.set_variable(
+                    "__voicemail_next_on_success".to_string(),
+                    next_on_success.clone(),
+                );
                 if let Some(error_node) = next_on_error {
-                    context.set_variable("__voicemail_next_on_error".to_string(), error_node.clone());
+                    context
+                        .set_variable("__voicemail_next_on_error".to_string(), error_node.clone());
                 }
 
                 // Return WaitingForVoicemail to let flow handler invoke voicemail service
@@ -626,26 +663,22 @@ impl FlowEngine {
             BranchOperator::Contains => left.contains(right),
             BranchOperator::StartsWith => left.starts_with(right),
             BranchOperator::EndsWith => left.ends_with(right),
-            BranchOperator::GreaterThan => {
-                left.parse::<f64>()
-                    .and_then(|l| right.parse::<f64>().map(|r| l > r))
-                    .unwrap_or(false)
-            }
-            BranchOperator::LessThan => {
-                left.parse::<f64>()
-                    .and_then(|l| right.parse::<f64>().map(|r| l < r))
-                    .unwrap_or(false)
-            }
-            BranchOperator::GreaterThanOrEqual => {
-                left.parse::<f64>()
-                    .and_then(|l| right.parse::<f64>().map(|r| l >= r))
-                    .unwrap_or(false)
-            }
-            BranchOperator::LessThanOrEqual => {
-                left.parse::<f64>()
-                    .and_then(|l| right.parse::<f64>().map(|r| l <= r))
-                    .unwrap_or(false)
-            }
+            BranchOperator::GreaterThan => left
+                .parse::<f64>()
+                .and_then(|l| right.parse::<f64>().map(|r| l > r))
+                .unwrap_or(false),
+            BranchOperator::LessThan => left
+                .parse::<f64>()
+                .and_then(|l| right.parse::<f64>().map(|r| l < r))
+                .unwrap_or(false),
+            BranchOperator::GreaterThanOrEqual => left
+                .parse::<f64>()
+                .and_then(|l| right.parse::<f64>().map(|r| l >= r))
+                .unwrap_or(false),
+            BranchOperator::LessThanOrEqual => left
+                .parse::<f64>()
+                .and_then(|l| right.parse::<f64>().map(|r| l <= r))
+                .unwrap_or(false),
             BranchOperator::Exists => !left.is_empty(),
             BranchOperator::NotExists => left.is_empty(),
         }
@@ -662,7 +695,8 @@ impl Default for FlowEngine {
 pub type AnswerCallback = Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
 
 /// Callback for hanging up a call (sends BYE)
-pub type HangupCallback = Arc<dyn Fn(Option<String>) -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
+pub type HangupCallback =
+    Arc<dyn Fn(Option<String>) -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
 
 /// Flow execution context.
 ///
@@ -860,10 +894,7 @@ mod tests {
         assert!(matches!(result, FlowExecutionResult::Continue(_)));
 
         // Execute Hangup node
-        let result = engine
-            .execute_node(&mut context, "hangup")
-            .await
-            .unwrap();
+        let result = engine.execute_node(&mut context, "hangup").await.unwrap();
         assert!(matches!(result, FlowExecutionResult::Hangup(_)));
     }
 }

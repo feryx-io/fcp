@@ -18,10 +18,7 @@ pub async fn handle(
 
     match cmd {
         UserCommands::List => {
-            let users = client
-                .list_users()
-                .await
-                .context("Failed to list users")?;
+            let users = client.list_users().await.context("Failed to list users")?;
 
             match output_format {
                 OutputFormat::Table => {
@@ -36,7 +33,11 @@ pub async fn handle(
                             user.username.clone(),
                             user.display_name.clone().unwrap_or_else(|| "-".to_string()),
                             user.tenant_id.clone(),
-                            if user.enabled { "yes".to_string() } else { "no".to_string() },
+                            if user.enabled {
+                                "yes".to_string()
+                            } else {
+                                "no".to_string()
+                            },
                         ]);
                     }
 
@@ -61,7 +62,10 @@ pub async fn handle(
             match output_format {
                 OutputFormat::Table => {
                     println!("User: {}", user.username);
-                    println!("  Display Name: {}", user.display_name.unwrap_or_else(|| "-".to_string()));
+                    println!(
+                        "  Display Name: {}",
+                        user.display_name.unwrap_or_else(|| "-".to_string())
+                    );
                     println!("  Tenant ID: {}", user.tenant_id);
                     println!("  Enabled: {}", if user.enabled { "yes" } else { "no" });
                     println!("  Created: {:?}", user.created_at);
@@ -109,7 +113,7 @@ pub async fn handle(
                 display_name,
                 tenant_id,
                 enabled: Some(enabled),
-                role: None, // TODO: Add role parameter to Add command
+                role: None,          // TODO: Add role parameter to Add command
                 department_id: None, // TODO: Add department_id parameter to Add command
                 // Enterprise fields - now supported via CLI
                 email,
@@ -251,7 +255,10 @@ pub async fn handle(
         UserCommands::Delete { username, yes } => {
             // Confirm deletion unless --yes was provided
             if !yes {
-                print!("Are you sure you want to delete user '{}'? [y/N]: ", username);
+                print!(
+                    "Are you sure you want to delete user '{}'? [y/N]: ",
+                    username
+                );
                 io::stdout().flush()?;
 
                 let mut input = String::new();
@@ -313,8 +320,15 @@ pub async fn handle(
                 .await
                 .context("Failed to create user")?;
 
-            println!("User '{}' created successfully with role: {}", username, user_role.name());
-            println!("Note: Use 'fcp user password {}' to set a password", username);
+            println!(
+                "User '{}' created successfully with role: {}",
+                username,
+                user_role.name()
+            );
+            println!(
+                "Note: Use 'fcp user password {}' to set a password",
+                username
+            );
         }
 
         UserCommands::Update {
@@ -329,7 +343,11 @@ pub async fn handle(
             if let Some(role_str) = &role {
                 let user_role = parse_role(role_str)?;
                 // TODO: Need API endpoint to update user role
-                println!("Would update user '{}' to role: {}", username, user_role.name());
+                println!(
+                    "Would update user '{}' to role: {}",
+                    username,
+                    user_role.name()
+                );
                 println!("Note: Role update API not yet implemented");
             }
 
@@ -362,17 +380,35 @@ pub async fn handle(
             }
         }
 
-        UserCommands::Grant { username, permission } => {
+        UserCommands::Grant {
+            username,
+            permission,
+        } => {
             let perm = parse_permission(&permission)?;
-            println!("Would grant permission '{}' to user '{}'", perm.name(), username);
-            println!("Note: Permission grant/revoke requires storing per-user permissions overrides");
+            println!(
+                "Would grant permission '{}' to user '{}'",
+                perm.name(),
+                username
+            );
+            println!(
+                "Note: Permission grant/revoke requires storing per-user permissions overrides"
+            );
             println!("      This feature is not yet implemented in the storage layer");
         }
 
-        UserCommands::Revoke { username, permission } => {
+        UserCommands::Revoke {
+            username,
+            permission,
+        } => {
             let perm = parse_permission(&permission)?;
-            println!("Would revoke permission '{}' from user '{}'", perm.name(), username);
-            println!("Note: Permission grant/revoke requires storing per-user permissions overrides");
+            println!(
+                "Would revoke permission '{}' from user '{}'",
+                perm.name(),
+                username
+            );
+            println!(
+                "Note: Permission grant/revoke requires storing per-user permissions overrides"
+            );
             println!("      This feature is not yet implemented in the storage layer");
         }
 
@@ -413,7 +449,10 @@ pub async fn handle(
                 println!("  Total: {} permissions", permissions.len());
             }
 
-            println!("\n\nDeployment mode: {} (affects available permissions)", deployment_mode.name());
+            println!(
+                "\n\nDeployment mode: {} (affects available permissions)",
+                deployment_mode.name()
+            );
         }
     }
 

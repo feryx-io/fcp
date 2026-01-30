@@ -18,7 +18,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::{storage::password, AccountStatus, CredentialStore, EmergencyContact, User, UserRole};
+use fcp_core::{
+    storage::password, AccountStatus, CredentialStore, EmergencyContact, User, UserRole,
+};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -284,7 +286,7 @@ pub async fn create_user(
         display_name: req.display_name,
         tenant_id: req.tenant_id,
         enabled: req.enabled,
-        role, // NEW: User role for RBAC
+        role,                             // NEW: User role for RBAC
         department_id: req.department_id, // NEW: Department scoping for department admins
         created_at: std::time::SystemTime::now(),
         updated_at: std::time::SystemTime::now(),
@@ -393,8 +395,8 @@ pub async fn update_user(
         user.timezone = timezone;
     }
     if let Some(account_status_str) = req.account_status {
-        user.account_status = AccountStatus::from_str(&account_status_str)
-            .unwrap_or(AccountStatus::Active);
+        user.account_status =
+            AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
     }
     if let Some(emergency_name) = req.emergency_contact_name {
         user.emergency_contact.name = Some(emergency_name);

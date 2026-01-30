@@ -52,7 +52,9 @@ async fn init_sqlite(config: &StorageSection) -> Result<Arc<DynStorage>> {
     #[cfg(not(feature = "storage-sqlite"))]
     {
         let _ = config;
-        anyhow::bail!("SQLite storage backend not available. Compile with --features storage-sqlite")
+        anyhow::bail!(
+            "SQLite storage backend not available. Compile with --features storage-sqlite"
+        )
     }
 }
 
@@ -106,9 +108,7 @@ async fn init_mysql(config: &StorageSection) -> Result<Arc<DynStorage>> {
     #[cfg(not(feature = "storage-mysql"))]
     {
         let _ = config;
-        anyhow::bail!(
-            "MySQL storage backend not available. Compile with --features storage-mysql"
-        )
+        anyhow::bail!("MySQL storage backend not available. Compile with --features storage-mysql")
     }
 }
 

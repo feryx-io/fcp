@@ -8,19 +8,21 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
     let mut config = Config::load_or_create()?;
 
     match cmd {
-        crate::ContextCommands::List => {
-            match output_format {
-                OutputFormat::Json => crate::output::print_json(&config.contexts),
-                OutputFormat::Yaml => crate::output::print_yaml(&config.contexts),
-                OutputFormat::Table => {
-                    println!("Available contexts:");
-                    for ctx in &config.contexts {
-                        let current = if ctx.name == config.current_context { " *" } else { "  " };
-                        println!("{}  {} - {}", current, ctx.name, ctx.url);
-                    }
+        crate::ContextCommands::List => match output_format {
+            OutputFormat::Json => crate::output::print_json(&config.contexts),
+            OutputFormat::Yaml => crate::output::print_yaml(&config.contexts),
+            OutputFormat::Table => {
+                println!("Available contexts:");
+                for ctx in &config.contexts {
+                    let current = if ctx.name == config.current_context {
+                        " *"
+                    } else {
+                        "  "
+                    };
+                    println!("{}  {} - {}", current, ctx.name, ctx.url);
                 }
             }
-        }
+        },
         crate::ContextCommands::Current => {
             if let Some(ctx) = config.current() {
                 match output_format {
@@ -39,7 +41,11 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
             }
         }
         crate::ContextCommands::Add { name, url, token } => {
-            config.add_context(Context { name: name.clone(), url, token })?;
+            config.add_context(Context {
+                name: name.clone(),
+                url,
+                token,
+            })?;
             println!("Context '{}' added successfully", name);
         }
         crate::ContextCommands::Use { name } => {
@@ -67,7 +73,7 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
             } else {
                 config.current()
             };
-            
+
             if let Some(ctx) = ctx {
                 match output_format {
                     OutputFormat::Json => crate::output::print_json(ctx),

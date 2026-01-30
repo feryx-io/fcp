@@ -70,12 +70,7 @@ impl TtsProvider for GoogleCloudTts {
         "google_cloud".to_string()
     }
 
-    async fn synthesize(
-        &self,
-        text: &str,
-        language: &str,
-        voice: Option<&str>,
-    ) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>> {
         debug!(
             text_len = text.len(),
             language = %language,
@@ -184,7 +179,9 @@ impl TtsProvider for GoogleCloudTts {
                 let mut metadata = HashMap::new();
                 metadata.insert(
                     "ssml_gender".to_string(),
-                    v.ssml_gender.clone().unwrap_or_else(|| "NEUTRAL".to_string()),
+                    v.ssml_gender
+                        .clone()
+                        .unwrap_or_else(|| "NEUTRAL".to_string()),
                 );
                 metadata.insert(
                     "natural_sample_rate".to_string(),

@@ -195,7 +195,9 @@ use crate::prelude::*;
 use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
 use fcp_b2bua_core::B2buaConfig;
-use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore};
+use fcp_core::storage::{
+    DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
+};
 use sip_transaction::ServerTransactionHandle;
 
 /// Routes inbound SIP messages to the transaction manager.
@@ -499,8 +501,8 @@ impl SipMessageHandler {
                         Ok(mut file) => {
                             use tokio::io::AsyncWriteExt;
 
-                            let entry_ts = chrono::DateTime::<chrono::Utc>::from(entry.timestamp)
-                                .to_rfc3339();
+                            let entry_ts =
+                                chrono::DateTime::<chrono::Utc>::from(entry.timestamp).to_rfc3339();
                             let line = format!(
                                 "{} {} {} dialog={} cseq={} peer={} transport={} rr={} route={} body_hash={}\n",
                                 entry_ts,
@@ -816,10 +818,8 @@ impl SipMessageHandler {
                 if let (Some(tx_key), Some(invite_req)) =
                     (&call.a_leg_invite_tx, &call.original_invite)
                 {
-                    let response = self.create_cancelled_response(
-                        invite_req,
-                        call.a_leg_to_tag.as_deref(),
-                    );
+                    let response =
+                        self.create_cancelled_response(invite_req, call.a_leg_to_tag.as_deref());
                     self.transaction_manager.send_final(tx_key, response).await;
                 }
 
@@ -999,7 +999,8 @@ impl SipMessageHandler {
 
                         // Extract Call-ID for correlation
                         if let Some(sip_call_id) = sip_parse::header(request.headers(), "Call-ID") {
-                            initial_variables.insert("sip_call_id".to_string(), sip_call_id.to_string());
+                            initial_variables
+                                .insert("sip_call_id".to_string(), sip_call_id.to_string());
                         }
 
                         // Create callbacks for Answer and Hangup nodes
@@ -1021,7 +1022,8 @@ impl SipMessageHandler {
                             Box::pin(async move {
                                 info!(call_id = %call_id, "Answer callback executing - creating 200 OK");
                                 // Create base 200 OK response
-                                let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
+                                let mut response =
+                                    sip_uas::UserAgentServer::create_response(&request, 200, "OK");
 
                                 // Add required dialog-establishing headers (To tag, Contact, Record-Route)
                                 add_response_headers(&request, &mut response, &uas);
@@ -1034,23 +1036,36 @@ impl SipMessageHandler {
                                         if let Some(ref media_session_id) = call.media_session_id {
                                             // Extract remote SDP from INVITE body
                                             if !request.body().is_empty() {
-                                                let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                                                let remote_sdp =
+                                                    String::from_utf8_lossy(request.body())
+                                                        .to_string();
 
                                                 // Update media session with remote SDP and get local SDP
-                                                match media_mgr.update_session(media_session_id, remote_sdp).await {
+                                                match media_mgr
+                                                    .update_session(media_session_id, remote_sdp)
+                                                    .await
+                                                {
                                                     Ok(local_sdp) => {
                                                         // Rebuild response with SDP body
-                                                        let sdp_bytes = bytes::Bytes::from(local_sdp);
+                                                        let sdp_bytes =
+                                                            bytes::Bytes::from(local_sdp);
 
                                                         // Clone headers and add Content-Type and Content-Length
-                                                        let mut headers = response.headers().clone();
+                                                        let mut headers =
+                                                            response.headers().clone();
                                                         let _ = headers.push(
                                                             smol_str::SmolStr::new("Content-Type"),
-                                                            smol_str::SmolStr::new("application/sdp"),
+                                                            smol_str::SmolStr::new(
+                                                                "application/sdp",
+                                                            ),
                                                         );
                                                         let _ = headers.push(
-                                                            smol_str::SmolStr::new("Content-Length"),
-                                                            smol_str::SmolStr::new(&sdp_bytes.len().to_string()),
+                                                            smol_str::SmolStr::new(
+                                                                "Content-Length",
+                                                            ),
+                                                            smol_str::SmolStr::new(
+                                                                &sdp_bytes.len().to_string(),
+                                                            ),
                                                         );
 
                                                         // Create new response with SDP
@@ -1058,10 +1073,13 @@ impl SipMessageHandler {
                                                             response.start_line().clone(),
                                                             headers,
                                                             sdp_bytes,
-                                                        ).expect("Failed to create response with SDP");
+                                                        )
+                                                        .expect(
+                                                            "Failed to create response with SDP",
+                                                        );
 
                                                         info!(call_id = %call_id, "Added SDP to 200 OK response");
-                                                    },
+                                                    }
                                                     Err(e) => {
                                                         error!(call_id = %call_id, error = %e, "Failed to update media session with SDP");
                                                     }
@@ -1079,8 +1097,9 @@ impl SipMessageHandler {
                                     &request,
                                     &response,
                                     uas.local_uri.clone(),
-                                    extract_from_uri(&request)
-                                        .unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
+                                    extract_from_uri(&request).unwrap_or_else(|_| {
+                                        sip_core::SipUri::parse("sip:unknown@unknown").unwrap()
+                                    }),
                                 ) {
                                     let dialog_id_str = format!("{:?}", a_leg_dialog.id());
                                     info!(call_id = %call_id, dialog_id = %dialog_id_str, "Created A-leg dialog");
@@ -1150,16 +1169,29 @@ impl SipMessageHandler {
 
                         // Get mutable call reference and start flow
                         if let Some(mut call_entry) = self.call_manager.get_call(&call_id) {
-                            match flow_handler.start_flow(&mut call_entry, flow_id, initial_variables, answer_callback, hangup_callback).await {
+                            match flow_handler
+                                .start_flow(
+                                    &mut call_entry,
+                                    flow_id,
+                                    initial_variables,
+                                    answer_callback,
+                                    hangup_callback,
+                                )
+                                .await
+                            {
                                 Ok(()) => {
                                     info!(call_id = %call_id, "Flow execution started successfully");
                                     // Flow will handle the call - don't forward to B-leg
                                     // Send 183 Session Progress to indicate flow is starting
-                                    let mut progress = sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
+                                    let mut progress = sip_uas::UserAgentServer::create_response(
+                                        request,
+                                        183,
+                                        "Session Progress",
+                                    );
                                     self.ensure_response_hygiene(request, &mut progress);
                                     handle.send_provisional(progress).await;
                                     return Ok(());
-                                },
+                                }
                                 Err(e) => {
                                     error!(
                                         call_id = %call_id,
@@ -1449,10 +1481,7 @@ impl SipMessageHandler {
             return;
         }
 
-        let external_domain = config
-            .local_domain
-            .as_deref()
-            .unwrap_or(&self.local_addr);
+        let external_domain = config.local_domain.as_deref().unwrap_or(&self.local_addr);
 
         debug!(
             mode = ?config.mode,
@@ -1464,10 +1493,7 @@ impl SipMessageHandler {
 
         // Strip Via headers (keep only top Via for response routing)
         if config.hide_via {
-            let via_values: Vec<String> = headers
-                .get_all("Via")
-                .map(|v| v.to_string())
-                .collect();
+            let via_values: Vec<String> = headers.get_all("Via").map(|v| v.to_string()).collect();
             if via_values.len() > 1 {
                 headers.remove("Via");
                 // Re-add only the top Via (first one — the one for the outermost hop)
@@ -1581,7 +1607,10 @@ impl SipMessageHandler {
                 match storage.get_phone_number_by_e164(e164_number).await {
                     Ok(Some(phone_number)) => {
                         // Then get the line binding by phone number ID
-                        match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                        match storage
+                            .get_line_binding_by_phone_number(&phone_number.id)
+                            .await
+                        {
                             Ok(Some(line_binding)) => {
                                 debug!(
                                     call_id = %call_id,
@@ -1598,9 +1627,16 @@ impl SipMessageHandler {
 
                                         if enabled_devices.is_empty() {
                                             warn!(call_id = %call_id, "Line binding has no enabled devices");
-                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
                                             a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(&call_id, Some("No devices enabled for line".to_string()));
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("No devices enabled for line".to_string()),
+                                            );
                                             return Ok(());
                                         }
 
@@ -1608,13 +1644,21 @@ impl SipMessageHandler {
                                         let mut all_contacts = Vec::new();
                                         for device_binding in enabled_devices {
                                             // Get the device record from storage
-                                            match storage.get_device(&device_binding.device_id).await {
+                                            match storage
+                                                .get_device(&device_binding.device_id)
+                                                .await
+                                            {
                                                 Ok(Some(device)) => {
                                                     if let Some(sip_uri) = &device.sip_uri {
                                                         // Look up registrations for this device's SIP URI
                                                         if let Some(registrar) = &self.registrar {
-                                                            match registrar.get_registrations(sip_uri).await {
-                                                                Ok(contacts) if !contacts.is_empty() => {
+                                                            match registrar
+                                                                .get_registrations(sip_uri)
+                                                                .await
+                                                            {
+                                                                Ok(contacts)
+                                                                    if !contacts.is_empty() =>
+                                                                {
                                                                     debug!(
                                                                         call_id = %call_id,
                                                                         device = %device.name,
@@ -1654,9 +1698,16 @@ impl SipMessageHandler {
                                         // Check if we found any registered contacts
                                         if all_contacts.is_empty() {
                                             info!(call_id = %call_id, phone_number = %destination_aor, "No devices registered for phone number");
-                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
                                             a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(&call_id, Some("No devices registered".to_string()));
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("No devices registered".to_string()),
+                                            );
                                             return Ok(());
                                         }
 
@@ -1665,17 +1716,34 @@ impl SipMessageHandler {
                                     fcp_core::BindingType::Ivr => {
                                         // IVR not yet implemented (Phase 2)
                                         info!(call_id = %call_id, "IVR routing not yet implemented");
-                                        let response = self.create_simple_response(request, 501, "Not Implemented");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            501,
+                                            "Not Implemented",
+                                        );
                                         a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(&call_id, Some("IVR not implemented".to_string()));
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("IVR not implemented".to_string()),
+                                        );
                                         return Ok(());
                                     }
                                     _ => {
                                         // Other binding types not yet implemented
                                         info!(call_id = %call_id, binding_type = %line_binding.binding_type, "Binding type not yet supported");
-                                        let response = self.create_simple_response(request, 501, "Not Implemented");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            501,
+                                            "Not Implemented",
+                                        );
                                         a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Binding type {} not supported", line_binding.binding_type)));
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(format!(
+                                                "Binding type {} not supported",
+                                                line_binding.binding_type
+                                            )),
+                                        );
                                         return Ok(());
                                     }
                                 }
@@ -1693,17 +1761,31 @@ impl SipMessageHandler {
                                         Ok(bindings) if !bindings.is_empty() => bindings,
                                         _ => {
                                             info!(call_id = %call_id, destination = %destination_aor, "No line binding or registration found");
-                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
                                             a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(&call_id, Some("Destination not found".to_string()));
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("Destination not found".to_string()),
+                                            );
                                             return Ok(());
                                         }
                                     }
                                 } else {
                                     error!(call_id = %call_id, "No registrar available");
-                                    let response = self.create_simple_response(request, 500, "Service Unavailable");
+                                    let response = self.create_simple_response(
+                                        request,
+                                        500,
+                                        "Service Unavailable",
+                                    );
                                     a_leg_handle.send_final(response).await;
-                                    let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                                    let _ = self.call_manager.terminate_call(
+                                        &call_id,
+                                        Some("No registrar configured".to_string()),
+                                    );
                                     return Ok(());
                                 }
                             }
@@ -1714,9 +1796,16 @@ impl SipMessageHandler {
                                     error = %e,
                                     "Failed to look up line binding"
                                 );
-                                let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                let response = self.create_simple_response(
+                                    request,
+                                    500,
+                                    "Internal Server Error",
+                                );
                                 a_leg_handle.send_final(response).await;
-                                let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to lookup line binding: {}", e)));
+                                let _ = self.call_manager.terminate_call(
+                                    &call_id,
+                                    Some(format!("Failed to lookup line binding: {}", e)),
+                                );
                                 return Ok(());
                             }
                         }
@@ -1734,17 +1823,28 @@ impl SipMessageHandler {
                                 Ok(bindings) if !bindings.is_empty() => bindings,
                                 _ => {
                                     info!(call_id = %call_id, destination = %destination_aor, "Phone number not found");
-                                    let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                    let response = self.create_simple_response(
+                                        request,
+                                        480,
+                                        "Temporarily Unavailable",
+                                    );
                                     a_leg_handle.send_final(response).await;
-                                    let _ = self.call_manager.terminate_call(&call_id, Some("Destination not found".to_string()));
+                                    let _ = self.call_manager.terminate_call(
+                                        &call_id,
+                                        Some("Destination not found".to_string()),
+                                    );
                                     return Ok(());
                                 }
                             }
                         } else {
                             error!(call_id = %call_id, "No registrar available");
-                            let response = self.create_simple_response(request, 500, "Service Unavailable");
+                            let response =
+                                self.create_simple_response(request, 500, "Service Unavailable");
                             a_leg_handle.send_final(response).await;
-                            let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                            let _ = self.call_manager.terminate_call(
+                                &call_id,
+                                Some("No registrar configured".to_string()),
+                            );
                             return Ok(());
                         }
                     }
@@ -1755,9 +1855,13 @@ impl SipMessageHandler {
                             error = %e,
                             "Failed to look up phone number"
                         );
-                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                        let response =
+                            self.create_simple_response(request, 500, "Internal Server Error");
                         a_leg_handle.send_final(response).await;
-                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to lookup phone number: {}", e)));
+                        let _ = self.call_manager.terminate_call(
+                            &call_id,
+                            Some(format!("Failed to lookup phone number: {}", e)),
+                        );
                         return Ok(());
                     }
                 }
@@ -1769,9 +1873,16 @@ impl SipMessageHandler {
                         Ok(bindings) if !bindings.is_empty() => bindings,
                         _ => {
                             info!(call_id = %call_id, destination = %destination_aor, "Destination not registered");
-                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                            let response = self.create_simple_response(
+                                request,
+                                480,
+                                "Temporarily Unavailable",
+                            );
                             a_leg_handle.send_final(response).await;
-                            let _ = self.call_manager.terminate_call(&call_id, Some("Destination not registered".to_string()));
+                            let _ = self.call_manager.terminate_call(
+                                &call_id,
+                                Some("Destination not registered".to_string()),
+                            );
                             return Ok(());
                         }
                     }
@@ -1779,7 +1890,9 @@ impl SipMessageHandler {
                     error!(call_id = %call_id, "No registrar available");
                     let response = self.create_simple_response(request, 500, "Service Unavailable");
                     a_leg_handle.send_final(response).await;
-                    let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                    let _ = self
+                        .call_manager
+                        .terminate_call(&call_id, Some("No registrar configured".to_string()));
                     return Ok(());
                 }
             }
@@ -1801,7 +1914,8 @@ impl SipMessageHandler {
             if let Some(storage) = &self.storage {
                 // Get tenant ID from the call (already stored when call was created)
                 // TODO: Phase 2 - Extract tenant from INVITE domain/headers/auth
-                let tenant_id = self.call_manager
+                let tenant_id = self
+                    .call_manager
                     .get_call(&call_id)
                     .map(|call| call.tenant_id)
                     .unwrap_or_else(|| fcp_core::TenantId::nil());
@@ -1813,7 +1927,10 @@ impl SipMessageHandler {
                     "Looking up extension (tenant-aware)"
                 );
 
-                match storage.get_extension_by_number(&tenant_id, extension_number).await {
+                match storage
+                    .get_extension_by_number(&tenant_id, extension_number)
+                    .await
+                {
                     Ok(Some(extension)) => {
                         info!(
                             call_id = %call_id,
@@ -1830,26 +1947,48 @@ impl SipMessageHandler {
                                 match storage.get_phone_number(phone_number_id).await {
                                     Ok(Some(phone_number)) => {
                                         // Get line binding for this phone number
-                                        match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                                        match storage
+                                            .get_line_binding_by_phone_number(&phone_number.id)
+                                            .await
+                                        {
                                             Ok(Some(line_binding)) => {
                                                 // Get devices from line binding
-                                                let enabled_devices = line_binding.enabled_devices();
+                                                let enabled_devices =
+                                                    line_binding.enabled_devices();
                                                 if enabled_devices.is_empty() {
                                                     warn!(call_id = %call_id, "Extension target has no enabled devices");
-                                                    let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                                    let response = self.create_simple_response(
+                                                        request,
+                                                        480,
+                                                        "Temporarily Unavailable",
+                                                    );
                                                     a_leg_handle.send_final(response).await;
-                                                    let _ = self.call_manager.terminate_call(&call_id, Some("No devices enabled".to_string()));
+                                                    let _ = self.call_manager.terminate_call(
+                                                        &call_id,
+                                                        Some("No devices enabled".to_string()),
+                                                    );
                                                     return Ok(());
                                                 }
 
                                                 // Collect all contact URIs from device registrations
                                                 for device_binding in enabled_devices {
-                                                    match storage.get_device(&device_binding.device_id).await {
+                                                    match storage
+                                                        .get_device(&device_binding.device_id)
+                                                        .await
+                                                    {
                                                         Ok(Some(device)) => {
                                                             if let Some(sip_uri) = &device.sip_uri {
-                                                                if let Some(registrar) = &self.registrar {
-                                                                    match registrar.get_registrations(sip_uri).await {
-                                                                        Ok(contacts) if !contacts.is_empty() => {
+                                                                if let Some(registrar) =
+                                                                    &self.registrar
+                                                                {
+                                                                    match registrar
+                                                                        .get_registrations(sip_uri)
+                                                                        .await
+                                                                    {
+                                                                        Ok(contacts)
+                                                                            if !contacts
+                                                                                .is_empty() =>
+                                                                        {
                                                                             debug!(
                                                                                 call_id = %call_id,
                                                                                 extension = %extension_number,
@@ -1857,7 +1996,8 @@ impl SipMessageHandler {
                                                                                 contacts = contacts.len(),
                                                                                 "Found registrations for extension target device"
                                                                             );
-                                                                            extension_contacts.extend(contacts);
+                                                                            extension_contacts
+                                                                                .extend(contacts);
                                                                         }
                                                                         _ => {}
                                                                     }
@@ -1908,8 +2048,11 @@ impl SipMessageHandler {
                                                 }
 
                                                 if let Some(sip_uri) = &device.sip_uri {
-                                                    match registrar.get_registrations(sip_uri).await {
-                                                        Ok(registrations) if !registrations.is_empty() => {
+                                                    match registrar.get_registrations(sip_uri).await
+                                                    {
+                                                        Ok(registrations)
+                                                            if !registrations.is_empty() =>
+                                                        {
                                                             debug!(
                                                                 call_id = %call_id,
                                                                 device_id = %device.id,
@@ -1917,7 +2060,8 @@ impl SipMessageHandler {
                                                                 reg_count = registrations.len(),
                                                                 "Found registrations for user device"
                                                             );
-                                                            extension_contacts.extend(registrations);
+                                                            extension_contacts
+                                                                .extend(registrations);
                                                         }
                                                         Ok(_) => {
                                                             debug!(
@@ -1948,24 +2092,45 @@ impl SipMessageHandler {
                                                 user_id = %user_id,
                                                 "User has no registered devices"
                                             );
-                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
                                             a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(&call_id, Some("User has no registered devices".to_string()));
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("User has no registered devices".to_string()),
+                                            );
                                             return Ok(());
                                         }
                                     }
                                     Ok(_) => {
                                         warn!(call_id = %call_id, user_id = %user_id, "User has no devices");
-                                        let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            480,
+                                            "Temporarily Unavailable",
+                                        );
                                         a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(&call_id, Some("User has no devices".to_string()));
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("User has no devices".to_string()),
+                                        );
                                         return Ok(());
                                     }
                                     Err(e) => {
                                         error!(call_id = %call_id, user_id = %user_id, error = %e, "Failed to list user devices");
-                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            500,
+                                            "Internal Server Error",
+                                        );
                                         a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to list user devices: {}", e)));
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(format!("Failed to list user devices: {}", e)),
+                                        );
                                         return Ok(());
                                     }
                                 }
@@ -1982,9 +2147,16 @@ impl SipMessageHandler {
                                     Ok(Some(device)) => {
                                         if !device.enabled {
                                             warn!(call_id = %call_id, device_id = %device_id, "Target device is disabled");
-                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
                                             a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(&call_id, Some("Target device is disabled".to_string()));
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("Target device is disabled".to_string()),
+                                            );
                                             return Ok(());
                                         }
 
@@ -1992,7 +2164,9 @@ impl SipMessageHandler {
                                             // Look up device registrations
                                             if let Some(registrar) = &self.registrar {
                                                 match registrar.get_registrations(sip_uri).await {
-                                                    Ok(registrations) if !registrations.is_empty() => {
+                                                    Ok(registrations)
+                                                        if !registrations.is_empty() =>
+                                                    {
                                                         debug!(
                                                             call_id = %call_id,
                                                             device_id = %device_id,
@@ -2009,9 +2183,18 @@ impl SipMessageHandler {
                                                             sip_uri = %sip_uri,
                                                             "Device not registered"
                                                         );
-                                                        let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                                        let response = self.create_simple_response(
+                                                            request,
+                                                            480,
+                                                            "Temporarily Unavailable",
+                                                        );
                                                         a_leg_handle.send_final(response).await;
-                                                        let _ = self.call_manager.terminate_call(&call_id, Some("Device not registered".to_string()));
+                                                        let _ = self.call_manager.terminate_call(
+                                                            &call_id,
+                                                            Some(
+                                                                "Device not registered".to_string(),
+                                                            ),
+                                                        );
                                                         return Ok(());
                                                     }
                                                     Err(e) => {
@@ -2021,7 +2204,11 @@ impl SipMessageHandler {
                                                             error = %e,
                                                             "Failed to get device registrations"
                                                         );
-                                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                                        let response = self.create_simple_response(
+                                                            request,
+                                                            500,
+                                                            "Internal Server Error",
+                                                        );
                                                         a_leg_handle.send_final(response).await;
                                                         let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to get device registrations: {}", e)));
                                                         return Ok(());
@@ -2029,31 +2216,56 @@ impl SipMessageHandler {
                                                 }
                                             } else {
                                                 warn!(call_id = %call_id, "No registrar available for device lookup");
-                                                let response = self.create_simple_response(request, 500, "Service Unavailable");
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    500,
+                                                    "Service Unavailable",
+                                                );
                                                 a_leg_handle.send_final(response).await;
-                                                let _ = self.call_manager.terminate_call(&call_id, Some("No registrar configured".to_string()));
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some("No registrar configured".to_string()),
+                                                );
                                                 return Ok(());
                                             }
                                         } else {
                                             warn!(call_id = %call_id, device_id = %device_id, "Device has no SIP URI");
-                                            let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+                                            let response = self.create_simple_response(
+                                                request,
+                                                480,
+                                                "Temporarily Unavailable",
+                                            );
                                             a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(&call_id, Some("Device has no SIP URI".to_string()));
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some("Device has no SIP URI".to_string()),
+                                            );
                                             return Ok(());
                                         }
                                     }
                                     Ok(None) => {
                                         warn!(call_id = %call_id, device_id = %device_id, "Device not found");
-                                        let response = self.create_simple_response(request, 404, "Not Found");
+                                        let response =
+                                            self.create_simple_response(request, 404, "Not Found");
                                         a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(&call_id, Some("Device not found".to_string()));
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some("Device not found".to_string()),
+                                        );
                                         return Ok(());
                                     }
                                     Err(e) => {
                                         error!(call_id = %call_id, device_id = %device_id, error = %e, "Failed to get device");
-                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            500,
+                                            "Internal Server Error",
+                                        );
                                         a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(&call_id, Some(format!("Failed to get device: {}", e)));
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(format!("Failed to get device: {}", e)),
+                                        );
                                         return Ok(());
                                     }
                                 }
@@ -2068,11 +2280,18 @@ impl SipMessageHandler {
                                 // Services include: IVR, call queues, voicemail, conferencing, etc.
                                 // This will require integration with fcp-flow for IVR flows,
                                 // fcp-queue for ACD queues, and fcp-voicemail for voicemail.
-                                let response = self.create_simple_response(request, 501, "Service Routing Not Implemented");
+                                let response = self.create_simple_response(
+                                    request,
+                                    501,
+                                    "Service Routing Not Implemented",
+                                );
                                 a_leg_handle.send_final(response).await;
                                 let _ = self.call_manager.terminate_call(
                                     &call_id,
-                                    Some(format!("Service routing not implemented (service_id: {})", service_id))
+                                    Some(format!(
+                                        "Service routing not implemented (service_id: {})",
+                                        service_id
+                                    )),
                                 );
                                 return Ok(());
                             }
@@ -2111,12 +2330,16 @@ impl SipMessageHandler {
                                 destination = %destination_aor,
                                 "Destination not registered (no bindings)"
                             );
-                            let response =
-                                self.create_simple_response(request, 480, "Temporarily Unavailable");
+                            let response = self.create_simple_response(
+                                request,
+                                480,
+                                "Temporarily Unavailable",
+                            );
                             a_leg_handle.send_final(response).await;
-                            let _ = self
-                                .call_manager
-                                .terminate_call(&call_id, Some("Destination not registered".to_string()));
+                            let _ = self.call_manager.terminate_call(
+                                &call_id,
+                                Some("Destination not registered".to_string()),
+                            );
                             return Ok(());
                         }
                         Err(e) => {
@@ -2167,7 +2390,11 @@ impl SipMessageHandler {
                     }
                 } else {
                     // No angle brackets - use as-is, but strip any contact-params after semicolon outside URI
-                    contact_str.split(';').next().unwrap_or(contact_str).to_string()
+                    contact_str
+                        .split(';')
+                        .next()
+                        .unwrap_or(contact_str)
+                        .to_string()
                 }
             })
             .collect();
@@ -2481,7 +2708,8 @@ impl SipMessageHandler {
                     // Build headers from initial response
                     let mut headers = sip_core::Headers::new();
                     for header in initial_resp.headers().iter() {
-                        let _ = headers.push(header.name_smol().clone(), header.value_smol().clone());
+                        let _ =
+                            headers.push(header.name_smol().clone(), header.value_smol().clone());
                     }
 
                     // Add Content-Type if we have a body from B-leg
@@ -2668,7 +2896,8 @@ impl SipMessageHandler {
                     let to_with_tag = format!("{};tag={}", to, saved_tag);
                     // Remove old To header and add new one with correct tag
                     resp.headers_mut().retain(|h| h.name() != "To");
-                    let _ = resp.headers_mut()
+                    let _ = resp
+                        .headers_mut()
                         .push(SmolStr::new("To"), SmolStr::new(to_with_tag));
                     debug!(call_id = %call_id, a_leg_to_tag = %saved_tag, "Reused To-tag in 200 OK for dialog consistency");
                 }
@@ -2790,7 +3019,8 @@ impl SipMessageHandler {
 
         // Spawn dedicated tasks to listen for provisional responses and relay first 180/183
         // IMPORTANT: Send the full Response object (not just status code) to preserve SDP/headers
-        let (provisional_tx, mut provisional_rx) = tokio::sync::mpsc::channel::<sip_core::Response>(10);
+        let (provisional_tx, mut provisional_rx) =
+            tokio::sync::mpsc::channel::<sip_core::Response>(10);
         let provisional_sent = Arc::new(tokio::sync::Mutex::new(false));
 
         let early_media_policy = self.b2bua_config.forking.early_media_policy;
@@ -2875,7 +3105,8 @@ impl SipMessageHandler {
 
                 // Build provisional using B-leg response as template
                 // This preserves: status code, SDP body, Require/RSeq headers, etc.
-                let provisional = handler_clone.create_provisional_from_b_leg(&request_clone, &b_leg_provisional);
+                let provisional =
+                    handler_clone.create_provisional_from_b_leg(&request_clone, &b_leg_provisional);
 
                 // Extract and save To-tag for reuse in 200 OK (RFC 3261 §12.1.1)
                 if let Some(to_header) = provisional.headers().get("To") {
@@ -2922,7 +3153,13 @@ impl SipMessageHandler {
                             code = code,
                             "B-leg {} final response", i
                         );
-                        Some((i, target_clone, code, response, Arc::clone(&b_leg_handle_clone)))
+                        Some((
+                            i,
+                            target_clone,
+                            code,
+                            response,
+                            Arc::clone(&b_leg_handle_clone),
+                        ))
                     }
                     Err(e) => {
                         warn!(
@@ -3054,7 +3291,9 @@ impl SipMessageHandler {
         }
 
         // If we have a winner, relay the response to A-leg
-        if let (Some(target), Some(response), Some(handle)) = (winning_target, winning_response, winning_handle) {
+        if let (Some(target), Some(response), Some(handle)) =
+            (winning_target, winning_response, winning_handle)
+        {
             let code = response.start_line().code();
             info!(
                 call_id = %call_id,
@@ -3127,14 +3366,18 @@ impl SipMessageHandler {
             }
 
             // Retrieve saved A-leg To-tag from provisional response
-            let saved_tag = self.call_manager.get_call(&call_id)
+            let saved_tag = self
+                .call_manager
+                .get_call(&call_id)
                 .and_then(|call| call.a_leg_to_tag.clone());
 
             // Create 200 OK response manually to ensure To-tag consistency
             // CRITICAL: Must reuse the To-tag from the provisional response (RFC 3261 §12.1.1)
             let mut ok_response = if let Some(ref tag) = saved_tag {
                 // Build 200 OK with the SAME To-tag as the provisional
-                let mut resp = self.uas.create_ok(&request, b_leg_sdp.as_deref())
+                let mut resp = self
+                    .uas
+                    .create_ok(&request, b_leg_sdp.as_deref())
                     .expect("Failed to create 200 OK");
 
                 // Replace To header with one containing our saved tag
@@ -3142,7 +3385,8 @@ impl SipMessageHandler {
                     let to_with_tag = format!("{};tag={}", to, tag);
                     // Remove old To header and add new one with correct tag
                     resp.headers_mut().retain(|h| h.name() != "To");
-                    let _ = resp.headers_mut()
+                    let _ = resp
+                        .headers_mut()
                         .push(SmolStr::new("To"), SmolStr::new(to_with_tag));
                     debug!(
                         call_id = %call_id,
@@ -3158,7 +3402,8 @@ impl SipMessageHandler {
                     call_id = %call_id,
                     "No A-leg To-tag saved in forking path, generating new one (dialog mismatch possible)"
                 );
-                self.uas.create_ok(&request, b_leg_sdp.as_deref())
+                self.uas
+                    .create_ok(&request, b_leg_sdp.as_deref())
                     .expect("Failed to create 200 OK")
             };
 
@@ -3229,7 +3474,9 @@ impl SipMessageHandler {
             warn!(call_id = %call_id, "All B-legs failed, returning 480");
             let response = self.create_simple_response(&request, 480, "Temporarily Unavailable");
             a_leg_handle.send_final(response).await;
-            let _ = self.call_manager.terminate_call(&call_id, Some("All B-legs failed".to_string()));
+            let _ = self
+                .call_manager
+                .terminate_call(&call_id, Some("All B-legs failed".to_string()));
         }
 
         Ok(())
@@ -3717,9 +3964,11 @@ impl SipMessageHandler {
 
         // If media is anchored, rewrite SDP before forwarding to peer
         if call.media_anchored {
-            if let (Some(ref body_str), Some(ref media_session_id), Some(ref media_manager)) =
-                (body.as_ref(), call.media_session_id.as_ref(), self.media_manager.as_ref())
-            {
+            if let (Some(ref body_str), Some(ref media_session_id), Some(ref media_manager)) = (
+                body.as_ref(),
+                call.media_session_id.as_ref(),
+                self.media_manager.as_ref(),
+            ) {
                 debug!(
                     call_id = %call.id,
                     media_session_id = %media_session_id,
@@ -4585,11 +4834,14 @@ impl SipMessageHandler {
 
                         // Route to FlowCallHandler if available
                         if let Some(flow_handler) = &self.flow_handler {
-                            match flow_handler.handle_dtmf_input(call.id, digit.to_string()).await {
+                            match flow_handler
+                                .handle_dtmf_input(call.id, digit.to_string())
+                                .await
+                            {
                                 Ok(()) => {
                                     info!(call_id = %call.id, digit = %digit, "DTMF routed to flow execution");
                                     return Ok(self.create_simple_response(request, 200, "OK"));
-                                },
+                                }
                                 Err(e) => {
                                     error!(call_id = %call.id, error = %e, "Failed to handle DTMF for flow");
                                     // Fall through to normal forwarding
@@ -5108,7 +5360,8 @@ impl SipMessageHandler {
                     if header.name_smol() == "To" {
                         let _ = new_headers.push(SmolStr::new("To"), new_to.clone());
                     } else {
-                        let _ = new_headers.push(header.name_smol().clone(), header.value_smol().clone());
+                        let _ = new_headers
+                            .push(header.name_smol().clone(), header.value_smol().clone());
                     }
                 }
 
@@ -5268,9 +5521,7 @@ impl SipMessageHandler {
         }
         if response.headers().get("Contact").is_none() {
             if let Some(ct) = peer_response.headers().get("Contact") {
-                let _ = response
-                    .headers_mut()
-                    .push(SmolStr::new("Contact"), ct);
+                let _ = response.headers_mut().push(SmolStr::new("Contact"), ct);
             }
         }
 
@@ -5766,15 +6017,12 @@ impl SipMessageHandler {
 
     fn index_subscription(&self, sub: sip_dialog::Subscription) {
         let key = (
-            sip_dialog::DialogId::new(
-                sub.id().call_id(),
-                sub.id().from_tag(),
-                sub.id().to_tag(),
-            )
-            .expect("Failed to create DialogId from subscription"),
+            sip_dialog::DialogId::new(sub.id().call_id(), sub.id().from_tag(), sub.id().to_tag())
+                .expect("Failed to create DialogId from subscription"),
             smol_str::SmolStr::new(sub.id().event().to_string()),
         );
-        self.subscription_created_at.insert(sub.id().clone(), Instant::now());
+        self.subscription_created_at
+            .insert(sub.id().clone(), Instant::now());
         let _ = self.subscription_manager.insert(sub.clone());
         let _ = self.subscription_index.insert(key, sub.id().clone());
     }
@@ -6008,7 +6256,7 @@ fn extract_domain_from_uri(uri: &sip_core::Uri) -> Option<String> {
                 None
             }
         }
-        sip_core::Uri::Tel(_) => None,      // tel URIs don't have domains
+        sip_core::Uri::Tel(_) => None, // tel URIs don't have domains
         sip_core::Uri::Absolute(_) => None, // Absolute URIs (http, etc.) not supported for tenant extraction
     }
 }
@@ -6043,7 +6291,11 @@ fn normalize_dialed_number(uri: &str) -> String {
     // Split into user part and host part
     let parts: Vec<&str> = user_and_host.split('@').collect();
     let user_part = parts[0];
-    let host_part = if parts.len() > 1 { Some(parts[1]) } else { None };
+    let host_part = if parts.len() > 1 {
+        Some(parts[1])
+    } else {
+        None
+    };
 
     // If already has +, it's already E.164
     if user_part.starts_with('+') {
@@ -6092,7 +6344,9 @@ fn is_e164_number(uri: &str) -> bool {
         .unwrap_or("");
 
     // E.164 numbers start with '+' and must have at least 7 digits (country code + minimal number)
-    user_part.starts_with('+') && user_part.len() > 7 && user_part[1..].chars().all(|c| c.is_ascii_digit())
+    user_part.starts_with('+')
+        && user_part.len() > 7
+        && user_part[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 /// Deduplicate target URIs by host:port.
@@ -6128,17 +6382,10 @@ fn extract_hostport_from_uri(uri: &str) -> String {
         .unwrap_or(uri);
 
     // Take everything after '@' (or the whole thing if no '@')
-    let hostpart = without_scheme
-        .split('@')
-        .nth(1)
-        .unwrap_or(without_scheme);
+    let hostpart = without_scheme.split('@').nth(1).unwrap_or(without_scheme);
 
     // Strip URI parameters (;rinstance=..., ;transport=..., etc.)
-    hostpart
-        .split(';')
-        .next()
-        .unwrap_or(hostpart)
-        .to_string()
+    hostpart.split(';').next().unwrap_or(hostpart).to_string()
 }
 
 /// SDP validation helper (exposed for tests).
@@ -6995,7 +7242,7 @@ mod tests {
         // Contact may include angle brackets as stored in the Contact header
         assert!(
             regs[0].contact == "sip:alice@127.0.0.1:5060"
-            || regs[0].contact == "<sip:alice@127.0.0.1:5060>"
+                || regs[0].contact == "<sip:alice@127.0.0.1:5060>"
         );
 
         // Cleanup

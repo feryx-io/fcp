@@ -374,12 +374,7 @@ pub trait TtsProvider: Send + Sync {
     ///
     /// # Returns
     /// Audio data in WAV format (8kHz, 16-bit PCM mono)
-    async fn synthesize(
-        &self,
-        text: &str,
-        language: &str,
-        voice: Option<&str>,
-    ) -> Result<Vec<u8>>;
+    async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>>;
 
     /// List available voices for a language.
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>>;

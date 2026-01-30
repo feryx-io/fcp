@@ -35,8 +35,6 @@ pub struct RegistrarConfig {
     pub logging: LoggingSection,
 }
 
-
-
 /// Service identification.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServiceSection {

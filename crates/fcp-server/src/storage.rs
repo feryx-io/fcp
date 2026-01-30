@@ -34,7 +34,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<Arc<DynStorage
         StorageBackend::Sqlite => {
             #[cfg(feature = "storage-sqlite")]
             {
-                use fcp_storage_sqlite::{SqliteStorage, SqliteConfig};
+                use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
 
                 // Parse connection string (format: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite)
                 let db_path = config.connection_string

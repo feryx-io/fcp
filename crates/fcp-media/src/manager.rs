@@ -322,7 +322,9 @@ impl MediaManager {
     /// // Now A and B can talk to each other
     /// ```
     pub async fn bridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
-        self.backend.bridge_calls(a_leg_call_id, b_leg_call_id).await
+        self.backend
+            .bridge_calls(a_leg_call_id, b_leg_call_id)
+            .await
     }
 
     /// Unbridge two calls
@@ -341,8 +343,14 @@ impl MediaManager {
     /// ```ignore
     /// manager.unbridge_calls(&a_leg_call_id, &b_leg_call_id).await?;
     /// ```
-    pub async fn unbridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
-        self.backend.unbridge_calls(a_leg_call_id, b_leg_call_id).await
+    pub async fn unbridge_calls(
+        &self,
+        a_leg_call_id: &CallId,
+        b_leg_call_id: &CallId,
+    ) -> Result<()> {
+        self.backend
+            .unbridge_calls(a_leg_call_id, b_leg_call_id)
+            .await
     }
 }
 

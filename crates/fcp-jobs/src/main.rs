@@ -10,13 +10,7 @@ mod queue;
 mod worker;
 
 use anyhow::{Context, Result};
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use clap::Parser;
 use std::sync::Arc;
 use tokio::signal;
@@ -76,11 +70,7 @@ async fn main() -> Result<()> {
         .context("Failed to create job queue")?;
 
     // Create worker pool
-    let worker_pool = WorkerPool::new(
-        queue.clone(),
-        config.workers.clone(),
-        config.retry.clone(),
-    );
+    let worker_pool = WorkerPool::new(queue.clone(), config.workers.clone(), config.retry.clone());
 
     // Start workers
     let worker_handles = worker_pool.start().await;

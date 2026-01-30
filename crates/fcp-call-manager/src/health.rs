@@ -18,10 +18,7 @@ pub struct AppState {
 }
 
 /// Run the HTTP health/status/calls server.
-pub async fn run_http_server(
-    bind_addr: SocketAddr,
-    state: Arc<AppState>,
-) -> anyhow::Result<()> {
+pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))
@@ -65,11 +62,7 @@ async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::V
     let call_list: Vec<serde_json::Value> = calls
         .iter()
         .map(|call| {
-            let elapsed = call
-                .created_at
-                .elapsed()
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let elapsed = call.created_at.elapsed().map(|d| d.as_secs()).unwrap_or(0);
             serde_json::json!({
                 "call_id": call.id.to_string(),
                 "state": format!("{:?}", call.state),

@@ -6,7 +6,7 @@
 //! NOTE: This is a placeholder for future executor functionality.
 //! In the MVP, flow execution is handled directly via FlowEngine.
 
-use crate::engine::{FlowEngine, FlowContext};
+use crate::engine::{FlowContext, FlowEngine};
 use crate::schema::FlowDefinition;
 use crate::Result;
 use fcp_core::CallId;
@@ -48,7 +48,10 @@ impl FlowExecutor {
             "Starting flow execution"
         );
 
-        let context = self.engine.execute(flow, call_id, initial_variables).await?;
+        let context = self
+            .engine
+            .execute(flow, call_id, initial_variables)
+            .await?;
         let context = Arc::new(context);
 
         // Track active execution

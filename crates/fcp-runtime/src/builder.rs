@@ -133,12 +133,7 @@ impl RuntimeBuilder {
 
         // Create flow handler if flow_store is available
         let flow_handler = if let Some(flow_store) = &flow_store {
-            Some(create_flow_handler(
-                flow_store,
-                &event_bus,
-                &media_manager,
-                &config,
-            ).await?)
+            Some(create_flow_handler(flow_store, &event_bus, &media_manager, &config).await?)
         } else {
             None
         };
@@ -290,7 +285,11 @@ async fn create_registrar(
 
     // Use provided storage or initialize from config
     // We need to keep both DynStorage and FlowStore references
-    let (storage, flow_store): (Arc<DynStorage>, Arc<dyn fcp_flow::FlowStore>) = if let Some(storage) = provided_storage {
+    let (storage, flow_store): (Arc<DynStorage>, Arc<dyn fcp_flow::FlowStore>) = if let Some(
+        storage,
+    ) =
+        provided_storage
+    {
         info!("Using provided storage backend for registrar");
         // TODO: Extract FlowStore from provided storage
         // For now, use InMemoryFlowStore as fallback
@@ -307,7 +306,7 @@ async fn create_registrar(
             fcp_core::StorageBackend::Sqlite => {
                 #[cfg(feature = "storage-sqlite")]
                 {
-                    use fcp_storage_sqlite::{SqliteStorage, SqliteConfig};
+                    use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
 
                     // Parse connection string (format: sqlite://path/to/db.sqlite or sqlite:///path/to/db.sqlite)
                     let db_path = config.storage.connection_string
@@ -317,9 +316,11 @@ async fn create_registrar(
 
                     // Create SqliteStorage from fcp-storage-sqlite crate
                     let sqlite_config = SqliteConfig::new(db_path);
-                    let sqlite_storage = Arc::new(SqliteStorage::new(sqlite_config)
-                        .await
-                        .context("Failed to initialize SQLite storage for registrar")?);
+                    let sqlite_storage = Arc::new(
+                        SqliteStorage::new(sqlite_config)
+                            .await
+                            .context("Failed to initialize SQLite storage for registrar")?,
+                    );
 
                     // Keep reference for FlowStore before wrapping in DynStorage
                     let flow_store = Arc::clone(&sqlite_storage) as Arc<dyn fcp_flow::FlowStore>;
@@ -327,7 +328,8 @@ async fn create_registrar(
                     // Create DynStorage for basic storage operations
                     // Note: This will fail until we implement the missing traits in fcp-storage-sqlite
                     // For now, let's use InMemoryFlowStore and address the full migration separately
-                    let dyn_storage = Arc::new(fcp_core::DynStorage::from_all_in_one(sqlite_storage));
+                    let dyn_storage =
+                        Arc::new(fcp_core::DynStorage::from_all_in_one(sqlite_storage));
 
                     (dyn_storage, flow_store)
                 }
@@ -486,7 +488,10 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
 
     // Build media configuration from FCP config
     // Use media.public_ip if set, otherwise fall back to transport.local_ip
-    let public_ip = config.media.public_ip.clone()
+    let public_ip = config
+        .media
+        .public_ip
+        .clone()
         .or(config.transport.local_ip.clone());
 
     let media_config = MediaConfig {
@@ -585,7 +590,7 @@ fn create_transport_listener(
         None => {
             // Only events available
             Arc::new(fcp_sip::CallManager::with_events(
-                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
             ))
         }
     };
@@ -750,7 +755,8 @@ async fn load_users_from_file(
 
         // Compute SIP HA1 hash from digest_password (if set) or password (fallback)
         let password_for_ha1 = entry.digest_password.as_deref().unwrap_or(&entry.password);
-        let sip_ha1 = fcp_core::storage::password::compute_ha1(&entry.username, realm, password_for_ha1);
+        let sip_ha1 =
+            fcp_core::storage::password::compute_ha1(&entry.username, realm, password_for_ha1);
 
         let user = User {
             id: fcp_core::UserId::new(),
@@ -797,7 +803,10 @@ async fn create_default_test_users(storage: &Arc<fcp_core::DynStorage>, realm: &
     use fcp_core::storage::password;
     use fcp_core::{CredentialStore, User};
 
-    let test_users = vec![("alice", "Secret123!", "Alice"), ("bob", "Secret456!", "Bob")];
+    let test_users = vec![
+        ("alice", "Secret123!", "Alice"),
+        ("bob", "Secret456!", "Bob"),
+    ];
 
     for (username, plaintext_password, display_name) in test_users {
         // Hash the password using bcrypt
@@ -1007,7 +1016,9 @@ async fn load_test_ivr_flow(
     info!("Test IVR flow inserted into flow store");
 
     // Configure DID routing: +15551234567 -> welcome-test
-    handler.add_route("+15551234567".to_string(), "welcome-test".to_string()).await;
+    handler
+        .add_route("+15551234567".to_string(), "welcome-test".to_string())
+        .await;
 
     info!(
         did = "+15551234567",
@@ -1024,7 +1035,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_default() {
-        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
         let db_path = temp_dir.join("test.db");
 
         let mut config = FcpConfig::default();
@@ -1044,7 +1056,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_custom_node_id() {
-        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
         let db_path = temp_dir.join("test.db");
 
         let mut config = FcpConfig::default();
@@ -1067,7 +1080,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_builder_with_config() {
-        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
         let db_path = temp_dir.join("test.db");
 
         let mut config = FcpConfig::default();

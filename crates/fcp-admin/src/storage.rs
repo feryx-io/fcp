@@ -37,7 +37,8 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<Arc<DynStorage
             {
                 use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
 
-                let sqlite_config = SqliteConfig::new(std::path::PathBuf::from(&config.sqlite_path));
+                let sqlite_config =
+                    SqliteConfig::new(std::path::PathBuf::from(&config.sqlite_path));
                 let storage = SqliteStorage::new(sqlite_config)
                     .await
                     .context("Failed to initialize SQLite storage")?;

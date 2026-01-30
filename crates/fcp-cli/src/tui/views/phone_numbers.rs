@@ -264,7 +264,11 @@ fn render_phone_numbers_table(
             };
 
             // Format recording status
-            let recording = if phone.recording_enabled { "✓" } else { "✗" };
+            let recording = if phone.recording_enabled {
+                "✓"
+            } else {
+                "✗"
+            };
 
             // Format CNAM
             let cnam = phone.cnam.as_deref().unwrap_or("-");
@@ -282,7 +286,10 @@ fn render_phone_numbers_table(
     let title = if state.loading {
         format!(" Phone Numbers (Loading...) ")
     } else {
-        format!(" Phone Numbers ({}) (↑↓ to navigate) ", state.phone_numbers.len())
+        format!(
+            " Phone Numbers ({}) (↑↓ to navigate) ",
+            state.phone_numbers.len()
+        )
     };
 
     let table = Table::new(
@@ -320,7 +327,10 @@ fn render_details_panel(
         vec![
             Line::from(""),
             Line::from(""),
-            Line::from(vec![Span::styled("  Loading phone numbers...", theme.info())]),
+            Line::from(vec![Span::styled(
+                "  Loading phone numbers...",
+                theme.info(),
+            )]),
         ]
     } else if let Some(phone) = state.selected_phone_number() {
         let mut lines = vec![
@@ -380,7 +390,10 @@ fn render_details_panel(
             if let Some(e911) = &phone.e911_address {
                 Line::from(vec![
                     Span::raw("  "),
-                    Span::raw(format!("{}, {} {}", e911.city, e911.state, e911.postal_code)),
+                    Span::raw(format!(
+                        "{}, {} {}",
+                        e911.city, e911.state, e911.postal_code
+                    )),
                 ])
             } else {
                 Line::from("")
@@ -401,11 +414,7 @@ fn render_details_panel(
             ]),
             Line::from(vec![
                 Span::styled("Block Anonymous: ", theme.muted()),
-                Span::raw(if phone.block_anonymous {
-                    "Yes"
-                } else {
-                    "No"
-                }),
+                Span::raw(if phone.block_anonymous { "Yes" } else { "No" }),
             ]),
         ];
 
@@ -490,43 +499,60 @@ fn render_add_modal(
         Line::from(vec![
             Span::styled("E.164 Number: ", theme.muted()),
             Span::raw(state.input_e164.value()),
-            if e164_focused { Span::raw(" █") } else { Span::raw("") },
+            if e164_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(Span::styled("  (e.g., +15551234567)", theme.muted())),
         Line::from(""),
         Line::from(vec![
             Span::styled("Tenant ID: ", theme.muted()),
             Span::raw(state.input_tenant_id.value()),
-            if tenant_focused { Span::raw(" █") } else { Span::raw("") },
+            if tenant_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("CNAM: ", theme.muted()),
             Span::raw(state.input_cnam.value()),
-            if cnam_focused { Span::raw(" █") } else { Span::raw("") },
+            if cnam_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(Span::styled("  (Optional caller ID name)", theme.muted())),
         Line::from(""),
-        Line::from(Span::styled("Enter to submit • Esc to cancel • Tab to navigate", theme.muted())),
+        Line::from(Span::styled(
+            "Enter to submit • Esc to cancel • Tab to navigate",
+            theme.muted(),
+        )),
     ];
 
     // Add error if present
     let lines = if let Some(err) = &state.error {
         let mut lines = lines;
         lines.insert(lines.len() - 1, Line::from(""));
-        lines.insert(lines.len() - 1, Line::from(Span::styled(err, theme.error())));
+        lines.insert(
+            lines.len() - 1,
+            Line::from(Span::styled(err, theme.error())),
+        );
         lines
     } else {
         lines
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Add Phone Number")
-                .borders(Borders::ALL)
-                .border_style(theme.primary()),
-        );
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .title("Add Phone Number")
+            .borders(Borders::ALL)
+            .border_style(theme.primary()),
+    );
 
     f.render_widget(paragraph, popup_area);
 }
@@ -560,45 +586,77 @@ fn render_edit_modal(
         Line::from(vec![
             Span::styled("CNAM: ", theme.muted()),
             Span::raw(state.input_cnam.value()),
-            if state.focused_field == 0 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 0 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("E911 Callback: ", theme.muted()),
             Span::raw(state.input_e911_callback.value()),
-            if state.focused_field == 1 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 1 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(""),
         Line::from(Span::styled("E911 Address:", theme.title())),
         Line::from(vec![
             Span::styled("  Address 1: ", theme.muted()),
             Span::raw(state.input_e911_address1.value()),
-            if state.focused_field == 2 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 2 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(vec![
             Span::styled("  Address 2: ", theme.muted()),
             Span::raw(state.input_e911_address2.value()),
-            if state.focused_field == 3 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 3 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(vec![
             Span::styled("  City: ", theme.muted()),
             Span::raw(state.input_e911_city.value()),
-            if state.focused_field == 4 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 4 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(vec![
             Span::styled("  State: ", theme.muted()),
             Span::raw(state.input_e911_state.value()),
-            if state.focused_field == 5 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 5 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(vec![
             Span::styled("  Postal Code: ", theme.muted()),
             Span::raw(state.input_e911_postal.value()),
-            if state.focused_field == 6 { Span::raw(" █") } else { Span::raw("") },
+            if state.focused_field == 6 {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("Recording Enabled: ", theme.muted()),
-            Span::raw(if state.input_recording_enabled == 1 { "Yes" } else { "No" }),
+            Span::raw(if state.input_recording_enabled == 1 {
+                "Yes"
+            } else {
+                "No"
+            }),
             if state.focused_field == 7 {
                 Span::styled(" ◄ Space to toggle", theme.primary())
             } else {
@@ -607,7 +665,11 @@ fn render_edit_modal(
         ]),
         Line::from(vec![
             Span::styled("Block Anonymous: ", theme.muted()),
-            Span::raw(if state.input_block_anonymous == 1 { "Yes" } else { "No" }),
+            Span::raw(if state.input_block_anonymous == 1 {
+                "Yes"
+            } else {
+                "No"
+            }),
             if state.focused_field == 8 {
                 Span::styled(" ◄ Space to toggle", theme.primary())
             } else {
@@ -615,26 +677,31 @@ fn render_edit_modal(
             },
         ]),
         Line::from(""),
-        Line::from(Span::styled("Enter to submit • Esc to cancel • Tab to navigate • Space to toggle", theme.muted())),
+        Line::from(Span::styled(
+            "Enter to submit • Esc to cancel • Tab to navigate • Space to toggle",
+            theme.muted(),
+        )),
     ];
 
     // Add error if present
     let lines = if let Some(err) = &state.error {
         let mut lines = lines;
         lines.insert(lines.len() - 1, Line::from(""));
-        lines.insert(lines.len() - 1, Line::from(Span::styled(err, theme.error())));
+        lines.insert(
+            lines.len() - 1,
+            Line::from(Span::styled(err, theme.error())),
+        );
         lines
     } else {
         lines
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Edit Phone Number")
-                .borders(Borders::ALL)
-                .border_style(theme.primary()),
-        );
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .title("Edit Phone Number")
+            .borders(Borders::ALL)
+            .border_style(theme.primary()),
+    );
 
     f.render_widget(paragraph, popup_area);
 }
@@ -669,32 +736,40 @@ fn render_delete_modal(
             Span::raw("?"),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Enter to confirm • Esc to cancel", theme.muted())),
+        Line::from(Span::styled(
+            "Enter to confirm • Esc to cancel",
+            theme.muted(),
+        )),
     ];
 
     // Add error if present
     let lines = if let Some(err) = &state.error {
         let mut lines = lines;
         lines.insert(lines.len() - 1, Line::from(""));
-        lines.insert(lines.len() - 1, Line::from(Span::styled(err, theme.error())));
+        lines.insert(
+            lines.len() - 1,
+            Line::from(Span::styled(err, theme.error())),
+        );
         lines
     } else {
         lines
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Delete Phone Number")
-                .borders(Borders::ALL)
-                .border_style(theme.error()),
-        );
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .title("Delete Phone Number")
+            .borders(Borders::ALL)
+            .border_style(theme.error()),
+    );
 
     f.render_widget(paragraph, popup_area);
 }
 
 /// Fetch phone numbers from the API
-pub async fn fetch_phone_numbers(api_client: &crate::api::ApiClient, state: &mut PhoneNumbersViewState) {
+pub async fn fetch_phone_numbers(
+    api_client: &crate::api::ApiClient,
+    state: &mut PhoneNumbersViewState,
+) {
     state.loading = true;
     state.error = None;
 
@@ -749,7 +824,9 @@ pub async fn handle_phone_number_action(
     }
 
     match event {
-        crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
+        crate::tui::event::Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) => {
             match code {
                 KeyCode::Esc if *modifiers == KeyModifiers::NONE => {
                     state.close_modal();
@@ -757,14 +834,22 @@ pub async fn handle_phone_number_action(
                 }
                 KeyCode::Tab if *modifiers == KeyModifiers::NONE => {
                     if state.modal != PhoneNumberModal::Delete {
-                        let max_field = if state.modal == PhoneNumberModal::Add { 3 } else { 9 };
+                        let max_field = if state.modal == PhoneNumberModal::Add {
+                            3
+                        } else {
+                            9
+                        };
                         state.focused_field = (state.focused_field + 1) % max_field;
                     }
                     return true;
                 }
                 KeyCode::BackTab => {
                     if state.modal != PhoneNumberModal::Delete {
-                        let max_field = if state.modal == PhoneNumberModal::Add { 3 } else { 9 };
+                        let max_field = if state.modal == PhoneNumberModal::Add {
+                            3
+                        } else {
+                            9
+                        };
                         state.focused_field = (state.focused_field + max_field - 1) % max_field;
                     }
                     return true;
@@ -837,7 +922,10 @@ pub async fn handle_phone_number_action(
 }
 
 /// Create a new phone number
-pub async fn create_phone_number(api_client: &crate::api::ApiClient, state: &mut PhoneNumbersViewState) {
+pub async fn create_phone_number(
+    api_client: &crate::api::ApiClient,
+    state: &mut PhoneNumbersViewState,
+) {
     let e164 = state.input_e164.value().to_string();
     let tenant_id = state.input_tenant_id.value().to_string();
     let cnam = state.input_cnam.value().to_string();
@@ -879,7 +967,10 @@ pub async fn create_phone_number(api_client: &crate::api::ApiClient, state: &mut
 }
 
 /// Update an existing phone number
-pub async fn update_phone_number(api_client: &crate::api::ApiClient, state: &mut PhoneNumbersViewState) {
+pub async fn update_phone_number(
+    api_client: &crate::api::ApiClient,
+    state: &mut PhoneNumbersViewState,
+) {
     let Some(phone) = state.selected_phone_number() else {
         state.error = Some("No phone number selected".to_string());
         return;
@@ -923,10 +1014,18 @@ pub async fn update_phone_number(api_client: &crate::api::ApiClient, state: &mut
     }
 
     // Build E911 address if we have the required fields
-    let e911_address = if !e911_address1.is_empty() && !e911_city.is_empty() && !e911_state.is_empty() && !e911_postal.is_empty() {
+    let e911_address = if !e911_address1.is_empty()
+        && !e911_city.is_empty()
+        && !e911_state.is_empty()
+        && !e911_postal.is_empty()
+    {
         Some(E911Address {
             address1: e911_address1,
-            address2: if e911_address2.is_empty() { None } else { Some(e911_address2) },
+            address2: if e911_address2.is_empty() {
+                None
+            } else {
+                Some(e911_address2)
+            },
             city: e911_city,
             state: e911_state,
             postal_code: e911_postal,
@@ -940,7 +1039,11 @@ pub async fn update_phone_number(api_client: &crate::api::ApiClient, state: &mut
 
     let request = UpdatePhoneNumberRequest {
         cnam: if cnam.is_empty() { None } else { Some(cnam) },
-        e911_callback: if e911_callback.is_empty() { None } else { Some(e911_callback) },
+        e911_callback: if e911_callback.is_empty() {
+            None
+        } else {
+            Some(e911_callback)
+        },
         e911_address,
         recording_enabled: Some(state.input_recording_enabled == 1),
         block_anonymous: Some(state.input_block_anonymous == 1),
@@ -959,7 +1062,10 @@ pub async fn update_phone_number(api_client: &crate::api::ApiClient, state: &mut
 }
 
 /// Delete a phone number
-pub async fn delete_phone_number(api_client: &crate::api::ApiClient, state: &mut PhoneNumbersViewState) {
+pub async fn delete_phone_number(
+    api_client: &crate::api::ApiClient,
+    state: &mut PhoneNumbersViewState,
+) {
     let Some(phone) = state.selected_phone_number() else {
         state.error = Some("No phone number selected".to_string());
         return;

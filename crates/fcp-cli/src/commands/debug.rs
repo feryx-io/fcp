@@ -153,11 +153,7 @@ pub async fn handle(
                     table
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
-                        .set_header(vec![
-                            "Dialog ID",
-                            "Window Start",
-                            "Request Counts",
-                        ]);
+                        .set_header(vec!["Dialog ID", "Window Start", "Request Counts"]);
 
                     for limit in &rate_limits {
                         // Format the counts map as a readable string
@@ -211,9 +207,15 @@ pub async fn handle(
                         table.add_row(vec![
                             call.call_id.clone(),
                             call.state.clone(),
-                            call.media_session_id.clone().unwrap_or_else(|| "-".to_string()),
-                            call.a_leg_dialog_id.clone().unwrap_or_else(|| "-".to_string()),
-                            call.b_leg_dialog_id.clone().unwrap_or_else(|| "-".to_string()),
+                            call.media_session_id
+                                .clone()
+                                .unwrap_or_else(|| "-".to_string()),
+                            call.a_leg_dialog_id
+                                .clone()
+                                .unwrap_or_else(|| "-".to_string()),
+                            call.b_leg_dialog_id
+                                .clone()
+                                .unwrap_or_else(|| "-".to_string()),
                         ]);
                     }
 

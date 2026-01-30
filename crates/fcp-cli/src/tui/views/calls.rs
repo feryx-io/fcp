@@ -71,11 +71,8 @@ impl CallsViewState {
         if self.table_state.selected().is_none()
             || self.table_state.selected().unwrap() >= self.calls.len()
         {
-            self.table_state.select(if self.calls.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
+            self.table_state
+                .select(if self.calls.is_empty() { None } else { Some(0) });
         }
     }
 }
@@ -190,8 +187,11 @@ fn render_calls_table(
             Span::raw(error),
         ])];
 
-        let error_para = Paragraph::new(error_text)
-            .block(Block::default().borders(Borders::ALL).border_style(theme.error()));
+        let error_para = Paragraph::new(error_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme.error()),
+        );
 
         // Show error in a small area at the bottom
         let error_area = Rect {
@@ -301,15 +301,9 @@ fn render_details_panel(
     } else if state.calls.is_empty() {
         vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "  No active calls",
-                theme.muted(),
-            )]),
+            Line::from(vec![Span::styled("  No active calls", theme.muted())]),
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "  Press 'r' to refresh",
-                theme.info(),
-            )]),
+            Line::from(vec![Span::styled("  Press 'r' to refresh", theme.info())]),
         ]
     } else {
         vec![

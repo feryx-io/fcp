@@ -271,8 +271,7 @@ mod tests {
 
     #[test]
     fn test_job_retry() {
-        let mut job = Job::new(JobType::WebhookDelivery, serde_json::json!({}))
-            .with_max_retries(3);
+        let mut job = Job::new(JobType::WebhookDelivery, serde_json::json!({})).with_max_retries(3);
 
         assert!(job.can_retry());
         assert_eq!(job.retry_count, 0);

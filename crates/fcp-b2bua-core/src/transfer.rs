@@ -165,10 +165,14 @@ impl TransferConfig {
             return Ok(());
         }
         if self.rate_limit_per_dialog == 0 {
-            return Err("rate_limit_per_dialog must be greater than zero when transfers are allowed".into());
+            return Err(
+                "rate_limit_per_dialog must be greater than zero when transfers are allowed".into(),
+            );
         }
         if self.max_transfer_depth == 0 {
-            return Err("max_transfer_depth must be greater than zero when transfers are allowed".into());
+            return Err(
+                "max_transfer_depth must be greater than zero when transfers are allowed".into(),
+            );
         }
         if self.max_transfer_depth > 20 {
             return Err("max_transfer_depth must not exceed 20".into());
@@ -267,7 +271,9 @@ mod tests {
     #[test]
     fn test_validate_deny_always_ok() {
         // Deny policy skips numeric validation
-        assert!(TransferConfig::session_manager_defaults().validate().is_ok());
+        assert!(TransferConfig::session_manager_defaults()
+            .validate()
+            .is_ok());
     }
 
     #[test]
@@ -316,7 +322,13 @@ mod tests {
             status_code: 603,
             reason: "Decline".into(),
         };
-        assert!(matches!(rejected, TransferResult::Rejected { status_code: 603, .. }));
+        assert!(matches!(
+            rejected,
+            TransferResult::Rejected {
+                status_code: 603,
+                ..
+            }
+        ));
 
         let failed = TransferResult::Failed {
             reason: "Timeout".into(),

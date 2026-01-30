@@ -5,12 +5,15 @@
 
 use crate::state::ApiState;
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, Query, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Query, State,
+    },
     response::IntoResponse,
 };
 use fcp_core::TenantId;
 use fcp_events::{filter::EventType, EventFilter};
-use futures_util::{SinkExt, stream::StreamExt};
+use futures_util::{stream::StreamExt, SinkExt};
 use serde::Deserialize;
 use std::str::FromStr;
 use tracing::{debug, error, info, warn};
@@ -75,7 +78,10 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
         Err(e) => {
             error!(error = %e, "Failed to subscribe to event bus");
             let _ = sender
-                .send(Message::Text(format!("Error: Failed to subscribe to events: {}", e)))
+                .send(Message::Text(format!(
+                    "Error: Failed to subscribe to events: {}",
+                    e
+                )))
                 .await;
             return;
         }
@@ -161,8 +167,8 @@ fn build_event_filter(params: &EventStreamQuery) -> Result<EventFilter, String> 
 
     // Parse tenant_id if provided
     if let Some(ref tenant_id_str) = params.tenant_id {
-        let tenant_id = TenantId::from_str(tenant_id_str)
-            .map_err(|e| format!("Invalid tenant_id: {}", e))?;
+        let tenant_id =
+            TenantId::from_str(tenant_id_str).map_err(|e| format!("Invalid tenant_id: {}", e))?;
         filter = filter.tenant(tenant_id);
     }
 

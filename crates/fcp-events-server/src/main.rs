@@ -10,10 +10,7 @@ mod connection;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{
-        ws::WebSocketUpgrade,
-        Path, State,
-    },
+    extract::{ws::WebSocketUpgrade, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -58,9 +55,7 @@ async fn main() -> Result<()> {
         config.logging.format = log_format;
     }
     if let Some(bind_addr) = cli.bind_addr {
-        config.websocket.bind_address = bind_addr
-            .parse()
-            .context("Invalid bind address format")?;
+        config.websocket.bind_address = bind_addr.parse().context("Invalid bind address format")?;
     }
 
     // Initialize logging

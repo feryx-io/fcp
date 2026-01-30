@@ -85,9 +85,7 @@ async fn main() -> Result<()> {
         config.logging.format = log_format;
     }
     if let Some(bind_addr) = cli.bind_addr {
-        config.api.bind_address = bind_addr
-            .parse()
-            .context("Invalid bind address format")?;
+        config.api.bind_address = bind_addr.parse().context("Invalid bind address format")?;
     }
     if let Some(auth_token) = cli.auth_token {
         config.api.auth_token = Some(auth_token);
@@ -114,7 +112,7 @@ async fn main() -> Result<()> {
     let mut fcp_config = fcp_core::FcpConfig::default();
     fcp_config.node.name = config.service.node_id.clone();
     fcp_config.registrar.enabled = false; // Admin doesn't need registrar
-    fcp_config.routing.enabled = false;   // Admin doesn't need routing
+    fcp_config.routing.enabled = false; // Admin doesn't need routing
     fcp_config.api = fcp_core::ApiConfig {
         enabled: true,
         bind: config.api.bind_address,
@@ -150,7 +148,7 @@ async fn main() -> Result<()> {
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
-        None,                // flow_store
+        None, // flow_store
         dialog_manager,
         subscription_manager,
         call_manager,
@@ -169,9 +167,8 @@ async fn main() -> Result<()> {
     );
 
     let bind_addr = config.api.bind_address;
-    let api_handle = tokio::spawn(async move {
-        fcp_api_core::serve(bind_addr, api_state, &api_config).await
-    });
+    let api_handle =
+        tokio::spawn(async move { fcp_api_core::serve(bind_addr, api_state, &api_config).await });
 
     // Start event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {

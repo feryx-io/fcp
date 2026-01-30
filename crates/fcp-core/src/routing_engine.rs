@@ -118,7 +118,10 @@ impl RoutingEngine for DefaultRoutingEngine {
         tenant_id: &TenantId,
         caller: &str,
     ) -> Result<RoutingResult, RoutingError> {
-        info!("Routing inbound call from {} to {} for tenant {}", caller, destination, tenant_id);
+        info!(
+            "Routing inbound call from {} to {} for tenant {}",
+            caller, destination, tenant_id
+        );
 
         match destination {
             RoutingDestination::E164(number) => {
@@ -206,7 +209,9 @@ impl RoutingEngine for DefaultRoutingEngine {
                 ))
             }
 
-            RoutingDestination::UserId(user_id) => self.route_to_user(user_id, tenant_id, caller).await,
+            RoutingDestination::UserId(user_id) => {
+                self.route_to_user(user_id, tenant_id, caller).await
+            }
         }
     }
 
@@ -237,7 +242,10 @@ impl RoutingEngine for DefaultRoutingEngine {
         tenant_id: &TenantId,
         caller: &str,
     ) -> Result<RoutingResult, RoutingError> {
-        debug!("Routing to user {} for tenant {} from caller {}", user_id, tenant_id, caller);
+        debug!(
+            "Routing to user {} for tenant {} from caller {}",
+            user_id, tenant_id, caller
+        );
 
         // Find line bindings for this user
         // Note: list_line_bindings_by_user doesn't filter by tenant, so we need to verify tenant after
@@ -265,7 +273,10 @@ impl RoutingEngine for DefaultRoutingEngine {
         let line_binding = &line_bindings[0];
 
         // Check for call forwarding
-        if let Some(forward_to) = self.check_call_forward(line_binding, tenant_id, caller).await {
+        if let Some(forward_to) = self
+            .check_call_forward(line_binding, tenant_id, caller)
+            .await
+        {
             return Ok(RoutingResult {
                 phone_number: None,
                 line_binding: Some(line_binding.clone()),
@@ -306,18 +317,14 @@ impl RoutingEngine for DefaultRoutingEngine {
             .get_phone_number(phone_number_id)
             .await
             .map_err(|e| RoutingError::Storage(e.to_string()))?
-            .ok_or_else(|| {
-                RoutingError::PhoneNumberNotFound(phone_number_id.to_string())
-            })?;
+            .ok_or_else(|| RoutingError::PhoneNumberNotFound(phone_number_id.to_string()))?;
 
         // Check phone number state - only route to Active numbers
         if phone_number.state != crate::NumberState::Active {
-            return Err(RoutingError::PhoneNumberNotRoutable(
-                format!(
-                    "Phone number {} is in state {:?}, only Active numbers can receive calls",
-                    phone_number.e164, phone_number.state
-                )
-            ));
+            return Err(RoutingError::PhoneNumberNotRoutable(format!(
+                "Phone number {} is in state {:?}, only Active numbers can receive calls",
+                phone_number.e164, phone_number.state
+            )));
         }
 
         // Find line binding for this phone number
@@ -326,19 +333,18 @@ impl RoutingEngine for DefaultRoutingEngine {
             .get_line_binding_by_phone_number(phone_number_id)
             .await
             .map_err(|e| RoutingError::Storage(e.to_string()))?
-            .ok_or_else(|| {
-                RoutingError::LineBindingNotFound(phone_number.e164.clone())
-            })?;
+            .ok_or_else(|| RoutingError::LineBindingNotFound(phone_number.e164.clone()))?;
 
         // Verify the line binding belongs to this tenant
         if &line_binding.tenant_id != tenant_id {
-            return Err(RoutingError::LineBindingNotFound(
-                phone_number.e164.clone(),
-            ));
+            return Err(RoutingError::LineBindingNotFound(phone_number.e164.clone()));
         }
 
         // Check for call forwarding
-        if let Some(forward_to) = self.check_call_forward(&line_binding, tenant_id, caller).await {
+        if let Some(forward_to) = self
+            .check_call_forward(&line_binding, tenant_id, caller)
+            .await
+        {
             return Ok(RoutingResult {
                 phone_number: Some(phone_number),
                 line_binding: Some(line_binding.clone()),
@@ -412,12 +418,7 @@ impl DefaultRoutingEngine {
         let current_time = SystemTime::now();
 
         rules_manager
-            .find_applicable_rule(
-                &line_binding.id,
-                ForwardType::Busy,
-                caller,
-                current_time,
-            )
+            .find_applicable_rule(&line_binding.id, ForwardType::Busy, caller, current_time)
             .map(|rule| {
                 info!(
                     "Line binding {} has busy forwarding rule to {}",
@@ -510,7 +511,9 @@ mod tests {
         let destination = RoutingDestination::E164("+15551234567".to_string());
         let caller = "+15559999999";
 
-        let result = engine.route_inbound_call(&destination, &tenant_id, caller).await;
+        let result = engine
+            .route_inbound_call(&destination, &tenant_id, caller)
+            .await;
         assert!(result.is_ok());
     }
 }

@@ -40,7 +40,10 @@ impl CacheState {
             None
         };
 
-        Self { client, config: cache_config }
+        Self {
+            client,
+            config: cache_config,
+        }
     }
 
     /// Get cached response from Redis
@@ -48,15 +51,13 @@ impl CacheState {
         let client = self.client.as_ref()?;
 
         match client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => {
-                match conn.get::<_, Vec<u8>>(key).await {
-                    Ok(data) => {
-                        debug!(key = %key, size = data.len(), "Cache hit");
-                        Some(data)
-                    }
-                    Err(_) => None,
+            Ok(mut conn) => match conn.get::<_, Vec<u8>>(key).await {
+                Ok(data) => {
+                    debug!(key = %key, size = data.len(), "Cache hit");
+                    Some(data)
                 }
-            }
+                Err(_) => None,
+            },
             Err(e) => {
                 error!(error = %e, "Failed to get Redis connection");
                 None
@@ -87,9 +88,13 @@ impl CacheState {
 
     /// Generate cache key from request
     fn cache_key(&self, req: &Request<Body>) -> String {
-        format!("gateway:cache:{}{}",
+        format!(
+            "gateway:cache:{}{}",
             req.uri().path(),
-            req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default()
+            req.uri()
+                .query()
+                .map(|q| format!("?{}", q))
+                .unwrap_or_default()
         )
     }
 }
@@ -137,7 +142,9 @@ pub async fn cache_middleware(
 
                 // Return response with cache miss header
                 let mut response = Response::from_parts(parts, Body::from(bytes));
-                response.headers_mut().insert("X-Cache", "MISS".parse().unwrap());
+                response
+                    .headers_mut()
+                    .insert("X-Cache", "MISS".parse().unwrap());
                 Ok(response)
             }
             Err(e) => {

@@ -153,7 +153,9 @@ impl CallManager {
 
                     Some(PlatformEvent::Call(CallEvent::Answered {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
-                        answer_time: updated_call.established_at.unwrap_or_else(std::time::SystemTime::now),
+                        answer_time: updated_call
+                            .established_at
+                            .unwrap_or_else(std::time::SystemTime::now),
                         codec,
                     }))
                 }
@@ -202,16 +204,15 @@ impl CallManager {
                     PlatformEvent::Call(CallEvent::Ended {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         end_time: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
-                        duration_ms: call.duration()
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0),
+                        duration_ms: call.duration().map(|d| d.as_millis() as u64).unwrap_or(0),
                         hangup_cause: "Normal Clearing".to_string(),
                         hangup_party: None, // TODO: Phase 2 - track BYE direction
                     })
                 }
                 CallState::Failed => {
                     // Failed call
-                    let (reason, sip_code) = call.failure_reason
+                    let (reason, sip_code) = call
+                        .failure_reason
                         .as_ref()
                         .map(|r| {
                             let code = extract_sip_status_code(r);
@@ -470,10 +471,7 @@ impl Default for CallManager {
 /// This function maps call state to disposition, extracts timing information,
 /// and creates a complete CDR record. It is non-blocking and errors are logged
 /// but do not prevent call termination.
-async fn create_and_insert_cdr(
-    storage: &fcp_core::DynStorage,
-    call: &Call,
-) -> Result<()> {
+async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> Result<()> {
     use fcp_core::storage::{CallDetailRecord, CdrStore};
 
     // Map CallState to CallDisposition
@@ -546,7 +544,7 @@ async fn create_and_insert_cdr(
         media_anchored: call.media_anchored,
         codec_a_leg,
         codec_b_leg,
-        rtp_packets_sent: None,    // TODO: Phase 2 - RTP statistics
+        rtp_packets_sent: None, // TODO: Phase 2 - RTP statistics
         rtp_packets_received: None,
         rtp_bytes_sent: None,
         rtp_bytes_received: None,
@@ -568,7 +566,10 @@ async fn create_and_insert_cdr(
 /// Map CallState and failure_reason to CallDisposition and HangupCause.
 fn map_call_state_to_disposition(
     call: &Call,
-) -> (fcp_core::storage::CallDisposition, fcp_core::storage::HangupCause) {
+) -> (
+    fcp_core::storage::CallDisposition,
+    fcp_core::storage::HangupCause,
+) {
     use fcp_core::storage::{CallDisposition, HangupCause};
 
     match call.state {
@@ -592,7 +593,10 @@ fn map_call_state_to_disposition(
                 }
 
                 // Check for 480/408 No Answer
-                if reason.contains("480") || reason.contains("408") || reason_lower.contains("timeout") {
+                if reason.contains("480")
+                    || reason.contains("408")
+                    || reason_lower.contains("timeout")
+                {
                     return (CallDisposition::NoAnswer, HangupCause::NoAnswer);
                 }
 
@@ -652,27 +656,16 @@ fn calculate_durations(call: &Call) -> (Option<u64>, Option<u64>, Option<u64>) {
     let end = call.ended_at;
 
     // Setup duration: start -> answer
-    let setup_duration_ms = answer.and_then(|ans| {
-        ans.duration_since(start)
-            .ok()
-            .map(|d| d.as_millis() as u64)
-    });
+    let setup_duration_ms =
+        answer.and_then(|ans| ans.duration_since(start).ok().map(|d| d.as_millis() as u64));
 
     // Call duration: answer -> end
-    let call_duration_ms = answer.and_then(|ans| {
-        end.and_then(|e| {
-            e.duration_since(ans)
-                .ok()
-                .map(|d| d.as_millis() as u64)
-        })
-    });
+    let call_duration_ms = answer
+        .and_then(|ans| end.and_then(|e| e.duration_since(ans).ok().map(|d| d.as_millis() as u64)));
 
     // Total duration: start -> end
-    let total_duration_ms = end.and_then(|e| {
-        e.duration_since(start)
-            .ok()
-            .map(|d| d.as_millis() as u64)
-    });
+    let total_duration_ms =
+        end.and_then(|e| e.duration_since(start).ok().map(|d| d.as_millis() as u64));
 
     (setup_duration_ms, call_duration_ms, total_duration_ms)
 }
@@ -989,7 +982,10 @@ mod tests {
         assert_eq!(extract_sip_status_code("486 Busy Here"), Some(486));
         assert_eq!(extract_sip_status_code("200 OK"), Some(200));
         assert_eq!(extract_sip_status_code("404 Not Found"), Some(404));
-        assert_eq!(extract_sip_status_code("503 Service Unavailable"), Some(503));
+        assert_eq!(
+            extract_sip_status_code("503 Service Unavailable"),
+            Some(503)
+        );
     }
 
     #[test]
@@ -1028,8 +1024,8 @@ mod tests {
 
         let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
 
-        assert_eq!(setup_ms, Some(2000));  // 2 seconds setup
-        assert_eq!(call_ms, Some(30000));  // 30 seconds call
+        assert_eq!(setup_ms, Some(2000)); // 2 seconds setup
+        assert_eq!(call_ms, Some(30000)); // 30 seconds call
         assert_eq!(total_ms, Some(32000)); // 32 seconds total
     }
 
@@ -1047,8 +1043,8 @@ mod tests {
 
         let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
 
-        assert_eq!(setup_ms, None);       // Never answered
-        assert_eq!(call_ms, None);        // No call duration
+        assert_eq!(setup_ms, None); // Never answered
+        assert_eq!(call_ms, None); // No call duration
         assert_eq!(total_ms, Some(10000)); // 10 seconds total (ringing time)
     }
 
@@ -1068,8 +1064,8 @@ mod tests {
         let (setup_ms, call_ms, total_ms) = calculate_durations(&call);
 
         assert_eq!(setup_ms, Some(3000)); // 3 seconds setup
-        assert_eq!(call_ms, None);        // Call still active
-        assert_eq!(total_ms, None);       // No end time yet
+        assert_eq!(call_ms, None); // Call still active
+        assert_eq!(total_ms, None); // No end time yet
     }
 
     // ============================================================================

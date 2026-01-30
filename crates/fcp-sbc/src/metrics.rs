@@ -60,7 +60,12 @@ impl SbcRuntimeMetrics {
     /// Update the stored snapshot with current counter values.
     ///
     /// Called periodically by a background task.
-    pub fn update_snapshot(&self, current_cps: u64, concurrent_calls: u64, concurrent_registrations: u64) {
+    pub fn update_snapshot(
+        &self,
+        current_cps: u64,
+        concurrent_calls: u64,
+        concurrent_registrations: u64,
+    ) {
         // Update peak CPS
         loop {
             let peak = self.peak_cps.load(Ordering::Relaxed);
@@ -96,10 +101,7 @@ impl SbcRuntimeMetrics {
 
     /// Return the most recent snapshot.
     pub fn snapshot(&self) -> SbcMetricsSnapshot {
-        self.snapshot
-            .read()
-            .map(|s| s.clone())
-            .unwrap_or_default()
+        self.snapshot.read().map(|s| s.clone()).unwrap_or_default()
     }
 }
 

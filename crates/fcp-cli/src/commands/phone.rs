@@ -27,14 +27,7 @@ pub async fn handle(
                     table
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
-                        .set_header(vec![
-                            "ID",
-                            "Number",
-                            "State",
-                            "CNAM",
-                            "E911",
-                            "Tenant",
-                        ]);
+                        .set_header(vec!["ID", "Number", "State", "CNAM", "E911", "Tenant"]);
 
                     for phone in &phones {
                         table.add_row(vec![
@@ -79,10 +72,7 @@ pub async fn handle(
                     println!("  NPA: {}", phone.npa);
                     println!("  NXX: {}", phone.nxx);
                     println!("  Line: {}", phone.line);
-                    println!(
-                        "  CNAM: {}",
-                        phone.cnam.unwrap_or_else(|| "-".to_string())
-                    );
+                    println!("  CNAM: {}", phone.cnam.unwrap_or_else(|| "-".to_string()));
                     if let Some(e911) = &phone.e911_address {
                         println!("  E911 Address:");
                         println!("    Address: {}", e911.address1);
@@ -227,7 +217,10 @@ pub async fn handle(
 
         PhoneCommands::Delete { id, force } => {
             if !force {
-                print!("Are you sure you want to delete phone number '{}'? [y/N] ", id);
+                print!(
+                    "Are you sure you want to delete phone number '{}'? [y/N] ",
+                    id
+                );
                 std::io::Write::flush(&mut std::io::stdout())?;
 
                 let mut input = String::new();

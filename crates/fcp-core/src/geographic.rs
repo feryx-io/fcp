@@ -108,10 +108,7 @@ pub enum Region {
     Country(String),
 
     /// State/province within a country
-    State {
-        country: String,
-        state: String,
-    },
+    State { country: String, state: String },
 
     /// City within a state
     City {
@@ -127,16 +124,10 @@ pub enum Region {
     },
 
     /// Area code (for phone numbers)
-    AreaCode {
-        country: String,
-        area_code: String,
-    },
+    AreaCode { country: String, area_code: String },
 
     /// Custom region defined by coordinates and radius
-    Radius {
-        center: Coordinates,
-        radius_km: f64,
-    },
+    Radius { center: Coordinates, radius_km: f64 },
 }
 
 impl std::fmt::Display for Region {
@@ -153,10 +144,7 @@ impl std::fmt::Display for Region {
                 country,
                 postal_code,
             } => write!(f, "{} {}", country, postal_code),
-            Region::AreaCode {
-                country,
-                area_code,
-            } => write!(f, "{} ({})", country, area_code),
+            Region::AreaCode { country, area_code } => write!(f, "{} ({})", country, area_code),
             Region::Radius { center, radius_km } => {
                 write!(
                     f,
@@ -365,11 +353,7 @@ pub struct RegionDestination {
 
 impl GeoRoutingRule {
     /// Creates a new geographic routing rule.
-    pub fn new(
-        tenant_id: TenantId,
-        name: String,
-        strategy: GeoRoutingStrategy,
-    ) -> Self {
+    pub fn new(tenant_id: TenantId, name: String, strategy: GeoRoutingStrategy) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             tenant_id,
@@ -404,10 +388,7 @@ impl GeoRoutingRule {
     }
 
     /// Finds the best destination for a given source location.
-    pub fn find_destination(
-        &self,
-        source_location: &Location,
-    ) -> Option<&RegionDestination> {
+    pub fn find_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
         if !self.applies_to_source(source_location) {
             return None;
         }
@@ -432,10 +413,7 @@ impl GeoRoutingRule {
         }
     }
 
-    fn find_nearest_destination(
-        &self,
-        source_location: &Location,
-    ) -> Option<&RegionDestination> {
+    fn find_nearest_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
         let mut nearest: Option<(&RegionDestination, f64)> = None;
 
         for dest in &self.region_destinations {
@@ -457,10 +435,7 @@ impl GeoRoutingRule {
         nearest.map(|(dest, _)| dest)
     }
 
-    fn find_regional_destination(
-        &self,
-        source_location: &Location,
-    ) -> Option<&RegionDestination> {
+    fn find_regional_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
         // Find first enabled destination in a matching region
         for dest in &self.region_destinations {
             if dest.enabled && source_location.matches_region(&dest.region) {
@@ -470,10 +445,7 @@ impl GeoRoutingRule {
         None
     }
 
-    fn find_timezone_destination(
-        &self,
-        source_location: &Location,
-    ) -> Option<&RegionDestination> {
+    fn find_timezone_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
         let source_tz = source_location.timezone.as_ref()?;
 
         // Find first enabled destination in same timezone
@@ -490,10 +462,7 @@ impl GeoRoutingRule {
         None
     }
 
-    fn find_emergency_destination(
-        &self,
-        source_location: &Location,
-    ) -> Option<&RegionDestination> {
+    fn find_emergency_destination(&self, source_location: &Location) -> Option<&RegionDestination> {
         // For emergency services, prefer regional match first, then nearest
         if let Some(dest) = self.find_regional_destination(source_location) {
             return Some(dest);
@@ -541,11 +510,7 @@ impl GeoRoutingManager {
     }
 
     /// Finds the best destination for a given source location.
-    pub fn route(
-        &self,
-        tenant_id: &TenantId,
-        source_location: &Location,
-    ) -> Option<LineBindingId> {
+    pub fn route(&self, tenant_id: &TenantId, source_location: &Location) -> Option<LineBindingId> {
         let rules = self.rules.get(tenant_id)?;
 
         for rule in rules {
@@ -705,11 +670,14 @@ mod tests {
 
         // Should route to LA (closer)
         if let Some(destination) = dest {
-            assert_eq!(destination.region, Region::City {
-                country: "US".to_string(),
-                state: "CA".to_string(),
-                city: "Los Angeles".to_string(),
-            });
+            assert_eq!(
+                destination.region,
+                Region::City {
+                    country: "US".to_string(),
+                    state: "CA".to_string(),
+                    city: "Los Angeles".to_string(),
+                }
+            );
         }
     }
 

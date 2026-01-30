@@ -163,7 +163,10 @@ pub struct BackendService {
     pub health_check_path: String,
 
     /// Health check interval (seconds)
-    #[serde(default = "default_health_check_interval_secs", with = "serde_duration")]
+    #[serde(
+        default = "default_health_check_interval_secs",
+        with = "serde_duration"
+    )]
     pub health_check_interval: Duration,
 
     /// Connection timeout

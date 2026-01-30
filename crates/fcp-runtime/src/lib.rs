@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use fcp_core::{FcpConfig, NodeId, RegistrationStore, ServiceManager};
 use fcp_events::EventBus;
 use fcp_media::MediaManager;
-use fcp_sip::CallManager;
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::prelude::*;
+use fcp_sip::CallManager;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -283,7 +283,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_builder() {
-        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
         let db_path = temp_dir.join("test.db");
 
         let mut config = FcpConfig::default();
@@ -303,7 +304,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_lifecycle() {
-        let temp_dir = std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fcp-test-{:?}", std::time::SystemTime::now()));
         let db_path = temp_dir.join("test.db");
 
         let mut config = FcpConfig::default();

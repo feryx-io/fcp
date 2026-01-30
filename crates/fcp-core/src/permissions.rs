@@ -92,7 +92,9 @@ impl UserRole {
     pub fn description(&self) -> &'static str {
         match self {
             Self::SuperAdmin => "Full system access including configuration and all resources",
-            Self::TelecomAdmin => "Manage voice infrastructure: phone numbers, devices, trunks, routing",
+            Self::TelecomAdmin => {
+                "Manage voice infrastructure: phone numbers, devices, trunks, routing"
+            }
             Self::UserAdmin => "Manage users, passwords, and basic settings",
             Self::DepartmentAdmin => "Manage users and resources within assigned department",
             Self::ReadOnly => "View-only access for monitoring and reporting",
@@ -207,16 +209,36 @@ impl UserRole {
             (TelecomAdmin, SystemViewLogs, _) => true,
             (TelecomAdmin, UserCreate | UserRead | UserUpdate | UserDelete, _) => false, // User management is UserAdmin's job
             (TelecomAdmin, UserSetPassword, _) => false,
-            (TelecomAdmin, PhoneNumberCreate | PhoneNumberRead | PhoneNumberUpdate | PhoneNumberDelete, _) => true,
-            (TelecomAdmin, PhoneNumberViewCarrierData, DeploymentMode::Carrier | DeploymentMode::ServiceProvider) => true,
+            (
+                TelecomAdmin,
+                PhoneNumberCreate | PhoneNumberRead | PhoneNumberUpdate | PhoneNumberDelete,
+                _,
+            ) => true,
+            (
+                TelecomAdmin,
+                PhoneNumberViewCarrierData,
+                DeploymentMode::Carrier | DeploymentMode::ServiceProvider,
+            ) => true,
             (TelecomAdmin, PhoneNumberViewCarrierData, DeploymentMode::Enterprise) => false,
             (TelecomAdmin, DeviceCreate | DeviceRead | DeviceUpdate | DeviceDelete, _) => true,
             (TelecomAdmin, CallView | CallControl, _) => true,
             (TelecomAdmin, CallRecordingAccess, _) => true,
             (TelecomAdmin, RegistrationView | RegistrationManage, _) => true,
-            (TelecomAdmin, TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete, DeploymentMode::Carrier | DeploymentMode::ServiceProvider) => true,
-            (TelecomAdmin, TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete, DeploymentMode::Enterprise) => false,
-            (TelecomAdmin, TenantCreate | TenantRead | TenantUpdate | TenantDelete, DeploymentMode::ServiceProvider) => true,
+            (
+                TelecomAdmin,
+                TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete,
+                DeploymentMode::Carrier | DeploymentMode::ServiceProvider,
+            ) => true,
+            (
+                TelecomAdmin,
+                TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete,
+                DeploymentMode::Enterprise,
+            ) => false,
+            (
+                TelecomAdmin,
+                TenantCreate | TenantRead | TenantUpdate | TenantDelete,
+                DeploymentMode::ServiceProvider,
+            ) => true,
             (TelecomAdmin, TenantCreate | TenantRead | TenantUpdate | TenantDelete, _) => false,
             (TelecomAdmin, DebugView, _) => true,
 
@@ -225,7 +247,14 @@ impl UserRole {
             (UserAdmin, UserCreate | UserRead | UserUpdate | UserDelete, _) => true,
             (UserAdmin, UserSetPassword, _) => true,
             (UserAdmin, PhoneNumberRead, _) => true, // View only
-            (UserAdmin, PhoneNumberCreate | PhoneNumberUpdate | PhoneNumberDelete | PhoneNumberViewCarrierData, _) => false,
+            (
+                UserAdmin,
+                PhoneNumberCreate
+                | PhoneNumberUpdate
+                | PhoneNumberDelete
+                | PhoneNumberViewCarrierData,
+                _,
+            ) => false,
             (UserAdmin, DeviceRead, _) => true, // View only
             (UserAdmin, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (UserAdmin, CallView, _) => true,
@@ -241,7 +270,14 @@ impl UserRole {
             (DepartmentAdmin, UserRead, _) => true, // Within department only
             (DepartmentAdmin, UserCreate | UserUpdate | UserDelete | UserSetPassword, _) => false,
             (DepartmentAdmin, PhoneNumberRead | DeviceRead, _) => true, // Within department only
-            (DepartmentAdmin, PhoneNumberCreate | PhoneNumberUpdate | PhoneNumberDelete | PhoneNumberViewCarrierData, _) => false,
+            (
+                DepartmentAdmin,
+                PhoneNumberCreate
+                | PhoneNumberUpdate
+                | PhoneNumberDelete
+                | PhoneNumberViewCarrierData,
+                _,
+            ) => false,
             (DepartmentAdmin, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (DepartmentAdmin, CallView, _) => true, // Within department only
             (DepartmentAdmin, CallControl | CallRecordingAccess, _) => false,
@@ -257,14 +293,20 @@ impl UserRole {
             (ReadOnly, UserRead | PhoneNumberRead | DeviceRead, _) => true,
             (ReadOnly, UserCreate | UserUpdate | UserDelete | UserSetPassword, _) => false,
             (ReadOnly, PhoneNumberCreate | PhoneNumberUpdate | PhoneNumberDelete, _) => false,
-            (ReadOnly, PhoneNumberViewCarrierData, DeploymentMode::Carrier | DeploymentMode::ServiceProvider) => true,
+            (
+                ReadOnly,
+                PhoneNumberViewCarrierData,
+                DeploymentMode::Carrier | DeploymentMode::ServiceProvider,
+            ) => true,
             (ReadOnly, PhoneNumberViewCarrierData, DeploymentMode::Enterprise) => false,
             (ReadOnly, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (ReadOnly, CallView, _) => true,
             (ReadOnly, CallControl | CallRecordingAccess, _) => false,
             (ReadOnly, RegistrationView, _) => true,
             (ReadOnly, RegistrationManage, _) => false,
-            (ReadOnly, TrunkRead, DeploymentMode::Carrier | DeploymentMode::ServiceProvider) => true,
+            (ReadOnly, TrunkRead, DeploymentMode::Carrier | DeploymentMode::ServiceProvider) => {
+                true
+            }
             (ReadOnly, TrunkRead, DeploymentMode::Enterprise) => false,
             (ReadOnly, TrunkCreate | TrunkUpdate | TrunkDelete, _) => false,
             (ReadOnly, TenantRead, DeploymentMode::ServiceProvider) => true,
@@ -277,7 +319,14 @@ impl UserRole {
             (EndUser, UserRead, _) => true, // Only their own profile
             (EndUser, UserCreate | UserUpdate | UserDelete | UserSetPassword, _) => false,
             (EndUser, PhoneNumberRead | DeviceRead, _) => true, // Only their assigned resources
-            (EndUser, PhoneNumberCreate | PhoneNumberUpdate | PhoneNumberDelete | PhoneNumberViewCarrierData, _) => false,
+            (
+                EndUser,
+                PhoneNumberCreate
+                | PhoneNumberUpdate
+                | PhoneNumberDelete
+                | PhoneNumberViewCarrierData,
+                _,
+            ) => false,
             (EndUser, DeviceCreate | DeviceUpdate | DeviceDelete, _) => false,
             (EndUser, CallView, _) => true, // Only their own calls
             (EndUser, CallControl | CallRecordingAccess, _) => false,
@@ -293,14 +342,35 @@ impl UserRole {
         use Permission::*;
 
         let all_permissions = vec![
-            SystemConfig, SystemViewLogs,
-            UserCreate, UserRead, UserUpdate, UserDelete, UserSetPassword,
-            PhoneNumberCreate, PhoneNumberRead, PhoneNumberUpdate, PhoneNumberDelete, PhoneNumberViewCarrierData,
-            DeviceCreate, DeviceRead, DeviceUpdate, DeviceDelete,
-            CallView, CallControl, CallRecordingAccess,
-            RegistrationView, RegistrationManage,
-            TrunkCreate, TrunkRead, TrunkUpdate, TrunkDelete,
-            TenantCreate, TenantRead, TenantUpdate, TenantDelete,
+            SystemConfig,
+            SystemViewLogs,
+            UserCreate,
+            UserRead,
+            UserUpdate,
+            UserDelete,
+            UserSetPassword,
+            PhoneNumberCreate,
+            PhoneNumberRead,
+            PhoneNumberUpdate,
+            PhoneNumberDelete,
+            PhoneNumberViewCarrierData,
+            DeviceCreate,
+            DeviceRead,
+            DeviceUpdate,
+            DeviceDelete,
+            CallView,
+            CallControl,
+            CallRecordingAccess,
+            RegistrationView,
+            RegistrationManage,
+            TrunkCreate,
+            TrunkRead,
+            TrunkUpdate,
+            TrunkDelete,
+            TenantCreate,
+            TenantRead,
+            TenantUpdate,
+            TenantDelete,
             DebugView,
         ];
 
@@ -331,11 +401,20 @@ mod tests {
         let role = UserRole::TelecomAdmin;
 
         // Can see carrier data in Carrier/ServiceProvider mode
-        assert!(role.has_permission(Permission::PhoneNumberViewCarrierData, DeploymentMode::Carrier));
-        assert!(role.has_permission(Permission::PhoneNumberViewCarrierData, DeploymentMode::ServiceProvider));
+        assert!(role.has_permission(
+            Permission::PhoneNumberViewCarrierData,
+            DeploymentMode::Carrier
+        ));
+        assert!(role.has_permission(
+            Permission::PhoneNumberViewCarrierData,
+            DeploymentMode::ServiceProvider
+        ));
 
         // Cannot see carrier data in Enterprise mode
-        assert!(!role.has_permission(Permission::PhoneNumberViewCarrierData, DeploymentMode::Enterprise));
+        assert!(!role.has_permission(
+            Permission::PhoneNumberViewCarrierData,
+            DeploymentMode::Enterprise
+        ));
     }
 
     #[test]

@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use fcp_b2bua_core::session::B2buaConfig;
 use fcp_b2bua_core::forking::ForkingConfig;
 use fcp_b2bua_core::media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
+use fcp_b2bua_core::session::B2buaConfig;
 use fcp_b2bua_core::topology::{TopologyHidingConfig, TopologyHidingMode};
 use fcp_b2bua_core::transfer::TransferConfig;
 use fcp_core::transport::TransportType;
@@ -123,9 +123,7 @@ impl SbcConfig {
         self.metrics.validate()?;
 
         for (i, trunk) in self.trunks.iter().enumerate() {
-            trunk
-                .validate()
-                .map_err(|e| format!("trunks[{i}]: {e}"))?;
+            trunk.validate().map_err(|e| format!("trunks[{i}]: {e}"))?;
         }
 
         // Check trunk name uniqueness
@@ -166,15 +164,9 @@ mod tests {
     fn test_default() {
         let cfg = SbcConfig::default();
         // B2BUA is SBC-tuned
-        assert_eq!(
-            cfg.b2bua.topology_hiding.mode,
-            TopologyHidingMode::Full
-        );
+        assert_eq!(cfg.b2bua.topology_hiding.mode, TopologyHidingMode::Full);
         assert!(cfg.b2bua.topology_hiding.hide_via);
-        assert_eq!(
-            cfg.b2bua.media_anchoring.mode,
-            MediaAnchoringMode::Always
-        );
+        assert_eq!(cfg.b2bua.media_anchoring.mode, MediaAnchoringMode::Always);
         assert_eq!(cfg.b2bua.max_forwards, 70);
         assert!(cfg.b2bua.relay_provisional_responses);
         assert!(cfg.b2bua.insert_record_route);

@@ -4,7 +4,9 @@ use crate::api::{CreateUserRequest, UpdateUserRequest, UserResponse};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+    },
     Frame,
 };
 use tui_input::Input;
@@ -239,8 +241,10 @@ impl UsersViewState {
         self.users = users;
         // Reset selection to first item if we had no selection or it's out of bounds
         if self.table_state.selected().is_none()
-            || self.table_state.selected().unwrap() >= self.users.len() {
-            self.table_state.select(if self.users.is_empty() { None } else { Some(0) });
+            || self.table_state.selected().unwrap() >= self.users.len()
+        {
+            self.table_state
+                .select(if self.users.is_empty() { None } else { Some(0) });
         }
     }
 
@@ -275,8 +279,10 @@ impl UsersViewState {
             self.input_language = Input::new(user.language);
             self.input_timezone = Input::new(user.timezone);
             self.input_account_status = Input::new(user.account_status);
-            self.input_emergency_contact_name = Input::new(user.emergency_contact_name.unwrap_or_default());
-            self.input_emergency_contact_phone = Input::new(user.emergency_contact_phone.unwrap_or_default());
+            self.input_emergency_contact_name =
+                Input::new(user.emergency_contact_name.unwrap_or_default());
+            self.input_emergency_contact_phone =
+                Input::new(user.emergency_contact_phone.unwrap_or_default());
 
             self.focused_field = 1; // Focus on display name for edit
             self.scroll_offset = 0;
@@ -406,12 +412,18 @@ impl UsersViewState {
         if self.focused_field == 11 {
             // Language field
             let current_lang = self.input_language.value();
-            let index = LANGUAGES.iter().position(|(code, _)| *code == current_lang).unwrap_or(0);
+            let index = LANGUAGES
+                .iter()
+                .position(|(code, _)| *code == current_lang)
+                .unwrap_or(0);
             self.language_list_state.select(Some(index));
         } else if self.focused_field == 12 {
             // Timezone field
             let current_tz = self.input_timezone.value();
-            let index = TIMEZONES.iter().position(|tz| *tz == current_tz).unwrap_or(0);
+            let index = TIMEZONES
+                .iter()
+                .position(|tz| *tz == current_tz)
+                .unwrap_or(0);
             self.timezone_list_state.select(Some(index));
         }
     }
@@ -490,7 +502,12 @@ impl UsersViewState {
 }
 
 /// Render the users view
-pub fn render(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut UsersViewState, area: Rect) {
+pub fn render(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &mut UsersViewState,
+    area: Rect,
+) {
     // Split into table and details panel
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -509,7 +526,9 @@ pub fn render(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut Users
         UserModal::Edit => render_edit_modal(f, theme, state, area),
         UserModal::Delete => render_delete_modal(f, theme, state, area),
         UserModal::SetDigestPassword => render_set_digest_password_modal(f, theme, state, area),
-        UserModal::RemoveDigestPassword => render_remove_digest_password_modal(f, theme, state, area),
+        UserModal::RemoveDigestPassword => {
+            render_remove_digest_password_modal(f, theme, state, area)
+        }
         UserModal::None => {}
     }
 
@@ -520,7 +539,12 @@ pub fn render(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut Users
 }
 
 /// Render the users table
-fn render_users_table(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut UsersViewState, area: Rect) {
+fn render_users_table(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &mut UsersViewState,
+    area: Rect,
+) {
     let header = Row::new(vec!["Username", "Display Name", "Tenant", "Enabled"])
         .style(theme.title())
         .bottom_margin(1);
@@ -573,7 +597,11 @@ fn render_users_table(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &m
         ])];
 
         let error_para = Paragraph::new(error_text)
-            .block(Block::default().borders(Borders::ALL).border_style(theme.error()))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(theme.error()),
+            )
             .wrap(ratatui::widgets::Wrap { trim: true });
 
         // Show error in a larger area at the bottom with word wrapping
@@ -590,7 +618,12 @@ fn render_users_table(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &m
 }
 
 /// Render the details panel for selected user
-fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+fn render_details_panel(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &UsersViewState,
+    area: Rect,
+) {
     let details_text = if let Some(user) = state.selected_user() {
         let mut lines = vec![
             Line::from(""),
@@ -606,10 +639,7 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
             Line::from(""),
             Line::from(vec![
                 Span::styled("Display Name: ", theme.muted()),
-                Span::styled(
-                    user.display_name.as_deref().unwrap_or("-"),
-                    theme.normal(),
-                ),
+                Span::styled(user.display_name.as_deref().unwrap_or("-"), theme.normal()),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -633,7 +663,10 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
         // Enterprise fields section
         if user.email.is_some() || user.extension.is_some() || user.department.is_some() {
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled("── Contact Info ──", theme.title())]));
+            lines.push(Line::from(vec![Span::styled(
+                "── Contact Info ──",
+                theme.title(),
+            )]));
 
             if let Some(email) = &user.email {
                 lines.push(Line::from(vec![
@@ -664,7 +697,10 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
         // Job info section
         if user.department.is_some() || user.job_title.is_some() || user.location.is_some() {
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled("── Job Info ──", theme.title())]));
+            lines.push(Line::from(vec![Span::styled(
+                "── Job Info ──",
+                theme.title(),
+            )]));
 
             if let Some(dept) = &user.department {
                 lines.push(Line::from(vec![
@@ -688,7 +724,10 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
 
         // Preferences section
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled("── Preferences ──", theme.title())]));
+        lines.push(Line::from(vec![Span::styled(
+            "── Preferences ──",
+            theme.title(),
+        )]));
         lines.push(Line::from(vec![
             Span::styled("Language: ", theme.muted()),
             Span::styled(&user.language, theme.normal()),
@@ -701,7 +740,10 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
         // Emergency contact section
         if user.emergency_contact_name.is_some() || user.emergency_contact_phone.is_some() {
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![Span::styled("── Emergency Contact ──", theme.title())]));
+            lines.push(Line::from(vec![Span::styled(
+                "── Emergency Contact ──",
+                theme.title(),
+            )]));
 
             if let Some(name) = &user.emergency_contact_name {
                 lines.push(Line::from(vec![
@@ -734,19 +776,13 @@ fn render_details_panel(f: &mut Frame, theme: &crate::tui::theme::Theme, state: 
     } else if state.users.is_empty() {
         vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "  No users to display",
-                theme.muted(),
-            )]),
+            Line::from(vec![Span::styled("  No users to display", theme.muted())]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "  Press 'a' to add a user",
                 theme.info(),
             )]),
-            Line::from(vec![Span::styled(
-                "  Press 'r' to refresh",
-                theme.info(),
-            )]),
+            Line::from(vec![Span::styled("  Press 'r' to refresh", theme.info())]),
         ]
     } else {
         vec![
@@ -797,10 +833,7 @@ pub fn handle_navigation(state: &mut UsersViewState, event: &crate::tui::event::
 }
 
 /// Fetch users data
-pub async fn fetch_users(
-    api_client: &crate::api::ApiClient,
-    state: &mut UsersViewState,
-) {
+pub async fn fetch_users(api_client: &crate::api::ApiClient, state: &mut UsersViewState) {
     state.loading = true;
     state.error = None;
 
@@ -817,7 +850,12 @@ pub async fn fetch_users(
 }
 
 /// Render add user modal
-fn render_add_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+fn render_add_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &UsersViewState,
+    area: Rect,
+) {
     let popup_area = centered_rect(70, 80, area);
 
     let title_text = " Add New User (Tab/Shift+Tab: navigate, Enter: save, Esc: cancel) ";
@@ -826,30 +864,107 @@ fn render_add_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Use
 
     let fields = vec![
         // Core fields
-        ("Username:", state.input_username.value(), state.focused_field == 0),
-        ("Display Name:", state.input_display_name.value(), state.focused_field == 1),
-        ("Password:", password_masked.as_str(), state.focused_field == 2),
+        (
+            "Username:",
+            state.input_username.value(),
+            state.focused_field == 0,
+        ),
+        (
+            "Display Name:",
+            state.input_display_name.value(),
+            state.focused_field == 1,
+        ),
+        (
+            "Password:",
+            password_masked.as_str(),
+            state.focused_field == 2,
+        ),
         // Enterprise fields
-        ("Email:", state.input_email.value(), state.focused_field == 3),
-        ("Phone Number:", state.input_phone_number.value(), state.focused_field == 4),
-        ("Mobile Number:", state.input_mobile_number.value(), state.focused_field == 5),
-        ("PIN (Voicemail):", pin_masked.as_str(), state.focused_field == 6),
-        ("Extension:", state.input_extension.value(), state.focused_field == 7),
-        ("Department:", state.input_department.value(), state.focused_field == 8),
-        ("Job Title:", state.input_job_title.value(), state.focused_field == 9),
-        ("Location:", state.input_location.value(), state.focused_field == 10),
-        ("Language (Space to select):", state.input_language.value(), state.focused_field == 11),
-        ("Timezone (Space to select):", state.input_timezone.value(), state.focused_field == 12),
-        ("Account Status:", state.input_account_status.value(), state.focused_field == 13),
-        ("Emergency Name:", state.input_emergency_contact_name.value(), state.focused_field == 14),
-        ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
+        (
+            "Email:",
+            state.input_email.value(),
+            state.focused_field == 3,
+        ),
+        (
+            "Phone Number:",
+            state.input_phone_number.value(),
+            state.focused_field == 4,
+        ),
+        (
+            "Mobile Number:",
+            state.input_mobile_number.value(),
+            state.focused_field == 5,
+        ),
+        (
+            "PIN (Voicemail):",
+            pin_masked.as_str(),
+            state.focused_field == 6,
+        ),
+        (
+            "Extension:",
+            state.input_extension.value(),
+            state.focused_field == 7,
+        ),
+        (
+            "Department:",
+            state.input_department.value(),
+            state.focused_field == 8,
+        ),
+        (
+            "Job Title:",
+            state.input_job_title.value(),
+            state.focused_field == 9,
+        ),
+        (
+            "Location:",
+            state.input_location.value(),
+            state.focused_field == 10,
+        ),
+        (
+            "Language (Space to select):",
+            state.input_language.value(),
+            state.focused_field == 11,
+        ),
+        (
+            "Timezone (Space to select):",
+            state.input_timezone.value(),
+            state.focused_field == 12,
+        ),
+        (
+            "Account Status:",
+            state.input_account_status.value(),
+            state.focused_field == 13,
+        ),
+        (
+            "Emergency Name:",
+            state.input_emergency_contact_name.value(),
+            state.focused_field == 14,
+        ),
+        (
+            "Emergency Phone:",
+            state.input_emergency_contact_phone.value(),
+            state.focused_field == 15,
+        ),
     ];
 
-    render_form_modal(f, theme, popup_area, title_text, &fields, state.scroll_offset, state.error.as_deref());
+    render_form_modal(
+        f,
+        theme,
+        popup_area,
+        title_text,
+        &fields,
+        state.scroll_offset,
+        state.error.as_deref(),
+    );
 }
 
 /// Render edit user modal
-fn render_edit_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+fn render_edit_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &UsersViewState,
+    area: Rect,
+) {
     let popup_area = centered_rect(70, 80, area);
 
     let title_text = " Edit User (Tab/Shift+Tab: navigate, Enter: save, Esc: cancel) ";
@@ -859,33 +974,105 @@ fn render_edit_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &Us
     let fields = vec![
         // Core fields
         ("Username:", state.input_username.value(), false), // Username not editable
-        ("Display Name:", state.input_display_name.value(), state.focused_field == 1),
-        ("New Password:", password_masked.as_str(), state.focused_field == 2),
+        (
+            "Display Name:",
+            state.input_display_name.value(),
+            state.focused_field == 1,
+        ),
+        (
+            "New Password:",
+            password_masked.as_str(),
+            state.focused_field == 2,
+        ),
         // Enterprise fields
-        ("Email:", state.input_email.value(), state.focused_field == 3),
-        ("Phone Number:", state.input_phone_number.value(), state.focused_field == 4),
-        ("Mobile Number:", state.input_mobile_number.value(), state.focused_field == 5),
+        (
+            "Email:",
+            state.input_email.value(),
+            state.focused_field == 3,
+        ),
+        (
+            "Phone Number:",
+            state.input_phone_number.value(),
+            state.focused_field == 4,
+        ),
+        (
+            "Mobile Number:",
+            state.input_mobile_number.value(),
+            state.focused_field == 5,
+        ),
         ("New PIN:", pin_masked.as_str(), state.focused_field == 6),
-        ("Extension:", state.input_extension.value(), state.focused_field == 7),
-        ("Department:", state.input_department.value(), state.focused_field == 8),
-        ("Job Title:", state.input_job_title.value(), state.focused_field == 9),
-        ("Location:", state.input_location.value(), state.focused_field == 10),
-        ("Language (Space to select):", state.input_language.value(), state.focused_field == 11),
-        ("Timezone (Space to select):", state.input_timezone.value(), state.focused_field == 12),
-        ("Account Status:", state.input_account_status.value(), state.focused_field == 13),
-        ("Emergency Name:", state.input_emergency_contact_name.value(), state.focused_field == 14),
-        ("Emergency Phone:", state.input_emergency_contact_phone.value(), state.focused_field == 15),
+        (
+            "Extension:",
+            state.input_extension.value(),
+            state.focused_field == 7,
+        ),
+        (
+            "Department:",
+            state.input_department.value(),
+            state.focused_field == 8,
+        ),
+        (
+            "Job Title:",
+            state.input_job_title.value(),
+            state.focused_field == 9,
+        ),
+        (
+            "Location:",
+            state.input_location.value(),
+            state.focused_field == 10,
+        ),
+        (
+            "Language (Space to select):",
+            state.input_language.value(),
+            state.focused_field == 11,
+        ),
+        (
+            "Timezone (Space to select):",
+            state.input_timezone.value(),
+            state.focused_field == 12,
+        ),
+        (
+            "Account Status:",
+            state.input_account_status.value(),
+            state.focused_field == 13,
+        ),
+        (
+            "Emergency Name:",
+            state.input_emergency_contact_name.value(),
+            state.focused_field == 14,
+        ),
+        (
+            "Emergency Phone:",
+            state.input_emergency_contact_phone.value(),
+            state.focused_field == 15,
+        ),
     ];
 
-    render_form_modal(f, theme, popup_area, title_text, &fields, state.scroll_offset, state.error.as_deref());
+    render_form_modal(
+        f,
+        theme,
+        popup_area,
+        title_text,
+        &fields,
+        state.scroll_offset,
+        state.error.as_deref(),
+    );
 }
 
 /// Render delete confirmation modal
-fn render_delete_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+fn render_delete_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &UsersViewState,
+    area: Rect,
+) {
     let popup_area = centered_rect(50, 20, area);
-    
-    let username = state.selected_user().map(|u| u.username.as_str()).unwrap_or("unknown");
-    
+
+    let username = state
+        .selected_user()
+        .map(|u| u.username.as_str())
+        .unwrap_or("unknown");
+
     let text = vec![
         Line::from(""),
         Line::from(vec![
@@ -902,7 +1089,7 @@ fn render_delete_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &
             Span::styled(" to cancel", theme.normal()),
         ]),
     ];
-    
+
     f.render_widget(Clear, popup_area);
     let block = Block::default()
         .title(" Confirm Delete ")
@@ -913,10 +1100,18 @@ fn render_delete_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &
 }
 
 /// Render set digest password modal
-fn render_set_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+fn render_set_digest_password_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &UsersViewState,
+    area: Rect,
+) {
     let popup_area = centered_rect(60, 30, area);
 
-    let username = state.selected_user().map(|u| u.username.as_str()).unwrap_or("unknown");
+    let username = state
+        .selected_user()
+        .map(|u| u.username.as_str())
+        .unwrap_or("unknown");
 
     let mut text = vec![
         Line::from(""),
@@ -925,7 +1120,10 @@ fn render_set_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Th
             Span::styled(username, theme.primary()),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Cisco-style security: Different passwords for API and SIP", theme.normal())),
+        Line::from(Span::styled(
+            "Cisco-style security: Different passwords for API and SIP",
+            theme.normal(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Digest Password: ", theme.normal()),
@@ -950,7 +1148,10 @@ fn render_set_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Th
 
     if let Some(error) = &state.error {
         text.push(Line::from(""));
-        text.push(Line::from(Span::styled(format!("Error: {}", error), theme.error())));
+        text.push(Line::from(Span::styled(
+            format!("Error: {}", error),
+            theme.error(),
+        )));
     }
 
     f.render_widget(Clear, popup_area);
@@ -963,10 +1164,18 @@ fn render_set_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Th
 }
 
 /// Render remove digest password confirmation modal
-fn render_remove_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &UsersViewState, area: Rect) {
+fn render_remove_digest_password_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &UsersViewState,
+    area: Rect,
+) {
     let popup_area = centered_rect(60, 25, area);
 
-    let username = state.selected_user().map(|u| u.username.as_str()).unwrap_or("unknown");
+    let username = state
+        .selected_user()
+        .map(|u| u.username.as_str())
+        .unwrap_or("unknown");
 
     let text = vec![
         Line::from(""),
@@ -977,11 +1186,20 @@ fn render_remove_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme:
         ]),
         Line::from(""),
         Line::from(Span::styled("This will:", theme.normal())),
-        Line::from(Span::styled("  • Remove separate SIP password", theme.normal())),
+        Line::from(Span::styled(
+            "  • Remove separate SIP password",
+            theme.normal(),
+        )),
         Line::from(Span::styled("  • Clear HA1 hash", theme.normal())),
-        Line::from(Span::styled("  • Revert to using main password for SIP", theme.normal())),
+        Line::from(Span::styled(
+            "  • Revert to using main password for SIP",
+            theme.normal(),
+        )),
         Line::from(""),
-        Line::from(Span::styled("⚠ Phone must re-register with main password", theme.warning())),
+        Line::from(Span::styled(
+            "⚠ Phone must re-register with main password",
+            theme.warning(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Press ", theme.normal()),
@@ -1002,7 +1220,15 @@ fn render_remove_digest_password_modal(f: &mut Frame, theme: &crate::tui::theme:
 }
 
 /// Helper to render a form modal with scrolling support
-fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect, title: &str, fields: &[(&str, &str, bool)], scroll_offset: usize, error: Option<&str>) {
+fn render_form_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    area: Rect,
+    title: &str,
+    fields: &[(&str, &str, bool)],
+    scroll_offset: usize,
+    error: Option<&str>,
+) {
     f.render_widget(Clear, area);
 
     let block = Block::default()
@@ -1029,11 +1255,14 @@ fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect
     // Show scroll indicator at top if we're scrolled down
     let mut y = inner.y;
     if scroll_offset > 0 {
-        let scroll_indicator = Line::from(vec![
-            Span::styled(format!("  ▲ {} more above  ", scroll_offset), theme.muted()),
-        ]);
-        f.render_widget(Paragraph::new(scroll_indicator).alignment(ratatui::layout::Alignment::Center),
-                       Rect::new(inner.x, y, inner.width, 1));
+        let scroll_indicator = Line::from(vec![Span::styled(
+            format!("  ▲ {} more above  ", scroll_offset),
+            theme.muted(),
+        )]);
+        f.render_widget(
+            Paragraph::new(scroll_indicator).alignment(ratatui::layout::Alignment::Center),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
         y += 1;
     } else {
         y += 1;
@@ -1043,18 +1272,24 @@ fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect
     for i in start_field..end_field {
         if let Some((label, value, focused)) = fields.get(i) {
             // Render label
-            let label_line = Line::from(vec![
-                Span::styled(*label, theme.muted()),
-            ]);
-            f.render_widget(Paragraph::new(label_line), Rect::new(inner.x + 2, y, inner.width - 4, 1));
+            let label_line = Line::from(vec![Span::styled(*label, theme.muted())]);
+            f.render_widget(
+                Paragraph::new(label_line),
+                Rect::new(inner.x + 2, y, inner.width - 4, 1),
+            );
             y += 1;
 
             // Render value
-            let value_style = if *focused { theme.selected() } else { theme.normal() };
-            let value_line = Line::from(vec![
-                Span::styled(format!(" {} ", value), value_style),
-            ]);
-            f.render_widget(Paragraph::new(value_line), Rect::new(inner.x + 2, y, inner.width - 4, 1));
+            let value_style = if *focused {
+                theme.selected()
+            } else {
+                theme.normal()
+            };
+            let value_line = Line::from(vec![Span::styled(format!(" {} ", value), value_style)]);
+            f.render_widget(
+                Paragraph::new(value_line),
+                Rect::new(inner.x + 2, y, inner.width - 4, 1),
+            );
             y += 1;
 
             // Add spacing
@@ -1074,23 +1309,34 @@ fn render_form_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, area: Rect
             .wrap(ratatui::widgets::Wrap { trim: true })
             .style(theme.normal());
 
-        f.render_widget(error_para, Rect::new(inner.x + 2, error_y, inner.width - 4, error_lines as u16));
+        f.render_widget(
+            error_para,
+            Rect::new(inner.x + 2, error_y, inner.width - 4, error_lines as u16),
+        );
     }
 
     // Show scroll indicator at bottom if there are more fields below
     let remaining_below = fields.len().saturating_sub(end_field);
     if remaining_below > 0 && error.is_none() {
         // Only show scroll indicator if no error (error takes priority for bottom space)
-        let scroll_indicator = Line::from(vec![
-            Span::styled(format!("  ▼ {} more below  ", remaining_below), theme.muted()),
-        ]);
-        f.render_widget(Paragraph::new(scroll_indicator).alignment(ratatui::layout::Alignment::Center),
-                       Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
+        let scroll_indicator = Line::from(vec![Span::styled(
+            format!("  ▼ {} more below  ", remaining_below),
+            theme.muted(),
+        )]);
+        f.render_widget(
+            Paragraph::new(scroll_indicator).alignment(ratatui::layout::Alignment::Center),
+            Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+        );
     }
 }
 
 /// Render selection modal for language or timezone
-fn render_selection_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state: &mut UsersViewState, area: Rect) {
+fn render_selection_modal(
+    f: &mut Frame,
+    theme: &crate::tui::theme::Theme,
+    state: &mut UsersViewState,
+    area: Rect,
+) {
     let popup_area = centered_rect(50, 60, area);
 
     f.render_widget(Clear, popup_area);
@@ -1114,9 +1360,7 @@ fn render_selection_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state
         // Language selection
         let items: Vec<ListItem> = LANGUAGES
             .iter()
-            .map(|(code, name)| {
-                ListItem::new(format!("{} - {}", code, name))
-            })
+            .map(|(code, name)| ListItem::new(format!("{} - {}", code, name)))
             .collect();
 
         let list = List::new(items)
@@ -1126,10 +1370,7 @@ fn render_selection_modal(f: &mut Frame, theme: &crate::tui::theme::Theme, state
         f.render_stateful_widget(list, inner, &mut state.language_list_state);
     } else if state.focused_field == 12 {
         // Timezone selection
-        let items: Vec<ListItem> = TIMEZONES
-            .iter()
-            .map(|tz| ListItem::new(*tz))
-            .collect();
+        let items: Vec<ListItem> = TIMEZONES.iter().map(|tz| ListItem::new(*tz)).collect();
 
         let list = List::new(items)
             .highlight_style(theme.selected())
@@ -1167,11 +1408,13 @@ pub async fn handle_user_action(
     event: &crate::tui::event::Event,
 ) -> bool {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    
+
     // Check if we're in selection mode first (highest priority)
     if state.in_selection_mode {
         match event {
-            crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
+            crate::tui::event::Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) => {
                 match code {
                     KeyCode::Up if *modifiers == KeyModifiers::NONE => {
                         state.selection_previous();
@@ -1199,7 +1442,9 @@ pub async fn handle_user_action(
     // Check if we're in a modal
     if state.modal != UserModal::None {
         match event {
-            crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
+            crate::tui::event::Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) => {
                 match code {
                     KeyCode::Esc if *modifiers == KeyModifiers::NONE => {
                         state.close_modal();
@@ -1242,7 +1487,9 @@ pub async fn handle_user_action(
                         }
                         return true;
                     }
-                    KeyCode::Char(' ') if *modifiers == KeyModifiers::NONE && state.is_selection_field() => {
+                    KeyCode::Char(' ')
+                        if *modifiers == KeyModifiers::NONE && state.is_selection_field() =>
+                    {
                         // Open selection mode for language/timezone fields when Space is pressed
                         state.open_selection_mode();
                         return true;
@@ -1255,7 +1502,9 @@ pub async fn handle_user_action(
                             UserModal::SetDigestPassword => {
                                 // Handle digest password input
                                 let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
-                                if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
+                                if let Some(req) = tui_input::backend::crossterm::to_input_request(
+                                    &crossterm::event::Event::Key(key_event),
+                                ) {
                                     state.input_digest_password.handle(req);
                                 }
                             }
@@ -1265,8 +1514,13 @@ pub async fn handle_user_action(
                                     state.open_selection_mode();
                                 } else {
                                     // Handle regular form input for non-selection fields
-                                    let key_event = crossterm::event::KeyEvent::new(*code, *modifiers);
-                                    if let Some(req) = tui_input::backend::crossterm::to_input_request(&crossterm::event::Event::Key(key_event)) {
+                                    let key_event =
+                                        crossterm::event::KeyEvent::new(*code, *modifiers);
+                                    if let Some(req) =
+                                        tui_input::backend::crossterm::to_input_request(
+                                            &crossterm::event::Event::Key(key_event),
+                                        )
+                                    {
                                         state.focused_input().handle(req);
                                     }
                                 }
@@ -1280,7 +1534,7 @@ pub async fn handle_user_action(
             _ => return true,
         }
     }
-    
+
     false
 }
 
@@ -1296,7 +1550,13 @@ async fn create_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
     }
 
     // Helper function to convert empty strings to None
-    let optional = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+    let optional = |s: &str| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    };
 
     let request = CreateUserRequest {
         username,
@@ -1304,7 +1564,7 @@ async fn create_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
         display_name: optional(&display_name),
         tenant_id: None,
         enabled: Some(state.input_enabled),
-        role: None, // TODO: Add role input field to TUI
+        role: None,          // TODO: Add role input field to TUI
         department_id: None, // TODO: Add department_id input field to TUI
         // Enterprise fields
         email: optional(state.input_email.value()),
@@ -1342,7 +1602,13 @@ async fn update_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
     let pin = state.input_pin.value().to_string();
 
     // Helper function to convert empty strings to None
-    let optional = |s: &str| if s.is_empty() { None } else { Some(s.to_string()) };
+    let optional = |s: &str| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    };
 
     let request = UpdateUserRequest {
         display_name: optional(&display_name),
@@ -1362,16 +1628,16 @@ async fn update_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
         emergency_contact_name: optional(state.input_emergency_contact_name.value()),
         emergency_contact_phone: optional(state.input_emergency_contact_phone.value()),
     };
-    
+
     match api_client.update_user(&username, &request).await {
         Ok(_) => {
             // Update password if provided
             if !password.is_empty() {
-                let _ = api_client.update_password(&username, &crate::api::UpdatePasswordRequest {
-                    password,
-                }).await;
+                let _ = api_client
+                    .update_password(&username, &crate::api::UpdatePasswordRequest { password })
+                    .await;
             }
-            
+
             state.close_modal();
             // Refresh user list
             fetch_users(api_client, state).await;
@@ -1386,7 +1652,7 @@ async fn update_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
 async fn delete_user(api_client: &crate::api::ApiClient, state: &mut UsersViewState) {
     if let Some(user) = state.selected_user() {
         let username = user.username.clone();
-        
+
         match api_client.delete_user(&username).await {
             Ok(_) => {
                 state.close_modal();
@@ -1411,7 +1677,10 @@ async fn set_digest_password(api_client: &crate::api::ApiClient, state: &mut Use
             return;
         }
 
-        match api_client.set_digest_password(&username, &digest_password).await {
+        match api_client
+            .set_digest_password(&username, &digest_password)
+            .await
+        {
             Ok(_) => {
                 state.close_modal();
                 // Refresh user list

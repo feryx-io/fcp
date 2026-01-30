@@ -455,7 +455,8 @@ mod system_time_as_string {
         D: Deserializer<'de>,
     {
         let ts = TimeStamp::deserialize(deserializer)?;
-        Ok(SystemTime::UNIX_EPOCH + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch))
+        Ok(SystemTime::UNIX_EPOCH
+            + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch))
     }
 }
 
@@ -490,6 +491,9 @@ mod optional_system_time_as_string {
         D: Deserializer<'de>,
     {
         let ts_opt = Option::<TimeStamp>::deserialize(deserializer)?;
-        Ok(ts_opt.map(|ts| SystemTime::UNIX_EPOCH + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch)))
+        Ok(ts_opt.map(|ts| {
+            SystemTime::UNIX_EPOCH
+                + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch)
+        }))
     }
 }

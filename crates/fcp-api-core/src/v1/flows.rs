@@ -29,7 +29,7 @@ pub struct FlowResponse {
     pub description: Option<String>,
     pub version: u32,
     pub initial_node: String,
-    pub nodes: serde_json::Value, // FlowNode map as JSON
+    pub nodes: serde_json::Value,     // FlowNode map as JSON
     pub variables: serde_json::Value, // Variables map as JSON
     pub tenant_id: Option<String>,
     pub enabled: bool,
@@ -42,7 +42,8 @@ impl From<FlowDefinition> for FlowResponse {
     fn from(flow: FlowDefinition) -> Self {
         // Serialize nodes and variables to JSON
         let nodes = serde_json::to_value(&flow.nodes).unwrap_or_else(|_| serde_json::json!({}));
-        let variables = serde_json::to_value(&flow.variables).unwrap_or_else(|_| serde_json::json!({}));
+        let variables =
+            serde_json::to_value(&flow.variables).unwrap_or_else(|_| serde_json::json!({}));
 
         // Convert timestamps to ISO 8601
         let created_at = flow.created_at.map(|t| t.to_rfc3339());
@@ -173,7 +174,8 @@ pub async fn list_flows(
     };
 
     // Execute query
-    let result = store.query_flows(&query)
+    let result = store
+        .query_flows(&query)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to query flows: {}", e)))?;
 
@@ -199,7 +201,8 @@ pub async fn get_flow(
 
     let store = get_flow_store(&state)?;
 
-    let flow = store.get_flow(&id)
+    let flow = store
+        .get_flow(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get flow: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))?;
@@ -242,7 +245,8 @@ pub async fn create_flow(
     };
 
     // Insert flow
-    store.insert_flow(flow.clone())
+    store
+        .insert_flow(flow.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create flow: {}", e)))?;
 
@@ -264,7 +268,8 @@ pub async fn update_flow(
     let store = get_flow_store(&state)?;
 
     // Get existing flow
-    let mut flow = store.get_flow(&id)
+    let mut flow = store
+        .get_flow(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get flow: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))?;
@@ -295,7 +300,8 @@ pub async fn update_flow(
     }
 
     // Update flow (increments version)
-    store.update_flow(flow.clone())
+    store
+        .update_flow(flow.clone())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update flow: {}", e)))?;
 
@@ -315,7 +321,8 @@ pub async fn delete_flow(
 
     let store = get_flow_store(&state)?;
 
-    store.delete_flow(&id)
+    store
+        .delete_flow(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete flow: {}", e)))?;
 
@@ -338,7 +345,8 @@ pub async fn list_flow_versions(
 
     let store = get_flow_store(&state)?;
 
-    let versions = store.list_flow_versions(&id)
+    let versions = store
+        .list_flow_versions(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list flow versions: {}", e)))?;
 

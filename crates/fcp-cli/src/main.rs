@@ -731,9 +731,9 @@ fn resolve_context(cli: &Cli, config: &config::Config) -> Result<config::Resolve
     }
 
     // Use current context from config
-    let context = config
-        .current()
-        .ok_or_else(|| anyhow::anyhow!("No current context configured. Use 'fcp context add' to add one."))?;
+    let context = config.current().ok_or_else(|| {
+        anyhow::anyhow!("No current context configured. Use 'fcp context add' to add one.")
+    })?;
 
     Ok(config::ResolvedContext {
         name: context.name.clone(),

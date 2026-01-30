@@ -115,11 +115,15 @@ impl CallInfo {
             id: call.id.to_string(),
             state: format!("{:?}", call.state),
             from_uri: call.a_leg.remote_uri.clone(),
-            to_uri: call.b_leg.as_ref()
+            to_uri: call
+                .b_leg
+                .as_ref()
                 .map(|leg| leg.remote_uri.clone())
                 .unwrap_or_else(|| call.callee().unwrap_or("").to_string()),
             from_display_name: call.a_leg.remote_display_name.clone(),
-            to_display_name: call.b_leg.as_ref()
+            to_display_name: call
+                .b_leg
+                .as_ref()
                 .and_then(|leg| leg.remote_display_name.clone()),
             created_at: format!("{:?}", call.created_at),
             established_at: call.established_at.map(|t| format!("{:?}", t)),
@@ -136,10 +140,7 @@ impl CallInfo {
 pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let calls = state.call_manager.active_calls();
 
-    let call_infos: Vec<CallInfo> = calls
-        .iter()
-        .map(CallInfo::from_call)
-        .collect();
+    let call_infos: Vec<CallInfo> = calls.iter().map(CallInfo::from_call).collect();
 
     Ok(Json(call_infos))
 }
@@ -184,7 +185,9 @@ pub async fn originate_call(
     // TODO: Implement call origination
     // This requires the SIP handler to expose a method to initiate outbound calls
     // For now, return "not implemented"
-    Err(ApiError::NotFound("Call origination not yet implemented - requires handler enhancement".into()))
+    Err(ApiError::NotFound(
+        "Call origination not yet implemented - requires handler enhancement".into(),
+    ))
 }
 
 /// DELETE /v1/calls/:call_id

@@ -208,7 +208,9 @@ pub mod embedded {
 
     /// Parse remote RTP endpoint from SDP
     /// Extracts IP from c= line and port from m=audio line
-    fn parse_remote_endpoint_from_sdp(sdp: &str) -> std::result::Result<std::net::SocketAddr, String> {
+    fn parse_remote_endpoint_from_sdp(
+        sdp: &str,
+    ) -> std::result::Result<std::net::SocketAddr, String> {
         use std::net::IpAddr;
 
         let mut ip: Option<IpAddr> = None;
@@ -286,7 +288,9 @@ pub mod embedded {
             let session_manager = SessionManager::new(manager_config, Some(event_bus));
 
             // Initialize PlaybackManager for audio injection (with session_manager reference)
-            let playback_manager = Arc::new(PlaybackManager::new_with_session_manager(session_manager.clone()));
+            let playback_manager = Arc::new(PlaybackManager::new_with_session_manager(
+                session_manager.clone(),
+            ));
 
             // Determine the IP address to advertise in SDP
             let advertise_ip = if let Some(ref public_ip) = config.public_ip {
@@ -298,7 +302,10 @@ pub mod embedded {
                 "127.0.0.1".to_string()
             };
 
-            info!("Embedded media backend initialized, advertise_ip: {}", advertise_ip);
+            info!(
+                "Embedded media backend initialized, advertise_ip: {}",
+                advertise_ip
+            );
 
             Ok(Self {
                 session_manager,
@@ -841,9 +848,13 @@ pub mod embedded {
             );
 
             // Get both sessions
-            let _a_leg_session = self.sessions.get(a_leg_call_id)
+            let _a_leg_session = self
+                .sessions
+                .get(a_leg_call_id)
                 .ok_or_else(|| Error::SessionNotFound(a_leg_call_id.to_string()))?;
-            let _b_leg_session = self.sessions.get(b_leg_call_id)
+            let _b_leg_session = self
+                .sessions
+                .get(b_leg_call_id)
                 .ok_or_else(|| Error::SessionNotFound(b_leg_call_id.to_string()))?;
 
             // TODO: Phase 3.1 - Implement actual RTP forwarding via forge-media
@@ -874,7 +885,11 @@ pub mod embedded {
             Ok(())
         }
 
-        async fn unbridge_calls(&self, a_leg_call_id: &CallId, b_leg_call_id: &CallId) -> Result<()> {
+        async fn unbridge_calls(
+            &self,
+            a_leg_call_id: &CallId,
+            b_leg_call_id: &CallId,
+        ) -> Result<()> {
             info!(
                 a_leg = %a_leg_call_id,
                 b_leg = %b_leg_call_id,
@@ -906,7 +921,11 @@ pub mod embedded {
 
     /// Generate a simple SDP for testing
     /// TODO: Use forge-sdp for proper SDP generation
-    fn generate_simple_sdp(session_info: &SessionInfo, _remote_sdp: &str, advertise_ip: &str) -> Result<String> {
+    fn generate_simple_sdp(
+        session_info: &SessionInfo,
+        _remote_sdp: &str,
+        advertise_ip: &str,
+    ) -> Result<String> {
         let ports = session_info.forge_session.ports();
 
         let sdp = format!(
@@ -1220,13 +1239,21 @@ pub mod remote {
             todo!("Implement remote playback completion waiting")
         }
 
-        async fn bridge_calls(&self, _a_leg_call_id: &CallId, _b_leg_call_id: &CallId) -> Result<()> {
+        async fn bridge_calls(
+            &self,
+            _a_leg_call_id: &CallId,
+            _b_leg_call_id: &CallId,
+        ) -> Result<()> {
             // POST /v1/bridge
             // Body: { "a_leg": "call-id-1", "b_leg": "call-id-2" }
             todo!("Implement remote call bridging")
         }
 
-        async fn unbridge_calls(&self, _a_leg_call_id: &CallId, _b_leg_call_id: &CallId) -> Result<()> {
+        async fn unbridge_calls(
+            &self,
+            _a_leg_call_id: &CallId,
+            _b_leg_call_id: &CallId,
+        ) -> Result<()> {
             // DELETE /v1/bridge
             // Body: { "a_leg": "call-id-1", "b_leg": "call-id-2" }
             todo!("Implement remote call unbridging")

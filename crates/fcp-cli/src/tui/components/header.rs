@@ -41,7 +41,11 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     ]);
 
     let status = Paragraph::new(status_line)
-        .block(Block::default().borders(Borders::ALL).border_style(app.theme.border()))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.border()),
+        )
         .alignment(Alignment::Left);
 
     f.render_widget(status, area);
@@ -52,10 +56,7 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
     // Get only tabs accessible to current user
     let accessible_tabs = app.accessible_tabs();
 
-    let tab_titles: Vec<_> = accessible_tabs
-        .iter()
-        .map(|t| t.title())
-        .collect();
+    let tab_titles: Vec<_> = accessible_tabs.iter().map(|t| t.title()).collect();
 
     let selected_idx = accessible_tabs
         .iter()
@@ -63,7 +64,11 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(0);
 
     let tabs = Tabs::new(tab_titles)
-        .block(Block::default().borders(Borders::ALL).border_style(app.theme.border()))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.border()),
+        )
         .select(selected_idx)
         .style(app.theme.normal())
         .highlight_style(app.theme.selected());

@@ -35,6 +35,7 @@ sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
 sip-ratelimit = { path = "../../external/siphon-rs/crates/sip-ratelimit" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
+sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 
 # HTTP API
 axum = "0.7"

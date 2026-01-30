@@ -33,13 +33,17 @@ impl RateLimitEntry {
             return Ok(());
         }
         if self.max_requests == 0 {
-            return Err(format!("{context}: max_requests must be greater than zero when enabled"));
+            return Err(format!(
+                "{context}: max_requests must be greater than zero when enabled"
+            ));
         }
         if self.max_requests > 1_000_000 {
             return Err(format!("{context}: max_requests must not exceed 1,000,000"));
         }
         if self.window_secs == 0 {
-            return Err(format!("{context}: window_secs must be greater than zero when enabled"));
+            return Err(format!(
+                "{context}: window_secs must be greater than zero when enabled"
+            ));
         }
         if self.window_secs > 86_400 {
             return Err(format!("{context}: window_secs must not exceed 86,400"));

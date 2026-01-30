@@ -1,13 +1,13 @@
 //! Phone number management API endpoints.
 
 use crate::{error::ApiError, state::ApiState};
-use fcp_core::storage::PhoneNumberStore;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use fcp_core::storage::PhoneNumberStore;
 use fcp_core::{E911Address, PhoneNumber, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -235,10 +235,7 @@ pub async fn create_phone_number(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create phone number: {}", e)))?;
 
-    info!(
-        "Created phone number {} ({})",
-        number.id, number.e164
-    );
+    info!("Created phone number {} ({})", number.id, number.e164);
 
     Ok((StatusCode::CREATED, Json(PhoneNumberResponse::from(number))))
 }

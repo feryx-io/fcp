@@ -1,16 +1,16 @@
 //! Line binding management API endpoints.
 
 use crate::{error::ApiError, state::ApiState};
-use fcp_core::storage::LineBindingStore;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use fcp_core::storage::LineBindingStore;
 use fcp_core::{
-    BindingType, DeviceBinding, DeviceId, LineBinding, LineBindingId, PhoneNumberId,
-    RingStrategy, TenantId, UserId,
+    BindingType, DeviceBinding, DeviceId, LineBinding, LineBindingId, PhoneNumberId, RingStrategy,
+    TenantId, UserId,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -225,7 +225,10 @@ pub async fn create_line_binding(
         binding.id, binding.phone_number_id
     );
 
-    Ok((StatusCode::CREATED, Json(LineBindingResponse::from(binding))))
+    Ok((
+        StatusCode::CREATED,
+        Json(LineBindingResponse::from(binding)),
+    ))
 }
 
 /// Update line binding.
@@ -288,7 +291,10 @@ pub async fn update_line_binding(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update line binding: {}", e)))?;
 
-    info!("Updated line binding {} for phone number {}", binding.id, binding.phone_number_id);
+    info!(
+        "Updated line binding {} for phone number {}",
+        binding.id, binding.phone_number_id
+    );
 
     Ok(Json(binding.into()))
 }
@@ -326,10 +332,7 @@ fn parse_binding_type(s: &str) -> Result<BindingType, ApiError> {
         "paging" => Ok(BindingType::Paging),
         "fax" => Ok(BindingType::Fax),
         "emergency" => Ok(BindingType::Emergency),
-        _ => Err(ApiError::BadRequest(format!(
-            "Invalid binding type: {}",
-            s
-        ))),
+        _ => Err(ApiError::BadRequest(format!("Invalid binding type: {}", s))),
     }
 }
 

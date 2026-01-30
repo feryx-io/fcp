@@ -95,7 +95,8 @@ impl AdmissionController {
 
     /// Record that a registration was added.
     pub fn registration_added(&self) {
-        self.concurrent_registrations.fetch_add(1, Ordering::Relaxed);
+        self.concurrent_registrations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record that a registration was removed.

@@ -20,10 +20,14 @@ pub async fn handle(
             // Normalize AOR (add sip: prefix if missing)
             let normalized_aor = normalize_aor(&aor);
 
-            let registrations = client
-                .list_registrations(&normalized_aor)
-                .await
-                .context(format!("Failed to list registrations for '{}'", normalized_aor))?;
+            let registrations =
+                client
+                    .list_registrations(&normalized_aor)
+                    .await
+                    .context(format!(
+                        "Failed to list registrations for '{}'",
+                        normalized_aor
+                    ))?;
 
             match output_format {
                 OutputFormat::Table => {
@@ -36,12 +40,7 @@ pub async fn handle(
                     table
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
-                        .set_header(vec![
-                            "Contact",
-                            "User Agent",
-                            "Expires In",
-                            "Q-Value",
-                        ]);
+                        .set_header(vec!["Contact", "User Agent", "Expires In", "Q-Value"]);
 
                     for reg in &registrations {
                         let user_agent = reg.user_agent.as_deref().unwrap_or("-");
@@ -72,11 +71,7 @@ pub async fn handle(
             }
         }
 
-        RegistrationCommands::Delete {
-            aor,
-            contact,
-            yes,
-        } => {
+        RegistrationCommands::Delete { aor, contact, yes } => {
             // Normalize AOR (add sip: prefix if missing)
             let normalized_aor = normalize_aor(&aor);
 
@@ -182,7 +177,10 @@ mod tests {
     fn test_normalize_aor() {
         assert_eq!(normalize_aor("alice@example.com"), "sip:alice@example.com");
         assert_eq!(normalize_aor("sip:bob@example.com"), "sip:bob@example.com");
-        assert_eq!(normalize_aor("sips:charlie@example.com"), "sips:charlie@example.com");
+        assert_eq!(
+            normalize_aor("sips:charlie@example.com"),
+            "sips:charlie@example.com"
+        );
     }
 
     #[test]

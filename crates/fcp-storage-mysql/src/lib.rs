@@ -32,14 +32,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
-        CdrStore, CredentialStore, DeviceStore, ExtensionStore,
-        LineBindingStore, PhoneNumberStore, RegistrationStore, TenantStore,
+        CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
+        RegistrationStore, TenantStore,
     },
-    AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery,
-    Device, DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension,
-    ExtensionId, ExtensionTarget, HangupCause, HangupParty, LineBinding, LineBindingId,
-    MediaPreferences, NumberState, PhoneNumber, PhoneNumberId, Registration,
-    RegistrationState, RingStrategy, Tenant, TenantId, User, UserId,
+    AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
+    DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
+    HangupCause, HangupParty, LineBinding, LineBindingId, MediaPreferences, NumberState,
+    PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, Tenant, TenantId,
+    User, UserId,
 };
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{MySql, Pool, Row};
@@ -172,7 +172,10 @@ impl MysqlStorage {
     }
 
     /// Helper method to get device bindings for a line binding
-    async fn get_device_bindings(&self, line_binding_id: &LineBindingId) -> Result<Vec<DeviceBinding>> {
+    async fn get_device_bindings(
+        &self,
+        line_binding_id: &LineBindingId,
+    ) -> Result<Vec<DeviceBinding>> {
         let rows = sqlx::query(
             "SELECT line_binding_id, device_id, priority, line_appearance, shared_line, enabled
              FROM device_bindings
@@ -420,16 +423,21 @@ impl RegistrationStore for MysqlStorage {
 #[async_trait]
 impl CdrStore for MysqlStorage {
     async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
-        let disposition = serde_json::to_string(&cdr.disposition)?.trim_matches('"').to_string();
+        let disposition = serde_json::to_string(&cdr.disposition)?
+            .trim_matches('"')
+            .to_string();
         let hangup_cause = match cdr.hangup_cause {
             HangupCause::Other(code) => format!("other:{}", code),
             _ => serde_json::to_string(&cdr.hangup_cause)?
                 .trim_matches('"')
                 .to_string(),
         };
-        let hangup_party = cdr
-            .hangup_party
-            .map(|p| serde_json::to_string(&p).unwrap_or_default().trim_matches('"').to_string());
+        let hangup_party = cdr.hangup_party.map(|p| {
+            serde_json::to_string(&p)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string()
+        });
 
         let custom_data = cdr
             .custom_data
@@ -777,11 +785,16 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
     let last_login = last_login.map(datetime_to_system_time);
 
     // Parse account status
-    let account_status_str: String = row.try_get("account_status").unwrap_or_else(|_| "active".to_string());
-    let account_status = AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
+    let account_status_str: String = row
+        .try_get("account_status")
+        .unwrap_or_else(|_| "active".to_string());
+    let account_status =
+        AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
 
     // Parse role from database (defaults to EndUser if not found or invalid)
-    let role_str: String = row.try_get("role").unwrap_or_else(|_| "enduser".to_string());
+    let role_str: String = row
+        .try_get("role")
+        .unwrap_or_else(|_| "enduser".to_string());
     let role = parse_role(&role_str);
 
     // Parse emergency contact
@@ -807,7 +820,7 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
             .unwrap_or_else(|_| TenantId::nil()),
         enabled: row.get("enabled"),
-        role, // User role for RBAC
+        role,                                             // User role for RBAC
         department_id: row.try_get("department_id").ok(), // Department ID for scoping
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
@@ -821,8 +834,12 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         department: row.try_get("department").ok(),
         job_title: row.try_get("job_title").ok(),
         location: row.try_get("location").ok(),
-        language: row.try_get("language").unwrap_or_else(|_| "en-US".to_string()),
-        timezone: row.try_get("timezone").unwrap_or_else(|_| "UTC".to_string()),
+        language: row
+            .try_get("language")
+            .unwrap_or_else(|_| "en-US".to_string()),
+        timezone: row
+            .try_get("timezone")
+            .unwrap_or_else(|_| "UTC".to_string()),
         account_status,
         last_login,
         emergency_contact,
@@ -854,8 +871,7 @@ fn row_to_cdr(row: sqlx::mysql::MySqlRow) -> Result<CallDetailRecord> {
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
 
     let disposition_str: String = row.get("disposition");
-    let disposition: CallDisposition =
-        serde_json::from_str(&format!("\"{}\"", disposition_str))?;
+    let disposition: CallDisposition = serde_json::from_str(&format!("\"{}\"", disposition_str))?;
 
     let hangup_cause_str: String = row.get("hangup_cause");
     let hangup_cause = if hangup_cause_str.starts_with("other:") {
@@ -933,7 +949,6 @@ fn row_to_cdr(row: sqlx::mysql::MySqlRow) -> Result<CallDetailRecord> {
 // ============================================================================
 // Tests
 // ============================================================================
-
 
 // ============================================================================
 // Phone Number, Line Binding, Extension, and Device Store Implementations
@@ -1110,8 +1125,6 @@ impl PhoneNumberStore for MysqlStorage {
 // ============================================================================
 
 #[async_trait]
-
-
 #[async_trait]
 impl LineBindingStore for MysqlStorage {
     async fn get_line_binding(&self, id: &LineBindingId) -> Result<Option<LineBinding>> {
@@ -1212,10 +1225,7 @@ impl LineBindingStore for MysqlStorage {
         Ok(bindings)
     }
 
-    async fn list_line_bindings_by_device(
-        &self,
-        device_id: &DeviceId,
-    ) -> Result<Vec<LineBinding>> {
+    async fn list_line_bindings_by_device(&self, device_id: &DeviceId) -> Result<Vec<LineBinding>> {
         let rows = sqlx::query(
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
                     lb.no_answer_timeout_secs, lb.forward_on_busy, lb.forward_on_no_answer,
@@ -1310,8 +1320,6 @@ impl LineBindingStore for MysqlStorage {
         Ok(())
     }
 }
-
-
 
 #[async_trait]
 impl ExtensionStore for MysqlStorage {
@@ -1430,7 +1438,6 @@ impl ExtensionStore for MysqlStorage {
 // DeviceStore Implementation
 // ============================================================================
 
-
 fn row_to_phone_number(row: sqlx::mysql::MySqlRow) -> Result<PhoneNumber> {
     let id = PhoneNumberId::from_str(&row.get::<String, _>("id"))?;
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
@@ -1539,8 +1546,7 @@ fn row_to_line_binding(row: sqlx::mysql::MySqlRow) -> Result<LineBinding> {
         _ => RingStrategy::Simultaneous,
     };
 
-    let no_answer_timeout =
-        Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
+    let no_answer_timeout = Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
 
@@ -1574,13 +1580,15 @@ fn row_to_extension(row: sqlx::mysql::MySqlRow) -> Result<Extension> {
         "user" => ExtensionTarget::User(UserId::from_str(&target_id)?),
         "phone_number" => ExtensionTarget::PhoneNumber(PhoneNumberId::from_str(&target_id)?),
         "device" => ExtensionTarget::Device(DeviceId::from_str(&target_id)?),
-        "service" => {
-            ExtensionTarget::Service(fcp_core::ServiceId::from_str(&target_id).unwrap_or_else(
-                |_| fcp_core::ServiceId::new(),
-            ))
-        }
+        "service" => ExtensionTarget::Service(
+            fcp_core::ServiceId::from_str(&target_id)
+                .unwrap_or_else(|_| fcp_core::ServiceId::new()),
+        ),
         _ => {
-            return Err(anyhow::anyhow!("Unknown extension target type: {}", target_type));
+            return Err(anyhow::anyhow!(
+                "Unknown extension target type: {}",
+                target_type
+            ));
         }
     };
 
@@ -1788,7 +1796,9 @@ impl DeviceStore for MysqlStorage {
                 .map(|c| format!("{:?}", c))
                 .collect::<Vec<_>>(),
         )?;
-        let e911_override_json = device.e911_override.map(|a| serde_json::to_value(&a))
+        let e911_override_json = device
+            .e911_override
+            .map(|a| serde_json::to_value(&a))
             .transpose()?;
         let created_at = system_time_to_datetime(device.created_at);
         let updated_at = system_time_to_datetime(device.updated_at);

@@ -133,19 +133,18 @@ async fn main() -> Result<()> {
     let dialog_manager_ref = Arc::clone(dialog_service.manager());
 
     // 10. Create UAC for outbound calls (B-leg)
-    let uac = create_uac(
-        &config,
-        Arc::clone(&transaction_manager_ref),
-        dispatcher,
-    )
-    .await?;
+    let uac = create_uac(&config, Arc::clone(&transaction_manager_ref), dispatcher).await?;
 
     // 11. Create event bus (needed by registrar and call manager)
     let event_bus = Arc::new(InMemoryEventBus::new());
     info!("Event bus initialized (in-memory)");
 
     // 12. Create FcpRegistrar (with event publishing)
-    let registrar = create_registrar(&config, &dyn_storage, Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+    let registrar = create_registrar(
+        &config,
+        &dyn_storage,
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+    );
 
     // 13. Create routing service (if configured)
     let routing_service = if let Some(ref rules_file) = config.routing.rules_file {
@@ -234,11 +233,13 @@ async fn main() -> Result<()> {
         tls_key: None,
     };
 
-
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
     let mut listener = TransportListener::new(listener_config, handler_dyn);
-    listener.start().await.context("Failed to start transport listeners")?;
+    listener
+        .start()
+        .await
+        .context("Failed to start transport listeners")?;
 
     // 17. Spawn TCP response routing task
     let handler_clone = Arc::clone(&handler);
@@ -283,8 +284,7 @@ async fn main() -> Result<()> {
     });
 
     // 19. Spawn registration cleanup task
-    let cleanup_storage: Arc<dyn fcp_core::RegistrationStore> =
-        Arc::clone(&dyn_storage) as _;
+    let cleanup_storage: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(&dyn_storage) as _;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -394,10 +394,7 @@ async fn create_transport_dispatcher(
     let std_socket: std::net::UdpSocket = socket.into();
     let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
 
-    let dispatcher = RealTransportDispatcher::new_with_pool(
-        Some(Arc::new(udp_socket)),
-        tcp_pool,
-    );
+    let dispatcher = RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
 
     Ok(Arc::new(dispatcher))
 }
@@ -417,16 +414,22 @@ async fn create_uac(
         .context("Invalid UDP bind address")?;
 
     let local_addr = if let Some(ref local_ip) = config.sip.local_ip {
-        let port = if bind_addr.port() == 0 { 5060 } else { bind_addr.port() };
+        let port = if bind_addr.port() == 0 {
+            5060
+        } else {
+            bind_addr.port()
+        };
         format!("{}:{}", local_ip, port)
     } else {
-        let port = if bind_addr.port() == 0 { 5060 } else { bind_addr.port() };
+        let port = if bind_addr.port() == 0 {
+            5060
+        } else {
+            bind_addr.port()
+        };
         format!("{}:{}", bind_addr.ip(), port)
     };
 
-    let resolver = Arc::new(
-        SipResolver::from_system().context("Failed to create DNS resolver")?,
-    );
+    let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
 
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
@@ -499,7 +502,10 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
 
     info!(
         backend = manager.backend_name(),
-        rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        rtp_ports = format!(
+            "{}-{}",
+            config.media.rtp_port_start, config.media.rtp_port_end
+        ),
         "Media manager created"
     );
 
@@ -539,8 +545,8 @@ fn auto_detect_local_ip() -> Option<String> {
 fn init_tracing(config: &CallManagerConfig) {
     use tracing_subscriber::EnvFilter;
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     match config.logging.format.as_str() {
         "json" => {
@@ -571,10 +577,7 @@ fn init_tracing(config: &CallManagerConfig) {
 }
 
 /// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
-async fn run_event_forwarder(
-    event_bus: Arc<InMemoryEventBus>,
-    events_url: &str,
-) -> Result<()> {
+async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()

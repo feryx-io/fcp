@@ -17,8 +17,7 @@ pub struct JobQueue {
 impl JobQueue {
     /// Create a new job queue
     pub async fn new(redis_url: &str, queue_prefix: String) -> Result<Self> {
-        let client = Client::open(redis_url)
-            .context("Failed to create Redis client")?;
+        let client = Client::open(redis_url).context("Failed to create Redis client")?;
 
         let connection_manager = ConnectionManager::new(client.clone())
             .await
@@ -37,8 +36,7 @@ impl JobQueue {
     pub async fn enqueue(&self, job: Job) -> Result<()> {
         let job_id = job.id;
         let priority = job.priority;
-        let job_json = serde_json::to_string(&job)
-            .context("Failed to serialize job")?;
+        let job_json = serde_json::to_string(&job).context("Failed to serialize job")?;
 
         let queue_key = self.queue_key_for_priority(priority);
         let job_key = self.job_key(job_id);
@@ -93,14 +91,12 @@ impl JobQueue {
             let job_key = format!("{}:job:{}", self.queue_prefix, job_id_str);
 
             // Get job data
-            let job_json: Option<String> = conn
-                .get(&job_key)
-                .await
-                .context("Failed to get job data")?;
+            let job_json: Option<String> =
+                conn.get(&job_key).await.context("Failed to get job data")?;
 
             if let Some(json) = job_json {
-                let mut job: Job = serde_json::from_str(&json)
-                    .context("Failed to deserialize job")?;
+                let mut job: Job =
+                    serde_json::from_str(&json).context("Failed to deserialize job")?;
 
                 debug!(
                     job_id = %job.id,
@@ -124,8 +120,7 @@ impl JobQueue {
 
     /// Update job status
     pub async fn update_job(&self, job: &Job) -> Result<()> {
-        let job_json = serde_json::to_string(job)
-            .context("Failed to serialize job")?;
+        let job_json = serde_json::to_string(job).context("Failed to serialize job")?;
 
         let job_key = self.job_key(job.id);
 

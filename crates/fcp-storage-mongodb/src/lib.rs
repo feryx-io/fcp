@@ -266,9 +266,7 @@ impl MongodbStorage {
             IndexModel::builder()
                 .keys(doc! { "phone_number_id": 1 })
                 .build(),
-            IndexModel::builder()
-                .keys(doc! { "tenant_id": 1 })
-                .build(),
+            IndexModel::builder().keys(doc! { "tenant_id": 1 }).build(),
         ];
         self.line_bindings
             .create_indexes(line_bindings_indexes)
@@ -1475,7 +1473,10 @@ impl PhoneNumberStore for MongodbStorage {
 
 impl MongodbStorage {
     /// Get device bindings for a line binding
-    async fn get_device_bindings(&self, line_binding_id: &LineBindingId) -> Result<Vec<DeviceBinding>> {
+    async fn get_device_bindings(
+        &self,
+        line_binding_id: &LineBindingId,
+    ) -> Result<Vec<DeviceBinding>> {
         let filter = doc! {
             "line_binding_id": line_binding_id.to_string(),
         };
@@ -1566,11 +1567,10 @@ impl LineBindingStore for MongodbStorage {
             "phone_number_id": phone_number_id.to_string(),
         };
 
-        let doc = self
-            .line_bindings
-            .find_one(filter)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to query line binding by phone number: {}", e))?;
+        let doc =
+            self.line_bindings.find_one(filter).await.map_err(|e| {
+                anyhow::anyhow!("Failed to query line binding by phone number: {}", e)
+            })?;
 
         match doc {
             Some(doc) => {
@@ -1868,9 +1868,9 @@ impl ExtensionStore for MongodbStorage {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to iterate extensions cursor: {}", e))?
         {
-            let doc = cursor.deserialize_current().map_err(|e| {
-                anyhow::anyhow!("Failed to deserialize extension document: {}", e)
-            })?;
+            let doc = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize extension document: {}", e))?;
             extensions.push(document_to_extension(doc)?);
         }
 
@@ -2179,15 +2179,13 @@ fn document_to_phone_number(doc: Document) -> Result<PhoneNumber> {
         _ => NumberState::Unassigned,
     };
 
-    let e911_address = doc
-        .get("e911_address")
-        .and_then(|v| {
-            if v.as_null().is_some() {
-                None
-            } else {
-                bson::from_bson(v.clone()).ok()
-            }
-        });
+    let e911_address = doc.get("e911_address").and_then(|v| {
+        if v.as_null().is_some() {
+            None
+        } else {
+            bson::from_bson(v.clone()).ok()
+        }
+    });
 
     let allow_list: Vec<String> = doc
         .get("allow_list")
@@ -2338,9 +2336,7 @@ fn document_to_line_binding(doc: Document) -> Result<LineBinding> {
         _ => RingStrategy::Simultaneous,
     };
 
-    let no_answer_timeout_secs = doc
-        .get_i64("no_answer_timeout_secs")
-        .unwrap_or(30);
+    let no_answer_timeout_secs = doc.get_i64("no_answer_timeout_secs").unwrap_or(30);
     let no_answer_timeout = Duration::from_secs(no_answer_timeout_secs as u64);
 
     let created_at = doc
@@ -2380,13 +2376,9 @@ fn document_to_device_binding(doc: Document) -> Result<DeviceBinding> {
             .map_err(|_| anyhow::anyhow!("Missing device_id field"))?,
     )?;
 
-    let priority = doc
-        .get_i32("priority")
-        .unwrap_or(1) as u8;
+    let priority = doc.get_i32("priority").unwrap_or(1) as u8;
 
-    let line_appearance = doc
-        .get_i32("line_appearance")
-        .unwrap_or(1) as u8;
+    let line_appearance = doc.get_i32("line_appearance").unwrap_or(1) as u8;
 
     let shared_line = doc.get_bool("shared_line").unwrap_or(false);
     let enabled = doc.get_bool("enabled").unwrap_or(true);
@@ -2424,7 +2416,12 @@ fn document_to_extension(doc: Document) -> Result<Extension> {
         "service" => ExtensionTarget::Service(
             ServiceId::from_str(target_id).unwrap_or_else(|_| ServiceId::new()),
         ),
-        _ => return Err(anyhow::anyhow!("Unknown extension target type: {}", target_type)),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Unknown extension target type: {}",
+                target_type
+            ))
+        }
     };
 
     let created_at = doc
@@ -2519,15 +2516,13 @@ fn document_to_device(doc: Document) -> Result<Device> {
         })
         .collect();
 
-    let e911_override = doc
-        .get("e911_override")
-        .and_then(|v| {
-            if v.as_null().is_some() {
-                None
-            } else {
-                bson::from_bson(v.clone()).ok()
-            }
-        });
+    let e911_override = doc.get("e911_override").and_then(|v| {
+        if v.as_null().is_some() {
+            None
+        } else {
+            bson::from_bson(v.clone()).ok()
+        }
+    });
 
     let created_at = doc
         .get_datetime("created_at")

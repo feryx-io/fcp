@@ -32,10 +32,8 @@ impl RateLimiterState {
     /// Create a new rate limiter
     pub fn new(config: RateLimitConfig) -> Self {
         // Create quota: requests_per_minute requests per 60 seconds with burst
-        let quota = Quota::per_minute(
-            NonZeroU32::new(config.default_requests_per_minute).unwrap()
-        )
-        .allow_burst(NonZeroU32::new(config.burst_size).unwrap());
+        let quota = Quota::per_minute(NonZeroU32::new(config.default_requests_per_minute).unwrap())
+            .allow_burst(NonZeroU32::new(config.burst_size).unwrap());
 
         let limiter = Arc::new(RateLimiter::direct(quota));
 

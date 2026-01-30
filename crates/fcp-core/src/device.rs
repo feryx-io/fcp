@@ -336,10 +336,7 @@ mod tests {
 
     #[test]
     fn test_registration_state_display() {
-        assert_eq!(
-            RegistrationState::Unregistered.to_string(),
-            "unregistered"
-        );
+        assert_eq!(RegistrationState::Unregistered.to_string(), "unregistered");
         assert_eq!(RegistrationState::Registered.to_string(), "registered");
         assert_eq!(RegistrationState::Failed.to_string(), "failed");
         assert_eq!(RegistrationState::Expired.to_string(), "expired");

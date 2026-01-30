@@ -5,7 +5,9 @@ use axum::{extract::State, http::header, response::IntoResponse};
 
 /// GET /metrics
 /// Prometheus metrics endpoint
-pub async fn prometheus_metrics(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn prometheus_metrics(
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, ApiError> {
     // Collect metrics
     let mut buffer = String::new();
 
@@ -38,7 +40,10 @@ pub async fn prometheus_metrics(State(state): State<ApiState>) -> Result<impl In
 
     buffer.push_str("# HELP fcp_subscriptions_active Number of active subscriptions\n");
     buffer.push_str("# TYPE fcp_subscriptions_active gauge\n");
-    buffer.push_str(&format!("fcp_subscriptions_active {}\n", active_subscriptions));
+    buffer.push_str(&format!(
+        "fcp_subscriptions_active {}\n",
+        active_subscriptions
+    ));
 
     // Uptime metric
     let uptime = state.start_time.elapsed().as_secs();
@@ -56,7 +61,10 @@ pub async fn prometheus_metrics(State(state): State<ApiState>) -> Result<impl In
     let call_stats = state.call_manager.stats();
     buffer.push_str("# HELP fcp_calls_established Total established calls\n");
     buffer.push_str("# TYPE fcp_calls_established gauge\n");
-    buffer.push_str(&format!("fcp_calls_established {}\n", call_stats.established));
+    buffer.push_str(&format!(
+        "fcp_calls_established {}\n",
+        call_stats.established
+    ));
 
     buffer.push_str("# HELP fcp_calls_terminated Total terminated calls\n");
     buffer.push_str("# TYPE fcp_calls_terminated gauge\n");

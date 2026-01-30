@@ -88,10 +88,7 @@ pub fn router() -> Router<ApiState> {
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
         // Flow engine endpoints
-        .route(
-            "/flows",
-            get(flows::list_flows).post(flows::create_flow),
-        )
+        .route("/flows", get(flows::list_flows).post(flows::create_flow))
         .route(
             "/flows/:id",
             get(flows::get_flow)

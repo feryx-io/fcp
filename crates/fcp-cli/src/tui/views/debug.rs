@@ -1,6 +1,9 @@
 //! Debug view showing internal server state
 
-use crate::api::{DebugCallResponse, DebugSummaryResponse, DialogResponse, RateLimitResponse, SubscriptionResponse};
+use crate::api::{
+    DebugCallResponse, DebugSummaryResponse, DialogResponse, RateLimitResponse,
+    SubscriptionResponse,
+};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
@@ -228,9 +231,7 @@ fn render_summary(
     let summary_text = if let Some(summary) = &state.summary {
         vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Server State Overview", theme.title()),
-            ]),
+            Line::from(vec![Span::styled("Server State Overview", theme.title())]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Active Dialogs: ", theme.muted()),
@@ -266,10 +267,7 @@ fn render_summary(
     } else {
         vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "No debug data available",
-                theme.muted(),
-            )]),
+            Line::from(vec![Span::styled("No debug data available", theme.muted())]),
             Line::from(""),
             Line::from(vec![Span::styled("Press 'r' to refresh", theme.info())]),
         ]
@@ -296,10 +294,7 @@ fn render_dialogs(
     if state.dialogs.is_empty() {
         let text = vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "No active dialogs",
-                theme.muted(),
-            )]),
+            Line::from(vec![Span::styled("No active dialogs", theme.muted())]),
         ];
         let paragraph = Paragraph::new(text).block(
             Block::default()
@@ -311,9 +306,11 @@ fn render_dialogs(
         return;
     }
 
-    let header = Row::new(vec!["Call-ID", "State", "Local", "Remote", "L-CSeq", "R-CSeq"])
-        .style(theme.title())
-        .bottom_margin(1);
+    let header = Row::new(vec![
+        "Call-ID", "State", "Local", "Remote", "L-CSeq", "R-CSeq",
+    ])
+    .style(theme.title())
+    .bottom_margin(1);
 
     let rows: Vec<Row> = state
         .dialogs
@@ -370,10 +367,7 @@ fn render_subscriptions(
     if state.subscriptions.is_empty() {
         let text = vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "No active subscriptions",
-                theme.muted(),
-            )]),
+            Line::from(vec![Span::styled("No active subscriptions", theme.muted())]),
         ];
         let paragraph = Paragraph::new(text).block(
             Block::default()
@@ -448,10 +442,7 @@ fn render_rate_limits(
     if state.rate_limits.is_empty() {
         let text = vec![
             Line::from(""),
-            Line::from(vec![Span::styled(
-                "No rate limit entries",
-                theme.muted(),
-            )]),
+            Line::from(vec![Span::styled("No rate limit entries", theme.muted())]),
         ];
         let paragraph = Paragraph::new(text).block(
             Block::default()

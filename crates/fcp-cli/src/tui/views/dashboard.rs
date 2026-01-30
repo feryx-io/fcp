@@ -14,8 +14,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // Status section
-            Constraint::Min(10),     // Stats section
+            Constraint::Length(5), // Status section
+            Constraint::Min(10),   // Stats section
         ])
         .split(area);
 

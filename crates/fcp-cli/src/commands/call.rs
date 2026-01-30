@@ -17,10 +17,7 @@ pub async fn handle(
 
     match cmd {
         CallCommands::List => {
-            let calls = client
-                .list_calls()
-                .await
-                .context("Failed to list calls")?;
+            let calls = client.list_calls().await.context("Failed to list calls")?;
 
             match output_format {
                 OutputFormat::Table => {
@@ -33,14 +30,7 @@ pub async fn handle(
                     table
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
-                        .set_header(vec![
-                            "Call ID",
-                            "State",
-                            "From",
-                            "To",
-                            "Duration",
-                            "Media",
-                        ]);
+                        .set_header(vec!["Call ID", "State", "From", "To", "Duration", "Media"]);
 
                     for call in &calls {
                         let duration = match call.duration_seconds {
@@ -83,8 +73,14 @@ pub async fn handle(
                 OutputFormat::Table => {
                     println!("Call ID: {}", call.id);
                     println!("  State: {}", call.state);
-                    println!("  From: {}", format_party(&call.from_uri, &call.from_display_name));
-                    println!("  To: {}", format_party(&call.to_uri, &call.to_display_name));
+                    println!(
+                        "  From: {}",
+                        format_party(&call.from_uri, &call.from_display_name)
+                    );
+                    println!(
+                        "  To: {}",
+                        format_party(&call.to_uri, &call.to_display_name)
+                    );
                     println!("  Created: {}", call.created_at);
 
                     if let Some(established) = &call.established_at {
@@ -99,7 +95,10 @@ pub async fn handle(
                         println!("  Duration: {}", format_duration(duration));
                     }
 
-                    println!("  Media Anchored: {}", if call.media_anchored { "yes" } else { "no" });
+                    println!(
+                        "  Media Anchored: {}",
+                        if call.media_anchored { "yes" } else { "no" }
+                    );
 
                     if let Some(reason) = &call.failure_reason {
                         println!("  Failure Reason: {}", reason);
@@ -117,7 +116,10 @@ pub async fn handle(
         CallCommands::Hangup { call_id, yes } => {
             // Confirm hangup unless --yes was provided
             if !yes {
-                print!("Are you sure you want to hang up call '{}'? [y/N]: ", call_id);
+                print!(
+                    "Are you sure you want to hang up call '{}'? [y/N]: ",
+                    call_id
+                );
                 io::stdout().flush()?;
 
                 let mut input = String::new();
@@ -136,7 +138,10 @@ pub async fn handle(
 
             match output_format {
                 OutputFormat::Table => {
-                    println!("Call '{}' hung up successfully (status: {})", response.call_id, response.status);
+                    println!(
+                        "Call '{}' hung up successfully (status: {})",
+                        response.call_id, response.status
+                    );
                 }
                 OutputFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&response)?);
@@ -156,7 +161,9 @@ pub async fn handle(
             return Err(anyhow::anyhow!(
                 "Call origination not yet implemented in fcp-server.\n\
                  Planned parameters: from={}, to={}, display_name={:?}",
-                from, to, from_display_name
+                from,
+                to,
+                from_display_name
             ));
         }
     }

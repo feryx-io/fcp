@@ -1,6 +1,6 @@
 //! Line bindings view for managing phone number to device mappings
 
-use crate::api::{ApiClient, LineBindingResponse, PhoneNumberResponse, DeviceResponse};
+use crate::api::{ApiClient, DeviceResponse, LineBindingResponse, PhoneNumberResponse};
 use crate::tui::theme::Theme;
 use anyhow::Result;
 use ratatui::{
@@ -110,14 +110,20 @@ pub fn render(frame: &mut Frame, area: Rect, state: &LineBindingsViewState, them
 }
 
 /// Render the list of line bindings
-fn render_bindings_list(frame: &mut Frame, area: Rect, state: &LineBindingsViewState, theme: &Theme) {
+fn render_bindings_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LineBindingsViewState,
+    theme: &Theme,
+) {
     let items: Vec<ListItem> = state
         .bindings
         .iter()
         .enumerate()
         .map(|(idx, binding)| {
             // Get phone number for display
-            let phone_number = state.get_phone_number(&binding.phone_number_id)
+            let phone_number = state
+                .get_phone_number(&binding.phone_number_id)
                 .map(|p| p.e164.clone())
                 .unwrap_or_else(|| binding.phone_number_id.clone());
 
@@ -126,10 +132,7 @@ fn render_bindings_list(frame: &mut Frame, area: Rect, state: &LineBindingsViewS
 
             let content = format!(
                 "{} → {} ({}/{} devices)",
-                phone_number,
-                binding.binding_type,
-                enabled_count,
-                device_count
+                phone_number, binding.binding_type, enabled_count, device_count
             );
 
             let style = if idx == state.selected_index {
@@ -143,20 +146,24 @@ fn render_bindings_list(frame: &mut Frame, area: Rect, state: &LineBindingsViewS
         .collect();
 
     let title = format!(" Line Bindings ({}) ", state.bindings.len());
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(title)
-                .title_alignment(Alignment::Center)
-                .borders(Borders::ALL)
-                .border_style(theme.border()),
-        );
+    let list = List::new(items).block(
+        Block::default()
+            .title(title)
+            .title_alignment(Alignment::Center)
+            .borders(Borders::ALL)
+            .border_style(theme.border()),
+    );
 
     frame.render_widget(list, area);
 }
 
 /// Render details of the selected binding
-fn render_binding_details(frame: &mut Frame, area: Rect, state: &LineBindingsViewState, theme: &Theme) {
+fn render_binding_details(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LineBindingsViewState,
+    theme: &Theme,
+) {
     let selected = state.selected_binding();
 
     let mut lines = Vec::new();
@@ -206,7 +213,10 @@ fn render_binding_details(frame: &mut Frame, area: Rect, state: &LineBindingsVie
 
         lines.push(Line::from(vec![
             Span::styled("No Answer Timeout: ", theme.title()),
-            Span::styled(format!("{}s", binding.no_answer_timeout_secs), theme.normal()),
+            Span::styled(
+                format!("{}s", binding.no_answer_timeout_secs),
+                theme.normal(),
+            ),
         ]));
 
         lines.push(Line::from(""));
@@ -260,7 +270,14 @@ fn render_binding_details(frame: &mut Frame, area: Rect, state: &LineBindingsVie
                     Span::styled(device_binding.priority.to_string(), theme.normal()),
                     Span::styled(", Line: ", theme.muted()),
                     Span::styled(device_binding.line_appearance.to_string(), theme.normal()),
-                    Span::styled(if device_binding.shared_line { ", Shared" } else { "" }, theme.muted()),
+                    Span::styled(
+                        if device_binding.shared_line {
+                            ", Shared"
+                        } else {
+                            ""
+                        },
+                        theme.muted(),
+                    ),
                 ]));
 
                 if let Some(sip_uri) = &device.sip_uri {

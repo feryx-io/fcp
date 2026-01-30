@@ -101,8 +101,7 @@ async fn main() -> Result<()> {
     });
 
     // 10. Spawn registration cleanup task
-    let cleanup_storage: Arc<dyn fcp_core::RegistrationStore> =
-        Arc::clone(&dyn_storage) as _;
+    let cleanup_storage: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(&dyn_storage) as _;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
@@ -199,9 +198,7 @@ async fn handle_packet(
             return;
         }
 
-        let handle = transaction_mgr
-            .receive_request(req.clone(), ctx)
-            .await;
+        let handle = transaction_mgr.receive_request(req.clone(), ctx).await;
 
         let registrar = Arc::clone(registrar);
         tokio::spawn(async move {
@@ -236,8 +233,8 @@ async fn handle_packet(
 fn init_tracing(config: &RegistrarConfig) {
     use tracing_subscriber::EnvFilter;
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
 
     match config.logging.format.as_str() {
         "json" => {
@@ -268,10 +265,7 @@ fn init_tracing(config: &RegistrarConfig) {
 }
 
 /// Run the HTTP health/status server.
-async fn run_health_server(
-    bind_addr: std::net::SocketAddr,
-    state: Arc<AppState>,
-) -> Result<()> {
+async fn run_health_server(bind_addr: std::net::SocketAddr, state: Arc<AppState>) -> Result<()> {
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/status", get(status_handler))

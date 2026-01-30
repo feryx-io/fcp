@@ -155,9 +155,9 @@ pub struct InMemoryFlowStore {
     flows: Arc<RwLock<HashMap<String, Vec<FlowDefinition>>>>,
 }
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
 
 impl InMemoryFlowStore {
     /// Create a new in-memory flow store.
@@ -313,11 +313,7 @@ impl FlowStore for InMemoryFlowStore {
         let limit = query.limit;
 
         // Apply pagination
-        let paginated: Vec<_> = matching
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
+        let paginated: Vec<_> = matching.into_iter().skip(offset).take(limit).collect();
 
         Ok(FlowQueryResult::new(paginated, total, limit, offset))
     }

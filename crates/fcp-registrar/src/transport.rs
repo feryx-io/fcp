@@ -97,10 +97,7 @@ impl TransportDispatcher for RegistrarTransportDispatcher {
                 }
             }
             other => {
-                return Err(anyhow!(
-                    "Transport {:?} not supported by registrar",
-                    other
-                ));
+                return Err(anyhow!("Transport {:?} not supported by registrar", other));
             }
         }
 

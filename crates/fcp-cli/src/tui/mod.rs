@@ -107,7 +107,9 @@ fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::
             app.deployment_mode,
         ),
         Tab::Devices => views::devices::render(f, &app.theme, &mut app.devices_view, area),
-        Tab::LineBindings => views::line_bindings::render(f, area, &app.line_bindings_view, &app.theme),
+        Tab::LineBindings => {
+            views::line_bindings::render(f, area, &app.line_bindings_view, &app.theme)
+        }
         Tab::Calls => views::calls::render(f, &app.theme, &mut app.calls_view, area),
         Tab::Registrations => {
             views::registrations::render(f, &app.theme, &mut app.registrations_view, area)
@@ -117,13 +119,11 @@ fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::
 }
 
 /// Render a placeholder for views not yet implemented
-fn render_placeholder(
-    f: &mut ratatui::Frame,
-    app: &App,
-    area: ratatui::layout::Rect,
-    title: &str,
-) {
-    use ratatui::{text::{Line, Span}, widgets::{Block, Borders, Paragraph}};
+fn render_placeholder(f: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect, title: &str) {
+    use ratatui::{
+        text::{Line, Span},
+        widgets::{Block, Borders, Paragraph},
+    };
 
     let text = vec![
         Line::from(""),
@@ -154,32 +154,50 @@ fn render_placeholder(
 /// Handle an event
 async fn handle_event(app: &mut App, event: Event) -> Result<()> {
     // Handle user modal events first - if a modal is open, it gets ALL keyboard events
-    if app.active_tab == Tab::Users && app.users_view.modal != crate::tui::views::users::UserModal::None {
-        let handled = views::users::handle_user_action(&mut app.users_view, &app.api_client, &event).await;
+    if app.active_tab == Tab::Users
+        && app.users_view.modal != crate::tui::views::users::UserModal::None
+    {
+        let handled =
+            views::users::handle_user_action(&mut app.users_view, &app.api_client, &event).await;
         if handled {
             return Ok(());
         }
     }
 
     // Handle phone number modal events
-    if app.active_tab == Tab::PhoneNumbers && app.phone_numbers_view.modal != crate::tui::views::phone_numbers::PhoneNumberModal::None {
-        let handled = views::phone_numbers::handle_phone_number_action(&mut app.phone_numbers_view, &app.api_client, &event).await;
+    if app.active_tab == Tab::PhoneNumbers
+        && app.phone_numbers_view.modal != crate::tui::views::phone_numbers::PhoneNumberModal::None
+    {
+        let handled = views::phone_numbers::handle_phone_number_action(
+            &mut app.phone_numbers_view,
+            &app.api_client,
+            &event,
+        )
+        .await;
         if handled {
             return Ok(());
         }
     }
 
     // Handle device modal events
-    if app.active_tab == Tab::Devices && app.devices_view.modal != crate::tui::views::devices::DeviceModal::None {
-        let handled = views::devices::handle_device_action(&mut app.devices_view, &app.api_client, &event).await;
+    if app.active_tab == Tab::Devices
+        && app.devices_view.modal != crate::tui::views::devices::DeviceModal::None
+    {
+        let handled =
+            views::devices::handle_device_action(&mut app.devices_view, &app.api_client, &event)
+                .await;
         if handled {
             return Ok(());
         }
     }
 
     // Handle tenant modal events
-    if app.active_tab == Tab::Tenants && app.tenants_view.modal != crate::tui::views::tenants::TenantModal::None {
-        let handled = views::tenants::handle_tenant_action(&mut app.tenants_view, &app.api_client, &event).await;
+    if app.active_tab == Tab::Tenants
+        && app.tenants_view.modal != crate::tui::views::tenants::TenantModal::None
+    {
+        let handled =
+            views::tenants::handle_tenant_action(&mut app.tenants_view, &app.api_client, &event)
+                .await;
         if handled {
             return Ok(());
         }
@@ -189,13 +207,19 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         Event::Key(_) if event.is_quit() => {
             app.quit();
         }
-        Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
+        Event::Key(KeyEvent {
+            code: KeyCode::Esc, ..
+        }) => {
             // Escape dismisses errors
             if app.error.is_some() {
                 app.clear_error();
             }
         }
-        Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers: KeyModifiers::NONE, .. }) if matches!(c, '1'..='9') => {
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::NONE,
+            ..
+        }) if matches!(c, '1'..='9') => {
             // Number keys 1-9 jump directly to main tabs
             if let Some(tab) = Tab::from_index((c as usize) - ('1' as usize)) {
                 app.set_tab(tab);
@@ -307,37 +331,59 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         }
         Event::Key(_) => {
             // Only handle these keys if no modal is open (modal events handled at top of function)
-            if app.active_tab == Tab::Users && app.users_view.modal == crate::tui::views::users::UserModal::None {
+            if app.active_tab == Tab::Users
+                && app.users_view.modal == crate::tui::views::users::UserModal::None
+            {
                 match event {
-                    Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('a'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_create_users() {
                             app.users_view.open_add_modal();
                         } else {
                             app.set_error("Permission denied: Cannot create users".to_string());
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('e'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_edit_users() {
                             app.users_view.open_edit_modal();
                         } else {
                             app.set_error("Permission denied: Cannot edit users".to_string());
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('d'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_delete_users() {
                             app.users_view.open_delete_modal();
                         } else {
                             app.set_error("Permission denied: Cannot delete users".to_string());
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('s'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('s'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_set_passwords() {
                             app.users_view.open_set_digest_password_modal();
                         } else {
                             app.set_error("Permission denied: Cannot set passwords".to_string());
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('c'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_set_passwords() {
                             app.users_view.open_remove_digest_password_modal();
                         } else {
@@ -349,27 +395,48 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             }
 
             // Handle phone numbers actions
-            if app.active_tab == Tab::PhoneNumbers && app.phone_numbers_view.modal == crate::tui::views::phone_numbers::PhoneNumberModal::None {
+            if app.active_tab == Tab::PhoneNumbers
+                && app.phone_numbers_view.modal
+                    == crate::tui::views::phone_numbers::PhoneNumberModal::None
+            {
                 match event {
-                    Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('a'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_create_phone_numbers() {
                             app.phone_numbers_view.open_add_modal();
                         } else {
-                            app.set_error("Permission denied: Cannot create phone numbers".to_string());
+                            app.set_error(
+                                "Permission denied: Cannot create phone numbers".to_string(),
+                            );
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('e'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_edit_phone_numbers() {
                             app.phone_numbers_view.open_edit_modal();
                         } else {
-                            app.set_error("Permission denied: Cannot edit phone numbers".to_string());
+                            app.set_error(
+                                "Permission denied: Cannot edit phone numbers".to_string(),
+                            );
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('d'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_delete_phone_numbers() {
                             app.phone_numbers_view.open_delete_modal();
                         } else {
-                            app.set_error("Permission denied: Cannot delete phone numbers".to_string());
+                            app.set_error(
+                                "Permission denied: Cannot delete phone numbers".to_string(),
+                            );
                         }
                     }
                     _ => {}
@@ -379,13 +446,25 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             // Handle line bindings actions
             if app.active_tab == Tab::LineBindings {
                 match event {
-                    Event::Key(KeyEvent { code: KeyCode::Char('r'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('r'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
                             app.error = Some(format!("Failed to refresh line bindings: {}", e));
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
-                        if let Err(e) = app.line_bindings_view.delete_selected(&app.api_client).await {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('d'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
+                        if let Err(e) = app
+                            .line_bindings_view
+                            .delete_selected(&app.api_client)
+                            .await
+                        {
                             app.error = Some(format!("Failed to delete line binding: {}", e));
                         }
                     }
@@ -394,29 +473,50 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             }
 
             // Handle tenant actions
-            if app.active_tab == Tab::Tenants && app.tenants_view.modal == crate::tui::views::tenants::TenantModal::None {
+            if app.active_tab == Tab::Tenants
+                && app.tenants_view.modal == crate::tui::views::tenants::TenantModal::None
+            {
                 // Handle action keys (a, e, d, r) - navigation is handled earlier in the event loop
-                views::tenants::handle_tenant_action(&mut app.tenants_view, &app.api_client, &event).await;
+                views::tenants::handle_tenant_action(
+                    &mut app.tenants_view,
+                    &app.api_client,
+                    &event,
+                )
+                .await;
             }
 
             // Handle devices actions
-            if app.active_tab == Tab::Devices && app.devices_view.modal == crate::tui::views::devices::DeviceModal::None {
+            if app.active_tab == Tab::Devices
+                && app.devices_view.modal == crate::tui::views::devices::DeviceModal::None
+            {
                 match event {
-                    Event::Key(KeyEvent { code: KeyCode::Char('a'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('a'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_create_devices() {
                             app.devices_view.open_add_modal();
                         } else {
                             app.set_error("Permission denied: Cannot create devices".to_string());
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('e'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('e'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_edit_devices() {
                             app.devices_view.open_edit_modal();
                         } else {
                             app.set_error("Permission denied: Cannot edit devices".to_string());
                         }
                     }
-                    Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers: KeyModifiers::NONE, .. }) => {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('d'),
+                        modifiers: KeyModifiers::NONE,
+                        ..
+                    }) => {
                         if app.can_delete_devices() {
                             app.devices_view.open_delete_modal();
                         } else {
@@ -434,7 +534,12 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                 Tab::Calls => time_since > std::time::Duration::from_secs(2), // Fast refresh for live durations
                 Tab::Registrations => time_since > std::time::Duration::from_secs(3), // Medium refresh for expiration countdown
                 Tab::Debug => time_since > std::time::Duration::from_secs(4), // Debug refresh
-                Tab::Users | Tab::Tenants | Tab::PhoneNumbers | Tab::Devices | Tab::LineBindings | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
+                Tab::Users
+                | Tab::Tenants
+                | Tab::PhoneNumbers
+                | Tab::Devices
+                | Tab::LineBindings
+                | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
             };
 
             if should_refresh {
@@ -457,16 +562,17 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
                         .await;
                     }
                     Tab::Debug => {
-                        views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view)
-                            .await;
+                        views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view).await;
                     }
                     Tab::PhoneNumbers => {
-                        views::phone_numbers::fetch_phone_numbers(&app.api_client, &mut app.phone_numbers_view)
-                            .await;
+                        views::phone_numbers::fetch_phone_numbers(
+                            &app.api_client,
+                            &mut app.phone_numbers_view,
+                        )
+                        .await;
                     }
                     Tab::Devices => {
-                        views::devices::fetch_devices(&app.api_client, &mut app.devices_view)
-                            .await;
+                        views::devices::fetch_devices(&app.api_client, &mut app.devices_view).await;
                     }
                     Tab::LineBindings => {
                         if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
@@ -508,9 +614,7 @@ async fn check_and_load_tab_data(app: &mut App) {
         }
         Tab::Registrations => {
             // Load registrations if list is empty or not loading
-            if app.registrations_view.registrations.is_empty()
-                && !app.registrations_view.loading
-            {
+            if app.registrations_view.registrations.is_empty() && !app.registrations_view.loading {
                 views::registrations::fetch_registrations(
                     &app.api_client,
                     &mut app.registrations_view,
@@ -527,7 +631,11 @@ async fn check_and_load_tab_data(app: &mut App) {
         Tab::PhoneNumbers => {
             // Load phone numbers if list is empty or not loading
             if app.phone_numbers_view.phone_numbers.is_empty() && !app.phone_numbers_view.loading {
-                views::phone_numbers::fetch_phone_numbers(&app.api_client, &mut app.phone_numbers_view).await;
+                views::phone_numbers::fetch_phone_numbers(
+                    &app.api_client,
+                    &mut app.phone_numbers_view,
+                )
+                .await;
             }
         }
         Tab::Devices => {

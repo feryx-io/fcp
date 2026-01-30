@@ -42,8 +42,7 @@ async fn main() -> Result<()> {
     };
 
     // Build runtime with storage
-    let runtime = Runtime::builder()
-        .with_config(config);
+    let runtime = Runtime::builder().with_config(config);
 
     // Add storage if available
     let runtime = if let Some(storage) = storage {
@@ -52,10 +51,7 @@ async fn main() -> Result<()> {
         runtime
     };
 
-    let mut runtime = runtime
-        .build()
-        .await
-        .context("Failed to build runtime")?;
+    let mut runtime = runtime.build().await.context("Failed to build runtime")?;
 
     info!(node_id = %runtime.node_id(), "Runtime built successfully");
 

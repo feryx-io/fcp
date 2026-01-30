@@ -84,7 +84,9 @@ impl Default for DevicesViewState {
 impl DevicesViewState {
     /// Get currently selected device
     pub fn selected_device(&self) -> Option<&DeviceResponse> {
-        self.table_state.selected().and_then(|i| self.devices.get(i))
+        self.table_state
+            .selected()
+            .and_then(|i| self.devices.get(i))
     }
 
     /// Move selection up
@@ -196,7 +198,9 @@ impl DevicesViewState {
 
     /// Get selected user for owner assignment
     pub fn selected_user(&self) -> Option<&crate::api::UserResponse> {
-        self.user_table_state.selected().and_then(|i| self.users_list.get(i))
+        self.user_table_state
+            .selected()
+            .and_then(|i| self.users_list.get(i))
     }
 
     /// Move user selection up
@@ -439,7 +443,10 @@ fn render_details_panel(
                 }),
             ]),
             if let Some(ua) = &device.user_agent {
-                Line::from(vec![Span::styled("User Agent: ", theme.muted()), Span::raw(ua)])
+                Line::from(vec![
+                    Span::styled("User Agent: ", theme.muted()),
+                    Span::raw(ua),
+                ])
             } else {
                 Line::from("")
             },
@@ -509,36 +516,65 @@ fn render_add_modal(
         Line::from(vec![
             Span::styled("Device Name: ", theme.muted()),
             Span::raw(state.input_name.value()),
-            if name_focused { Span::raw(" █") } else { Span::raw("") },
+            if name_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(Span::styled("  (e.g., Alice Desk Phone)", theme.muted())),
         Line::from(""),
         Line::from(vec![
             Span::styled("Device Type: ", theme.muted()),
             Span::raw(state.input_device_type.value()),
-            if type_focused { Span::raw(" █") } else { Span::raw("") },
+            if type_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)", theme.muted())),
+        Line::from(Span::styled(
+            "  (desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)",
+            theme.muted(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Tenant ID: ", theme.muted()),
             Span::raw(state.input_tenant_id.value()),
-            if tenant_focused { Span::raw(" █") } else { Span::raw("") },
+            if tenant_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("MAC Address: ", theme.muted()),
             Span::raw(state.input_mac_address.value()),
-            if mac_focused { Span::raw(" █") } else { Span::raw("") },
+            if mac_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (Optional, e.g., 00:11:22:33:44:55)", theme.muted())),
+        Line::from(Span::styled(
+            "  (Optional, e.g., 00:11:22:33:44:55)",
+            theme.muted(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Model: ", theme.muted()),
             Span::raw(state.input_model.value()),
-            if model_focused { Span::raw(" █") } else { Span::raw("") },
+            if model_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (Optional, e.g., Yealink T46S)", theme.muted())),
+        Line::from(Span::styled(
+            "  (Optional, e.g., Yealink T46S)",
+            theme.muted(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Owner User ID: ", theme.muted()),
@@ -547,30 +583,42 @@ fn render_add_modal(
             } else {
                 state.input_owner_user_id.value()
             }),
-            if owner_focused { Span::raw(" █") } else { Span::raw("") },
+            if owner_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (Optional, Tab here and press 's' to select from user list)", theme.muted())),
+        Line::from(Span::styled(
+            "  (Optional, Tab here and press 's' to select from user list)",
+            theme.muted(),
+        )),
         Line::from(""),
-        Line::from(Span::styled("Enter to submit • Esc to cancel • Tab to navigate", theme.muted())),
+        Line::from(Span::styled(
+            "Enter to submit • Esc to cancel • Tab to navigate",
+            theme.muted(),
+        )),
     ];
 
     // Add error if present
     let lines = if let Some(err) = &state.error {
         let mut lines = lines;
         lines.insert(lines.len() - 1, Line::from(""));
-        lines.insert(lines.len() - 1, Line::from(Span::styled(err, theme.error())));
+        lines.insert(
+            lines.len() - 1,
+            Line::from(Span::styled(err, theme.error())),
+        );
         lines
     } else {
         lines
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Add Device")
-                .borders(Borders::ALL)
-                .border_style(theme.primary()),
-        );
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .title("Add Device")
+            .borders(Borders::ALL)
+            .border_style(theme.primary()),
+    );
 
     f.render_widget(paragraph, popup_area);
 }
@@ -605,36 +653,65 @@ fn render_edit_modal(
         Line::from(vec![
             Span::styled("Device Name: ", theme.muted()),
             Span::raw(state.input_name.value()),
-            if name_focused { Span::raw(" █") } else { Span::raw("") },
+            if name_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(Span::styled("  (e.g., Alice Desk Phone)", theme.muted())),
         Line::from(""),
         Line::from(vec![
             Span::styled("Device Type: ", theme.muted()),
             Span::raw(state.input_device_type.value()),
-            if type_focused { Span::raw(" █") } else { Span::raw("") },
+            if type_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)", theme.muted())),
+        Line::from(Span::styled(
+            "  (desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)",
+            theme.muted(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Tenant ID: ", theme.muted()),
             Span::raw(state.input_tenant_id.value()),
-            if tenant_focused { Span::raw(" █") } else { Span::raw("") },
+            if tenant_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("MAC Address: ", theme.muted()),
             Span::raw(state.input_mac_address.value()),
-            if mac_focused { Span::raw(" █") } else { Span::raw("") },
+            if mac_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (Optional, e.g., 00:11:22:33:44:55)", theme.muted())),
+        Line::from(Span::styled(
+            "  (Optional, e.g., 00:11:22:33:44:55)",
+            theme.muted(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Model: ", theme.muted()),
             Span::raw(state.input_model.value()),
-            if model_focused { Span::raw(" █") } else { Span::raw("") },
+            if model_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (Optional, e.g., Yealink T46S)", theme.muted())),
+        Line::from(Span::styled(
+            "  (Optional, e.g., Yealink T46S)",
+            theme.muted(),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled("Owner User ID: ", theme.muted()),
@@ -643,30 +720,42 @@ fn render_edit_modal(
             } else {
                 state.input_owner_user_id.value()
             }),
-            if owner_focused { Span::raw(" █") } else { Span::raw("") },
+            if owner_focused {
+                Span::raw(" █")
+            } else {
+                Span::raw("")
+            },
         ]),
-        Line::from(Span::styled("  (Optional, Tab here and press 's' to select from user list)", theme.muted())),
+        Line::from(Span::styled(
+            "  (Optional, Tab here and press 's' to select from user list)",
+            theme.muted(),
+        )),
         Line::from(""),
-        Line::from(Span::styled("Enter to submit • Esc to cancel • Tab to navigate", theme.muted())),
+        Line::from(Span::styled(
+            "Enter to submit • Esc to cancel • Tab to navigate",
+            theme.muted(),
+        )),
     ];
 
     // Add error if present
     let lines = if let Some(err) = &state.error {
         let mut lines = lines;
         lines.insert(lines.len() - 1, Line::from(""));
-        lines.insert(lines.len() - 1, Line::from(Span::styled(err, theme.error())));
+        lines.insert(
+            lines.len() - 1,
+            Line::from(Span::styled(err, theme.error())),
+        );
         lines
     } else {
         lines
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Edit Device")
-                .borders(Borders::ALL)
-                .border_style(theme.primary()),
-        );
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .title("Edit Device")
+            .borders(Borders::ALL)
+            .border_style(theme.primary()),
+    );
 
     f.render_widget(paragraph, popup_area);
 }
@@ -701,26 +790,31 @@ fn render_delete_modal(
             Span::raw("?"),
         ]),
         Line::from(""),
-        Line::from(Span::styled("Enter to confirm • Esc to cancel", theme.muted())),
+        Line::from(Span::styled(
+            "Enter to confirm • Esc to cancel",
+            theme.muted(),
+        )),
     ];
 
     // Add error if present
     let lines = if let Some(err) = &state.error {
         let mut lines = lines;
         lines.insert(lines.len() - 1, Line::from(""));
-        lines.insert(lines.len() - 1, Line::from(Span::styled(err, theme.error())));
+        lines.insert(
+            lines.len() - 1,
+            Line::from(Span::styled(err, theme.error())),
+        );
         lines
     } else {
         lines
     };
 
-    let paragraph = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title("Delete Device")
-                .borders(Borders::ALL)
-                .border_style(theme.error()),
-        );
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .title("Delete Device")
+            .borders(Borders::ALL)
+            .border_style(theme.error()),
+    );
 
     f.render_widget(paragraph, popup_area);
 }
@@ -754,7 +848,9 @@ fn render_select_owner_modal(
         .map(|user| {
             Row::new(vec![
                 user.username.clone(),
-                user.display_name.clone().unwrap_or_else(|| "(none)".to_string()),
+                user.display_name
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
                 user.email.clone().unwrap_or_else(|| "(none)".to_string()),
                 user.role.clone(),
             ])
@@ -857,7 +953,9 @@ pub async fn handle_device_action(
     }
 
     match event {
-        crate::tui::event::Event::Key(KeyEvent { code, modifiers, .. }) => {
+        crate::tui::event::Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) => {
             match code {
                 KeyCode::Esc if *modifiers == KeyModifiers::NONE => {
                     // If in SelectOwner modal, return to previous modal instead of closing
@@ -873,13 +971,15 @@ pub async fn handle_device_action(
                     return true;
                 }
                 KeyCode::Tab if *modifiers == KeyModifiers::NONE => {
-                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner {
+                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner
+                    {
                         state.focused_field = (state.focused_field + 1) % 6;
                     }
                     return true;
                 }
                 KeyCode::BackTab => {
-                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner {
+                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner
+                    {
                         state.focused_field = (state.focused_field + 5) % 6;
                     }
                     return true;
@@ -928,7 +1028,10 @@ pub async fn handle_device_action(
                 _ => {
                     // Special handling for 's' key on owner field (field 5)
                     if let KeyCode::Char('s') | KeyCode::Char('S') = code {
-                        if *modifiers == KeyModifiers::NONE && (state.modal == DeviceModal::Add || state.modal == DeviceModal::Edit) && state.focused_field == 5 {
+                        if *modifiers == KeyModifiers::NONE
+                            && (state.modal == DeviceModal::Add || state.modal == DeviceModal::Edit)
+                            && state.focused_field == 5
+                        {
                             // Open user selection modal
                             select_owner(api_client, state).await;
                             return true;
@@ -936,7 +1039,8 @@ pub async fn handle_device_action(
                     }
 
                     // Handle text input for the focused field (not for Delete modal or SelectOwner modal)
-                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner {
+                    if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner
+                    {
                         let input = match state.focused_field {
                             0 => &mut state.input_name,
                             1 => &mut state.input_device_type,
@@ -981,7 +1085,14 @@ pub async fn create_device(api_client: &crate::api::ApiClient, state: &mut Devic
     // Validate device type (must match server's parse_device_type expectations)
     if !matches!(
         device_type.as_str(),
-        "desk_phone" | "softphone" | "webrtc" | "conference_room" | "ata" | "gateway" | "mobile" | "other"
+        "desk_phone"
+            | "softphone"
+            | "webrtc"
+            | "conference_room"
+            | "ata"
+            | "gateway"
+            | "mobile"
+            | "other"
     ) {
         state.error = Some("Invalid device type (use: desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)".to_string());
         return;
@@ -1056,7 +1167,14 @@ pub async fn update_device(api_client: &crate::api::ApiClient, state: &mut Devic
     // Validate device type (must match server's parse_device_type expectations)
     if !matches!(
         device_type.as_str(),
-        "desk_phone" | "softphone" | "webrtc" | "conference_room" | "ata" | "gateway" | "mobile" | "other"
+        "desk_phone"
+            | "softphone"
+            | "webrtc"
+            | "conference_room"
+            | "ata"
+            | "gateway"
+            | "mobile"
+            | "other"
     ) {
         state.error = Some("Invalid device type (use: desk_phone, softphone, webrtc, conference_room, ata, gateway, mobile, other)".to_string());
         return;

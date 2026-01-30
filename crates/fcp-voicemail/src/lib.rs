@@ -15,11 +15,11 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use tracing::{debug, error, info, instrument, warn};
 
+use fcp_core::storage::VoicemailStore;
 use fcp_core::{
     CallId, GreetingType, LineBindingId, MessagePriority, MessageStatus, MwiStatus, TenantId,
     VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
 };
-use fcp_core::storage::VoicemailStore;
 use fcp_media::MediaManager;
 
 /// Configuration for the voicemail service.
@@ -152,11 +152,7 @@ impl VoicemailService {
         }
 
         // Generate recording file path
-        let recording_filename = format!(
-            "{}-{}.wav",
-            mailbox_id,
-            uuid::Uuid::new_v4()
-        );
+        let recording_filename = format!("{}-{}.wav", mailbox_id, uuid::Uuid::new_v4());
         let recording_path = self
             .config
             .recordings_dir
@@ -198,10 +194,7 @@ impl VoicemailService {
         // Calculate actual recording duration
         let duration = recording_start.elapsed().as_secs() as u32;
 
-        info!(
-            duration_secs = duration,
-            "Recording completed"
-        );
+        info!(duration_secs = duration, "Recording completed");
 
         // Create message record
         let message = VoicemailMessage {
@@ -254,7 +247,11 @@ impl VoicemailService {
         debug!("Retrieving messages for mailbox: {}", mailbox_id);
 
         let messages = match status {
-            Some(status) => self.storage.list_messages_by_status(mailbox_id, status).await?,
+            Some(status) => {
+                self.storage
+                    .list_messages_by_status(mailbox_id, status)
+                    .await?
+            }
             None => self.storage.list_messages(mailbox_id).await?,
         };
 
@@ -401,10 +398,9 @@ impl VoicemailService {
             Some(greeting) => &greeting.audio_path,
             None => {
                 // Fall back to system default greeting
-                self.config
-                    .default_greeting_path
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("No greeting available and no default configured"))?
+                self.config.default_greeting_path.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("No greeting available and no default configured")
+                })?
             }
         };
 

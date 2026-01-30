@@ -84,12 +84,7 @@ pub struct VoicemailMessage {
 
 impl VoicemailMessage {
     /// Creates a new voicemail message.
-    pub fn new(
-        mailbox_id: String,
-        caller: String,
-        duration: u32,
-        recording_path: PathBuf,
-    ) -> Self {
+    pub fn new(mailbox_id: String, caller: String, duration: u32, recording_path: PathBuf) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             mailbox_id,
@@ -272,31 +267,36 @@ impl VoicemailMailbox {
     /// Gets the appropriate greeting for the given scenario.
     pub fn get_greeting(&self, is_busy: bool) -> Option<&VoicemailGreeting> {
         // Check for temporary greeting first
-        if let Some(greeting) = self.greetings.iter().find(|g| {
-            g.greeting_type == GreetingType::Temporary && !g.is_expired()
-        }) {
+        if let Some(greeting) = self
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Temporary && !g.is_expired())
+        {
             return Some(greeting);
         }
 
         // Check for busy greeting if busy
         if is_busy {
-            if let Some(greeting) = self.greetings.iter().find(|g| {
-                g.greeting_type == GreetingType::Busy
-            }) {
+            if let Some(greeting) = self
+                .greetings
+                .iter()
+                .find(|g| g.greeting_type == GreetingType::Busy)
+            {
                 return Some(greeting);
             }
         }
 
         // Fall back to unavailable greeting
-        self.greetings.iter().find(|g| {
-            g.greeting_type == GreetingType::Unavailable
-        })
+        self.greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
     }
 
     /// Adds a greeting to this mailbox.
     pub fn add_greeting(&mut self, greeting: VoicemailGreeting) {
         // Remove existing greeting of the same type
-        self.greetings.retain(|g| g.greeting_type != greeting.greeting_type);
+        self.greetings
+            .retain(|g| g.greeting_type != greeting.greeting_type);
         self.greetings.push(greeting);
         self.updated_at = SystemTime::now();
     }
@@ -462,10 +462,7 @@ mod tests {
 
     #[test]
     fn test_mwi_status() {
-        let mut mwi = MwiStatus::new(
-            "mailbox-123".to_string(),
-            LineBindingId::new(),
-        );
+        let mut mwi = MwiStatus::new("mailbox-123".to_string(), LineBindingId::new());
 
         assert!(!mwi.has_messages());
 

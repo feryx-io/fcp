@@ -1,9 +1,9 @@
-//! SBC call lifecycle hooks.
+//! SBC event hooks (calls + registrations).
 //!
-//! Implements `EventPublisher` to wire B2BUA call events into the SBC's
-//! admission controller and runtime metrics. Passed to `CallManager::with_events()`
-//! so that `create_call()` / `terminate_call()` automatically update concurrent
-//! call counts and outcome counters.
+//! Implements `EventPublisher` to wire B2BUA call events and registrar events
+//! into the SBC's admission controller and runtime metrics. Passed to
+//! `CallManager::with_events()` and the registrar so lifecycle changes
+//! automatically update concurrent counts and outcome counters.
 
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
@@ -13,20 +13,20 @@ use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};
 use std::sync::Arc;
 use tracing::debug;
 
-/// Bridges B2BUA call lifecycle events to SBC admission and metrics.
-pub struct SbcCallHooks {
+/// Bridges B2BUA + registrar events to SBC admission and metrics.
+pub struct SbcEventHooks {
     admission: Arc<AdmissionController>,
     metrics: Arc<SbcRuntimeMetrics>,
 }
 
-impl SbcCallHooks {
+impl SbcEventHooks {
     pub fn new(admission: Arc<AdmissionController>, metrics: Arc<SbcRuntimeMetrics>) -> Self {
         Self { admission, metrics }
     }
 }
 
 #[async_trait]
-impl EventPublisher for SbcCallHooks {
+impl EventPublisher for SbcEventHooks {
     async fn publish(&self, event: PlatformEvent) -> Result<()> {
         if let PlatformEvent::Call(ref call_event) = event {
             match call_event {

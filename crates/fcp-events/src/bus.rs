@@ -143,11 +143,7 @@ impl EventPublisher for InMemoryEventBus {
             }
         }
 
-        debug!(
-            sent,
-            failed,
-            "Event published to subscribers"
-        );
+        debug!(sent, failed, "Event published to subscribers");
 
         Ok(())
     }

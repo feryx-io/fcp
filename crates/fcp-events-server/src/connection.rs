@@ -56,7 +56,9 @@ impl Connection {
         }
 
         // Check if any subscription matches
-        self.subscriptions.iter().any(|filter| filter.matches(event))
+        self.subscriptions
+            .iter()
+            .any(|filter| filter.matches(event))
     }
 
     /// Update activity timestamp
@@ -201,11 +203,7 @@ impl ConnectionManager {
             }
         }
 
-        debug!(
-            send_count,
-            error_count,
-            "Published event to connections"
-        );
+        debug!(send_count, error_count, "Published event to connections");
     }
 
     /// Remove timed out connections
@@ -362,8 +360,8 @@ fn handle_client_message(
     conn_id: ConnectionId,
     manager: &ConnectionManager,
 ) -> Result<(), String> {
-    let msg: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    let msg: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     let msg_type = msg
         .get("type")

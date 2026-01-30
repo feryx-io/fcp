@@ -325,7 +325,12 @@ impl PhoneNumber {
                 (country_code, npa, nxx, line)
             } else {
                 // Short number, store everything as line
-                (country_code, String::new(), String::new(), remaining.to_string())
+                (
+                    country_code,
+                    String::new(),
+                    String::new(),
+                    remaining.to_string(),
+                )
             }
         };
 
@@ -641,7 +646,10 @@ mod tests {
 
     #[test]
     fn test_number_state_parsing() {
-        assert_eq!("active".parse::<NumberState>().unwrap(), NumberState::Active);
+        assert_eq!(
+            "active".parse::<NumberState>().unwrap(),
+            NumberState::Active
+        );
         assert_eq!(
             "unassigned".parse::<NumberState>().unwrap(),
             NumberState::Unassigned
@@ -654,7 +662,10 @@ mod tests {
             "quarantine".parse::<NumberState>().unwrap(),
             NumberState::Quarantine
         );
-        assert_eq!("ported".parse::<NumberState>().unwrap(), NumberState::Ported);
+        assert_eq!(
+            "ported".parse::<NumberState>().unwrap(),
+            NumberState::Ported
+        );
 
         assert!("invalid".parse::<NumberState>().is_err());
     }

@@ -56,7 +56,7 @@ pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrat
 pub use crate::permissions::{DeploymentMode, Permission, UserRole};
 pub use crate::phone_number::{E911Address, NumberState, PhoneNumber};
 pub use crate::porting::{
-    PortRequest, PortRequestId, PortRejectionReason, PortStatus, PortType, PortingManager,
+    PortRejectionReason, PortRequest, PortRequestId, PortStatus, PortType, PortingManager,
     PortingStore,
 };
 pub use crate::routing::{

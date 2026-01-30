@@ -97,7 +97,12 @@ mod tests {
     use super::*;
     use fcp_sbc_core::trunk::TrunkFailover;
 
-    fn make_trunk(name: &str, priority: u32, weight: u32, direction: TrunkDirection) -> TrunkConfig {
+    fn make_trunk(
+        name: &str,
+        priority: u32,
+        weight: u32,
+        direction: TrunkDirection,
+    ) -> TrunkConfig {
         TrunkConfig {
             name: name.into(),
             enabled: true,

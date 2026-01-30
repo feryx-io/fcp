@@ -177,12 +177,7 @@ pub struct InviteContext {
 
 impl InviteContext {
     /// Creates a new INVITE context.
-    pub fn new(
-        sip_call_id: String,
-        from_uri: String,
-        to_uri: String,
-        request_uri: String,
-    ) -> Self {
+    pub fn new(sip_call_id: String, from_uri: String, to_uri: String, request_uri: String) -> Self {
         Self {
             sip_call_id,
             from_uri: from_uri.clone(),
@@ -374,7 +369,10 @@ impl InviteHandler {
             }
 
             ForkResult::Failed { device_id, reason } => {
-                warn!("Call {} failed on device {}: {}", call_id, device_id, reason);
+                warn!(
+                    "Call {} failed on device {}: {}",
+                    call_id, device_id, reason
+                );
                 self.handle_no_answer(&call, &ctx, &routing_result).await
             }
 
@@ -523,10 +521,7 @@ impl InviteHandler {
                 current_time,
             ) {
                 let destination = rule.destination.to_string();
-                info!(
-                    "No answer, forwarding to {} (no-answer rule)",
-                    destination
-                );
+                info!("No answer, forwarding to {} (no-answer rule)", destination);
                 drop(forwarding_rules);
                 return self
                     .handle_forward(ctx.clone(), call.tenant_id, &destination)
@@ -570,7 +565,10 @@ impl InviteHandler {
         ctx.decrement_max_forwards()?;
 
         if ctx.max_forwards < 10 {
-            warn!("Potential forwarding loop detected (Max-Forwards: {})", ctx.max_forwards);
+            warn!(
+                "Potential forwarding loop detected (Max-Forwards: {})",
+                ctx.max_forwards
+            );
         }
 
         // Update called number to forwarding destination
@@ -606,16 +604,10 @@ pub enum InviteResponse {
     },
 
     /// Call is ringing (180 Ringing)
-    Ringing {
-        call_id: CallId,
-        contact: String,
-    },
+    Ringing { call_id: CallId, contact: String },
 
     /// Early media (183 Session Progress)
-    EarlyMedia {
-        call_id: CallId,
-        sdp_answer: String,
-    },
+    EarlyMedia { call_id: CallId, sdp_answer: String },
 
     /// Call forwarded/redirected (3xx)
     Redirect {
@@ -636,7 +628,10 @@ mod tests {
 
     #[test]
     fn test_extract_phone_number() {
-        assert_eq!(extract_phone_number("sip:+15551234567@example.com"), "+15551234567");
+        assert_eq!(
+            extract_phone_number("sip:+15551234567@example.com"),
+            "+15551234567"
+        );
         assert_eq!(extract_phone_number("+15551234567"), "+15551234567");
         assert_eq!(extract_phone_number("sip:alice@example.com"), "alice");
         assert_eq!(extract_phone_number("<sip:1234@example.com>"), "1234");

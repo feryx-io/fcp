@@ -346,14 +346,9 @@ impl ForwardingRulesManager {
         caller: &str,
         time: SystemTime,
     ) -> Option<&ForwardingRule> {
-        self.rules
-            .get(line_binding_id)?
-            .iter()
-            .find(|rule| {
-                rule.enabled
-                    && rule.forward_type == forward_type
-                    && rule.should_apply(caller, time)
-            })
+        self.rules.get(line_binding_id)?.iter().find(|rule| {
+            rule.enabled && rule.forward_type == forward_type && rule.should_apply(caller, time)
+        })
     }
 
     /// Removes a rule by ID.

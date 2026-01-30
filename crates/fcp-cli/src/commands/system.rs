@@ -34,7 +34,10 @@ pub async fn handle(
                     println!("Version: {}", status.version);
                     println!("Uptime: {} seconds", status.uptime_seconds);
                     println!("Users: {}", status.users_count);
-                    println!("Active Registrations: {}", status.active_registrations_count);
+                    println!(
+                        "Active Registrations: {}",
+                        status.active_registrations_count
+                    );
                 }
             }
         }

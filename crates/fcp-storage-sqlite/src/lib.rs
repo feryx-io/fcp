@@ -30,12 +30,12 @@ use async_trait::async_trait;
 use chrono::TimeZone;
 use fcp_core::{
     storage::{
-        CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
-        PhoneNumberStore, RegistrationStore,
-    }, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
-    DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
-    ExtensionTarget, HangupCause, HangupParty, LineBinding, LineBindingId,
-    MediaPreferences, NumberState, PhoneNumber, PhoneNumberId,
+        CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
+        RegistrationStore,
+    },
+    AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
+    DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
+    LineBinding, LineBindingId, MediaPreferences, NumberState, PhoneNumber, PhoneNumberId,
     Registration, RegistrationState, RingStrategy, TenantId, User, UserId,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -190,7 +190,7 @@ impl SqliteStorage {
             "CREATE TABLE IF NOT EXISTS schema_migrations (
                 version TEXT PRIMARY KEY,
                 applied_at INTEGER NOT NULL
-            )"
+            )",
         )
         .execute(pool)
         .await
@@ -202,7 +202,7 @@ impl SqliteStorage {
     /// Check if a migration has already been applied.
     async fn is_migration_applied(pool: &SqlitePool, version: &str) -> Result<bool> {
         let result = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?"
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
         )
         .bind(version)
         .fetch_one(pool)
@@ -218,20 +218,22 @@ impl SqliteStorage {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        sqlx::query(
-            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)"
-        )
-        .bind(version)
-        .bind(now)
-        .execute(pool)
-        .await
-        .context(format!("Failed to record migration {}", version))?;
+        sqlx::query("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(version)
+            .bind(now)
+            .execute(pool)
+            .await
+            .context(format!("Failed to record migration {}", version))?;
 
         Ok(())
     }
 
     /// Execute a single migration file.
-    async fn execute_migration(pool: &SqlitePool, migration_sql: &str, version: &str) -> Result<()> {
+    async fn execute_migration(
+        pool: &SqlitePool,
+        migration_sql: &str,
+        version: &str,
+    ) -> Result<()> {
         // Check if migration has already been applied
         if Self::is_migration_applied(pool, version).await? {
             debug!(version = %version, "Migration already applied, skipping");
@@ -260,7 +262,10 @@ impl SqliteStorage {
             sqlx::query(&statement)
                 .execute(pool)
                 .await
-                .context(format!("Failed to execute migration {} statement: {}", version, statement))?;
+                .context(format!(
+                    "Failed to execute migration {} statement: {}",
+                    version, statement
+                ))?;
         }
 
         // Record successful migration
@@ -323,15 +328,17 @@ impl CredentialStore for SqliteStorage {
             .as_secs() as i64;
         let media_prefs = serde_json::to_string(&user.media_preferences)?;
 
-        let password_last_reset = user.password_last_reset.map(|t| {
-            t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
-        });
-        let last_login = user.last_login.map(|t| {
-            t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64
-        });
+        let password_last_reset = user
+            .password_last_reset
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let last_login = user
+            .last_login
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
         let account_status = user.account_status.to_string();
         let id = user.id.to_string();
-        let role = serde_json::to_string(&user.role)?.trim_matches('"').to_string();
+        let role = serde_json::to_string(&user.role)?
+            .trim_matches('"')
+            .to_string();
 
         sqlx::query(
             "INSERT INTO users (
@@ -554,27 +561,28 @@ impl CdrStore for SqliteStorage {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let answer_time = cdr.answer_time.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
-        let end_time = cdr.end_time.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
+        let answer_time = cdr
+            .answer_time
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let end_time = cdr
+            .end_time
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
 
-        let disposition = serde_json::to_string(&cdr.disposition)?.trim_matches('"').to_string();
+        let disposition = serde_json::to_string(&cdr.disposition)?
+            .trim_matches('"')
+            .to_string();
         let hangup_cause = match cdr.hangup_cause {
             HangupCause::Other(code) => format!("other:{}", code),
             _ => serde_json::to_string(&cdr.hangup_cause)?
                 .trim_matches('"')
                 .to_string(),
         };
-        let hangup_party = cdr
-            .hangup_party
-            .map(|p| serde_json::to_string(&p).unwrap_or_default().trim_matches('"').to_string());
+        let hangup_party = cdr.hangup_party.map(|p| {
+            serde_json::to_string(&p)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string()
+        });
 
         let custom_data = cdr
             .custom_data
@@ -826,7 +834,9 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
     let account_status = AccountStatus::from_str(&account_status_str).unwrap_or_default();
 
     // Parse role from database (defaults to EndUser if not found or invalid)
-    let role_str: String = row.try_get("role").unwrap_or_else(|_| "enduser".to_string());
+    let role_str: String = row
+        .try_get("role")
+        .unwrap_or_else(|_| "enduser".to_string());
     let role = parse_role(&role_str);
 
     let emergency_contact = EmergencyContact {
@@ -851,7 +861,7 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
         tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
             .unwrap_or_else(|_| TenantId::nil()),
         enabled: row.get::<i64, _>("enabled") != 0,
-        role, // User role for RBAC
+        role,                                             // User role for RBAC
         department_id: row.try_get("department_id").ok(), // Department ID for scoping
         created_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("created_at") as u64),
         updated_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("updated_at") as u64),
@@ -895,8 +905,7 @@ fn row_to_cdr(row: sqlx::sqlite::SqliteRow) -> Result<CallDetailRecord> {
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
 
     let disposition_str: String = row.get("disposition");
-    let disposition: CallDisposition =
-        serde_json::from_str(&format!("\"{}\"", disposition_str))?;
+    let disposition: CallDisposition = serde_json::from_str(&format!("\"{}\"", disposition_str))?;
 
     let hangup_cause_str: String = row.get("hangup_cause");
     let hangup_cause = if hangup_cause_str.starts_with("other:") {
@@ -1061,26 +1070,18 @@ impl PhoneNumberStore for SqliteStorage {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let activated_at = phone_number.activated_at.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
-        let ported_at = phone_number.ported_at.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
-        let loa_date = phone_number.loa_date.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
-        let foc_date = phone_number.foc_date.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
+        let activated_at = phone_number
+            .activated_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let ported_at = phone_number
+            .ported_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let loa_date = phone_number
+            .loa_date
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let foc_date = phone_number
+            .foc_date
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
         let created_at = phone_number
             .created_at
             .duration_since(UNIX_EPOCH)
@@ -1275,10 +1276,7 @@ impl LineBindingStore for SqliteStorage {
         Ok(bindings)
     }
 
-    async fn list_line_bindings_by_device(
-        &self,
-        device_id: &DeviceId,
-    ) -> Result<Vec<LineBinding>> {
+    async fn list_line_bindings_by_device(&self, device_id: &DeviceId) -> Result<Vec<LineBinding>> {
         let rows = sqlx::query(
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
                     lb.no_answer_timeout_secs, lb.forward_on_busy, lb.forward_on_no_answer,
@@ -1383,7 +1381,10 @@ impl LineBindingStore for SqliteStorage {
 }
 
 impl SqliteStorage {
-    async fn get_device_bindings(&self, line_binding_id: &LineBindingId) -> Result<Vec<DeviceBinding>> {
+    async fn get_device_bindings(
+        &self,
+        line_binding_id: &LineBindingId,
+    ) -> Result<Vec<DeviceBinding>> {
         let rows = sqlx::query(
             "SELECT device_id, priority, line_appearance, shared_line, enabled
              FROM device_bindings
@@ -1433,13 +1434,17 @@ impl SqliteStorage {
     }
 
     // Helper method to map a mailbox row from database to VoicemailMailbox
-    async fn map_mailbox_row(&self, row: sqlx::sqlite::SqliteRow) -> Result<fcp_core::VoicemailMailbox> {
+    async fn map_mailbox_row(
+        &self,
+        row: sqlx::sqlite::SqliteRow,
+    ) -> Result<fcp_core::VoicemailMailbox> {
         use sqlx::Row;
 
         let id: String = row.try_get("id")?;
         let tenant_id = fcp_core::TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?;
         let user_id = fcp_core::UserId::from_str(&row.try_get::<String, _>("user_id")?)?;
-        let line_binding_id = fcp_core::LineBindingId::from_str(&row.try_get::<String, _>("line_binding_id")?)?;
+        let line_binding_id =
+            fcp_core::LineBindingId::from_str(&row.try_get::<String, _>("line_binding_id")?)?;
         let extension: String = row.try_get("extension")?;
         let pin: String = row.try_get("pin")?;
         let enabled: i32 = row.try_get("enabled")?;
@@ -1456,7 +1461,7 @@ impl SqliteStorage {
         // Fetch greetings for this mailbox
         let greeting_rows = sqlx::query(
             "SELECT greeting_type, audio_path, created_at, expires_at
-             FROM voicemail_greetings WHERE mailbox_id = ?"
+             FROM voicemail_greetings WHERE mailbox_id = ?",
         )
         .bind(&id)
         .fetch_all(&self.pool)
@@ -1480,8 +1485,10 @@ impl SqliteStorage {
             greetings.push(fcp_core::VoicemailGreeting {
                 greeting_type,
                 audio_path: std::path::PathBuf::from(audio_path),
-                created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(greeting_created_at as u64),
-                expires_at: expires_at.map(|ts| std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64)),
+                created_at: std::time::UNIX_EPOCH
+                    + std::time::Duration::from_secs(greeting_created_at as u64),
+                expires_at: expires_at
+                    .map(|ts| std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64)),
             });
         }
 
@@ -1546,7 +1553,8 @@ impl SqliteStorage {
             recording_path: std::path::PathBuf::from(recording_path),
             transcription,
             created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(created_at as u64),
-            accessed_at: accessed_at.map(|ts| std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64)),
+            accessed_at: accessed_at
+                .map(|ts| std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts as u64)),
         })
     }
 }
@@ -1774,11 +1782,9 @@ impl DeviceStore for SqliteStorage {
         let tenant_id = device.tenant_id.to_string();
         let owner_user_id = device.owner_user_id.map(|u| u.to_string());
         let registration_state = device.registration_state.to_string();
-        let last_registration = device.last_registration.map(|t| {
-            t.duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64
-        });
+        let last_registration = device
+            .last_registration
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
         let codec_support = serde_json::to_string(
             &device
                 .codec_support
@@ -1987,8 +1993,7 @@ fn row_to_line_binding(row: sqlx::sqlite::SqliteRow) -> Result<LineBinding> {
         _ => RingStrategy::Simultaneous,
     };
 
-    let no_answer_timeout =
-        Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
+    let no_answer_timeout = Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
     let created_at = UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("created_at") as u64);
     let updated_at = UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("updated_at") as u64);
 
@@ -2022,13 +2027,15 @@ fn row_to_extension(row: sqlx::sqlite::SqliteRow) -> Result<Extension> {
         "user" => ExtensionTarget::User(UserId::from_str(&target_id)?),
         "phone_number" => ExtensionTarget::PhoneNumber(PhoneNumberId::from_str(&target_id)?),
         "device" => ExtensionTarget::Device(DeviceId::from_str(&target_id)?),
-        "service" => {
-            ExtensionTarget::Service(fcp_core::ServiceId::from_str(&target_id).unwrap_or_else(
-                |_| fcp_core::ServiceId::new(),
-            ))
-        }
+        "service" => ExtensionTarget::Service(
+            fcp_core::ServiceId::from_str(&target_id)
+                .unwrap_or_else(|_| fcp_core::ServiceId::new()),
+        ),
         _ => {
-            return Err(anyhow::anyhow!("Unknown extension target type: {}", target_type));
+            return Err(anyhow::anyhow!(
+                "Unknown extension target type: {}",
+                target_type
+            ));
         }
     };
 
@@ -2148,7 +2155,7 @@ impl FlowStore for SqliteStorage {
              FROM flows
              WHERE id = ?
              ORDER BY version DESC
-             LIMIT 1"
+             LIMIT 1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -2161,12 +2168,16 @@ impl FlowStore for SqliteStorage {
         }
     }
 
-    async fn get_flow_version(&self, id: &str, version: u32) -> std::result::Result<Option<FlowDefinition>, FlowError> {
+    async fn get_flow_version(
+        &self,
+        id: &str,
+        version: u32,
+    ) -> std::result::Result<Option<FlowDefinition>, FlowError> {
         let row = sqlx::query(
             "SELECT id, name, description, version, initial_node, nodes, variables,
                     tenant_id, enabled, webhook_url, created_at, updated_at
              FROM flows
-             WHERE id = ? AND version = ?"
+             WHERE id = ? AND version = ?",
         )
         .bind(id)
         .bind(version as i64)
@@ -2180,14 +2191,17 @@ impl FlowStore for SqliteStorage {
         }
     }
 
-    async fn list_flows(&self, tenant_id: Option<&str>) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
+    async fn list_flows(
+        &self,
+        tenant_id: Option<&str>,
+    ) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
         let rows = if let Some(tid) = tenant_id {
             sqlx::query(
                 "SELECT id, name, description, version, initial_node, nodes, variables,
                         tenant_id, enabled, webhook_url, created_at, updated_at
                  FROM flows
                  WHERE tenant_id = ?
-                 ORDER BY updated_at DESC"
+                 ORDER BY updated_at DESC",
             )
             .bind(tid)
             .fetch_all(&self.pool)
@@ -2198,7 +2212,7 @@ impl FlowStore for SqliteStorage {
                 "SELECT id, name, description, version, initial_node, nodes, variables,
                         tenant_id, enabled, webhook_url, created_at, updated_at
                  FROM flows
-                 ORDER BY updated_at DESC"
+                 ORDER BY updated_at DESC",
             )
             .fetch_all(&self.pool)
             .await
@@ -2213,7 +2227,10 @@ impl FlowStore for SqliteStorage {
         Ok(flows)
     }
 
-    async fn query_flows(&self, query: &FlowQuery) -> std::result::Result<FlowQueryResult, FlowError> {
+    async fn query_flows(
+        &self,
+        query: &FlowQuery,
+    ) -> std::result::Result<FlowQueryResult, FlowError> {
         // Build WHERE clause
         let mut where_clauses = Vec::new();
         let mut where_clause = String::new();
@@ -2266,7 +2283,8 @@ impl FlowStore for SqliteStorage {
             count_q = count_q.bind(format!("%{}%", desc));
         }
 
-        let count_row = count_q.fetch_one(&self.pool)
+        let count_row = count_q
+            .fetch_one(&self.pool)
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?;
         let total: i64 = count_row.get("count");
@@ -2302,7 +2320,8 @@ impl FlowStore for SqliteStorage {
         select_q = select_q.bind(query.limit as i64);
         select_q = select_q.bind(query.offset as i64);
 
-        let rows = select_q.fetch_all(&self.pool)
+        let rows = select_q
+            .fetch_all(&self.pool)
             .await
             .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
@@ -2333,7 +2352,7 @@ impl FlowStore for SqliteStorage {
             "INSERT INTO flows (
                 id, name, description, version, initial_node, nodes, variables,
                 tenant_id, enabled, webhook_url, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&flow.id)
         .bind(&flow.name)
@@ -2357,13 +2376,12 @@ impl FlowStore for SqliteStorage {
 
     async fn update_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
         // Get current version
-        let current_version_row = sqlx::query(
-            "SELECT version FROM flows WHERE id = ? ORDER BY version DESC LIMIT 1"
-        )
-        .bind(&flow.id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let current_version_row =
+            sqlx::query("SELECT version FROM flows WHERE id = ? ORDER BY version DESC LIMIT 1")
+                .bind(&flow.id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
         let current_version: u32 = match current_version_row {
             Some(row) => {
@@ -2389,7 +2407,7 @@ impl FlowStore for SqliteStorage {
             "INSERT INTO flows (
                 id, name, description, version, initial_node, nodes, variables,
                 tenant_id, enabled, webhook_url, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&flow.id)
         .bind(&flow.name)
@@ -2418,14 +2436,12 @@ impl FlowStore for SqliteStorage {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let result = sqlx::query(
-            "UPDATE flows SET enabled = 0, updated_at = ? WHERE id = ?"
-        )
-        .bind(now)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let result = sqlx::query("UPDATE flows SET enabled = 0, updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
@@ -2435,13 +2451,16 @@ impl FlowStore for SqliteStorage {
         Ok(())
     }
 
-    async fn list_flow_versions(&self, id: &str) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
+    async fn list_flow_versions(
+        &self,
+        id: &str,
+    ) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
         let rows = sqlx::query(
             "SELECT id, name, description, version, initial_node, nodes, variables,
                     tenant_id, enabled, webhook_url, created_at, updated_at
              FROM flows
              WHERE id = ?
-             ORDER BY version DESC"
+             ORDER BY version DESC",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -2462,14 +2481,12 @@ impl FlowStore for SqliteStorage {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let result = sqlx::query(
-            "UPDATE flows SET enabled = 1, updated_at = ? WHERE id = ?"
-        )
-        .bind(now)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let result = sqlx::query("UPDATE flows SET enabled = 1, updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
@@ -2485,14 +2502,12 @@ impl FlowStore for SqliteStorage {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let result = sqlx::query(
-            "UPDATE flows SET enabled = 0, updated_at = ? WHERE id = ?"
-        )
-        .bind(now)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let result = sqlx::query("UPDATE flows SET enabled = 0, updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
@@ -2504,7 +2519,9 @@ impl FlowStore for SqliteStorage {
 }
 
 /// Parse a flow from a database row.
-fn parse_flow_from_row(row: &sqlx::sqlite::SqliteRow) -> std::result::Result<FlowDefinition, FlowError> {
+fn parse_flow_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> std::result::Result<FlowDefinition, FlowError> {
     let id: String = row.get("id");
     let name: String = row.get("name");
     let description: Option<String> = row.get("description");
@@ -2533,16 +2550,26 @@ fn parse_flow_from_row(row: &sqlx::sqlite::SqliteRow) -> std::result::Result<Flo
         tenant_id,
         enabled,
         webhook_url,
-        created_at: Some(chrono::Utc.timestamp_opt(created_at, 0).single().unwrap_or_else(|| chrono::Utc::now())),
-        updated_at: Some(chrono::Utc.timestamp_opt(updated_at, 0).single().unwrap_or_else(|| chrono::Utc::now())),
+        created_at: Some(
+            chrono::Utc
+                .timestamp_opt(created_at, 0)
+                .single()
+                .unwrap_or_else(|| chrono::Utc::now()),
+        ),
+        updated_at: Some(
+            chrono::Utc
+                .timestamp_opt(updated_at, 0)
+                .single()
+                .unwrap_or_else(|| chrono::Utc::now()),
+        ),
     })
 }
 // ============================================================================
 // Stub Implementations (TODO: Implement these properly)
 // ============================================================================
 
-use fcp_core::storage::{VoicemailStore, GeoRoutingStore, TenantStore};
 use fcp_core::porting::PortingStore;
+use fcp_core::storage::{GeoRoutingStore, TenantStore, VoicemailStore};
 
 #[async_trait]
 impl VoicemailStore for SqliteStorage {
@@ -2552,7 +2579,7 @@ impl VoicemailStore for SqliteStorage {
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
                     created_at, updated_at
-             FROM voicemail_mailboxes WHERE id = ?"
+             FROM voicemail_mailboxes WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -2576,7 +2603,7 @@ impl VoicemailStore for SqliteStorage {
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
                     created_at, updated_at
-             FROM voicemail_mailboxes WHERE line_binding_id = ?"
+             FROM voicemail_mailboxes WHERE line_binding_id = ?",
         )
         .bind(line_binding_id.to_string())
         .fetch_optional(&self.pool)
@@ -2600,7 +2627,7 @@ impl VoicemailStore for SqliteStorage {
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
                     created_at, updated_at
-             FROM voicemail_mailboxes WHERE user_id = ?"
+             FROM voicemail_mailboxes WHERE user_id = ?",
         )
         .bind(user_id.to_string())
         .fetch_optional(&self.pool)
@@ -2625,7 +2652,7 @@ impl VoicemailStore for SqliteStorage {
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
                     created_at, updated_at
-             FROM voicemail_mailboxes WHERE tenant_id = ? AND extension = ?"
+             FROM voicemail_mailboxes WHERE tenant_id = ? AND extension = ?",
         )
         .bind(tenant_id.to_string())
         .bind(extension)
@@ -2650,7 +2677,7 @@ impl VoicemailStore for SqliteStorage {
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
                     created_at, updated_at
-             FROM voicemail_mailboxes WHERE tenant_id = ? ORDER BY extension"
+             FROM voicemail_mailboxes WHERE tenant_id = ? ORDER BY extension",
         )
         .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
@@ -2670,7 +2697,8 @@ impl VoicemailStore for SqliteStorage {
             .unwrap()
             .as_secs() as i64;
 
-        let created_at = mailbox.created_at
+        let created_at = mailbox
+            .created_at
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
@@ -2682,7 +2710,7 @@ impl VoicemailStore for SqliteStorage {
               max_message_duration, max_messages, email_notification, email_address,
               attach_audio, include_transcription, transcription_enabled,
               created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&mailbox.id)
         .bind(mailbox.tenant_id.to_string())
@@ -2711,21 +2739,20 @@ impl VoicemailStore for SqliteStorage {
 
         // Insert greetings
         for greeting in &mailbox.greetings {
-            let greeting_created_at = greeting.created_at
+            let greeting_created_at = greeting
+                .created_at
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
 
-            let expires_at = greeting.expires_at.map(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64
-            });
+            let expires_at = greeting
+                .expires_at
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64);
 
             sqlx::query(
                 "INSERT INTO voicemail_greetings
                  (mailbox_id, greeting_type, audio_path, created_at, expires_at)
-                 VALUES (?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?)",
             )
             .bind(&mailbox.id)
             .bind(greeting.greeting_type.to_string())
@@ -2751,7 +2778,7 @@ impl VoicemailStore for SqliteStorage {
         let row = sqlx::query(
             "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
                     recording_path, transcription, created_at, accessed_at
-             FROM voicemail_messages WHERE id = ?"
+             FROM voicemail_messages WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -2769,7 +2796,7 @@ impl VoicemailStore for SqliteStorage {
                     recording_path, transcription, created_at, accessed_at
              FROM voicemail_messages
              WHERE mailbox_id = ? AND status != 'deleted'
-             ORDER BY created_at DESC"
+             ORDER BY created_at DESC",
         )
         .bind(mailbox_id)
         .fetch_all(&self.pool)
@@ -2783,22 +2810,21 @@ impl VoicemailStore for SqliteStorage {
     }
 
     async fn put_message(&self, message: fcp_core::VoicemailMessage) -> Result<()> {
-        let created_at = message.created_at
+        let created_at = message
+            .created_at
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
 
-        let accessed_at = message.accessed_at.map(|t| {
-            t.duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64
-        });
+        let accessed_at = message
+            .accessed_at
+            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64);
 
         sqlx::query(
             "INSERT OR REPLACE INTO voicemail_messages
              (id, mailbox_id, caller, caller_name, status, priority, duration,
               recording_path, transcription, created_at, accessed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&message.id)
         .bind(&message.mailbox_id)
@@ -2838,7 +2864,7 @@ impl VoicemailStore for SqliteStorage {
                     recording_path, transcription, created_at, accessed_at
              FROM voicemail_messages
              WHERE mailbox_id = ? AND status = ?
-             ORDER BY created_at DESC"
+             ORDER BY created_at DESC",
         )
         .bind(mailbox_id)
         .bind(status.to_string())
@@ -2854,7 +2880,9 @@ impl VoicemailStore for SqliteStorage {
 
     async fn get_mwi_status(&self, mailbox_id: &str) -> Result<fcp_core::MwiStatus> {
         // Get mailbox to retrieve line_binding_id
-        let mailbox = self.get_mailbox(mailbox_id).await?
+        let mailbox = self
+            .get_mailbox(mailbox_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Mailbox not found"))?;
 
         // Count messages by status and priority
@@ -2895,7 +2923,7 @@ impl VoicemailStore for SqliteStorage {
                 COUNT(CASE WHEN status = 'saved' THEN 1 END) as saved,
                 COALESCE(AVG(duration), 0) as avg_duration
              FROM voicemail_messages
-             WHERE mailbox_id = ? AND status != 'deleted'"
+             WHERE mailbox_id = ? AND status != 'deleted'",
         )
         .bind(mailbox_id)
         .fetch_one(&self.pool)
@@ -2932,11 +2960,15 @@ impl GeoRoutingStore for SqliteStorage {
     }
 
     async fn put_geo_rule(&self, _rule: fcp_core::GeoRoutingRule) -> Result<()> {
-        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
     }
 
     async fn delete_geo_rule(&self, _id: &str) -> Result<()> {
-        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
     }
 
     async fn get_phone_number_location(
@@ -2957,14 +2989,18 @@ impl GeoRoutingStore for SqliteStorage {
         &self,
         _location: fcp_core::PhoneNumberLocation,
     ) -> Result<()> {
-        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
     }
 
     async fn delete_phone_number_location(
         &self,
         _phone_number_id: &fcp_core::PhoneNumberId,
     ) -> Result<()> {
-        Err(anyhow::anyhow!("Geographic routing storage not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
     }
 }
 
@@ -2985,11 +3021,15 @@ impl PortingStore for SqliteStorage {
     }
 
     async fn put_port_request(&self, _request: fcp_core::PortRequest) -> Result<()> {
-        Err(anyhow::anyhow!("Number porting storage not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Number porting storage not yet implemented"
+        ))
     }
 
     async fn delete_port_request(&self, _id: &fcp_core::PortRequestId) -> Result<()> {
-        Err(anyhow::anyhow!("Number porting storage not yet implemented"))
+        Err(anyhow::anyhow!(
+            "Number porting storage not yet implemented"
+        ))
     }
 
     async fn list_port_requests_by_status(
@@ -3030,7 +3070,10 @@ impl TenantStore for SqliteStorage {
 
     async fn list_tenants(&self) -> Result<Vec<fcp_core::Tenant>> {
         // Return single default tenant for MVP
-        Ok(vec![self.get_tenant(&fcp_core::TenantId::nil()).await?.unwrap()])
+        Ok(vec![self
+            .get_tenant(&fcp_core::TenantId::nil())
+            .await?
+            .unwrap()])
     }
 
     async fn put_tenant(&self, _tenant: fcp_core::Tenant) -> Result<()> {
@@ -3049,8 +3092,8 @@ impl TenantStore for SqliteStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fcp_core::{CallId, UserId, UserRole};
     use fcp_core::storage::{AccountStatus, EmergencyContact};
+    use fcp_core::{CallId, UserId, UserRole};
     use tempfile::TempDir;
 
     async fn create_test_storage() -> (SqliteStorage, TempDir) {

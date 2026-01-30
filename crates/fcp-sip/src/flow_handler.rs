@@ -3,10 +3,10 @@
 //! This module integrates the flow engine with call management, allowing
 //! calls to execute programmable flows (IVR, call routing, etc.).
 
-use fcp_b2bua_core::{Call, CallId, CallManager};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use fcp_b2bua_core::{Call, CallId, CallManager};
 use fcp_events::{EventPublisher, FlowEvent, PlatformEvent};
 use fcp_flow::{FlowContext, FlowEngine, FlowExecutionResult, FlowStore};
 use fcp_media::{AudioTarget, MediaManager};
@@ -108,7 +108,10 @@ impl FlowCallHandler {
     }
 
     /// Set the transaction manager (for sending SIP requests).
-    pub fn with_transaction_manager(mut self, transaction_manager: Arc<TransactionManager>) -> Self {
+    pub fn with_transaction_manager(
+        mut self,
+        transaction_manager: Arc<TransactionManager>,
+    ) -> Self {
         self.transaction_manager = Some(transaction_manager);
         self
     }
@@ -337,7 +340,10 @@ impl FlowCallHandler {
                     );
 
                     // Wait for playback to complete
-                    match media_manager.wait_playback_completion(playback_id.clone()).await {
+                    match media_manager
+                        .wait_playback_completion(playback_id.clone())
+                        .await
+                    {
                         Ok(()) => {
                             info!(
                                 call_id = %call_id,
@@ -416,12 +422,21 @@ impl FlowCallHandler {
         // Check if B2BUA components are available
         if self.transaction_manager.is_none() {
             warn!(a_leg_call_id = %a_leg_call_id, "TransactionManager not available - Dial node disabled");
-            return self.transition_to_error(a_leg_call_id, "TransactionManager not configured", on_error, next).await;
+            return self
+                .transition_to_error(
+                    a_leg_call_id,
+                    "TransactionManager not configured",
+                    on_error,
+                    next,
+                )
+                .await;
         }
 
         if self.local_uri.is_none() || self.contact_uri.is_none() {
             warn!(a_leg_call_id = %a_leg_call_id, "SIP URIs not configured - Dial node disabled");
-            return self.transition_to_error(a_leg_call_id, "SIP URIs not configured", on_error, next).await;
+            return self
+                .transition_to_error(a_leg_call_id, "SIP URIs not configured", on_error, next)
+                .await;
         }
 
         let transaction_manager = self.transaction_manager.as_ref().unwrap();
@@ -439,12 +454,9 @@ impl FlowCallHandler {
                     error = %error_msg,
                     "Invalid destination URI"
                 );
-                return self.transition_to_error(
-                    a_leg_call_id,
-                    &error_msg,
-                    on_error,
-                    next,
-                ).await;
+                return self
+                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                    .await;
             }
         };
 
@@ -492,10 +504,11 @@ impl FlowCallHandler {
         // For MVP, resolve host to IP address using basic DNS lookup
         let peer_addr: SocketAddr = match tokio::net::lookup_host(format!("{}:{}", host, port))
             .await
-            .and_then(|mut addrs| addrs.next().ok_or_else(|| std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "No addresses found for host"
-            ))) {
+            .and_then(|mut addrs| {
+                addrs.next().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "No addresses found for host")
+                })
+            }) {
             Ok(addr) => addr,
             Err(e) => {
                 let error_msg = format!("Failed to resolve destination host {}: {}", host, e);
@@ -506,12 +519,9 @@ impl FlowCallHandler {
                     error = %e,
                     "DNS resolution failed for B-leg destination"
                 );
-                return self.transition_to_error(
-                    a_leg_call_id,
-                    &error_msg,
-                    on_error,
-                    next,
-                ).await;
+                return self
+                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                    .await;
             }
         };
 
@@ -573,7 +583,11 @@ impl FlowCallHandler {
         let mut dial_status = String::from("no_answer");
         let mut dial_sip_code: Option<u16> = None;
         let mut dial_sip_reason: Option<String> = None;
-        let mut next_node = on_no_answer.as_ref().or(on_error.as_ref()).unwrap_or(&next).clone();
+        let mut next_node = on_no_answer
+            .as_ref()
+            .or(on_error.as_ref())
+            .unwrap_or(&next)
+            .clone();
 
         // Response event loop
         tokio::select! {
@@ -827,7 +841,9 @@ impl FlowCallHandler {
         }
 
         // Set flow variables with dial results
-        let context_entry = self.contexts.get(&a_leg_call_id)
+        let context_entry = self
+            .contexts
+            .get(&a_leg_call_id)
             .ok_or_else(|| anyhow::anyhow!("Flow context not found after dial"))?;
         let context = Arc::clone(context_entry.value());
         drop(context_entry);
@@ -894,7 +910,9 @@ impl FlowCallHandler {
         on_error: Option<String>,
         next: String,
     ) -> Result<()> {
-        let context_entry = self.contexts.get(&call_id)
+        let context_entry = self
+            .contexts
+            .get(&call_id)
             .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
         let context = Arc::clone(context_entry.value());
         drop(context_entry);
@@ -1059,7 +1077,9 @@ impl FlowCallHandler {
                                 drop(context_guard);
 
                                 // Wait for playback to complete before continuing
-                                match media_manager.wait_playback_completion(playback_id.clone()).await
+                                match media_manager
+                                    .wait_playback_completion(playback_id.clone())
+                                    .await
                                 {
                                     Ok(()) => {
                                         info!(
@@ -1150,7 +1170,9 @@ impl FlowCallHandler {
                                 drop(context_guard);
 
                                 // Wait for playback to complete before continuing
-                                match media_manager.wait_playback_completion(playback_id.clone()).await
+                                match media_manager
+                                    .wait_playback_completion(playback_id.clone())
+                                    .await
                                 {
                                     Ok(()) => {
                                         info!(
@@ -1304,14 +1326,10 @@ impl FlowCallHandler {
                     .ok()
                     .and_then(|s| s.chars().next());
 
-                let on_timeout_node = context_guard
-                    .get_variable("__gather_on_timeout")
-                    .ok();
+                let on_timeout_node = context_guard.get_variable("__gather_on_timeout").ok();
 
                 // Check for prompt
-                let prompt_url = context_guard
-                    .get_variable("__gather_prompt_url")
-                    .ok();
+                let prompt_url = context_guard.get_variable("__gather_prompt_url").ok();
 
                 let media_session_id = context_guard.media_session_id;
                 let flow_id = context_guard.flow.id.clone();
@@ -1337,11 +1355,9 @@ impl FlowCallHandler {
                 }
 
                 // Play prompt if available
-                if let (Some(prompt_url), Some(media_manager), Some(session_id)) = (
-                    prompt_url,
-                    &self.media_manager,
-                    media_session_id,
-                ) {
+                if let (Some(prompt_url), Some(media_manager), Some(session_id)) =
+                    (prompt_url, &self.media_manager, media_session_id)
+                {
                     info!(
                         call_id = %call_id,
                         prompt_url = %prompt_url,
@@ -1349,12 +1365,19 @@ impl FlowCallHandler {
                     );
 
                     match media_manager
-                        .play_file(&session_id, prompt_url.clone(), fcp_media::AudioTarget::ParticipantA)
+                        .play_file(
+                            &session_id,
+                            prompt_url.clone(),
+                            fcp_media::AudioTarget::ParticipantA,
+                        )
                         .await
                     {
                         Ok(playback_id) => {
                             // Wait for prompt playback to complete
-                            if let Err(e) = media_manager.wait_playback_completion(playback_id.clone()).await {
+                            if let Err(e) = media_manager
+                                .wait_playback_completion(playback_id.clone())
+                                .await
+                            {
                                 warn!(
                                     call_id = %call_id,
                                     error = %e,
@@ -1436,7 +1459,8 @@ impl FlowCallHandler {
                             // Store partial digits if any
                             let mut context_guard = context.write().await;
                             if !partial_digits.is_empty() {
-                                context_guard.set_variable(variable.clone(), partial_digits.clone());
+                                context_guard
+                                    .set_variable(variable.clone(), partial_digits.clone());
                             }
 
                             // Go to timeout node if specified, otherwise use default
@@ -1506,17 +1530,20 @@ impl FlowCallHandler {
                 let next_fallback = next.clone();
 
                 // Handle the dial operation
-                match self.handle_dial(
-                    call_id,
-                    destination,
-                    timeout_secs,
-                    caller_id,
-                    max_duration_secs,
-                    on_busy,
-                    on_no_answer,
-                    on_error,
-                    next,
-                ).await {
+                match self
+                    .handle_dial(
+                        call_id,
+                        destination,
+                        timeout_secs,
+                        caller_id,
+                        max_duration_secs,
+                        on_busy,
+                        on_no_answer,
+                        on_error,
+                        next,
+                    )
+                    .await
+                {
                     Ok(()) => {
                         // Dial completed successfully, flow continues
                     }
@@ -1585,7 +1612,9 @@ impl FlowCallHandler {
 
         // Determine next node based on transitions
         if let Some(transitions_str) = transitions_json {
-            if let Ok(transitions) = serde_json::from_str::<HashMap<String, String>>(&transitions_str) {
+            if let Ok(transitions) =
+                serde_json::from_str::<HashMap<String, String>>(&transitions_str)
+            {
                 if let Some(next_node) = transitions.get(&digits) {
                     context_guard.current_node = next_node.clone();
                     drop(context_guard);
@@ -1635,7 +1664,9 @@ impl FlowCallHandler {
 
     /// Get the current flow context for a call.
     pub async fn get_context(&self, call_id: &CallId) -> Option<Arc<RwLock<FlowContext>>> {
-        self.contexts.get(call_id).map(|entry| Arc::clone(entry.value()))
+        self.contexts
+            .get(call_id)
+            .map(|entry| Arc::clone(entry.value()))
     }
 }
 
@@ -1713,13 +1744,11 @@ impl ClientTransactionUser for DialTransactionUser {
         );
     }
 
-    async fn send_prack(
-        &self,
-        _key: &TransactionKey,
-        response: Response,
-        _ctx: &TransportContext,
-    ) {
-        debug!("PRACK for reliable provisional {} (not implemented for Dial node MVP)", response.code());
+    async fn send_prack(&self, _key: &TransactionKey, response: Response, _ctx: &TransportContext) {
+        debug!(
+            "PRACK for reliable provisional {} (not implemented for Dial node MVP)",
+            response.code()
+        );
         // Phase 5: Send PRACK for reliable provisionals via sip-uac
     }
 
@@ -1878,7 +1907,9 @@ mod tests {
         let store = Arc::new(InMemoryFlowStore::new());
         let handler = FlowCallHandler::new(store, None, None);
 
-        handler.add_route("+15551234567".to_string(), "test-flow".to_string()).await;
+        handler
+            .add_route("+15551234567".to_string(), "test-flow".to_string())
+            .await;
 
         let flow_id = handler.get_flow_for_did("+15551234567").await;
         assert_eq!(flow_id, Some("test-flow".to_string()));

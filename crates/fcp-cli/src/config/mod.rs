@@ -43,10 +43,9 @@ impl Config {
         let config_path = Self::config_file_path()?;
 
         if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)
-                .context("Failed to read config file")?;
-            let config: Config = toml::from_str(&content)
-                .context("Failed to parse config file")?;
+            let content =
+                std::fs::read_to_string(&config_path).context("Failed to read config file")?;
+            let config: Config = toml::from_str(&content).context("Failed to parse config file")?;
             Ok(config)
         } else {
             // Create default configuration
@@ -59,15 +58,12 @@ impl Config {
     /// Save configuration to disk
     pub fn save(&self) -> Result<()> {
         let config_dir = Self::config_dir()?;
-        std::fs::create_dir_all(&config_dir)
-            .context("Failed to create config directory")?;
+        std::fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
 
         let config_path = Self::config_file_path()?;
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
-        std::fs::write(&config_path, content)
-            .context("Failed to write config file")?;
+        std::fs::write(&config_path, content).context("Failed to write config file")?;
 
         Ok(())
     }

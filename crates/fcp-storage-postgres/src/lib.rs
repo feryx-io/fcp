@@ -32,14 +32,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
-        CdrStore, CredentialStore, DeviceStore, ExtensionStore,
-        LineBindingStore, PhoneNumberStore, RegistrationStore, TenantStore,
+        CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
+        RegistrationStore, TenantStore,
     },
-    AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery,
-    Device, DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension,
-    ExtensionId, ExtensionTarget, HangupCause, HangupParty, LineBinding, LineBindingId,
-    MediaPreferences, NumberState, PhoneNumber, PhoneNumberId, Registration,
-    RegistrationState, RingStrategy, Tenant, TenantId, User, UserId,
+    AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
+    DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
+    HangupCause, HangupParty, LineBinding, LineBindingId, MediaPreferences, NumberState,
+    PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, Tenant, TenantId,
+    User, UserId,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Pool, Postgres, Row};
@@ -117,10 +117,7 @@ impl PostgresStorage {
     /// - Connection to PostgreSQL fails
     /// - Migrations fail to run
     pub async fn new(config: PostgresConfig) -> Result<Self> {
-        info!(
-            "Connecting to PostgreSQL at {}",
-            config.connection_string
-        );
+        info!("Connecting to PostgreSQL at {}", config.connection_string);
 
         // Parse connection options
         let options = PgConnectOptions::from_str(&config.connection_string)
@@ -161,7 +158,10 @@ impl PostgresStorage {
     }
 
     /// Helper method to get device bindings for a line binding
-    async fn get_device_bindings(&self, line_binding_id: &LineBindingId) -> Result<Vec<DeviceBinding>> {
+    async fn get_device_bindings(
+        &self,
+        line_binding_id: &LineBindingId,
+    ) -> Result<Vec<DeviceBinding>> {
         let rows = sqlx::query(
             "SELECT line_binding_id, device_id, priority, line_appearance, shared_line, enabled
              FROM device_bindings
@@ -247,7 +247,9 @@ impl CredentialStore for PostgresStorage {
     async fn put_user(&self, user: User) -> Result<()> {
         let id = user.id.to_string();
         let tenant_id = user.tenant_id.to_string();
-        let role = serde_json::to_string(&user.role)?.trim_matches('"').to_string();
+        let role = serde_json::to_string(&user.role)?
+            .trim_matches('"')
+            .to_string();
         let account_status = user.account_status.to_string();
         let media_preferences = serde_json::to_value(&user.media_preferences)?;
         let emergency_contact = serde_json::to_value(&user.emergency_contact)?;
@@ -518,7 +520,9 @@ impl TenantStore for PostgresStorage {
 
     async fn put_tenant(&self, tenant: Tenant) -> Result<()> {
         let id = tenant.id.to_string();
-        let status = serde_json::to_string(&tenant.status)?.trim_matches('"').to_string();
+        let status = serde_json::to_string(&tenant.status)?
+            .trim_matches('"')
+            .to_string();
         let created_at = system_time_to_datetime(tenant.created_at);
         let updated_at = system_time_to_datetime(tenant.updated_at);
         let trial_expires_at = tenant.trial_expires_at.map(system_time_to_datetime);
@@ -584,7 +588,9 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
 
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
-    let trial_expires_at = row.get::<Option<DateTime<Utc>>, _>("trial_expires_at").map(datetime_to_system_time);
+    let trial_expires_at = row
+        .get::<Option<DateTime<Utc>>, _>("trial_expires_at")
+        .map(datetime_to_system_time);
 
     Ok(Tenant {
         id,
@@ -594,8 +600,12 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         contact_email: row.get("contact_email"),
         contact_phone: row.get("contact_phone"),
         max_users: row.get::<Option<i64>, _>("max_users").map(|u| u as u32),
-        max_phone_numbers: row.get::<Option<i64>, _>("max_phone_numbers").map(|p| p as u32),
-        max_concurrent_calls: row.get::<Option<i64>, _>("max_concurrent_calls").map(|c| c as u32),
+        max_phone_numbers: row
+            .get::<Option<i64>, _>("max_phone_numbers")
+            .map(|p| p as u32),
+        max_concurrent_calls: row
+            .get::<Option<i64>, _>("max_concurrent_calls")
+            .map(|c| c as u32),
         billing_id: row.get("billing_id"),
         created_at,
         updated_at,
@@ -613,13 +623,25 @@ impl CdrStore for PostgresStorage {
     async fn insert_cdr(&self, cdr: CallDetailRecord) -> Result<()> {
         let call_id = cdr.call_id.to_string();
         let tenant_id = cdr.tenant_id.to_string();
-        let disposition = serde_json::to_string(&cdr.disposition)?.trim_matches('"').to_string();
+        let disposition = serde_json::to_string(&cdr.disposition)?
+            .trim_matches('"')
+            .to_string();
         let hangup_cause = match cdr.hangup_cause {
             HangupCause::Other(code) => format!("other:{}", code),
-            _ => serde_json::to_string(&cdr.hangup_cause)?.trim_matches('"').to_string(),
+            _ => serde_json::to_string(&cdr.hangup_cause)?
+                .trim_matches('"')
+                .to_string(),
         };
-        let hangup_party = cdr.hangup_party.map(|p| serde_json::to_string(&p).unwrap_or_default().trim_matches('"').to_string());
-        let custom_data = cdr.custom_data.map(|v| serde_json::to_value(&v)).transpose()?;
+        let hangup_party = cdr.hangup_party.map(|p| {
+            serde_json::to_string(&p)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string()
+        });
+        let custom_data = cdr
+            .custom_data
+            .map(|v| serde_json::to_value(&v))
+            .transpose()?;
 
         let start_time = system_time_to_datetime(cdr.start_time);
         let answer_time = cdr.answer_time.map(system_time_to_datetime);
@@ -748,7 +770,9 @@ impl CdrStore for PostgresStorage {
         }
 
         if let Some(disposition) = &query.disposition {
-            let disp_str = serde_json::to_string(disposition)?.trim_matches('"').to_string();
+            let disp_str = serde_json::to_string(disposition)?
+                .trim_matches('"')
+                .to_string();
             conditions.push(("disposition", disp_str));
         }
 
@@ -809,9 +833,15 @@ impl CdrStore for PostgresStorage {
         }
 
         if let Some(disposition) = &query.disposition {
-            let param_num = if conditions.is_empty() { 1 } else { conditions.len() + 1 };
+            let param_num = if conditions.is_empty() {
+                1
+            } else {
+                conditions.len() + 1
+            };
             sql.push_str(&format!(" AND disposition = ${}", param_num));
-            let disp_str = serde_json::to_string(disposition)?.trim_matches('"').to_string();
+            let disp_str = serde_json::to_string(disposition)?
+                .trim_matches('"')
+                .to_string();
             conditions.push(disp_str);
         }
 
@@ -841,20 +871,25 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         .unwrap_or(fcp_core::UserRole::EndUser);
 
     let account_status_str: String = row.get("account_status");
-    let account_status = AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
+    let account_status =
+        AccountStatus::from_str(&account_status_str).unwrap_or(AccountStatus::Active);
 
-    let media_preferences: MediaPreferences = serde_json::from_value(
-        row.get::<serde_json::Value, _>("media_preferences")
-    ).map_err(|e| anyhow::anyhow!("Failed to parse media_preferences: {}", e))?;
+    let media_preferences: MediaPreferences =
+        serde_json::from_value(row.get::<serde_json::Value, _>("media_preferences"))
+            .map_err(|e| anyhow::anyhow!("Failed to parse media_preferences: {}", e))?;
 
-    let emergency_contact: EmergencyContact = serde_json::from_value(
-        row.get::<serde_json::Value, _>("emergency_contact_json")
-    ).map_err(|e| anyhow::anyhow!("Failed to parse emergency_contact: {}", e))?;
+    let emergency_contact: EmergencyContact =
+        serde_json::from_value(row.get::<serde_json::Value, _>("emergency_contact_json"))
+            .map_err(|e| anyhow::anyhow!("Failed to parse emergency_contact: {}", e))?;
 
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
-    let password_last_reset = row.get::<Option<DateTime<Utc>>, _>("password_last_reset").map(datetime_to_system_time);
-    let last_login = row.get::<Option<DateTime<Utc>>, _>("last_login").map(datetime_to_system_time);
+    let password_last_reset = row
+        .get::<Option<DateTime<Utc>>, _>("password_last_reset")
+        .map(datetime_to_system_time);
+    let last_login = row
+        .get::<Option<DateTime<Utc>>, _>("last_login")
+        .map(datetime_to_system_time);
 
     let primary_phone_number_id = row
         .get::<Option<String>, _>("primary_phone_number_id")
@@ -920,7 +955,11 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
 
     let hangup_cause_str: String = row.get("hangup_cause");
     let hangup_cause = if hangup_cause_str.starts_with("other:") {
-        let code = hangup_cause_str.strip_prefix("other:").unwrap().parse().unwrap_or(0);
+        let code = hangup_cause_str
+            .strip_prefix("other:")
+            .unwrap()
+            .parse()
+            .unwrap_or(0);
         HangupCause::Other(code)
     } else {
         serde_json::from_str::<HangupCause>(&format!("\"{}\"", hangup_cause_str))
@@ -935,8 +974,8 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
     let disposition = serde_json::from_str::<CallDisposition>(&format!("\"{}\"", disposition_str))
         .unwrap_or(CallDisposition::NoAnswer);
 
-    let custom_data: Option<serde_json::Value> = row
-        .get::<Option<serde_json::Value>, _>("custom_data");
+    let custom_data: Option<serde_json::Value> =
+        row.get::<Option<serde_json::Value>, _>("custom_data");
 
     let start_time = datetime_to_system_time(row.get::<DateTime<Utc>, _>("start_time"));
     let answer_time = row
@@ -1172,8 +1211,6 @@ impl PhoneNumberStore for PostgresStorage {
 // ============================================================================
 
 #[async_trait]
-
-
 #[async_trait]
 impl LineBindingStore for PostgresStorage {
     async fn get_line_binding(&self, id: &LineBindingId) -> Result<Option<LineBinding>> {
@@ -1274,10 +1311,7 @@ impl LineBindingStore for PostgresStorage {
         Ok(bindings)
     }
 
-    async fn list_line_bindings_by_device(
-        &self,
-        device_id: &DeviceId,
-    ) -> Result<Vec<LineBinding>> {
+    async fn list_line_bindings_by_device(&self, device_id: &DeviceId) -> Result<Vec<LineBinding>> {
         let rows = sqlx::query(
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
                     lb.no_answer_timeout_secs, lb.forward_on_busy, lb.forward_on_no_answer,
@@ -1372,8 +1406,6 @@ impl LineBindingStore for PostgresStorage {
         Ok(())
     }
 }
-
-
 
 #[async_trait]
 impl ExtensionStore for PostgresStorage {
@@ -1781,8 +1813,7 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
         _ => RingStrategy::Simultaneous,
     };
 
-    let no_answer_timeout =
-        Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
+    let no_answer_timeout = Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
 
@@ -1816,13 +1847,15 @@ fn row_to_extension(row: sqlx::postgres::PgRow) -> Result<Extension> {
         "user" => ExtensionTarget::User(UserId::from_str(&target_id)?),
         "phone_number" => ExtensionTarget::PhoneNumber(PhoneNumberId::from_str(&target_id)?),
         "device" => ExtensionTarget::Device(DeviceId::from_str(&target_id)?),
-        "service" => {
-            ExtensionTarget::Service(fcp_core::ServiceId::from_str(&target_id).unwrap_or_else(
-                |_| fcp_core::ServiceId::new(),
-            ))
-        }
+        "service" => ExtensionTarget::Service(
+            fcp_core::ServiceId::from_str(&target_id)
+                .unwrap_or_else(|_| fcp_core::ServiceId::new()),
+        ),
         _ => {
-            return Err(anyhow::anyhow!("Unknown extension target type: {}", target_type));
+            return Err(anyhow::anyhow!(
+                "Unknown extension target type: {}",
+                target_type
+            ));
         }
     };
 

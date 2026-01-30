@@ -39,11 +39,14 @@ pub async fn proxy_handler(
     req: Request<Body>,
 ) -> Result<Response, StatusCode> {
     let path = req.uri().path();
-    let query = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
 
     // Determine which backend to route to based on path
-    let backend_url = determine_backend(&state.config, path)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let backend_url = determine_backend(&state.config, path).ok_or(StatusCode::NOT_FOUND)?;
 
     // Construct target URL
     let target_url = format!("{}{}{}", backend_url, path, query);
@@ -107,7 +110,18 @@ async fn forward_request(
     for (name, value) in headers.iter() {
         let name_str = name.as_str();
         // Skip hop-by-hop headers
-        if !matches!(name_str, "host" | "connection" | "keep-alive" | "transfer-encoding" | "upgrade" | "te" | "trailer" | "proxy-authorization" | "proxy-authenticate") {
+        if !matches!(
+            name_str,
+            "host"
+                | "connection"
+                | "keep-alive"
+                | "transfer-encoding"
+                | "upgrade"
+                | "te"
+                | "trailer"
+                | "proxy-authorization"
+                | "proxy-authenticate"
+        ) {
             backend_req = backend_req.header(name, value);
         }
     }
@@ -120,15 +134,12 @@ async fn forward_request(
     let headers = backend_resp.headers().clone();
     let body_bytes = backend_resp.bytes().await?;
 
-    let mut response = Response::builder()
-        .status(status);
+    let mut response = Response::builder().status(status);
 
     // Copy response headers
     for (name, value) in headers.iter() {
         response = response.header(name, value);
     }
 
-    Ok(response
-        .body(Body::from(body_bytes))
-        .unwrap())
+    Ok(response.body(Body::from(body_bytes)).unwrap())
 }

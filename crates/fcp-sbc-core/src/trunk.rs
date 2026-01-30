@@ -188,10 +188,7 @@ impl TrunkConfig {
         }
         for (i, host) in self.hosts.iter().enumerate() {
             if host.is_empty() {
-                return Err(format!(
-                    "trunk {:?}: host {i} must not be empty",
-                    self.name
-                ));
+                return Err(format!("trunk {:?}: host {i} must not be empty", self.name));
             }
             if host.contains('\r') || host.contains('\n') {
                 return Err(format!(
@@ -201,10 +198,7 @@ impl TrunkConfig {
             }
         }
         if self.weight > 100 {
-            return Err(format!(
-                "trunk {:?}: weight must not exceed 100",
-                self.name
-            ));
+            return Err(format!("trunk {:?}: weight must not exceed 100", self.name));
         }
         if let Some(expiry) = self.register_expiry {
             if !(60..=86400).contains(&expiry) {
@@ -222,7 +216,9 @@ impl TrunkConfig {
                 ));
             }
         }
-        self.failover.validate().map_err(|e| format!("trunk {:?}: {e}", self.name))?;
+        self.failover
+            .validate()
+            .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
         Ok(())
     }
 }

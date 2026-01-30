@@ -103,11 +103,7 @@ impl RoutingResult {
 
     /// Returns enabled targets sorted by priority.
     pub fn enabled_targets(&self) -> Vec<&RoutingTarget> {
-        let mut targets: Vec<&RoutingTarget> = self
-            .targets
-            .iter()
-            .filter(|t| t.enabled)
-            .collect();
+        let mut targets: Vec<&RoutingTarget> = self.targets.iter().filter(|t| t.enabled).collect();
         targets.sort_by_key(|t| t.priority);
         targets
     }

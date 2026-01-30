@@ -101,7 +101,8 @@ impl LineBinding {
     /// Add a device to this line binding.
     pub fn add_device(&mut self, device_binding: DeviceBinding) {
         // Remove existing binding for this device if present
-        self.devices.retain(|d| d.device_id != device_binding.device_id);
+        self.devices
+            .retain(|d| d.device_id != device_binding.device_id);
         self.devices.push(device_binding);
         self.updated_at = SystemTime::now();
     }
@@ -292,12 +293,8 @@ mod tests {
         let user_id = UserId::new();
         let tenant_id = TenantId::new();
 
-        let binding = LineBinding::new(
-            phone_number_id,
-            Some(user_id),
-            BindingType::User,
-            tenant_id,
-        );
+        let binding =
+            LineBinding::new(phone_number_id, Some(user_id), BindingType::User, tenant_id);
 
         assert_eq!(binding.phone_number_id, phone_number_id);
         assert_eq!(binding.owner_user_id, Some(user_id));

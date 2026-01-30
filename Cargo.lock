@@ -1781,6 +1781,7 @@ dependencies = [
  "sip-auth",
  "sip-core",
  "sip-dialog",
+ "sip-dns",
  "sip-observe",
  "sip-ratelimit",
  "sip-registrar",

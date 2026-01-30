@@ -4,12 +4,12 @@ use super::{TtsProvider, TtsProviderConfig};
 use anyhow::Result;
 use std::sync::Arc;
 
-pub mod google_cloud;
 pub mod aws_polly;
 pub mod azure;
-pub mod openai;
 pub mod elevenlabs;
+pub mod google_cloud;
 pub mod local;
+pub mod openai;
 
 /// Create a TTS provider from configuration.
 pub async fn create_provider(config: TtsProviderConfig) -> Result<Arc<dyn TtsProvider>> {

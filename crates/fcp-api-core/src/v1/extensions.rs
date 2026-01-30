@@ -1,16 +1,14 @@
 //! Extension management API endpoints.
 
 use crate::{error::ApiError, state::ApiState};
-use fcp_core::storage::ExtensionStore;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use fcp_core::{
-    DeviceId, Extension, ExtensionTarget, PhoneNumberId, ServiceId, TenantId, UserId,
-};
+use fcp_core::storage::ExtensionStore;
+use fcp_core::{DeviceId, Extension, ExtensionTarget, PhoneNumberId, ServiceId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -197,9 +195,15 @@ pub async fn create_extension(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create extension: {}", e)))?;
 
-    info!("Created extension {} -> {}", extension.number, extension.target);
+    info!(
+        "Created extension {} -> {}",
+        extension.number, extension.target
+    );
 
-    Ok((StatusCode::CREATED, Json(ExtensionResponse::from(extension))))
+    Ok((
+        StatusCode::CREATED,
+        Json(ExtensionResponse::from(extension)),
+    ))
 }
 
 /// Update extension.
@@ -244,7 +248,10 @@ pub async fn update_extension(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update extension: {}", e)))?;
 
-    info!("Updated extension {} -> {}", extension.number, extension.target);
+    info!(
+        "Updated extension {} -> {}",
+        extension.number, extension.target
+    );
 
     Ok(Json(extension.into()))
 }

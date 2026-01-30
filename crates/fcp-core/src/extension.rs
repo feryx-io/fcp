@@ -175,7 +175,11 @@ impl fmt::Display for ValidationError {
         match self {
             Self::EmptyExtension => write!(f, "Extension number cannot be empty"),
             Self::InvalidLength { length } => {
-                write!(f, "Extension length {} is invalid (must be 2-10 digits)", length)
+                write!(
+                    f,
+                    "Extension length {} is invalid (must be 2-10 digits)",
+                    length
+                )
             }
             Self::NonNumeric => write!(f, "Extension must contain only digits"),
             Self::ReservedPrefix(prefix) => {
@@ -252,10 +256,7 @@ mod tests {
         assert!(extension.description.is_none());
 
         extension.set_description("Alice's extension".to_string());
-        assert_eq!(
-            extension.description,
-            Some("Alice's extension".to_string())
-        );
+        assert_eq!(extension.description, Some("Alice's extension".to_string()));
     }
 
     #[test]

@@ -349,7 +349,12 @@ pub async fn update_message(
             "heard" => MessageStatus::Heard,
             "saved" => MessageStatus::Saved,
             "deleted" => MessageStatus::Deleted,
-            _ => return Err(ApiError::BadRequest(format!("Invalid status: {}", status_str))),
+            _ => {
+                return Err(ApiError::BadRequest(format!(
+                    "Invalid status: {}",
+                    status_str
+                )))
+            }
         };
         message.status = status;
         message.accessed_at = Some(SystemTime::now());

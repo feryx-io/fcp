@@ -127,7 +127,9 @@ impl TenantsState {
     }
 
     pub fn selected_tenant(&self) -> Option<&TenantResponse> {
-        self.table_state.selected().and_then(|i| self.tenants.get(i))
+        self.table_state
+            .selected()
+            .and_then(|i| self.tenants.get(i))
     }
 
     pub fn next_tenant(&mut self) {
@@ -169,23 +171,31 @@ impl TenantsState {
             self.modal = TenantModal::Edit;
             self.current_field = TenantField::Name;
             self.name_input = Input::default().with_value(tenant.name.clone());
-            self.description_input = Input::default()
-                .with_value(tenant.description.clone().unwrap_or_default());
+            self.description_input =
+                Input::default().with_value(tenant.description.clone().unwrap_or_default());
             self.status_input = Input::default().with_value(tenant.status.clone());
-            self.contact_email_input = Input::default()
-                .with_value(tenant.contact_email.clone().unwrap_or_default());
-            self.contact_phone_input = Input::default()
-                .with_value(tenant.contact_phone.clone().unwrap_or_default());
+            self.contact_email_input =
+                Input::default().with_value(tenant.contact_email.clone().unwrap_or_default());
+            self.contact_phone_input =
+                Input::default().with_value(tenant.contact_phone.clone().unwrap_or_default());
             self.max_users_input = Input::default()
                 .with_value(tenant.max_users.map(|v| v.to_string()).unwrap_or_default());
-            self.max_phone_numbers_input = Input::default()
-                .with_value(tenant.max_phone_numbers.map(|v| v.to_string()).unwrap_or_default());
-            self.max_concurrent_calls_input = Input::default()
-                .with_value(tenant.max_concurrent_calls.map(|v| v.to_string()).unwrap_or_default());
-            self.billing_id_input = Input::default()
-                .with_value(tenant.billing_id.clone().unwrap_or_default());
-            self.metadata_input = Input::default()
-                .with_value(tenant.metadata.clone().unwrap_or_default());
+            self.max_phone_numbers_input = Input::default().with_value(
+                tenant
+                    .max_phone_numbers
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+            self.max_concurrent_calls_input = Input::default().with_value(
+                tenant
+                    .max_concurrent_calls
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            );
+            self.billing_id_input =
+                Input::default().with_value(tenant.billing_id.clone().unwrap_or_default());
+            self.metadata_input =
+                Input::default().with_value(tenant.metadata.clone().unwrap_or_default());
         }
     }
 
@@ -375,9 +385,24 @@ fn render_tenant_list(f: &mut Frame, area: Rect, state: &mut TenantsState) {
         Row::new(vec![
             Cell::from(tenant.name.clone()),
             Cell::from(tenant.status.clone()).style(Style::default().fg(status_color)),
-            Cell::from(tenant.max_users.map(|v| v.to_string()).unwrap_or_else(|| "∞".to_string())),
-            Cell::from(tenant.max_phone_numbers.map(|v| v.to_string()).unwrap_or_else(|| "∞".to_string())),
-            Cell::from(tenant.max_concurrent_calls.map(|v| v.to_string()).unwrap_or_else(|| "∞".to_string())),
+            Cell::from(
+                tenant
+                    .max_users
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "∞".to_string()),
+            ),
+            Cell::from(
+                tenant
+                    .max_phone_numbers
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "∞".to_string()),
+            ),
+            Cell::from(
+                tenant
+                    .max_concurrent_calls
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "∞".to_string()),
+            ),
         ])
     });
 
@@ -441,15 +466,30 @@ fn render_details(f: &mut Frame, area: Rect, state: &TenantsState) {
             Line::from(""),
             Line::from(vec![
                 Span::styled("Max Users: ", Style::default().fg(Color::Cyan)),
-                Span::raw(tenant.max_users.map(|v| v.to_string()).unwrap_or_else(|| "Unlimited".to_string())),
+                Span::raw(
+                    tenant
+                        .max_users
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "Unlimited".to_string()),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Max Phone Numbers: ", Style::default().fg(Color::Cyan)),
-                Span::raw(tenant.max_phone_numbers.map(|v| v.to_string()).unwrap_or_else(|| "Unlimited".to_string())),
+                Span::raw(
+                    tenant
+                        .max_phone_numbers
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "Unlimited".to_string()),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Max Concurrent Calls: ", Style::default().fg(Color::Cyan)),
-                Span::raw(tenant.max_concurrent_calls.map(|v| v.to_string()).unwrap_or_else(|| "Unlimited".to_string())),
+                Span::raw(
+                    tenant
+                        .max_concurrent_calls
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "Unlimited".to_string()),
+                ),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -470,23 +510,17 @@ fn render_details(f: &mut Frame, area: Rect, state: &TenantsState) {
         vec![Line::from("No tenant selected")]
     };
 
-    let paragraph = Paragraph::new(details)
-        .block(Block::default().title("Details").borders(Borders::ALL));
+    let paragraph =
+        Paragraph::new(details).block(Block::default().title("Details").borders(Borders::ALL));
 
     f.render_widget(paragraph, area);
 }
 
 fn render_status_bar(f: &mut Frame, area: Rect, state: &TenantsState) {
     let text = if let Some(ref msg) = state.message {
-        Line::from(vec![Span::styled(
-            msg,
-            Style::default().fg(Color::Green),
-        )])
+        Line::from(vec![Span::styled(msg, Style::default().fg(Color::Green))])
     } else if let Some(ref err) = state.error {
-        Line::from(vec![Span::styled(
-            err,
-            Style::default().fg(Color::Red),
-        )])
+        Line::from(vec![Span::styled(err, Style::default().fg(Color::Red))])
     } else {
         Line::from(vec![Span::raw(format!(
             "Total tenants: {}",
@@ -494,8 +528,7 @@ fn render_status_bar(f: &mut Frame, area: Rect, state: &TenantsState) {
         ))])
     };
 
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL));
+    let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
 
     f.render_widget(paragraph, area);
 }
@@ -515,7 +548,10 @@ fn render_form_modal(f: &mut Frame, area: Rect, state: &TenantsState) {
 
     // Modal block
     let block = Block::default()
-        .title(format!("{} (Tab/Shift+Tab: next/prev field, Enter: submit, Esc: cancel)", modal_title))
+        .title(format!(
+            "{} (Tab/Shift+Tab: next/prev field, Enter: submit, Esc: cancel)",
+            modal_title
+        ))
         .borders(Borders::ALL)
         .style(Style::default().bg(Color::Black));
 
@@ -539,21 +575,83 @@ fn render_form_modal(f: &mut Frame, area: Rect, state: &TenantsState) {
         ])
         .split(inner);
 
-    render_field(f, field_chunks[0], "Name", &state.name_input, state.current_field == TenantField::Name);
-    render_field(f, field_chunks[1], "Description", &state.description_input, state.current_field == TenantField::Description);
-    render_field(f, field_chunks[2], "Status (active/trial/suspended/closed)", &state.status_input, state.current_field == TenantField::Status);
-    render_field(f, field_chunks[3], "Contact Email", &state.contact_email_input, state.current_field == TenantField::ContactEmail);
-    render_field(f, field_chunks[4], "Contact Phone", &state.contact_phone_input, state.current_field == TenantField::ContactPhone);
-    render_field(f, field_chunks[5], "Max Users (empty = unlimited)", &state.max_users_input, state.current_field == TenantField::MaxUsers);
-    render_field(f, field_chunks[6], "Max Phone Numbers (empty = unlimited)", &state.max_phone_numbers_input, state.current_field == TenantField::MaxPhoneNumbers);
-    render_field(f, field_chunks[7], "Max Concurrent Calls (empty = unlimited)", &state.max_concurrent_calls_input, state.current_field == TenantField::MaxConcurrentCalls);
-    render_field(f, field_chunks[8], "Billing ID", &state.billing_id_input, state.current_field == TenantField::BillingId);
-    render_field(f, field_chunks[9], "Metadata (JSON)", &state.metadata_input, state.current_field == TenantField::Metadata);
+    render_field(
+        f,
+        field_chunks[0],
+        "Name",
+        &state.name_input,
+        state.current_field == TenantField::Name,
+    );
+    render_field(
+        f,
+        field_chunks[1],
+        "Description",
+        &state.description_input,
+        state.current_field == TenantField::Description,
+    );
+    render_field(
+        f,
+        field_chunks[2],
+        "Status (active/trial/suspended/closed)",
+        &state.status_input,
+        state.current_field == TenantField::Status,
+    );
+    render_field(
+        f,
+        field_chunks[3],
+        "Contact Email",
+        &state.contact_email_input,
+        state.current_field == TenantField::ContactEmail,
+    );
+    render_field(
+        f,
+        field_chunks[4],
+        "Contact Phone",
+        &state.contact_phone_input,
+        state.current_field == TenantField::ContactPhone,
+    );
+    render_field(
+        f,
+        field_chunks[5],
+        "Max Users (empty = unlimited)",
+        &state.max_users_input,
+        state.current_field == TenantField::MaxUsers,
+    );
+    render_field(
+        f,
+        field_chunks[6],
+        "Max Phone Numbers (empty = unlimited)",
+        &state.max_phone_numbers_input,
+        state.current_field == TenantField::MaxPhoneNumbers,
+    );
+    render_field(
+        f,
+        field_chunks[7],
+        "Max Concurrent Calls (empty = unlimited)",
+        &state.max_concurrent_calls_input,
+        state.current_field == TenantField::MaxConcurrentCalls,
+    );
+    render_field(
+        f,
+        field_chunks[8],
+        "Billing ID",
+        &state.billing_id_input,
+        state.current_field == TenantField::BillingId,
+    );
+    render_field(
+        f,
+        field_chunks[9],
+        "Metadata (JSON)",
+        &state.metadata_input,
+        state.current_field == TenantField::Metadata,
+    );
 }
 
 fn render_field(f: &mut Frame, area: Rect, label: &str, input: &Input, is_focused: bool) {
     let style = if is_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -595,7 +693,9 @@ fn render_delete_modal(f: &mut Frame, area: Rect, state: &TenantsState) {
         Line::from(vec![Span::raw("Are you sure you want to delete tenant")]),
         Line::from(vec![Span::styled(
             tenant_name,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![Span::raw("Press Enter to confirm, Esc to cancel")]),
@@ -652,34 +752,50 @@ pub async fn fetch_tenants(client: &ApiClient, state: &mut TenantsState) {
     }
 }
 
-
 /// Handle tenant-specific actions (keyboard events in the tenants view)
-pub async fn handle_tenant_action(state: &mut TenantsState, client: &ApiClient, event: &crate::tui::event::Event) -> bool {
+pub async fn handle_tenant_action(
+    state: &mut TenantsState,
+    client: &ApiClient,
+    event: &crate::tui::event::Event,
+) -> bool {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     match state.modal {
         TenantModal::Add | TenantModal::Edit => {
             // Handle form modal events
             match event {
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) => {
                     state.close_modal();
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Tab, modifiers: KeyModifiers::NONE, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Tab,
+                    modifiers: KeyModifiers::NONE,
+                    ..
+                }) => {
                     state.next_field();
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::BackTab, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::BackTab,
+                    ..
+                }) => {
                     state.previous_field();
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                }) => {
                     // Submit the form
                     if state.modal == TenantModal::Add {
                         let req = state.build_create_request();
                         match client.create_tenant(&req).await {
                             Ok(tenant) => {
-                                state.message = Some(format!("Tenant '{}' created successfully", tenant.name));
+                                state.message =
+                                    Some(format!("Tenant '{}' created successfully", tenant.name));
                                 state.close_modal();
                                 fetch_tenants(client, state).await;
                             }
@@ -693,7 +809,10 @@ pub async fn handle_tenant_action(state: &mut TenantsState, client: &ApiClient, 
                             let req = state.build_update_request();
                             match client.update_tenant(&tenant_id, &req).await {
                                 Ok(tenant) => {
-                                    state.message = Some(format!("Tenant '{}' updated successfully", tenant.name));
+                                    state.message = Some(format!(
+                                        "Tenant '{}' updated successfully",
+                                        tenant.name
+                                    ));
                                     state.close_modal();
                                     fetch_tenants(client, state).await;
                                 }
@@ -705,8 +824,11 @@ pub async fn handle_tenant_action(state: &mut TenantsState, client: &ApiClient, 
                     }
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Char(c), modifiers, .. })
-                    if *modifiers == KeyModifiers::NONE || *modifiers == KeyModifiers::SHIFT => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Char(c),
+                    modifiers,
+                    ..
+                }) if *modifiers == KeyModifiers::NONE || *modifiers == KeyModifiers::SHIFT => {
                     // Type character into current field (accept both lowercase and uppercase)
                     let input = state.get_current_input_mut();
                     let mut value = input.value().to_string();
@@ -714,30 +836,47 @@ pub async fn handle_tenant_action(state: &mut TenantsState, client: &ApiClient, 
                     *input = Input::default().with_value(value);
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Backspace, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Backspace,
+                    ..
+                }) => {
                     let input = state.get_current_input_mut();
                     let mut value = input.value().to_string();
                     value.pop();
                     *input = Input::default().with_value(value);
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Delete, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Delete,
+                    ..
+                }) => {
                     // Delete doesn't make sense without cursor position, so ignore
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Left, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Left,
+                    ..
+                }) => {
                     // Cursor movement doesn't make sense without tracking cursor, so ignore
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Right, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Right,
+                    ..
+                }) => {
                     // Cursor movement doesn't make sense without tracking cursor, so ignore
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Home, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Home,
+                    ..
+                }) => {
                     // Cursor movement doesn't make sense without tracking cursor, so ignore
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::End, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::End, ..
+                }) => {
                     // Cursor movement doesn't make sense without tracking cursor, so ignore
                     true
                 }
@@ -747,18 +886,24 @@ pub async fn handle_tenant_action(state: &mut TenantsState, client: &ApiClient, 
         TenantModal::Delete => {
             // Handle delete confirmation modal
             match event {
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Esc, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Esc, ..
+                }) => {
                     state.close_modal();
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Enter, .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                }) => {
                     // Confirm deletion
                     if let Some(tenant) = state.selected_tenant() {
                         let tenant_id = tenant.id.clone();
                         let tenant_name = tenant.name.clone();
                         match client.delete_tenant(&tenant_id).await {
                             Ok(_) => {
-                                state.message = Some(format!("Tenant '{}' deleted successfully", tenant_name));
+                                state.message =
+                                    Some(format!("Tenant '{}' deleted successfully", tenant_name));
                                 state.close_modal();
                                 fetch_tenants(client, state).await;
                             }
@@ -776,23 +921,35 @@ pub async fn handle_tenant_action(state: &mut TenantsState, client: &ApiClient, 
             // Handle action keys when no modal is open
             // Note: Up/Down navigation is handled in the main event loop (mod.rs)
             match event {
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Char('a'), .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Char('a'),
+                    ..
+                }) => {
                     state.open_add_modal();
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Char('e'), .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Char('e'),
+                    ..
+                }) => {
                     if state.selected_tenant().is_some() {
                         state.open_edit_modal();
                     }
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Char('d'), .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Char('d'),
+                    ..
+                }) => {
                     if state.selected_tenant().is_some() {
                         state.open_delete_modal();
                     }
                     true
                 }
-                crate::tui::event::Event::Key(KeyEvent { code: KeyCode::Char('r'), .. }) => {
+                crate::tui::event::Event::Key(KeyEvent {
+                    code: KeyCode::Char('r'),
+                    ..
+                }) => {
                     // Refresh the list
                     fetch_tenants(client, state).await;
                     true

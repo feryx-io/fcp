@@ -1,13 +1,13 @@
 //! Device management API endpoints.
 
 use crate::{error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse};
-use fcp_core::storage::DeviceStore;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use fcp_core::storage::DeviceStore;
 use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;

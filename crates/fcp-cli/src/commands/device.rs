@@ -35,13 +35,7 @@ pub async fn handle(
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
                         .set_header(vec![
-                            "ID",
-                            "Type",
-                            "MAC",
-                            "User",
-                            "Model",
-                            "Enabled",
-                            "Tenant",
+                            "ID", "Type", "MAC", "User", "Model", "Enabled", "Tenant",
                         ]);
 
                     for device in &devices {
@@ -52,7 +46,10 @@ pub async fn handle(
                                 .mac_address
                                 .clone()
                                 .unwrap_or_else(|| "-".to_string()),
-                            device.owner_user_id.clone().unwrap_or_else(|| "-".to_string()),
+                            device
+                                .owner_user_id
+                                .clone()
+                                .unwrap_or_else(|| "-".to_string()),
                             device.model.clone().unwrap_or_else(|| "-".to_string()),
                             if device.enabled { "yes" } else { "no" }.to_string(),
                             device.tenant_id.clone(),

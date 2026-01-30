@@ -225,7 +225,10 @@ impl Worker {
     /// Calculate retry delay with exponential backoff
     fn calculate_retry_delay(&self, retry_count: u32) -> Duration {
         let delay = self.retry_config.initial_delay.as_secs_f64()
-            * self.retry_config.backoff_multiplier.powi(retry_count as i32);
+            * self
+                .retry_config
+                .backoff_multiplier
+                .powi(retry_count as i32);
 
         Duration::from_secs_f64(delay.min(self.retry_config.max_delay.as_secs_f64()))
     }
