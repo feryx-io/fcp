@@ -145,6 +145,10 @@ pub struct TrunkConfig {
 
     /// Maximum concurrent calls on this trunk (0 = unlimited).
     pub max_concurrent_calls: u32,
+
+    /// Names of HMR rules to apply for this trunk (empty = use all matching global rules).
+    #[serde(default)]
+    pub header_rules: Vec<String>,
 }
 
 impl Default for TrunkConfig {
@@ -162,6 +166,7 @@ impl Default for TrunkConfig {
             register_expiry: None,
             failover: TrunkFailover::default(),
             max_concurrent_calls: 0,
+            header_rules: Vec::new(),
         }
     }
 }

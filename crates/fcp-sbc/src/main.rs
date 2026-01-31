@@ -22,6 +22,8 @@ mod config;
 mod enforcement;
 mod health;
 mod health_probes;
+mod hmr;
+mod hmr_dispatcher;
 mod hooks;
 mod metrics;
 mod nat;
@@ -36,6 +38,7 @@ use admission::AdmissionController;
 use cli::Cli;
 use enforcement::SbcEnforcementHandler;
 use health::HealthState;
+use hmr::HeaderManipulationEngine;
 use hooks::SbcEventHooks;
 use metrics::SbcRuntimeMetrics;
 use registration_store::InMemoryRegistrationStore;
@@ -105,8 +108,32 @@ async fn main() -> Result<()> {
         warn!("transport metrics already configured");
     }
 
-    // 8. Create TransactionManager
-    let transaction_manager = TransactionManager::new_with_pool(dispatcher.clone(), tcp_pool);
+    // 7b. Build HMR engine (if enabled) and wrap dispatcher for egress
+    let hmr_engine = if sbc_config.header_manipulation.enabled {
+        Some(Arc::new(
+            HeaderManipulationEngine::new(
+                &sbc_config.header_manipulation,
+                &sbc_config.trunks,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to compile HMR rules: {e}"))?,
+        ))
+    } else {
+        None
+    };
+
+    let effective_dispatcher: Arc<dyn TransportDispatcher> = if let Some(ref engine) = hmr_engine {
+        Arc::new(hmr_dispatcher::HmrTransportDispatcher::new(
+            Arc::clone(&dispatcher) as Arc<dyn TransportDispatcher>,
+            Arc::clone(engine),
+            &sbc_config.trunks,
+        ))
+    } else {
+        Arc::clone(&dispatcher) as Arc<dyn TransportDispatcher>
+    };
+
+    // 8. Create TransactionManager (uses effective dispatcher for HMR egress)
+    let transaction_manager =
+        TransactionManager::new_with_pool(effective_dispatcher.clone(), tcp_pool);
     let transaction_service = TransactionService::new(transaction_manager);
     let transaction_manager_ref = Arc::clone(transaction_service.manager());
 
@@ -129,7 +156,7 @@ async fn main() -> Result<()> {
         .via_advertised_addr(&local_addr)?
         .transaction_manager(Arc::clone(&transaction_manager_ref))
         .resolver(resolver)
-        .dispatcher(Arc::clone(&dispatcher) as Arc<dyn TransportDispatcher>)
+        .dispatcher(Arc::clone(&effective_dispatcher))
         .credential_provider(credential_provider)
         .build()
         .context("Failed to build IntegratedUAC")?;
@@ -242,7 +269,20 @@ async fn main() -> Result<()> {
         Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
     ));
 
-    // 19. Create SbcEnforcementHandler (wraps SipMessageHandler)
+    // 19. Build peer-trunk IP map for ingress trunk identification
+    let peer_trunk_map = {
+        let mut map = std::collections::HashMap::new();
+        for trunk in &sbc_config.trunks {
+            for host in &trunk.hosts {
+                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                    map.insert(ip, trunk.name.clone());
+                }
+            }
+        }
+        map
+    };
+
+    // 19b. Create SbcEnforcementHandler (wraps SipMessageHandler)
     let enforcement_handler = Arc::new(SbcEnforcementHandler::new(
         Arc::clone(&handler),
         sbc_config.security.clone(),
@@ -250,6 +290,8 @@ async fn main() -> Result<()> {
         Arc::clone(&admission),
         Arc::clone(&sbc_metrics),
         Arc::clone(&dispatcher),
+        hmr_engine,
+        peer_trunk_map,
     ));
 
     // 20. Create TransportListener (wired to SbcEnforcementHandler)

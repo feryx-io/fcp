@@ -27,6 +27,7 @@ fcp-storage-sqlite = { path = "../fcp-storage-sqlite" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
 sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
 sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
@@ -67,6 +68,7 @@ dashmap = "6"
 socket2 = "0.5"
 ipnetwork = "0.20"
 rand = "0.8"
+regex = "1"
 uuid = { workspace = true }
 
 [dev-dependencies]

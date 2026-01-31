@@ -10,6 +10,7 @@
 
 pub mod admission;
 pub mod config;
+pub mod hmr;
 pub mod metrics;
 pub mod nat;
 pub mod rate_limit;
@@ -25,4 +26,8 @@ pub use nat::{NatConfig, StunServerConfig, TurnServerConfig};
 pub use rate_limit::{MethodRateLimits, RateLimitEntry, RateLimitPolicyConfig};
 pub use security::{AclAction, IpAcl, IpAclEntry, MalformedSipPolicy, SecurityConfig};
 pub use siprec::{RecordingPolicy, RecordingServer, SiprecConfig};
+pub use hmr::{
+    HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection,
+    HmrMessageType, HmrRule,
+};
 pub use trunk::{TrunkConfig, TrunkCredentials, TrunkDirection, TrunkFailover, TrunkTransport};

@@ -9,6 +9,7 @@
 //! layer to avoid timeouts.
 
 use crate::admission::AdmissionController;
+use crate::hmr::HeaderManipulationEngine;
 use crate::metrics::SbcRuntimeMetrics;
 use bytes::Bytes;
 use fcp_sbc_core::security::{AclAction, MalformedSipPolicy, SecurityConfig};
@@ -17,7 +18,8 @@ use fcp_sip::listener::InboundMessageHandler;
 use fcp_sip::transport::RealTransportDispatcher;
 use sip_ratelimit::RateLimiterSet;
 use sip_transaction::{TransportContext, TransportDispatcher};
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -39,6 +41,9 @@ pub struct SbcEnforcementHandler {
     admission: Arc<AdmissionController>,
     metrics: Arc<SbcRuntimeMetrics>,
     dispatcher: Arc<RealTransportDispatcher>,
+    hmr_engine: Option<Arc<HeaderManipulationEngine>>,
+    /// Maps peer IP to trunk name for trunk identification on ingress.
+    peer_trunk_map: HashMap<IpAddr, String>,
 }
 
 impl SbcEnforcementHandler {
@@ -49,6 +54,8 @@ impl SbcEnforcementHandler {
         admission: Arc<AdmissionController>,
         metrics: Arc<SbcRuntimeMetrics>,
         dispatcher: Arc<RealTransportDispatcher>,
+        hmr_engine: Option<Arc<HeaderManipulationEngine>>,
+        peer_trunk_map: HashMap<IpAddr, String>,
     ) -> Self {
         Self {
             inner,
@@ -57,7 +64,14 @@ impl SbcEnforcementHandler {
             admission,
             metrics,
             dispatcher,
+            hmr_engine,
+            peer_trunk_map,
         }
+    }
+
+    /// Look up the trunk name for a given peer address.
+    fn identify_trunk_by_peer(&self, peer: SocketAddr) -> Option<&str> {
+        self.peer_trunk_map.get(&peer.ip()).map(|s| s.as_str())
     }
 
     /// Send a SIP rejection response back to the peer.
@@ -228,7 +242,23 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             }
         }
 
-        // 7. Delegate to inner handler
+        // 7. Apply ingress header manipulation rules (if enabled)
+        let payload = if let Some(ref engine) = self.hmr_engine {
+            let trunk = self.identify_trunk_by_peer(peer);
+            if let Some(mut req) = sip_parse::parse_request(&payload) {
+                engine.apply_request_ingress(&mut req, trunk);
+                sip_parse::serialize_request(&req)
+            } else if let Some(mut resp) = sip_parse::parse_response(&payload) {
+                engine.apply_response_ingress(&mut resp, trunk);
+                sip_parse::serialize_response(&resp)
+            } else {
+                payload // unparseable, pass through
+            }
+        } else {
+            payload
+        };
+
+        // 8. Delegate to inner handler
         self.inner
             .handle_inbound(transport, peer, payload, stream)
             .await

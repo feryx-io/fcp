@@ -15,6 +15,7 @@ use fcp_core::transport::TransportType;
 use serde::{Deserialize, Serialize};
 
 use crate::admission::AdmissionConfig;
+use crate::hmr::HeaderManipulationConfig;
 use crate::metrics::SbcMetricsConfig;
 use crate::nat::NatConfig;
 use crate::rate_limit::RateLimitPolicyConfig;
@@ -84,6 +85,10 @@ pub struct SbcConfig {
     /// Enabled transport protocols.
     pub transports: Vec<TransportType>,
 
+    /// Header manipulation rules.
+    #[serde(default)]
+    pub header_manipulation: HeaderManipulationConfig,
+
     /// Optional storage for CDR persistence.
     #[serde(default)]
     pub storage: SbcStorageConfig,
@@ -125,6 +130,7 @@ impl Default for SbcConfig {
             metrics: SbcMetricsConfig::default(),
             external_domain: String::new(),
             transports: vec![TransportType::Udp, TransportType::Tcp],
+            header_manipulation: HeaderManipulationConfig::default(),
             storage: SbcStorageConfig::default(),
         }
     }
@@ -151,6 +157,8 @@ impl SbcConfig {
         self.nat.validate()?;
         self.siprec.validate()?;
         self.metrics.validate()?;
+
+        self.header_manipulation.validate()?;
 
         for (i, trunk) in self.trunks.iter().enumerate() {
             trunk.validate().map_err(|e| format!("trunks[{i}]: {e}"))?;
