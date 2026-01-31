@@ -23,6 +23,7 @@ mod health;
 mod health_probes;
 mod hooks;
 mod metrics;
+mod nat;
 mod registration_store;
 mod topology;
 mod trunk_health;
@@ -165,23 +166,37 @@ async fn main() -> Result<()> {
     // 14. Create RateLimiterSet from sip-ratelimit config
     let rate_limiter = Arc::new(build_rate_limiter_set(&sbc_config.rate_limit));
 
-    // 15. Create SipMessageHandler (with B2buaConfig from SbcConfig)
+    // 15. Compute effective media IP and create media stack for NAT/SDP rewriting
     let local_ip = derive_local_ip(&cli.bind);
+    let effective_ip = nat::effective_media_ip(&sbc_config.nat, &local_ip);
+
+    let (media_manager, media_config) = if sbc_config.nat.enabled && sbc_config.nat.rewrite_sdp {
+        let fcp_media_cfg = nat::build_fcp_media_config(&sbc_config.nat, &effective_ip);
+        let mgr = fcp_media::MediaManager::new(fcp_media_cfg)
+            .await
+            .context("Failed to create media manager for NAT/SDP rewriting")?;
+        let core_cfg = nat::build_fcp_core_media_config(&sbc_config.nat, &effective_ip);
+        (Some(Arc::new(mgr)), Some(core_cfg))
+    } else {
+        (None, None)
+    };
+
+    // 16. Create SipMessageHandler (with B2buaConfig from SbcConfig)
     let media_profile = Some(MediaProfileBuilder::audio_only());
     let handler = Arc::new(SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
         local_uri,
         media_profile,
-        local_ip,
-        10000, // RTP port start
+        effective_ip,
+        sbc_config.nat.rtp_port_start,
         Some(registrar),
         None, // no routing service
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
         None, // no storage
-        None, // no media manager
-        None, // no media config
+        media_manager,
+        media_config,
         None, // no flow handler
         sbc_config.b2bua.clone(),
         Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),

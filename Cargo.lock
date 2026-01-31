@@ -1772,6 +1772,7 @@ dependencies = [
  "fcp-b2bua-core",
  "fcp-core",
  "fcp-events",
+ "fcp-media",
  "fcp-sbc-core",
  "fcp-sip",
  "ipnetwork",
