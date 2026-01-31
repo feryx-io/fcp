@@ -86,6 +86,38 @@ impl TrunkHealthMonitor {
             .unwrap_or(false)
     }
 
+    /// Returns `true` if the trunk is in Degraded state.
+    pub fn is_degraded(&self, trunk: &str) -> bool {
+        self.state
+            .get(trunk)
+            .map(|e| e.status == TrunkHealthStatus::Degraded)
+            .unwrap_or(false)
+    }
+
+    /// Auto-recover Degraded trunks whose last failure is older than
+    /// `recovery_interval_secs`. Returns names of recovered trunks.
+    pub fn check_degraded_recovery(&self) -> Vec<String> {
+        let now = Instant::now();
+        let mut recovered = Vec::new();
+        for mut entry in self.state.iter_mut() {
+            if entry.status != TrunkHealthStatus::Degraded {
+                continue;
+            }
+            let should_recover = match entry.last_failure {
+                Some(last_fail) => {
+                    now.duration_since(last_fail).as_secs() >= entry.recovery_interval_secs
+                }
+                None => true,
+            };
+            if should_recover {
+                entry.status = TrunkHealthStatus::Healthy;
+                entry.consecutive_failures = 0;
+                recovered.push(entry.key().clone());
+            }
+        }
+        recovered
+    }
+
     /// Get the current health status for a trunk.
     pub fn status(&self, trunk: &str) -> Option<TrunkHealthStatus> {
         self.state.get(trunk).map(|e| e.status)
@@ -358,5 +390,89 @@ mod tests {
         monitor.mark_probed("carrier-a");
         // With default interval of 30s, just-probed trunk should not be due
         assert!(!monitor.should_probe("carrier-a"));
+    }
+
+    #[test]
+    fn test_is_degraded() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        // Unknown is not degraded
+        assert!(!monitor.is_degraded("carrier-a"));
+        // Push to Degraded (2 failures with max_failures=3, 2 >= 3/2)
+        monitor.record_failure("carrier-a");
+        monitor.record_failure("carrier-a");
+        assert!(monitor.is_degraded("carrier-a"));
+        // Push to Down (3 failures)
+        monitor.record_failure("carrier-a");
+        assert!(!monitor.is_degraded("carrier-a"));
+    }
+
+    #[test]
+    fn test_check_degraded_recovery_no_failures() {
+        let trunks = vec![TrunkConfig {
+            name: "trunk-a".into(),
+            hosts: vec!["h".into()],
+            failover: fcp_sbc_core::trunk::TrunkFailover {
+                max_failures: 4,
+                recovery_interval_secs: 60,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        // Manually push to Degraded via failures then clear last_failure scenario:
+        // 2 failures with max_failures=4 → 2 >= 4/2=2 → Degraded
+        monitor.record_failure("trunk-a");
+        monitor.record_failure("trunk-a");
+        assert!(monitor.is_degraded("trunk-a"));
+        // last_failure is set, but recovery_interval is 60s — won't recover yet
+        let recovered = monitor.check_degraded_recovery();
+        assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn test_check_degraded_recovery_with_zero_interval() {
+        let trunks = vec![TrunkConfig {
+            name: "trunk-a".into(),
+            hosts: vec!["h".into()],
+            failover: fcp_sbc_core::trunk::TrunkFailover {
+                max_failures: 4,
+                recovery_interval_secs: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        monitor.record_failure("trunk-a");
+        monitor.record_failure("trunk-a");
+        assert!(monitor.is_degraded("trunk-a"));
+        // recovery_interval_secs=0 means recover immediately
+        let recovered = monitor.check_degraded_recovery();
+        assert_eq!(recovered, vec!["trunk-a".to_string()]);
+        assert_eq!(
+            monitor.status("trunk-a"),
+            Some(TrunkHealthStatus::Healthy)
+        );
+    }
+
+    #[test]
+    fn test_check_degraded_recovery_recent_failure() {
+        let trunks = vec![TrunkConfig {
+            name: "trunk-a".into(),
+            hosts: vec!["h".into()],
+            failover: fcp_sbc_core::trunk::TrunkFailover {
+                max_failures: 4,
+                recovery_interval_secs: 3600, // 1 hour
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        monitor.record_failure("trunk-a");
+        monitor.record_failure("trunk-a");
+        assert!(monitor.is_degraded("trunk-a"));
+        // Recent failure with long recovery interval — should NOT recover
+        let recovered = monitor.check_degraded_recovery();
+        assert!(recovered.is_empty());
+        assert!(monitor.is_degraded("trunk-a"));
     }
 }

@@ -233,6 +233,21 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// Send a SIPREC INVITE with custom body and Content-Type.
+    ///
+    /// Used for initiating SIPREC recording sessions with multipart/mixed bodies
+    /// containing SDP and metadata XML.
+    pub async fn send_siprec_invite(
+        &self,
+        target: &str,
+        body: &str,
+        content_type: &str,
+    ) -> Result<CallHandle> {
+        self.inner
+            .invite_with_body(target, body, content_type)
+            .await
+    }
+
     fn log_outbound(&self, method: &str, dialog_id: Option<&sip_dialog::DialogId>) {
         if let Some(dir) = &self.transcript_dir {
             if let Some(did) = dialog_id {

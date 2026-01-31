@@ -43,9 +43,13 @@ impl TrunkRouter {
     /// 4. Trunk has capacity (concurrent calls < max, or max == 0 for unlimited)
     /// 5. Trunk is within its per-trunk CPS limit (if configured)
     ///
-    /// Then selects by priority (lowest first), with weighted random selection
-    /// among trunks sharing the best priority. Records the selected trunk's
-    /// call in the CPS sliding window.
+    /// After filtering, partitions candidates into preferred (Healthy/Unknown)
+    /// and degraded pools. Preferred trunks are selected first; degraded trunks
+    /// are used only as a fallback when no preferred candidates exist.
+    ///
+    /// Within a pool, selects by priority (lowest first), with weighted random
+    /// selection among trunks sharing the best priority. Records the selected
+    /// trunk's call in the CPS sliding window.
     pub fn select_trunk(&self, direction: TrunkDirection) -> Option<&TrunkConfig> {
         let candidates: Vec<&TrunkConfig> = self
             .trunks
@@ -73,41 +77,61 @@ impl TrunkRouter {
             return None;
         }
 
-        // Find the best (lowest) priority
-        let best_priority = candidates.iter().map(|t| t.priority).min().unwrap();
-
-        // Filter to only best-priority trunks
-        let best: Vec<&TrunkConfig> = candidates
+        // Partition into preferred (not degraded) and degraded
+        let (preferred, degraded): (Vec<_>, Vec<_>) = candidates
             .into_iter()
-            .filter(|t| t.priority == best_priority)
-            .collect();
+            .partition(|t| !self.health.is_degraded(&t.name));
 
-        let selected = if best.len() == 1 {
-            best[0]
+        let pool = if !preferred.is_empty() {
+            preferred
         } else {
-            // Weighted random selection among equal-priority trunks
-            let total_weight: u32 = best.iter().map(|t| t.weight).sum();
-            if total_weight == 0 {
-                // All zero weight — pick first
-                best[0]
-            } else {
-                let mut rng = rand::thread_rng();
-                let mut pick = rng.gen_range(0..total_weight);
-                let mut chosen = best[0];
-                for trunk in &best {
-                    if pick < trunk.weight {
-                        chosen = trunk;
-                        break;
-                    }
-                    pick -= trunk.weight;
-                }
-                chosen
-            }
+            degraded
         };
+
+        let selected = self.select_from_pool(&pool)?;
 
         // Record the call in the per-trunk CPS sliding window
         self.admission.record_trunk_call(&selected.name);
         Some(selected)
+    }
+
+    /// Select a trunk from a pool by priority (lowest first) with weighted
+    /// random selection among equal-priority candidates.
+    fn select_from_pool<'a>(&self, pool: &[&'a TrunkConfig]) -> Option<&'a TrunkConfig> {
+        if pool.is_empty() {
+            return None;
+        }
+
+        // Find the best (lowest) priority
+        let best_priority = pool.iter().map(|t| t.priority).min().unwrap();
+
+        // Filter to only best-priority trunks
+        let best: Vec<&&TrunkConfig> = pool
+            .iter()
+            .filter(|t| t.priority == best_priority)
+            .collect();
+
+        if best.len() == 1 {
+            return Some(best[0]);
+        }
+
+        // Weighted random selection among equal-priority trunks
+        let total_weight: u32 = best.iter().map(|t| t.weight).sum();
+        if total_weight == 0 {
+            return Some(best[0]);
+        }
+
+        let mut rng = rand::thread_rng();
+        let mut pick = rng.gen_range(0..total_weight);
+        let mut chosen = best[0];
+        for trunk in &best {
+            if pick < trunk.weight {
+                chosen = trunk;
+                break;
+            }
+            pick -= trunk.weight;
+        }
+        Some(chosen)
     }
 }
 
@@ -308,5 +332,64 @@ mod tests {
         let router = TrunkRouter::new(trunks, health, admission);
         let selected = router.select_trunk(TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "secondary");
+    }
+
+    #[test]
+    fn test_degraded_trunk_deprioritized() {
+        // Two trunks at same priority: one Healthy, one Degraded
+        let trunks = vec![
+            make_trunk("healthy", 100, 100, TrunkDirection::Upstream),
+            make_trunk("degraded", 100, 100, TrunkDirection::Upstream),
+        ];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        health.record_success("healthy");
+        // Push "degraded" to Degraded state (max_failures defaults to 5, so 3 >= 5/2)
+        health.record_failure("degraded");
+        health.record_failure("degraded");
+        health.record_failure("degraded");
+        assert!(health.is_degraded("degraded"));
+
+        let router = TrunkRouter::new(trunks, health, default_admission());
+        // Healthy trunk should always be selected over Degraded at same priority
+        for _ in 0..20 {
+            let selected = router.select_trunk(TrunkDirection::Upstream);
+            assert_eq!(selected.unwrap().name, "healthy");
+        }
+    }
+
+    #[test]
+    fn test_degraded_trunk_used_as_fallback() {
+        // Only trunk is Degraded — should still be selected
+        let trunks = vec![make_trunk("degraded", 100, 100, TrunkDirection::Upstream)];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        health.record_failure("degraded");
+        health.record_failure("degraded");
+        health.record_failure("degraded");
+        assert!(health.is_degraded("degraded"));
+
+        let router = TrunkRouter::new(trunks, health, default_admission());
+        let selected = router.select_trunk(TrunkDirection::Upstream);
+        assert_eq!(selected.unwrap().name, "degraded");
+    }
+
+    #[test]
+    fn test_all_degraded_selects_by_priority() {
+        // Two degraded trunks with different priorities
+        let trunks = vec![
+            make_trunk("low-pri", 200, 100, TrunkDirection::Upstream),
+            make_trunk("high-pri", 100, 100, TrunkDirection::Upstream),
+        ];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        // Push both to Degraded
+        for name in &["low-pri", "high-pri"] {
+            health.record_failure(name);
+            health.record_failure(name);
+            health.record_failure(name);
+            assert!(health.is_degraded(name));
+        }
+
+        let router = TrunkRouter::new(trunks, health, default_admission());
+        let selected = router.select_trunk(TrunkDirection::Upstream);
+        assert_eq!(selected.unwrap().name, "high-pri"); // priority 100 < 200
     }
 }

@@ -26,6 +26,7 @@ mod metrics;
 mod nat;
 mod registration_store;
 mod topology;
+mod siprec;
 mod trunk_health;
 mod trunk_auth;
 mod trunk_router;
@@ -138,11 +139,25 @@ async fn main() -> Result<()> {
     let trunk_health = Arc::new(TrunkHealthMonitor::new(&sbc_config.trunks));
     let sbc_metrics = Arc::new(SbcRuntimeMetrics::new());
 
-    // 12. Create event hooks so call/registration lifecycle updates admission/metrics
-    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = Arc::new(SbcEventHooks::new(
-        Arc::clone(&admission),
-        Arc::clone(&sbc_metrics),
-    ));
+    // 12. Create SIPREC recorder (if configured)
+    let siprec_recorder = siprec::SiprecRecorder::new(
+        sbc_config.siprec.clone(),
+        Arc::clone(&uac),
+    );
+    let siprec_recorder = siprec_recorder.map(Arc::new);
+
+    // 12a. Create event hooks so call/registration lifecycle updates admission/metrics
+    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = match &siprec_recorder {
+        Some(recorder) => Arc::new(SbcEventHooks::with_recorder(
+            Arc::clone(&admission),
+            Arc::clone(&sbc_metrics),
+            Arc::clone(recorder),
+        )),
+        None => Arc::new(SbcEventHooks::new(
+            Arc::clone(&admission),
+            Arc::clone(&sbc_metrics),
+        )),
+    };
     let call_manager = Arc::new(fcp_sip::CallManager::with_events(Arc::clone(&sbc_hooks)));
 
     // 12b. Create registrar with event publishing so registration lifecycle

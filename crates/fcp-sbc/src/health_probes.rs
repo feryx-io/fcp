@@ -36,6 +36,12 @@ pub async fn run_health_probes(
     loop {
         ticker.tick().await;
 
+        // Auto-recover Degraded trunks whose last failure is old enough
+        let recovered = monitor.check_degraded_recovery();
+        for name in &recovered {
+            info!(trunk = %name, "Degraded trunk auto-recovered to Healthy");
+        }
+
         for trunk in &enabled {
             if !monitor.should_probe(&trunk.name) {
                 continue;
