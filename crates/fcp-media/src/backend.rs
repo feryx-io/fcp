@@ -28,6 +28,13 @@ pub trait MediaBackend: Send + Sync {
     /// Update session with SDP offer/answer
     async fn update_session(&self, call_id: &CallId, remote_sdp: String) -> Result<String>; // Returns local SDP
 
+    /// Set the B-leg remote endpoint from SDP.
+    ///
+    /// Used by B2BUA when the second call leg answers. This sets participant_b's
+    /// remote address so the ForwardingEngine knows where to send RTP packets
+    /// destined for the B-leg endpoint.
+    async fn update_session_b_leg(&self, call_id: &CallId, remote_sdp: String) -> Result<()>;
+
     /// Put session on hold
     async fn hold_session(&self, call_id: &CallId) -> Result<()>;
 
@@ -494,6 +501,33 @@ pub mod embedded {
             Ok(local_sdp)
         }
 
+        async fn update_session_b_leg(
+            &self,
+            call_id: &fcp_core::CallId,
+            remote_sdp: String,
+        ) -> Result<()> {
+            debug!(?call_id, "Setting B-leg remote endpoint from SDP");
+
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+
+            if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
+                let participant_b = session_info.forge_session.participant_b();
+                participant_b.write().await.remote_addr = Some(remote_endpoint);
+                info!(
+                    ?call_id,
+                    endpoint = %remote_endpoint,
+                    "Set B-leg remote RTP endpoint from SDP"
+                );
+            } else {
+                warn!(?call_id, "Failed to parse B-leg remote endpoint from SDP");
+            }
+
+            Ok(())
+        }
+
         async fn hold_session(&self, call_id: &fcp_core::CallId) -> Result<()> {
             debug!(?call_id, "Putting session on hold");
 
@@ -847,39 +881,55 @@ pub mod embedded {
                 "Bridging calls for B2BUA operation"
             );
 
-            // Get both sessions
-            let _a_leg_session = self
+            let a_session = self
                 .sessions
                 .get(a_leg_call_id)
                 .ok_or_else(|| Error::SessionNotFound(a_leg_call_id.to_string()))?;
-            let _b_leg_session = self
+
+            // Single-session mode: both call IDs refer to the same media session
+            // (used by handler.rs B2BUA where one session handles both legs)
+            if a_leg_call_id == b_leg_call_id {
+                let a_addr = a_session.forge_session.participant_a().read().await.remote_addr;
+                let b_addr = a_session.forge_session.participant_b().read().await.remote_addr;
+                info!(
+                    a_leg = %a_leg_call_id,
+                    a_endpoint = ?a_addr,
+                    b_endpoint = ?b_addr,
+                    "Single-session bridge verified"
+                );
+                return Ok(());
+            }
+
+            // Two-session mode: cross-wire endpoints between separate sessions
+            // A-leg session's participant_b → B-leg phone address
+            // B-leg session's participant_b → A-leg phone address
+            let b_session = self
                 .sessions
                 .get(b_leg_call_id)
                 .ok_or_else(|| Error::SessionNotFound(b_leg_call_id.to_string()))?;
 
-            // TODO: Phase 3.1 - Implement actual RTP forwarding via forge-media
-            // For MVP, we just mark the sessions as bridged
-            //
-            // Full implementation will need to:
-            // 1. Get ParticipantA from A-leg session
-            // 2. Get ParticipantA from B-leg session
-            // 3. Configure forge-media to forward RTP bidirectionally:
-            //    - A-leg ParticipantA → B-leg ParticipantA
-            //    - B-leg ParticipantA → A-leg ParticipantA
-            // 4. Enable DTMF passthrough
-            //
-            // Example (pseudocode for future implementation):
-            // ```
-            // self.session_manager.bridge_participants(
-            //     a_leg_session.forge_session.participant_a(),
-            //     b_leg_session.forge_session.participant_a(),
-            // ).await?;
-            // ```
+            // Get B-leg phone's address from B-leg session's participant_a
+            let b_phone_addr = b_session.forge_session.participant_a().read().await.remote_addr;
+
+            // Get A-leg phone's address from A-leg session's participant_a
+            let a_phone_addr = a_session.forge_session.participant_a().read().await.remote_addr;
+
+            // Cross-wire: A-leg session forwards to B-leg phone
+            if let Some(addr) = b_phone_addr {
+                a_session.forge_session.participant_b().write().await.remote_addr = Some(addr);
+            }
+
+            // Cross-wire: B-leg session forwards to A-leg phone
+            if let Some(addr) = a_phone_addr {
+                b_session.forge_session.participant_b().write().await.remote_addr = Some(addr);
+            }
 
             info!(
                 a_leg = %a_leg_call_id,
                 b_leg = %b_leg_call_id,
-                "Call bridge established (RTP forwarding pending full forge-media integration)"
+                a_endpoint = ?a_phone_addr,
+                b_endpoint = ?b_phone_addr,
+                "Two-session bridge established"
             );
 
             Ok(())
@@ -896,8 +946,18 @@ pub mod embedded {
                 "Unbridging calls"
             );
 
-            // TODO: Phase 3.1 - Implement actual RTP forwarding removal
-            // For MVP, this is a no-op
+            // Single-session mode: nothing to cross-unwire
+            if a_leg_call_id == b_leg_call_id {
+                return Ok(());
+            }
+
+            // Clear cross-wired participant_b on both sessions
+            if let Some(a_session) = self.sessions.get(a_leg_call_id) {
+                a_session.forge_session.participant_b().write().await.remote_addr = None;
+            }
+            if let Some(b_session) = self.sessions.get(b_leg_call_id) {
+                b_session.forge_session.participant_b().write().await.remote_addr = None;
+            }
 
             info!(
                 a_leg = %a_leg_call_id,
@@ -916,6 +976,235 @@ pub mod embedded {
             // Check if SessionManager is healthy
             // For now, just check if we can access it
             Ok(true)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_parse_remote_endpoint_ipv4() {
+            let sdp = "v=0\r\n\
+                        o=- 123 1 IN IP4 192.168.1.100\r\n\
+                        s=Test\r\n\
+                        c=IN IP4 192.168.1.100\r\n\
+                        t=0 0\r\n\
+                        m=audio 51163 RTP/AVP 0 8\r\n";
+            let result = parse_remote_endpoint_from_sdp(sdp);
+            assert!(result.is_ok());
+            let addr = result.unwrap();
+            assert_eq!(addr.ip().to_string(), "192.168.1.100");
+            assert_eq!(addr.port(), 51163);
+        }
+
+        #[test]
+        fn test_parse_remote_endpoint_missing_ip() {
+            let sdp = "v=0\r\n\
+                        m=audio 51163 RTP/AVP 0 8\r\n";
+            let result = parse_remote_endpoint_from_sdp(sdp);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_parse_remote_endpoint_missing_port() {
+            let sdp = "v=0\r\n\
+                        c=IN IP4 192.168.1.100\r\n";
+            let result = parse_remote_endpoint_from_sdp(sdp);
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_update_session_b_leg_sets_participant_b() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 40000,
+                rtp_port_end: 41000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id = fcp_core::CallId::new();
+            let dialog_id = fcp_core::DialogId::new();
+            let session_config = crate::MediaSessionConfig::default();
+
+            backend
+                .create_session(call_id.clone(), dialog_id, session_config)
+                .await
+                .unwrap();
+
+            let b_leg_sdp = "v=0\r\n\
+                              o=- 456 1 IN IP4 10.0.0.50\r\n\
+                              s=Test\r\n\
+                              c=IN IP4 10.0.0.50\r\n\
+                              t=0 0\r\n\
+                              m=audio 6000 RTP/AVP 0\r\n"
+                .to_string();
+
+            backend
+                .update_session_b_leg(&call_id, b_leg_sdp)
+                .await
+                .unwrap();
+
+            // Verify participant_b remote_addr is set
+            let b_addr = {
+                let session_info = backend.sessions.get(&call_id).unwrap();
+                let participant_b = session_info.forge_session.participant_b();
+                let addr = participant_b.read().await.remote_addr;
+                addr
+            };
+            assert!(b_addr.is_some());
+            let addr = b_addr.unwrap();
+            assert_eq!(addr.ip().to_string(), "10.0.0.50");
+            assert_eq!(addr.port(), 6000);
+
+            backend.terminate_session(&call_id).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_bridge_calls_single_session() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 41000,
+                rtp_port_end: 42000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id = fcp_core::CallId::new();
+            let dialog_id = fcp_core::DialogId::new();
+
+            backend
+                .create_session(call_id.clone(), dialog_id, crate::MediaSessionConfig::default())
+                .await
+                .unwrap();
+
+            // Single-session bridge: same call_id for both legs
+            let result = backend.bridge_calls(&call_id, &call_id).await;
+            assert!(result.is_ok());
+
+            backend.terminate_session(&call_id).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_bridge_calls_two_sessions() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 42000,
+                rtp_port_end: 43000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id_a = fcp_core::CallId::new();
+            let call_id_b = fcp_core::CallId::new();
+
+            // Create A-leg session with known remote endpoint
+            backend
+                .create_session(
+                    call_id_a.clone(),
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            // Set A-leg participant_a remote addr
+            let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
+            backend.update_session(&call_id_a, a_sdp.to_string()).await.unwrap();
+
+            // Create B-leg session
+            backend
+                .create_session(
+                    call_id_b.clone(),
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            // Set B-leg participant_a remote addr
+            let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
+            backend.update_session(&call_id_b, b_sdp.to_string()).await.unwrap();
+
+            // Bridge calls
+            backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
+
+            // Verify cross-wiring: A-leg's participant_b should point to B-leg phone (10.0.0.2:6000)
+            {
+                let a_session = backend.sessions.get(&call_id_a).unwrap();
+                let b_remote = a_session.forge_session.participant_b().read().await.remote_addr;
+                assert!(b_remote.is_some());
+                let addr = b_remote.unwrap();
+                assert_eq!(addr.ip().to_string(), "10.0.0.2");
+                assert_eq!(addr.port(), 6000);
+            }
+
+            // Verify cross-wiring: B-leg's participant_b should point to A-leg phone (10.0.0.1:5000)
+            {
+                let b_session = backend.sessions.get(&call_id_b).unwrap();
+                let a_remote = b_session.forge_session.participant_b().read().await.remote_addr;
+                assert!(a_remote.is_some());
+                let addr = a_remote.unwrap();
+                assert_eq!(addr.ip().to_string(), "10.0.0.1");
+                assert_eq!(addr.port(), 5000);
+            }
+
+            backend.terminate_session(&call_id_a).await.unwrap();
+            backend.terminate_session(&call_id_b).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_unbridge_calls_clears_participant_b() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 43000,
+                rtp_port_end: 44000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id_a = fcp_core::CallId::new();
+            let call_id_b = fcp_core::CallId::new();
+
+            backend
+                .create_session(
+                    call_id_a.clone(),
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            backend
+                .create_session(
+                    call_id_b.clone(),
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            // Set up endpoints and bridge
+            let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
+            let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
+            backend.update_session(&call_id_a, a_sdp.to_string()).await.unwrap();
+            backend.update_session(&call_id_b, b_sdp.to_string()).await.unwrap();
+            backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
+
+            // Unbridge
+            backend.unbridge_calls(&call_id_a, &call_id_b).await.unwrap();
+
+            // Verify participant_b remote_addr cleared on both
+            {
+                let a_session = backend.sessions.get(&call_id_a).unwrap();
+                let b_remote = a_session.forge_session.participant_b().read().await.remote_addr;
+                assert!(b_remote.is_none());
+            }
+            {
+                let b_session = backend.sessions.get(&call_id_b).unwrap();
+                let a_remote = b_session.forge_session.participant_b().read().await.remote_addr;
+                assert!(a_remote.is_none());
+            }
+
+            backend.terminate_session(&call_id_a).await.unwrap();
+            backend.terminate_session(&call_id_b).await.unwrap();
         }
     }
 
@@ -1126,6 +1415,15 @@ pub mod remote {
                 .await;
 
             Ok(resp.sdp)
+        }
+
+        async fn update_session_b_leg(
+            &self,
+            _call_id: &fcp_core::CallId,
+            _remote_sdp: String,
+        ) -> Result<()> {
+            // POST /v1/sessions/{id}/sdp-b-leg
+            todo!("Implement remote B-leg SDP update")
         }
 
         async fn hold_session(&self, _call_id: &fcp_core::CallId) -> Result<()> {

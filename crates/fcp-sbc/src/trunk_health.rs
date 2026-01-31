@@ -3,7 +3,7 @@
 //! Tracks per-trunk failure counts, success/failure timestamps, and health
 //! status transitions. Optionally runs periodic OPTIONS probe health checks.
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use fcp_sbc_core::metrics::TrunkHealthStatus;
 use fcp_sbc_core::trunk::TrunkConfig;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +26,8 @@ struct TrunkHealthState {
 /// Monitors trunk health, tracking failures and triggering status transitions.
 pub struct TrunkHealthMonitor {
     state: DashMap<String, TrunkHealthState>,
+    /// Trunks that have been administratively disabled via the admin API.
+    admin_disabled: DashSet<String>,
 }
 
 impl TrunkHealthMonitor {
@@ -49,7 +51,10 @@ impl TrunkHealthMonitor {
                 },
             );
         }
-        Self { state }
+        Self {
+            state,
+            admin_disabled: DashSet::new(),
+        }
     }
 
     /// Record a failure for the given trunk.
@@ -78,8 +83,11 @@ impl TrunkHealthMonitor {
         }
     }
 
-    /// Returns `true` if the trunk is healthy (not `Down`).
+    /// Returns `true` if the trunk is healthy (not `Down` and not admin-disabled).
     pub fn is_healthy(&self, trunk: &str) -> bool {
+        if self.admin_disabled.contains(trunk) {
+            return false;
+        }
         self.state
             .get(trunk)
             .map(|e| e.status != TrunkHealthStatus::Down)
@@ -123,14 +131,51 @@ impl TrunkHealthMonitor {
         self.state.get(trunk).map(|e| e.status)
     }
 
-    /// Returns `true` if at least one trunk is healthy, or no trunks exist.
+    /// Returns `true` if at least one trunk is healthy (not Down, not admin-disabled),
+    /// or no trunks exist.
     pub fn any_healthy(&self) -> bool {
         if self.state.is_empty() {
             return true;
         }
+        self.state.iter().any(|e| {
+            e.status != TrunkHealthStatus::Down && !self.admin_disabled.contains(e.key())
+        })
+    }
+
+    /// Administratively disable a trunk. Returns `false` if the trunk name is unknown.
+    pub fn admin_disable(&self, name: &str) -> bool {
+        if !self.state.contains_key(name) {
+            return false;
+        }
+        self.admin_disabled.insert(name.to_string());
+        true
+    }
+
+    /// Re-enable an admin-disabled trunk. Returns `false` if the trunk name is unknown.
+    pub fn admin_enable(&self, name: &str) -> bool {
+        if !self.state.contains_key(name) {
+            return false;
+        }
+        self.admin_disabled.remove(name);
+        true
+    }
+
+    /// Returns `true` if the trunk is currently admin-disabled.
+    pub fn is_admin_disabled(&self, name: &str) -> bool {
+        self.admin_disabled.contains(name)
+    }
+
+    /// Returns all known trunk names.
+    pub fn trunk_names(&self) -> Vec<String> {
+        self.state.iter().map(|e| e.key().clone()).collect()
+    }
+
+    /// Returns the consecutive failure count for a trunk, or 0 if unknown.
+    pub fn consecutive_failures(&self, name: &str) -> u32 {
         self.state
-            .iter()
-            .any(|e| e.status != TrunkHealthStatus::Down)
+            .get(name)
+            .map(|e| e.consecutive_failures)
+            .unwrap_or(0)
     }
 
     /// Get concurrent calls for a trunk.
@@ -474,5 +519,78 @@ mod tests {
         let recovered = monitor.check_degraded_recovery();
         assert!(recovered.is_empty());
         assert!(monitor.is_degraded("trunk-a"));
+    }
+
+    #[test]
+    fn test_admin_disable_makes_unhealthy() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        monitor.record_success("carrier-a");
+        assert!(monitor.is_healthy("carrier-a"));
+
+        assert!(monitor.admin_disable("carrier-a"));
+        assert!(!monitor.is_healthy("carrier-a"));
+    }
+
+    #[test]
+    fn test_admin_enable_restores() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        monitor.record_success("carrier-a");
+        monitor.admin_disable("carrier-a");
+        assert!(!monitor.is_healthy("carrier-a"));
+
+        assert!(monitor.admin_enable("carrier-a"));
+        assert!(monitor.is_healthy("carrier-a"));
+    }
+
+    #[test]
+    fn test_admin_disable_nonexistent() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        assert!(!monitor.admin_disable("nonexistent"));
+        assert!(!monitor.admin_enable("nonexistent"));
+    }
+
+    #[test]
+    fn test_admin_disabled_excluded_from_any_healthy() {
+        let trunks = vec![TrunkConfig {
+            name: "only-trunk".into(),
+            hosts: vec!["h".into()],
+            ..Default::default()
+        }];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        monitor.record_success("only-trunk");
+        assert!(monitor.any_healthy());
+
+        monitor.admin_disable("only-trunk");
+        assert!(!monitor.any_healthy());
+    }
+
+    #[test]
+    fn test_trunk_names() {
+        let trunks = vec![
+            TrunkConfig {
+                name: "a".into(),
+                hosts: vec!["h".into()],
+                ..Default::default()
+            },
+            TrunkConfig {
+                name: "b".into(),
+                hosts: vec!["h".into()],
+                ..Default::default()
+            },
+        ];
+        let monitor = TrunkHealthMonitor::new(&trunks);
+        let mut names = monitor.trunk_names();
+        names.sort();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn test_is_admin_disabled() {
+        let monitor = TrunkHealthMonitor::new(&test_trunks());
+        assert!(!monitor.is_admin_disabled("carrier-a"));
+        monitor.admin_disable("carrier-a");
+        assert!(monitor.is_admin_disabled("carrier-a"));
+        monitor.admin_enable("carrier-a");
+        assert!(!monitor.is_admin_disabled("carrier-a"));
     }
 }

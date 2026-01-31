@@ -81,6 +81,26 @@ pub struct NatConfig {
 
     /// Force rport parameter in Via headers (RFC 3581).
     pub force_rport: bool,
+
+    /// Enable XDP kernel-level RTP forwarding (Linux only, requires CAP_NET_ADMIN).
+    #[serde(default)]
+    pub xdp_enabled: bool,
+
+    /// Network interface for XDP attachment (e.g., "eth0").
+    #[serde(default = "default_xdp_interface")]
+    pub xdp_interface: String,
+
+    /// XDP mode: "native" (driver-level, fastest) or "generic" (software fallback).
+    #[serde(default = "default_xdp_mode")]
+    pub xdp_mode: String,
+}
+
+fn default_xdp_interface() -> String {
+    "eth0".to_string()
+}
+
+fn default_xdp_mode() -> String {
+    "generic".to_string()
 }
 
 impl Default for NatConfig {
@@ -94,6 +114,9 @@ impl Default for NatConfig {
             stun_servers: Vec::new(),
             turn_servers: Vec::new(),
             force_rport: true,
+            xdp_enabled: false,
+            xdp_interface: default_xdp_interface(),
+            xdp_mode: default_xdp_mode(),
         }
     }
 }

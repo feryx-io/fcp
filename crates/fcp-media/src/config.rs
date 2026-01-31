@@ -54,6 +54,18 @@ pub struct MediaConfig {
 
     /// TURN server for NAT traversal (future)
     pub turn_server: Option<String>,
+
+    /// Enable XDP kernel-level RTP forwarding (Linux only).
+    #[serde(default)]
+    pub xdp_enabled: bool,
+
+    /// Network interface for XDP (e.g., "eth0").
+    #[serde(default = "default_xdp_interface")]
+    pub xdp_interface: String,
+
+    /// XDP mode: "native" or "generic".
+    #[serde(default = "default_xdp_mode")]
+    pub xdp_mode: String,
 }
 
 /// Backend deployment mode
@@ -110,6 +122,9 @@ impl Default for MediaConfig {
             public_ip: None,
             stun_server: None,
             turn_server: None,
+            xdp_enabled: false,
+            xdp_interface: default_xdp_interface(),
+            xdp_mode: default_xdp_mode(),
         }
     }
 }
@@ -225,6 +240,14 @@ fn default_recording_format() -> String {
     "wav".to_string()
 }
 
+fn default_xdp_interface() -> String {
+    "eth0".to_string()
+}
+
+fn default_xdp_mode() -> String {
+    "generic".to_string()
+}
+
 fn reject_crlf(field: &str, value: &str) -> Result<()> {
     if value.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
         Err(Error::Config(format!(
@@ -279,5 +302,29 @@ mod tests {
         config.rtp_port_start = 5000;
         config.rtp_port_end = 4000;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_xdp_config_defaults() {
+        let config = MediaConfig::default();
+        assert!(!config.xdp_enabled);
+        assert_eq!(config.xdp_interface, "eth0");
+        assert_eq!(config.xdp_mode, "generic");
+    }
+
+    #[test]
+    fn test_xdp_config_serde_roundtrip() {
+        let config = MediaConfig {
+            xdp_enabled: true,
+            xdp_interface: "ens3".to_string(),
+            xdp_mode: "native".to_string(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: MediaConfig = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.xdp_enabled);
+        assert_eq!(deserialized.xdp_interface, "ens3");
+        assert_eq!(deserialized.xdp_mode, "native");
     }
 }

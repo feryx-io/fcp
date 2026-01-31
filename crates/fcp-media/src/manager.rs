@@ -100,6 +100,14 @@ impl MediaManager {
         self.backend.update_session(call_id, remote_sdp).await
     }
 
+    /// Set B-leg remote endpoint from SDP
+    ///
+    /// Used by B2BUA when the second call leg answers. Sets participant_b's
+    /// remote address so the ForwardingEngine knows where to send RTP packets.
+    pub async fn update_session_b_leg(&self, call_id: &CallId, remote_sdp: String) -> Result<()> {
+        self.backend.update_session_b_leg(call_id, remote_sdp).await
+    }
+
     /// Put call on hold (send silence/comfort noise)
     pub async fn hold_session(&self, call_id: &CallId) -> Result<()> {
         self.backend.hold_session(call_id).await

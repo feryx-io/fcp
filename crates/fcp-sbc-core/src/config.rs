@@ -22,6 +22,31 @@ use crate::security::SecurityConfig;
 use crate::siprec::SiprecConfig;
 use crate::trunk::TrunkConfig;
 
+/// Optional storage configuration for CDR persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SbcStorageConfig {
+    /// Enable storage (and CDR generation). Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// SQLite database path. Default: "data/fcp-sbc.db"
+    #[serde(default = "default_storage_db_path")]
+    pub database_path: String,
+}
+
+fn default_storage_db_path() -> String {
+    "data/fcp-sbc.db".to_string()
+}
+
+impl Default for SbcStorageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_path: default_storage_db_path(),
+        }
+    }
+}
+
 /// Top-level SBC configuration.
 ///
 /// Aggregates the B2BUA config (from `fcp-b2bua-core`) with all SBC-specific
@@ -58,6 +83,10 @@ pub struct SbcConfig {
 
     /// Enabled transport protocols.
     pub transports: Vec<TransportType>,
+
+    /// Optional storage for CDR persistence.
+    #[serde(default)]
+    pub storage: SbcStorageConfig,
 }
 
 impl Default for SbcConfig {
@@ -96,6 +125,7 @@ impl Default for SbcConfig {
             metrics: SbcMetricsConfig::default(),
             external_domain: String::new(),
             transports: vec![TransportType::Udp, TransportType::Tcp],
+            storage: SbcStorageConfig::default(),
         }
     }
 }
@@ -306,5 +336,39 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: SbcConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_sbc_storage_config_defaults() {
+        let cfg = SbcStorageConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.database_path, "data/fcp-sbc.db");
+    }
+
+    #[test]
+    fn test_sbc_storage_config_serde_roundtrip() {
+        let cfg = SbcStorageConfig {
+            enabled: true,
+            database_path: "/tmp/test-sbc.db".to_string(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SbcStorageConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_sbc_config_includes_storage_default() {
+        let cfg = SbcConfig::default();
+        assert!(!cfg.storage.enabled);
+        assert_eq!(cfg.storage.database_path, "data/fcp-sbc.db");
+    }
+
+    #[test]
+    fn test_sbc_storage_config_deserialize_missing_fields() {
+        // When storage section is empty JSON object, defaults should apply
+        let json = "{}";
+        let cfg: SbcStorageConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.database_path, "data/fcp-sbc.db");
     }
 }

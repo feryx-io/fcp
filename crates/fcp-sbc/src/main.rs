@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
+mod admin;
 mod admission;
 mod cli;
 mod config;
@@ -158,7 +159,31 @@ async fn main() -> Result<()> {
             Arc::clone(&sbc_metrics),
         )),
     };
-    let call_manager = Arc::new(fcp_sip::CallManager::with_events(Arc::clone(&sbc_hooks)));
+    // 12a-1. Initialize optional storage for CDR persistence
+    let dyn_storage = if sbc_config.storage.enabled {
+        use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
+
+        let sqlite_config =
+            SqliteConfig::new(std::path::PathBuf::from(&sbc_config.storage.database_path));
+        let sqlite_storage = SqliteStorage::new(sqlite_config)
+            .await
+            .context("Failed to initialize SQLite storage for CDR")?;
+        let storage = Arc::new(fcp_core::DynStorage::from_all_in_one(Arc::new(
+            sqlite_storage,
+        )));
+        info!(db = %sbc_config.storage.database_path, "CDR storage initialized");
+        Some(storage)
+    } else {
+        None
+    };
+
+    let call_manager = match &dyn_storage {
+        Some(storage) => Arc::new(fcp_sip::CallManager::with_storage_and_events(
+            Arc::clone(storage),
+            Arc::clone(&sbc_hooks),
+        )),
+        None => Arc::new(fcp_sip::CallManager::with_events(Arc::clone(&sbc_hooks))),
+    };
 
     // 12b. Create registrar with event publishing so registration lifecycle
     //      updates admission counters (registration_added / registration_removed)
@@ -209,7 +234,7 @@ async fn main() -> Result<()> {
         None, // no routing service
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
-        None, // no storage
+        dyn_storage,
         media_manager,
         media_config,
         None, // no flow handler
@@ -286,6 +311,8 @@ async fn main() -> Result<()> {
         admission: Arc::clone(&admission),
         health_monitor: Arc::clone(&trunk_health),
         metrics: Arc::clone(&sbc_metrics),
+        call_manager: Arc::clone(&call_manager),
+        trunk_configs: sbc_config.trunks.clone(),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {

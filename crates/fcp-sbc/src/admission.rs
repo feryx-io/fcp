@@ -7,23 +7,24 @@
 use fcp_sbc_core::AdmissionConfig;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 /// Runtime admission controller.
 ///
 /// Thread-safe: atomics for counters, mutex only for CPS sliding windows.
 /// Supports both global CPS limits and per-trunk CPS limits.
+/// Config and trunk maps are behind `RwLock` for runtime updates via the admin API.
 pub struct AdmissionController {
-    config: AdmissionConfig,
+    config: RwLock<AdmissionConfig>,
     concurrent_calls: AtomicU64,
     concurrent_registrations: AtomicU64,
     /// Sliding window of call-start timestamps for global CPS calculation.
     cps_window: Mutex<VecDeque<Instant>>,
     /// Per-trunk CPS limits (trunk_name -> max_cps).
-    trunk_cps_limits: HashMap<String, u32>,
+    trunk_cps_limits: RwLock<HashMap<String, u32>>,
     /// Per-trunk sliding windows (trunk_name -> timestamps).
-    trunk_cps_windows: HashMap<String, Mutex<VecDeque<Instant>>>,
+    trunk_cps_windows: RwLock<HashMap<String, Mutex<VecDeque<Instant>>>>,
 }
 
 impl AdmissionController {
@@ -37,12 +38,12 @@ impl AdmissionController {
         }
 
         Self {
-            config,
+            config: RwLock::new(config),
             concurrent_calls: AtomicU64::new(0),
             concurrent_registrations: AtomicU64::new(0),
             cps_window: Mutex::new(VecDeque::new()),
-            trunk_cps_limits,
-            trunk_cps_windows,
+            trunk_cps_limits: RwLock::new(trunk_cps_limits),
+            trunk_cps_windows: RwLock::new(trunk_cps_windows),
         }
     }
 
@@ -52,9 +53,11 @@ impl AdmissionController {
     /// 1. Concurrent call limit
     /// 2. CPS sliding window
     pub fn try_admit_call(&self) -> bool {
+        let cfg = self.config.read().unwrap();
+
         // Check concurrent calls
         let current = self.concurrent_calls.load(Ordering::Relaxed);
-        if current >= self.config.max_concurrent_calls as u64 {
+        if current >= cfg.max_concurrent_calls as u64 {
             return false;
         }
 
@@ -71,7 +74,7 @@ impl AdmissionController {
             }
         }
 
-        if window.len() as u32 >= self.config.max_cps {
+        if window.len() as u32 >= cfg.max_cps {
             return false;
         }
 
@@ -81,8 +84,9 @@ impl AdmissionController {
 
     /// Try to admit a new registration. Returns `true` if allowed.
     pub fn try_admit_registration(&self) -> bool {
+        let cfg = self.config.read().unwrap();
         let current = self.concurrent_registrations.load(Ordering::Relaxed);
-        current < self.config.max_concurrent_registrations as u64
+        current < cfg.max_concurrent_registrations as u64
     }
 
     /// Record that a call has started (increment concurrent count).
@@ -157,12 +161,14 @@ impl AdmissionController {
     /// current call rate is below the limit. Does NOT record a new call;
     /// use [`record_trunk_call`] after the trunk is actually selected.
     pub fn is_trunk_within_cps(&self, trunk_name: &str) -> bool {
-        let limit = match self.trunk_cps_limits.get(trunk_name) {
+        let limits = self.trunk_cps_limits.read().unwrap();
+        let limit = match limits.get(trunk_name) {
             Some(&limit) => limit,
             None => return true, // no limit configured
         };
 
-        let window = match self.trunk_cps_windows.get(trunk_name) {
+        let windows = self.trunk_cps_windows.read().unwrap();
+        let window = match windows.get(trunk_name) {
             Some(w) => w,
             None => return true,
         };
@@ -186,7 +192,8 @@ impl AdmissionController {
     ///
     /// Call this after a trunk has been selected for an outbound call.
     pub fn record_trunk_call(&self, trunk_name: &str) {
-        if let Some(window) = self.trunk_cps_windows.get(trunk_name) {
+        let windows = self.trunk_cps_windows.read().unwrap();
+        if let Some(window) = windows.get(trunk_name) {
             let mut guard = window.lock().unwrap();
             guard.push_back(Instant::now());
         }
@@ -194,7 +201,8 @@ impl AdmissionController {
 
     /// Current CPS for a specific trunk (calls in the last second).
     pub fn trunk_cps(&self, trunk_name: &str) -> u64 {
-        let window = match self.trunk_cps_windows.get(trunk_name) {
+        let windows = self.trunk_cps_windows.read().unwrap();
+        let window = match windows.get(trunk_name) {
             Some(w) => w,
             None => return 0,
         };
@@ -206,9 +214,31 @@ impl AdmissionController {
             .count() as u64
     }
 
-    /// Access the admission config.
-    pub fn config(&self) -> &AdmissionConfig {
-        &self.config
+    /// Return a cloned snapshot of the current admission config.
+    pub fn config_snapshot(&self) -> AdmissionConfig {
+        self.config.read().unwrap().clone()
+    }
+
+    /// Update the admission config at runtime.
+    ///
+    /// Validates the new config before applying. Rebuilds per-trunk CPS
+    /// maps (existing sliding windows are reset).
+    pub fn update_config(&self, new_config: AdmissionConfig) -> Result<(), String> {
+        new_config.validate()?;
+
+        let mut trunk_limits = HashMap::new();
+        let mut trunk_windows = HashMap::new();
+        for entry in &new_config.per_trunk_cps {
+            trunk_limits.insert(entry.trunk_name.clone(), entry.max_cps);
+            trunk_windows.insert(entry.trunk_name.clone(), Mutex::new(VecDeque::new()));
+        }
+
+        // Apply atomically: config first, then trunk maps
+        *self.config.write().unwrap() = new_config;
+        *self.trunk_cps_limits.write().unwrap() = trunk_limits;
+        *self.trunk_cps_windows.write().unwrap() = trunk_windows;
+
+        Ok(())
     }
 }
 
@@ -345,5 +375,52 @@ mod tests {
         // trunk-a is at limit, trunk-b is still open
         assert!(!ctrl.is_trunk_within_cps("trunk-a"));
         assert!(ctrl.is_trunk_within_cps("trunk-b"));
+    }
+
+    #[test]
+    fn test_update_config_valid() {
+        let ctrl = default_controller();
+        assert_eq!(ctrl.config_snapshot().max_cps, 100);
+
+        let new_config = AdmissionConfig {
+            max_cps: 200,
+            max_concurrent_calls: 2000,
+            per_trunk_cps: vec![TrunkCpsLimit {
+                trunk_name: "new-trunk".into(),
+                max_cps: 50,
+            }],
+            ..Default::default()
+        };
+        assert!(ctrl.update_config(new_config).is_ok());
+        assert_eq!(ctrl.config_snapshot().max_cps, 200);
+        assert_eq!(ctrl.config_snapshot().max_concurrent_calls, 2000);
+        // New trunk CPS limit should be active
+        assert!(ctrl.is_trunk_within_cps("new-trunk"));
+    }
+
+    #[test]
+    fn test_update_config_invalid() {
+        let ctrl = default_controller();
+        let bad_config = AdmissionConfig {
+            max_cps: 200_000, // exceeds 100,000 limit
+            ..Default::default()
+        };
+        let result = ctrl.update_config(bad_config);
+        assert!(result.is_err());
+        // Original config should be unchanged
+        assert_eq!(ctrl.config_snapshot().max_cps, 100);
+    }
+
+    #[test]
+    fn test_config_snapshot() {
+        let config = AdmissionConfig {
+            max_cps: 42,
+            max_concurrent_calls: 99,
+            ..Default::default()
+        };
+        let ctrl = AdmissionController::new(config.clone());
+        let snapshot = ctrl.config_snapshot();
+        assert_eq!(snapshot.max_cps, 42);
+        assert_eq!(snapshot.max_concurrent_calls, 99);
     }
 }

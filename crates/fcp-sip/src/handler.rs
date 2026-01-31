@@ -1266,6 +1266,14 @@ impl SipMessageHandler {
                     .await
                 {
                     Ok(_session) => {
+                        // Set A-leg remote endpoint from INVITE SDP
+                        if !request.body().is_empty() {
+                            let a_leg_sdp = String::from_utf8_lossy(request.body()).to_string();
+                            if let Err(e) = media_manager.update_session(&fcp_call_id, a_leg_sdp).await {
+                                warn!(call_id = %call_id, error = %e, "Failed to set A-leg media endpoint");
+                            }
+                        }
+
                         let _ = self.call_manager.update_call(call_id, |call| {
                             call.media_session_id = Some(fcp_call_id);
                             call.media_anchored = true;
@@ -1408,15 +1416,19 @@ impl SipMessageHandler {
                             "Created media session"
                         );
 
+                        // Set A-leg remote endpoint from INVITE SDP
+                        if !request.body().is_empty() {
+                            let a_leg_sdp = String::from_utf8_lossy(request.body()).to_string();
+                            if let Err(e) = media_manager.update_session(&fcp_call_id, a_leg_sdp).await {
+                                warn!(call_id = %call_id, error = %e, "Failed to set A-leg media endpoint");
+                            }
+                        }
+
                         // Update call object to track media session
                         let _ = self.call_manager.update_call(call_id, |call| {
                             call.media_session_id = Some(fcp_call_id);
                             call.media_anchored = true;
                         });
-
-                        // TODO: Store session for later SDP rewriting
-                        // When we forward the INVITE, we'll need to rewrite the SDP
-                        // to point to the server's RTP ports
                     }
                     Err(e) => {
                         error!(
@@ -2916,6 +2928,32 @@ impl SipMessageHandler {
                 None
             };
 
+            // Set B-leg remote endpoint on the media session (before SDP rewriting)
+            if let Some(ref original_sdp) = b_leg_sdp {
+                let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
+                    if call.media_anchored {
+                        call.media_session_id.clone()
+                    } else {
+                        None
+                    }
+                });
+
+                if let (Some(ref media_session_id), Some(media_manager)) =
+                    (&media_session_id, &self.media_manager)
+                {
+                    if let Err(e) = media_manager
+                        .update_session_b_leg(media_session_id, original_sdp.clone())
+                        .await
+                    {
+                        warn!(
+                            call_id = %call_id,
+                            error = %e,
+                            "Failed to set B-leg media endpoint"
+                        );
+                    }
+                }
+            }
+
             // Rewrite B-leg SDP if media is anchored on server
             if let Some(ref original_sdp) = b_leg_sdp {
                 // Check if this call has anchored media
@@ -3416,6 +3454,32 @@ impl SipMessageHandler {
             } else {
                 None
             };
+
+            // Set B-leg remote endpoint on the media session (before SDP rewriting)
+            if let Some(ref original_sdp) = b_leg_sdp {
+                let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
+                    if call.media_anchored {
+                        call.media_session_id.clone()
+                    } else {
+                        None
+                    }
+                });
+
+                if let (Some(ref media_session_id), Some(media_manager)) =
+                    (&media_session_id, &self.media_manager)
+                {
+                    if let Err(e) = media_manager
+                        .update_session_b_leg(media_session_id, original_sdp.clone())
+                        .await
+                    {
+                        warn!(
+                            call_id = %call_id,
+                            error = %e,
+                            "Failed to set B-leg media endpoint in parallel fork"
+                        );
+                    }
+                }
+            }
 
             // Rewrite B-leg SDP if media is anchored on server (for A-leg response)
             if let Some(ref original_sdp) = b_leg_sdp {

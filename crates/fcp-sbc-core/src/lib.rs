@@ -19,7 +19,7 @@ pub mod trunk;
 
 // Re-export key types for convenience
 pub use admission::{AdmissionAction, AdmissionConfig, TrunkCpsLimit};
-pub use config::SbcConfig;
+pub use config::{SbcConfig, SbcStorageConfig};
 pub use metrics::{SbcMetricsConfig, SbcMetricsSnapshot, TrunkHealthStatus};
 pub use nat::{NatConfig, StunServerConfig, TurnServerConfig};
 pub use rate_limit::{MethodRateLimits, RateLimitEntry, RateLimitPolicyConfig};

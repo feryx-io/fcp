@@ -23,6 +23,7 @@ fcp-sbc-core = { path = "../fcp-sbc-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-events = { path = "../fcp-events" }
 fcp-media = { path = "../fcp-media" }
+fcp-storage-sqlite = { path = "../fcp-storage-sqlite" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
@@ -67,3 +68,6 @@ socket2 = "0.5"
 ipnetwork = "0.20"
 rand = "0.8"
 uuid = { workspace = true }
+
+[dev-dependencies]
+tower = "0.5"

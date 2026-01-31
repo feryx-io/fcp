@@ -507,6 +507,9 @@ async fn create_media_manager(config: &FcpConfig) -> Result<Arc<fcp_media::Media
         public_ip,
         stun_server: config.media.stun_server.clone(),
         turn_server: config.media.turn_server.clone(),
+        xdp_enabled: false,
+        xdp_interface: "eth0".to_string(),
+        xdp_mode: "generic".to_string(),
     };
 
     // Create manager
