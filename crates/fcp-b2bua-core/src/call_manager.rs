@@ -89,6 +89,7 @@ impl CallManager {
                     CallDirection::Outbound => fcp_events::CallDirection::Outbound,
                 },
                 timestamp: call.created_at,
+                trunk_name: call.trunk_name.clone(),
             });
 
             let events = Arc::clone(events);
@@ -207,6 +208,7 @@ impl CallManager {
                         duration_ms: call.duration().map(|d| d.as_millis() as u64).unwrap_or(0),
                         hangup_cause: "Normal Clearing".to_string(),
                         hangup_party: None, // TODO: Phase 2 - track BYE direction
+                        trunk_name: call.trunk_name.clone(),
                     })
                 }
                 CallState::Failed => {
@@ -225,6 +227,7 @@ impl CallManager {
                         timestamp: call.ended_at.unwrap_or_else(std::time::SystemTime::now),
                         reason,
                         sip_code,
+                        trunk_name: call.trunk_name.clone(),
                     })
                 }
                 _ => {
@@ -240,6 +243,7 @@ impl CallManager {
                         timestamp: std::time::SystemTime::now(),
                         reason: format!("Terminated in unexpected state: {:?}", call.state),
                         sip_code: None,
+                        trunk_name: call.trunk_name.clone(),
                     })
                 }
             };
@@ -540,7 +544,7 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
         sip_status_code,
         sip_reason: call.failure_reason.clone(),
         route_id: None,
-        gateway_id: None,
+        gateway_id: call.trunk_name.clone(),
         media_anchored: call.media_anchored,
         codec_a_leg,
         codec_b_leg,

@@ -205,6 +205,7 @@ mod tests {
             to: "bob@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         bus.publish(event.clone()).await.unwrap();
@@ -244,6 +245,7 @@ mod tests {
             to: "bob@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         // Publish event for call_id_2 (should be filtered out)
@@ -254,6 +256,7 @@ mod tests {
             to: "dave@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         bus.publish(event2).await.unwrap();
@@ -291,6 +294,7 @@ mod tests {
             to: "bob@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         bus.publish(event).await.unwrap();

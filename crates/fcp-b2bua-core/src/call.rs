@@ -234,6 +234,9 @@ pub struct Call {
     /// Current node ID in the flow execution
     pub flow_current_node: Option<String>,
 
+    /// Name of the outbound trunk (if routed via trunk).
+    pub trunk_name: Option<String>,
+
     /// Notify handle to signal cancellation to the parallel forking task.
     /// When the A-leg sends CANCEL before any B-leg answers, the CANCEL handler
     /// notifies this to wake up the forking task so it can CANCEL all B-legs immediately.
@@ -272,6 +275,7 @@ impl fmt::Debug for Call {
             .field("established_at", &self.established_at)
             .field("ended_at", &self.ended_at)
             .field("failure_reason", &self.failure_reason)
+            .field("trunk_name", &self.trunk_name)
             .finish()
     }
 }
@@ -303,6 +307,7 @@ impl Call {
             failure_reason: None,
             flow_id: None,
             flow_current_node: None,
+            trunk_name: None,
             cancel_notify: None,
         }
     }

@@ -1,9 +1,10 @@
 //! SBC event hooks (calls + registrations).
 //!
 //! Implements `EventPublisher` to wire B2BUA call events and registrar events
-//! into the SBC's admission controller and runtime metrics. Passed to
-//! `CallManager::with_events()` and the registrar so lifecycle changes
-//! automatically update concurrent counts and outcome counters.
+//! into the SBC's admission controller, runtime metrics, and trunk health
+//! monitor. Passed to `CallManager::with_events()` and the registrar so
+//! lifecycle changes automatically update concurrent counts and outcome
+//! counters.
 //!
 //! Optionally hooks SIPREC recording: when a `SiprecRecorder` is provided,
 //! call events trigger recording session start/stop.
@@ -11,25 +12,32 @@
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
+use crate::trunk_health::TrunkHealthMonitor;
 use anyhow::Result;
 use async_trait::async_trait;
 use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};
 use std::sync::Arc;
 use tracing::debug;
 
-/// Bridges B2BUA + registrar events to SBC admission and metrics.
+/// Bridges B2BUA + registrar events to SBC admission, metrics, and trunk health.
 pub struct SbcEventHooks {
     admission: Arc<AdmissionController>,
     metrics: Arc<SbcRuntimeMetrics>,
     recorder: Option<Arc<SiprecRecorder>>,
+    trunk_health: Option<Arc<TrunkHealthMonitor>>,
 }
 
 impl SbcEventHooks {
-    pub fn new(admission: Arc<AdmissionController>, metrics: Arc<SbcRuntimeMetrics>) -> Self {
+    pub fn new(
+        admission: Arc<AdmissionController>,
+        metrics: Arc<SbcRuntimeMetrics>,
+        trunk_health: Option<Arc<TrunkHealthMonitor>>,
+    ) -> Self {
         Self {
             admission,
             metrics,
             recorder: None,
+            trunk_health,
         }
     }
 
@@ -37,11 +45,13 @@ impl SbcEventHooks {
         admission: Arc<AdmissionController>,
         metrics: Arc<SbcRuntimeMetrics>,
         recorder: Arc<SiprecRecorder>,
+        trunk_health: Option<Arc<TrunkHealthMonitor>>,
     ) -> Self {
         Self {
             admission,
             metrics,
             recorder: Some(recorder),
+            trunk_health,
         }
     }
 }
@@ -70,9 +80,20 @@ impl EventPublisher for SbcEventHooks {
                         });
                     }
                 }
-                CallEvent::Ended { call_id, .. } => {
+                CallEvent::Ended {
+                    call_id,
+                    trunk_name,
+                    ..
+                } => {
                     self.admission.call_ended();
                     self.metrics.record_call_completed();
+
+                    if let Some(ref health) = self.trunk_health {
+                        if let Some(ref name) = trunk_name {
+                            health.call_ended(name);
+                            health.record_success(name);
+                        }
+                    }
 
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);
@@ -83,9 +104,28 @@ impl EventPublisher for SbcEventHooks {
                         });
                     }
                 }
-                CallEvent::Failed { call_id, .. } => {
+                CallEvent::Failed {
+                    call_id,
+                    sip_code,
+                    trunk_name,
+                    ..
+                } => {
                     self.admission.call_ended();
                     self.metrics.record_call_rejected();
+
+                    if let Some(ref health) = self.trunk_health {
+                        if let Some(ref name) = trunk_name {
+                            health.call_ended(name);
+                            // 5xx and timeouts indicate trunk-side failure;
+                            // 4xx responses are client errors, not trunk issues.
+                            let is_trunk_failure = sip_code
+                                .map(|c| c >= 500 || c == 408)
+                                .unwrap_or(true); // no code = likely timeout
+                            if is_trunk_failure {
+                                health.record_failure(name);
+                            }
+                        }
+                    }
 
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);

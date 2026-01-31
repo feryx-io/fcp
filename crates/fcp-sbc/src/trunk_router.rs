@@ -10,7 +10,7 @@
 use crate::admission::AdmissionController;
 use crate::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk::{TrunkConfig, TrunkDirection};
-use fcp_sip::OutboundRouteProvider;
+use fcp_sip::{OutboundRoute, OutboundRouteProvider};
 use rand::Rng;
 use std::sync::Arc;
 
@@ -137,9 +137,13 @@ impl TrunkRouter {
 
 #[async_trait::async_trait]
 impl OutboundRouteProvider for TrunkRouter {
-    async fn resolve_outbound(&self, destination_uri: &str) -> Option<String> {
+    async fn resolve_outbound(&self, destination_uri: &str) -> Option<OutboundRoute> {
         // Select an upstream trunk for outbound calls
         let trunk = self.select_trunk(TrunkDirection::Upstream)?;
+        let trunk_name = trunk.name.clone();
+
+        // Increment per-trunk concurrent call counter
+        self.health.call_started(&trunk_name);
 
         // Extract user part from destination URI
         let user_part = destination_uri
@@ -160,7 +164,10 @@ impl OutboundRouteProvider for TrunkRouter {
             other => format!(";transport={}", other.as_str()),
         };
 
-        Some(format!("sip:{}@{}:{}{}", user_part, host, port, transport_param))
+        Some(OutboundRoute {
+            target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
+            trunk_name: Some(trunk_name),
+        })
     }
 }
 

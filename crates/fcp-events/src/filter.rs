@@ -108,6 +108,7 @@ mod tests {
             to: "bob@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         assert!(filter.matches(&event));
@@ -125,6 +126,7 @@ mod tests {
             to: "bob@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         let non_matching_event = PlatformEvent::Call(CallEvent::Initiated {
@@ -134,6 +136,7 @@ mod tests {
             to: "dave@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         assert!(filter.matches(&matching_event));
@@ -151,6 +154,7 @@ mod tests {
             to: "bob@example.com".to_string(),
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
+            trunk_name: None,
         });
 
         let system_event = PlatformEvent::System(crate::SystemEvent::Started {

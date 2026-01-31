@@ -47,6 +47,8 @@ pub enum CallEvent {
         direction: CallDirection,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_name: Option<String>,
     },
 
     /// Call is ringing (180/183 received)
@@ -79,6 +81,8 @@ pub enum CallEvent {
         duration_ms: u64,
         hangup_cause: String,
         hangup_party: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_name: Option<String>,
     },
 
     /// Call failed (4xx/5xx/6xx)
@@ -88,6 +92,8 @@ pub enum CallEvent {
         timestamp: SystemTime,
         reason: String,
         sip_code: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trunk_name: Option<String>,
     },
 }
 

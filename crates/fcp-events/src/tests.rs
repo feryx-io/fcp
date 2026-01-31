@@ -13,6 +13,7 @@ async fn test_event_serialization() {
         to: "bob@example.com".to_string(),
         direction: CallDirection::Inbound,
         timestamp: SystemTime::now(),
+        trunk_name: None,
     });
 
     // Serialize to JSON

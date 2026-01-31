@@ -29,8 +29,8 @@ pub use fcp_b2bua_core::{
 // Re-export commonly used types for convenience
 pub use exports::*;
 
-// Re-export outbound route provider trait
-pub use handler::OutboundRouteProvider;
+// Re-export outbound route provider trait and types
+pub use handler::{OutboundRoute, OutboundRouteProvider};
 
 /// Prelude module for convenient imports.
 pub mod prelude {

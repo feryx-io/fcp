@@ -199,6 +199,15 @@ use fcp_core::storage::{
     DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
 };
 
+/// Result of outbound route resolution.
+#[derive(Debug, Clone)]
+pub struct OutboundRoute {
+    /// Target SIP URI to INVITE.
+    pub target_uri: String,
+    /// Name of the trunk selected (if trunk-based routing was used).
+    pub trunk_name: Option<String>,
+}
+
 /// Provides fallback outbound routing when registrar lookup fails.
 ///
 /// Used by the SBC to route calls to trunks when the destination
@@ -206,8 +215,9 @@ use fcp_core::storage::{
 #[async_trait::async_trait]
 pub trait OutboundRouteProvider: Send + Sync {
     /// Given a destination URI (e.g. "sip:+15551234@example.com"),
-    /// return an outbound target URI to INVITE, or None if no route available.
-    async fn resolve_outbound(&self, destination_uri: &str) -> Option<String>;
+    /// return an outbound route with target URI and optional trunk name,
+    /// or None if no route available.
+    async fn resolve_outbound(&self, destination_uri: &str) -> Option<OutboundRoute>;
 }
 use sip_transaction::ServerTransactionHandle;
 
@@ -1906,11 +1916,17 @@ impl SipMessageHandler {
                         _ => {
                             // Try outbound route provider before giving up
                             if let Some(provider) = &self.outbound_route_provider {
-                                if let Some(target_uri) = provider.resolve_outbound(destination_aor).await {
-                                    info!(call_id = %call_id, target = %target_uri, "Routing via outbound trunk");
+                                if let Some(route) = provider.resolve_outbound(destination_aor).await {
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, "Routing via outbound trunk");
+                                    // Store trunk name on call for lifecycle tracking
+                                    if let Some(ref trunk_name) = route.trunk_name {
+                                        let _ = self.call_manager.update_call(&call_id, |call| {
+                                            call.trunk_name = Some(trunk_name.clone());
+                                        });
+                                    }
                                     match sip_registrar::Binding::new(
                                         SmolStr::new(destination_aor),
-                                        SmolStr::new(&target_uri),
+                                        SmolStr::new(&route.target_uri),
                                         Duration::from_secs(3600),
                                     ) {
                                         Ok(binding) => vec![binding],
@@ -2397,11 +2413,17 @@ impl SipMessageHandler {
                         Ok(_) => {
                             // Try outbound route provider before giving up
                             if let Some(provider) = &self.outbound_route_provider {
-                                if let Some(target_uri) = provider.resolve_outbound(destination_aor).await {
-                                    info!(call_id = %call_id, target = %target_uri, "Routing via outbound trunk (extension path)");
+                                if let Some(route) = provider.resolve_outbound(destination_aor).await {
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, "Routing via outbound trunk (extension path)");
+                                    // Store trunk name on call for lifecycle tracking
+                                    if let Some(ref trunk_name) = route.trunk_name {
+                                        let _ = self.call_manager.update_call(&call_id, |call| {
+                                            call.trunk_name = Some(trunk_name.clone());
+                                        });
+                                    }
                                     match sip_registrar::Binding::new(
                                         SmolStr::new(destination_aor),
-                                        SmolStr::new(&target_uri),
+                                        SmolStr::new(&route.target_uri),
                                         Duration::from_secs(3600),
                                     ) {
                                         Ok(binding) => vec![binding],

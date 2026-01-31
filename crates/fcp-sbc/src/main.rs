@@ -174,16 +174,18 @@ async fn main() -> Result<()> {
     );
     let siprec_recorder = siprec_recorder.map(Arc::new);
 
-    // 12a. Create event hooks so call/registration lifecycle updates admission/metrics
+    // 12a. Create event hooks so call/registration lifecycle updates admission/metrics/trunk health
     let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = match &siprec_recorder {
         Some(recorder) => Arc::new(SbcEventHooks::with_recorder(
             Arc::clone(&admission),
             Arc::clone(&sbc_metrics),
             Arc::clone(recorder),
+            Some(Arc::clone(&trunk_health)),
         )),
         None => Arc::new(SbcEventHooks::new(
             Arc::clone(&admission),
             Arc::clone(&sbc_metrics),
+            Some(Arc::clone(&trunk_health)),
         )),
     };
     // 12a-1. Initialize optional storage for CDR persistence
@@ -269,18 +271,9 @@ async fn main() -> Result<()> {
         Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
     ));
 
-    // 19. Build peer-trunk IP map for ingress trunk identification
-    let peer_trunk_map = {
-        let mut map = std::collections::HashMap::new();
-        for trunk in &sbc_config.trunks {
-            for host in &trunk.hosts {
-                if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                    map.insert(ip, trunk.name.clone());
-                }
-            }
-        }
-        map
-    };
+    // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared
+    //     implementation that also resolves FQDN hosts via DNS)
+    let peer_trunk_map = hmr_dispatcher::build_peer_trunk_map(&sbc_config.trunks);
 
     // 19b. Create SbcEnforcementHandler (wraps SipMessageHandler)
     let enforcement_handler = Arc::new(SbcEnforcementHandler::new(

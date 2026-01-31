@@ -72,16 +72,23 @@ impl TransportDispatcher for HmrTransportDispatcher {
 /// Build a mapping from peer IP addresses to trunk names.
 ///
 /// For each trunk, attempts to parse each host entry as an IP address.
-/// FQDN hosts that can't be parsed as IPs are skipped (they would need
-/// DNS resolution which is not done at config time).
-fn build_peer_trunk_map(trunks: &[TrunkConfig]) -> HashMap<IpAddr, String> {
+/// FQDN hosts are resolved via DNS at startup (best-effort).
+pub(crate) fn build_peer_trunk_map(trunks: &[TrunkConfig]) -> HashMap<IpAddr, String> {
+    use std::net::ToSocketAddrs;
+
     let mut map = HashMap::new();
     for trunk in trunks {
         for host in &trunk.hosts {
             if let Ok(ip) = host.parse::<IpAddr>() {
                 map.insert(ip, trunk.name.clone());
+            } else {
+                // DNS resolution for FQDNs (best-effort at startup)
+                if let Ok(addrs) = (host.as_str(), 5060u16).to_socket_addrs() {
+                    for addr in addrs {
+                        map.insert(addr.ip(), trunk.name.clone());
+                    }
+                }
             }
-            // Skip FQDNs — they would need DNS resolution
         }
     }
     map
