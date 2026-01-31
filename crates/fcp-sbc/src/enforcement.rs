@@ -11,7 +11,7 @@
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use bytes::Bytes;
-use fcp_sbc_core::security::{AclAction, SecurityConfig};
+use fcp_sbc_core::security::{AclAction, MalformedSipPolicy, SecurityConfig};
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::listener::InboundMessageHandler;
 use fcp_sip::transport::RealTransportDispatcher;
@@ -29,8 +29,9 @@ use tracing::{debug, warn};
 /// 2. IP ACL check
 /// 3. Message size limit
 /// 4. Rate limiting (per-IP via `sip-ratelimit`)
-/// 5. Admission control (CPS + concurrent limits)
-/// 6. Delegate to inner `SipMessageHandler`
+/// 5. Malformed SIP structure check
+/// 6. Method-specific rate limiting + admission control
+/// 7. Delegate to inner `SipMessageHandler`
 pub struct SbcEnforcementHandler {
     inner: Arc<SipMessageHandler>,
     security: SecurityConfig,
@@ -147,7 +148,29 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             return Ok(());
         }
 
-        // Method-specific rate limiting: quick-parse the first line to extract method
+        // 4. Malformed SIP structure check
+        if !validate_sip_structure(&payload) {
+            match self.security.malformed_sip_policy {
+                MalformedSipPolicy::Drop => {
+                    self.metrics.record_security_rejection();
+                    return Ok(());
+                }
+                MalformedSipPolicy::Reject => {
+                    warn!(%peer, "SBC: malformed SIP request — rejecting with 400");
+                    self.metrics.record_security_rejection();
+                    self.send_rejection(transport, peer, &payload, &stream, 400, "Bad Request")
+                        .await;
+                    return Ok(());
+                }
+                MalformedSipPolicy::LogAndDrop => {
+                    warn!(%peer, "SBC: malformed SIP request — dropping");
+                    self.metrics.record_security_rejection();
+                    return Ok(());
+                }
+            }
+        }
+
+        // 5. Method-specific rate limiting: quick-parse the first line to extract method
         if let Some(method) = extract_method_from_payload(&payload) {
             let allowed = match method {
                 "INVITE" => self.rate_limiter.invite().check_rate_limit(&ip_str),
@@ -169,7 +192,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                 return Ok(());
             }
 
-            // 4a. Admission control for INVITE (new call attempts)
+            // 6a. Admission control for INVITE (new call attempts)
             if method == "INVITE" {
                 self.metrics.record_call_attempt();
                 if !self.admission.try_admit_call() {
@@ -188,7 +211,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                 }
             }
 
-            // 4b. Admission control for REGISTER
+            // 6b. Admission control for REGISTER
             if method == "REGISTER" && !self.admission.try_admit_registration() {
                 warn!(%peer, "SBC: registration admission rejected");
                 self.metrics.record_admission_rejection();
@@ -205,7 +228,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             }
         }
 
-        // 5. Delegate to inner handler
+        // 7. Delegate to inner handler
         self.inner
             .handle_inbound(transport, peer, payload, stream)
             .await
@@ -261,6 +284,66 @@ fn build_rejection_response(payload: &[u8], code: u16, reason: &str) -> Option<B
     );
 
     Some(Bytes::from(response))
+}
+
+/// Lightweight structural validation of a raw SIP request.
+///
+/// Checks that the payload has:
+/// 1. A recognizable request line (METHOD SP URI SP SIP/2.0)
+/// 2. The five mandatory headers: Via, From, To, Call-ID, CSeq
+///
+/// This does NOT perform a full SIP parse — it only scans for header
+/// presence to reject obviously malformed messages before delegation.
+fn validate_sip_structure(payload: &[u8]) -> bool {
+    // Must be valid UTF-8 to be a SIP message
+    let text = match std::str::from_utf8(payload) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    let mut lines = text.lines();
+
+    // Request line: METHOD SP URI SP SIP/2.0
+    let request_line = match lines.next() {
+        Some(l) => l.trim_end_matches('\r'),
+        None => return false,
+    };
+    if !request_line.ends_with("SIP/2.0") {
+        return false;
+    }
+    // Need at least three parts: METHOD uri SIP/2.0
+    let parts: Vec<&str> = request_line.splitn(3, ' ').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+
+    // Scan headers for the 5 mandatory ones
+    let mut has_via = false;
+    let mut has_from = false;
+    let mut has_to = false;
+    let mut has_call_id = false;
+    let mut has_cseq = false;
+
+    for line in lines {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed.is_empty() {
+            break; // end of headers
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if !has_via && (lower.starts_with("via:") || lower.starts_with("v:")) {
+            has_via = true;
+        } else if !has_from && (lower.starts_with("from:") || lower.starts_with("f:")) {
+            has_from = true;
+        } else if !has_to && (lower.starts_with("to:") || lower.starts_with("t:")) {
+            has_to = true;
+        } else if !has_call_id && (lower.starts_with("call-id:") || lower.starts_with("i:")) {
+            has_call_id = true;
+        } else if !has_cseq && lower.starts_with("cseq:") {
+            has_cseq = true;
+        }
+    }
+
+    has_via && has_from && has_to && has_call_id && has_cseq
 }
 
 /// Quick-extract the SIP method from the first line of a raw SIP message.
@@ -361,5 +444,88 @@ mod tests {
         assert!(response.is_some());
         let resp_str = String::from_utf8(response.unwrap().to_vec()).unwrap();
         assert!(resp_str.starts_with("SIP/2.0 429 Too Many Requests\r\n"));
+    }
+
+    // --- validate_sip_structure tests ---
+
+    #[test]
+    fn test_validate_valid_minimal_request() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+            Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+            From: <sip:alice@example.com>;tag=abc\r\n\
+            To: <sip:bob@example.com>\r\n\
+            Call-ID: test123@10.0.0.1\r\n\
+            CSeq: 1 INVITE\r\n\
+            \r\n";
+        assert!(validate_sip_structure(payload));
+    }
+
+    #[test]
+    fn test_validate_compact_headers() {
+        let payload = b"OPTIONS sip:example.com SIP/2.0\r\n\
+            v: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+            f: <sip:alice@example.com>;tag=abc\r\n\
+            t: <sip:bob@example.com>\r\n\
+            i: test123@10.0.0.1\r\n\
+            CSeq: 1 OPTIONS\r\n\
+            \r\n";
+        assert!(validate_sip_structure(payload));
+    }
+
+    #[test]
+    fn test_validate_missing_via() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+            From: <sip:alice@example.com>;tag=abc\r\n\
+            To: <sip:bob@example.com>\r\n\
+            Call-ID: test123@10.0.0.1\r\n\
+            CSeq: 1 INVITE\r\n\
+            \r\n";
+        assert!(!validate_sip_structure(payload));
+    }
+
+    #[test]
+    fn test_validate_missing_cseq() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+            Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+            From: <sip:alice@example.com>;tag=abc\r\n\
+            To: <sip:bob@example.com>\r\n\
+            Call-ID: test123@10.0.0.1\r\n\
+            \r\n";
+        assert!(!validate_sip_structure(payload));
+    }
+
+    #[test]
+    fn test_validate_empty_payload() {
+        assert!(!validate_sip_structure(b""));
+    }
+
+    #[test]
+    fn test_validate_bad_request_line() {
+        let payload = b"GARBAGE LINE HERE\r\n\
+            Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+            From: <sip:alice@example.com>;tag=abc\r\n\
+            To: <sip:bob@example.com>\r\n\
+            Call-ID: test123@10.0.0.1\r\n\
+            CSeq: 1 INVITE\r\n\
+            \r\n";
+        assert!(!validate_sip_structure(payload));
+    }
+
+    #[test]
+    fn test_validate_non_utf8() {
+        let payload: &[u8] = &[0xFF, 0xFE, 0x00, 0x01];
+        assert!(!validate_sip_structure(payload));
+    }
+
+    #[test]
+    fn test_validate_headers_only_no_request_line() {
+        // Starts with a header, not a request line
+        let payload = b"Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+            From: <sip:alice@example.com>;tag=abc\r\n\
+            To: <sip:bob@example.com>\r\n\
+            Call-ID: test123@10.0.0.1\r\n\
+            CSeq: 1 INVITE\r\n\
+            \r\n";
+        assert!(!validate_sip_structure(payload));
     }
 }
