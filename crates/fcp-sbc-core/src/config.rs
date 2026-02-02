@@ -5,6 +5,7 @@
 //! into a single top-level struct.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 
 use fcp_b2bua_core::forking::ForkingConfig;
 use fcp_b2bua_core::media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
@@ -92,6 +93,18 @@ pub struct SbcConfig {
     /// Optional storage for CDR persistence.
     #[serde(default)]
     pub storage: SbcStorageConfig,
+
+    /// TLS bind address (e.g. "0.0.0.0:5061"). None = TLS disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_bind: Option<String>,
+
+    /// Path to PEM certificate file for TLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+
+    /// Path to PEM private key file for TLS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
 }
 
 impl Default for SbcConfig {
@@ -132,6 +145,9 @@ impl Default for SbcConfig {
             transports: vec![TransportType::Udp, TransportType::Tcp],
             header_manipulation: HeaderManipulationConfig::default(),
             storage: SbcStorageConfig::default(),
+            tls_bind: None,
+            tls_cert: None,
+            tls_key: None,
         }
     }
 }
@@ -181,6 +197,24 @@ impl SbcConfig {
 
         if self.transports.is_empty() {
             return Err("transports must not be empty".into());
+        }
+
+        // TLS: if any TLS field is set, all three must be provided
+        let tls_fields = [
+            self.tls_bind.is_some(),
+            self.tls_cert.is_some(),
+            self.tls_key.is_some(),
+        ];
+        let tls_count = tls_fields.iter().filter(|&&v| v).count();
+        if tls_count > 0 && tls_count < 3 {
+            return Err(
+                "TLS requires all three fields: tls_bind, tls_cert, and tls_key".into(),
+            );
+        }
+        if let Some(ref bind) = self.tls_bind {
+            if bind.parse::<SocketAddr>().is_err() {
+                return Err(format!("tls_bind is not a valid socket address: {:?}", bind));
+            }
         }
 
         Ok(())
@@ -378,5 +412,52 @@ mod tests {
         let cfg: SbcStorageConfig = serde_json::from_str(json).unwrap();
         assert!(!cfg.enabled);
         assert_eq!(cfg.database_path, "data/fcp-sbc.db");
+    }
+
+    #[test]
+    fn test_validate_tls_partial_config() {
+        // Only tls_bind set — should fail because cert/key are missing
+        let mut cfg = valid_config();
+        cfg.tls_bind = Some("0.0.0.0:5061".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("tls_bind, tls_cert, and tls_key"));
+
+        // Only tls_cert and tls_key — missing tls_bind
+        let mut cfg = valid_config();
+        cfg.tls_cert = Some("/path/to/cert.pem".into());
+        cfg.tls_key = Some("/path/to/key.pem".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("tls_bind, tls_cert, and tls_key"));
+    }
+
+    #[test]
+    fn test_validate_tls_complete_config() {
+        let mut cfg = valid_config();
+        cfg.tls_bind = Some("0.0.0.0:5061".into());
+        cfg.tls_cert = Some("/path/to/cert.pem".into());
+        cfg.tls_key = Some("/path/to/key.pem".into());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_tls_invalid_bind() {
+        let mut cfg = valid_config();
+        cfg.tls_bind = Some("not-an-address".into());
+        cfg.tls_cert = Some("/path/to/cert.pem".into());
+        cfg.tls_key = Some("/path/to/key.pem".into());
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("tls_bind"));
+        assert!(err.contains("valid socket address"));
+    }
+
+    #[test]
+    fn test_serde_roundtrip_tls() {
+        let mut cfg = valid_config();
+        cfg.tls_bind = Some("0.0.0.0:5061".into());
+        cfg.tls_cert = Some("/etc/ssl/cert.pem".into());
+        cfg.tls_key = Some("/etc/ssl/key.pem".into());
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SbcConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
     }
 }

@@ -65,4 +65,31 @@ pub struct Cli {
         env = "FCP_SBC_HEALTH_BIND"
     )]
     pub health_bind: String,
+
+    /// TLS SIP bind address (e.g. 0.0.0.0:5061)
+    #[arg(
+        long = "tls-bind",
+        value_name = "ADDR",
+        help = "SIP TLS bind address (enables TLS listener)",
+        env = "FCP_SBC_TLS_BIND"
+    )]
+    pub tls_bind: Option<String>,
+
+    /// Path to TLS certificate (PEM)
+    #[arg(
+        long = "tls-cert",
+        value_name = "FILE",
+        help = "Path to PEM certificate file for TLS",
+        env = "FCP_SBC_TLS_CERT"
+    )]
+    pub tls_cert: Option<String>,
+
+    /// Path to TLS private key (PEM)
+    #[arg(
+        long = "tls-key",
+        value_name = "FILE",
+        help = "Path to PEM private key file for TLS",
+        env = "FCP_SBC_TLS_KEY"
+    )]
+    pub tls_key: Option<String>,
 }

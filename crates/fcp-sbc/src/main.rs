@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
 
     // 19b. Create SbcEnforcementHandler (wraps SipMessageHandler)
     let enforcement_handler = Arc::new(SbcEnforcementHandler::new(
-        Arc::clone(&handler),
+        handler as Arc<dyn InboundMessageHandler>,
         sbc_config.security.clone(),
         Arc::clone(&rate_limiter),
         Arc::clone(&admission),
@@ -293,16 +293,26 @@ async fn main() -> Result<()> {
         peer_trunk_map,
     ));
 
-    // 20. Create TransportListener (wired to SbcEnforcementHandler)
+    // 20. Resolve TLS config: CLI args override config file
+    let tls_bind_str = cli.tls_bind.as_deref().or(sbc_config.tls_bind.as_deref());
+    let tls_cert = cli.tls_cert.as_deref().or(sbc_config.tls_cert.as_deref());
+    let tls_key = cli.tls_key.as_deref().or(sbc_config.tls_key.as_deref());
+
+    let tls_bind_addr: Option<std::net::SocketAddr> = match tls_bind_str {
+        Some(s) => Some(s.parse().context("Invalid TLS bind address")?),
+        None => None,
+    };
+
+    // Create TransportListener (wired to SbcEnforcementHandler)
     let listener_config = ListenerConfig {
         udp_bind: Some(bind_addr),
         tcp_bind: Some(bind_addr),
         #[cfg(feature = "tls")]
-        tls_bind: None,
+        tls_bind: tls_bind_addr,
         #[cfg(feature = "tls")]
-        tls_cert: None,
+        tls_cert: tls_cert.map(|s| s.to_string()),
         #[cfg(feature = "tls")]
-        tls_key: None,
+        tls_key: tls_key.map(|s| s.to_string()),
     };
     let enforcement_for_tcp = Arc::clone(&enforcement_handler);
     let handler_dyn: Arc<dyn InboundMessageHandler> =
@@ -403,6 +413,7 @@ async fn main() -> Result<()> {
     info!(
         udp = %cli.bind,
         tcp = %cli.bind,
+        tls = ?tls_bind_str,
         health = %cli.health_bind,
         trunks = sbc_config.trunks.len(),
         "fcp-sbc ready — listening for SIP messages"

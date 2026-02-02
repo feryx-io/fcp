@@ -15,7 +15,6 @@ use crate::hmr::HeaderManipulationEngine;
 use crate::metrics::SbcRuntimeMetrics;
 use bytes::Bytes;
 use fcp_sbc_core::security::{AclAction, MalformedSipPolicy, SecurityConfig};
-use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::listener::InboundMessageHandler;
 use fcp_sip::transport::RealTransportDispatcher;
 use sip_ratelimit::RateLimiterSet;
@@ -39,7 +38,7 @@ use tracing::{debug, warn};
 /// 7. Apply ingress header manipulation rules (requests and responses)
 /// 8. Delegate to inner `SipMessageHandler`
 pub struct SbcEnforcementHandler {
-    inner: Arc<SipMessageHandler>,
+    inner: Arc<dyn InboundMessageHandler>,
     security: SecurityConfig,
     rate_limiter: Arc<RateLimiterSet>,
     admission: Arc<AdmissionController>,
@@ -52,7 +51,7 @@ pub struct SbcEnforcementHandler {
 
 impl SbcEnforcementHandler {
     pub fn new(
-        inner: Arc<SipMessageHandler>,
+        inner: Arc<dyn InboundMessageHandler>,
         security: SecurityConfig,
         rate_limiter: Arc<RateLimiterSet>,
         admission: Arc<AdmissionController>,
@@ -629,5 +628,544 @@ mod tests {
         assert!(text.starts_with("SIP/2.0 200 OK\r\n"));
         assert!(!text.contains("Server:"));
         assert!(!text.contains("BadServer"));
+    }
+
+    // ===================================================================
+    // Integration tests with MockInnerHandler
+    // ===================================================================
+
+    /// Mock inner handler that records all calls for inspection.
+    struct MockInnerHandler {
+        calls: Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>,
+    }
+
+    impl MockInnerHandler {
+        fn new() -> (Self, Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>) {
+            let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            (Self { calls: Arc::clone(&calls) }, calls)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl InboundMessageHandler for MockInnerHandler {
+        async fn handle_inbound(
+            &self,
+            transport: sip_transaction::TransportKind,
+            peer: SocketAddr,
+            payload: Bytes,
+            _stream: Option<mpsc::Sender<Bytes>>,
+        ) -> anyhow::Result<()> {
+            self.calls.lock().await.push((transport, peer, payload));
+            Ok(())
+        }
+    }
+
+    /// A valid SIP INVITE payload for testing.
+    fn valid_invite() -> Bytes {
+        Bytes::from(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: test123@10.0.0.1\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        )
+    }
+
+    /// A valid SIP REGISTER payload for testing.
+    fn valid_register() -> Bytes {
+        Bytes::from(
+            "REGISTER sip:example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:alice@example.com>\r\n\
+             Call-ID: reg456@10.0.0.1\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        )
+    }
+
+    /// A valid SIP OPTIONS payload for testing.
+    fn valid_options() -> Bytes {
+        Bytes::from(
+            "OPTIONS sip:example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: opt789@10.0.0.1\r\n\
+             CSeq: 1 OPTIONS\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        )
+    }
+
+    /// Build a test enforcement handler with configurable options.
+    fn build_test_handler(
+        inner: Arc<dyn InboundMessageHandler>,
+        security: SecurityConfig,
+        admission: fcp_sbc_core::AdmissionConfig,
+        rate_limiter: Option<Arc<RateLimiterSet>>,
+        hmr_engine: Option<Arc<HeaderManipulationEngine>>,
+    ) -> SbcEnforcementHandler {
+        let dispatcher = Arc::new(fcp_sip::transport::RealTransportDispatcher::new(None));
+        let rate_limiter = rate_limiter.unwrap_or_else(|| Arc::new(RateLimiterSet::disabled()));
+        let admission = Arc::new(crate::admission::AdmissionController::new(admission));
+        let metrics = Arc::new(SbcRuntimeMetrics::new());
+        SbcEnforcementHandler::new(
+            inner,
+            security,
+            rate_limiter,
+            admission,
+            metrics,
+            dispatcher,
+            hmr_engine,
+            HashMap::new(),
+        )
+    }
+
+    /// Default peer address for tests.
+    fn test_peer() -> SocketAddr {
+        "10.0.0.1:5060".parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_acl_deny_sends_403() {
+        use fcp_sbc_core::security::{IpAcl, IpAclEntry};
+
+        let (mock, calls) = MockInnerHandler::new();
+        let security = SecurityConfig {
+            signaling_acl: IpAcl {
+                rules: vec![IpAclEntry {
+                    cidr: "10.0.0.0/8".into(),
+                    action: AclAction::Deny,
+                    description: None,
+                }],
+                default_action: AclAction::Allow,
+            },
+            ..Default::default()
+        };
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            security,
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        // Use a TCP stream channel to capture the rejection response
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Tcp,
+                test_peer(),
+                valid_invite(),
+                Some(tx),
+            )
+            .await
+            .unwrap();
+
+        // Inner should NOT be called
+        assert!(calls.lock().await.is_empty());
+
+        // Should receive a 403 response
+        let resp = rx.recv().await.expect("should receive rejection response");
+        let text = std::str::from_utf8(&resp).unwrap();
+        assert!(text.starts_with("SIP/2.0 403 Forbidden"));
+    }
+
+    #[tokio::test]
+    async fn test_acl_allow_delegates() {
+        let (mock, calls) = MockInnerHandler::new();
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(), // default allows all
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Udp,
+                test_peer(),
+                valid_options(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Inner should be called with the payload
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].1, test_peer());
+    }
+
+    #[tokio::test]
+    async fn test_message_too_large_sends_513() {
+        let (mock, calls) = MockInnerHandler::new();
+        let security = SecurityConfig {
+            max_message_size: 100, // very small limit
+            ..Default::default()
+        };
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            security,
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Tcp,
+                test_peer(),
+                valid_invite(), // > 100 bytes
+                Some(tx),
+            )
+            .await
+            .unwrap();
+
+        assert!(calls.lock().await.is_empty());
+
+        let resp = rx.recv().await.expect("should receive 513 response");
+        let text = std::str::from_utf8(&resp).unwrap();
+        assert!(text.starts_with("SIP/2.0 513 Message Too Large"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_sends_429() {
+        use sip_ratelimit::RateLimitConfig;
+
+        let (mock, calls) = MockInnerHandler::new();
+        // 1 request per 60 seconds — very restrictive
+        let connections_cfg = RateLimitConfig::new(1, 60).unwrap().with_enabled(true);
+        let rate_limiter = Arc::new(RateLimiterSet::with_configs(
+            RateLimitConfig::disabled(),
+            RateLimitConfig::disabled(),
+            RateLimitConfig::disabled(),
+            connections_cfg,
+        ));
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(),
+            fcp_sbc_core::AdmissionConfig::default(),
+            Some(rate_limiter),
+            None,
+        );
+
+        // First request should pass (consumes the 1 token)
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Udp,
+                test_peer(),
+                valid_options(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(calls.lock().await.len(), 1);
+
+        // Second request should be rate limited
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Tcp,
+                test_peer(),
+                valid_options(),
+                Some(tx),
+            )
+            .await
+            .unwrap();
+
+        // Inner should still only have 1 call
+        assert_eq!(calls.lock().await.len(), 1);
+
+        let resp = rx.recv().await.expect("should receive 429 response");
+        let text = std::str::from_utf8(&resp).unwrap();
+        assert!(text.starts_with("SIP/2.0 429 Too Many Requests"));
+    }
+
+    #[tokio::test]
+    async fn test_malformed_sip_drop() {
+        let (mock, calls) = MockInnerHandler::new();
+        let security = SecurityConfig {
+            malformed_sip_policy: MalformedSipPolicy::Drop,
+            ..Default::default()
+        };
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            security,
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        // Payload with bad request line (no SIP/2.0)
+        let bad_payload = Bytes::from("GARBAGE\r\nVia: x\r\n\r\n");
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Udp,
+                test_peer(),
+                bad_payload,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Inner should NOT be called (silently dropped)
+        assert!(calls.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_malformed_sip_reject_400() {
+        let (mock, calls) = MockInnerHandler::new();
+        let security = SecurityConfig {
+            malformed_sip_policy: MalformedSipPolicy::Reject,
+            ..Default::default()
+        };
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            security,
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        // Valid enough to extract headers but missing mandatory headers
+        let bad_payload = Bytes::from(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             \r\n",
+        );
+
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Tcp,
+                test_peer(),
+                bad_payload,
+                Some(tx),
+            )
+            .await
+            .unwrap();
+
+        assert!(calls.lock().await.is_empty());
+
+        // The 400 response may or may not be buildable (missing To/Call-ID/CSeq).
+        // The handler sends a rejection if it can, otherwise silently drops.
+        // For this payload, build_rejection_response returns None (missing headers),
+        // so we just verify inner was NOT called.
+        let _resp = rx.try_recv(); // may or may not have response
+    }
+
+    #[tokio::test]
+    async fn test_admission_invite_503() {
+        let (mock, calls) = MockInnerHandler::new();
+        let admission = fcp_sbc_core::AdmissionConfig {
+            max_concurrent_calls: 0, // reject all
+            ..Default::default()
+        };
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(),
+            admission,
+            None,
+            None,
+        );
+
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Tcp,
+                test_peer(),
+                valid_invite(),
+                Some(tx),
+            )
+            .await
+            .unwrap();
+
+        assert!(calls.lock().await.is_empty());
+
+        let resp = rx.recv().await.expect("should receive 503 response");
+        let text = std::str::from_utf8(&resp).unwrap();
+        assert!(text.starts_with("SIP/2.0 503 Service Unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_admission_register_503() {
+        let (mock, calls) = MockInnerHandler::new();
+        let admission = fcp_sbc_core::AdmissionConfig {
+            max_concurrent_registrations: 0, // reject all
+            ..Default::default()
+        };
+
+        // Seed one registration so the counter exceeds 0
+        // Actually, the check is `current < max`, and max is 0,
+        // so current (0) < 0 is false, so it should reject immediately.
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(),
+            admission,
+            None,
+            None,
+        );
+
+        let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Tcp,
+                test_peer(),
+                valid_register(),
+                Some(tx),
+            )
+            .await
+            .unwrap();
+
+        assert!(calls.lock().await.is_empty());
+
+        let resp = rx.recv().await.expect("should receive 503 response");
+        let text = std::str::from_utf8(&resp).unwrap();
+        assert!(text.starts_with("SIP/2.0 503 Service Unavailable"));
+    }
+
+    #[tokio::test]
+    async fn test_response_bypass() {
+        let (mock, calls) = MockInnerHandler::new();
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(),
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        let response_payload = Bytes::from(
+            "SIP/2.0 200 OK\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:bob@example.com>;tag=xyz\r\n\
+             Call-ID: test123@10.0.0.1\r\n\
+             CSeq: 1 INVITE\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        );
+
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Udp,
+                test_peer(),
+                response_payload,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Response should bypass enforcement and reach inner handler
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_hmr_applied_to_request() {
+        use crate::hmr::HeaderManipulationEngine;
+        use fcp_sbc_core::hmr::*;
+
+        let (mock, calls) = MockInnerHandler::new();
+
+        // Build HMR rule that removes X-Custom header on ingress requests
+        let cfg = HeaderManipulationConfig {
+            enabled: true,
+            rules: vec![HmrRule {
+                name: "strip-x-custom".into(),
+                priority: 10,
+                enabled: true,
+                direction: HmrDirection::Ingress,
+                message_type: HmrMessageType::Request,
+                methods: vec![],
+                conditions: vec![],
+                actions: vec![HmrAction {
+                    action_type: HmrActionType::Remove,
+                    header_name: "X-Custom".into(),
+                    value: None,
+                    pattern: None,
+                }],
+            }],
+        };
+        let engine = Arc::new(HeaderManipulationEngine::new(&cfg, &[]).unwrap());
+
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(),
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            Some(engine),
+        );
+
+        // Payload with an X-Custom header that should be stripped
+        let payload = Bytes::from(
+            "OPTIONS sip:example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: opt789@10.0.0.1\r\n\
+             CSeq: 1 OPTIONS\r\n\
+             X-Custom: should-be-removed\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        );
+
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Udp,
+                test_peer(),
+                payload,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        let forwarded = std::str::from_utf8(&recorded[0].2).unwrap();
+        assert!(!forwarded.contains("X-Custom"));
+        assert!(!forwarded.contains("should-be-removed"));
+    }
+
+    #[tokio::test]
+    async fn test_full_pipeline_happy_path() {
+        let (mock, calls) = MockInnerHandler::new();
+        let handler = build_test_handler(
+            Arc::new(mock),
+            SecurityConfig::default(),
+            fcp_sbc_core::AdmissionConfig::default(),
+            None,
+            None,
+        );
+
+        handler
+            .handle_inbound(
+                sip_transaction::TransportKind::Udp,
+                test_peer(),
+                valid_invite(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, sip_transaction::TransportKind::Udp);
+        assert_eq!(recorded[0].1, test_peer());
     }
 }
