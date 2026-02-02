@@ -3,9 +3,8 @@
 //! Selects an outbound trunk based on direction, enabled state, health,
 //! capacity, priority, and weighted random selection among equal-priority trunks.
 //!
-//! **v1 scope**: Built but NOT integrated into the handler's INVITE routing flow.
-//! This module is a standalone trunk selector; integration into
-//! `SipMessageHandler::forward_invite_to_b_leg()` is deferred.
+//! Integrated into `SipMessageHandler::forward_invite_to_b_leg()` via the
+//! `OutboundRouteProvider` trait as a fallback when registrar lookup fails.
 
 use crate::admission::AdmissionController;
 use crate::trunk_health::TrunkHealthMonitor;
