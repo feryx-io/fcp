@@ -466,8 +466,12 @@ pub mod embedded {
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
             // Generate negotiated SDP (intersects remote codecs with our supported set)
-            let result =
-                generate_negotiated_sdp(&session_info, &remote_sdp, &self.advertise_ip)?;
+            let result = generate_negotiated_sdp(
+                &session_info,
+                &remote_sdp,
+                &self.advertise_ip,
+                false, // enable_srtp: controlled by caller / trunk config
+            )?;
 
             // Parse remote SDP to extract client's RTP endpoint and set codec config
             if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
@@ -483,6 +487,38 @@ pub mod embedded {
                 );
             } else {
                 warn!(?call_id, "Failed to parse remote endpoint from SDP - will rely on symmetric RTP learning");
+            }
+
+            // Wire SRTP keys for A-leg if SRTP was negotiated
+            if let (Some(ref local_material), Some(ref remote_crypto)) =
+                (&result.local_crypto, &result.remote_crypto)
+            {
+                match crate::sdp::decode_sdes_key_params(
+                    &remote_crypto.key_params,
+                    &remote_crypto.suite,
+                ) {
+                    Ok((remote_key, remote_salt, profile)) => {
+                        match forge_rtp::srtp::SrtpKeyMaterial::new(
+                            remote_key,
+                            remote_salt,
+                            profile,
+                        ) {
+                            Ok(remote_material) => {
+                                let mut srtp_a =
+                                    session_info.forge_session.srtp_a().lock().await;
+                                srtp_a.set_local_key(local_material.clone());
+                                srtp_a.set_remote_key(remote_material);
+                                info!(?call_id, "SRTP keys configured for A-leg");
+                            }
+                            Err(e) => {
+                                warn!(?call_id, error = %e, "Failed to create A-leg remote SRTP key material");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(?call_id, error = %e, "Failed to decode A-leg SDES key params");
+                    }
+                }
             }
 
             // Update cached session state
@@ -530,6 +566,45 @@ pub mod embedded {
                 }
             } else {
                 warn!(?call_id, "Failed to parse B-leg remote endpoint from SDP");
+            }
+
+            // Wire SRTP keys for B-leg if remote offered crypto
+            let b_leg_crypto = crate::sdp::parse_sdes_crypto(&remote_sdp);
+            if let Some(first_crypto) = b_leg_crypto.into_iter().next() {
+                match crate::sdp::decode_sdes_key_params(
+                    &first_crypto.key_params,
+                    &first_crypto.suite,
+                ) {
+                    Ok((remote_key, remote_salt, profile)) => {
+                        match forge_rtp::srtp::SrtpKeyMaterial::new(
+                            remote_key,
+                            remote_salt,
+                            profile,
+                        ) {
+                            Ok(remote_material) => {
+                                // Generate local key for B-leg
+                                match crate::sdp::generate_srtp_key_material() {
+                                    Ok((local_material, _)) => {
+                                        let mut srtp_b =
+                                            session_info.forge_session.srtp_b().lock().await;
+                                        srtp_b.set_local_key(local_material);
+                                        srtp_b.set_remote_key(remote_material);
+                                        info!(?call_id, "SRTP keys configured for B-leg");
+                                    }
+                                    Err(e) => {
+                                        warn!(?call_id, error = %e, "Failed to generate B-leg local SRTP key material");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(?call_id, error = %e, "Failed to create B-leg remote SRTP key material");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(?call_id, error = %e, "Failed to decode B-leg SDES key params");
+                    }
+                }
             }
 
             Ok(())
@@ -1219,6 +1294,10 @@ pub mod embedded {
     struct SdpNegotiationResult {
         sdp: String,
         primary_codec: crate::sdp::SdpCodecInfo,
+        /// Our local SRTP key material (if SRTP is active)
+        local_crypto: Option<forge_rtp::srtp::SrtpKeyMaterial>,
+        /// Remote SDES crypto line (if remote offered crypto)
+        remote_crypto: Option<crate::sdp::SdesCryptoLine>,
     }
 
     /// Generate a negotiated SDP answer based on the remote offer.
@@ -1226,10 +1305,15 @@ pub mod embedded {
     /// Intersects remote codecs with locally supported codecs (preserving remote
     /// preference order), always appends telephone-event PT 101 for DTMF, and
     /// falls back to PCMU+PCMA if no common codecs are found.
+    ///
+    /// When `enable_srtp` is true (or the remote SDP contains `a=crypto:` lines),
+    /// the generated SDP will use `RTP/SAVP` protocol and include an `a=crypto:`
+    /// attribute with locally generated SRTP key material.
     fn generate_negotiated_sdp(
         session_info: &SessionInfo,
         remote_sdp: &str,
         advertise_ip: &str,
+        enable_srtp: bool,
     ) -> Result<SdpNegotiationResult> {
         let ports = session_info.forge_session.ports();
         let remote_codecs = crate::sdp::parse_sdp_codecs(remote_sdp);
@@ -1260,8 +1344,25 @@ pub mod embedded {
 
         let primary = negotiated[0].clone();
 
+        // SRTP negotiation: parse remote crypto lines
+        let remote_crypto_lines = crate::sdp::parse_sdes_crypto(remote_sdp);
+        let use_srtp = enable_srtp || !remote_crypto_lines.is_empty();
+        let (local_crypto, remote_crypto) = if use_srtp {
+            let (material, b64) = crate::sdp::generate_srtp_key_material()?;
+            let remote = remote_crypto_lines.into_iter().next();
+            (Some((material, b64)), remote)
+        } else {
+            (None, None)
+        };
+
         // Build SDP with sip-sdp builder
         let mut audio = sip_sdp::MediaDescription::audio(ports.rtp_port);
+
+        // Set protocol to RTP/SAVP when SRTP is active
+        if local_crypto.is_some() {
+            audio.protocol = sip_sdp::Protocol::RtpSavp;
+        }
+
         for codec in &negotiated {
             audio = audio
                 .add_format(codec.payload_type)
@@ -1289,6 +1390,16 @@ pub mod embedded {
             .add_property("sendrecv")
             .map_err(|e| Error::Sdp(e.to_string()))?;
 
+        // Add a=crypto: line if SRTP is active
+        if let Some((_, ref b64)) = local_crypto {
+            audio = audio
+                .add_attribute(
+                    "crypto",
+                    &format!("1 AES_CM_128_HMAC_SHA1_80 inline:{}", b64),
+                )
+                .map_err(|e| Error::Sdp(e.to_string()))?;
+        }
+
         let sdp = sip_sdp::SessionDescription::builder()
             .origin("-", &session_info.forge_call_id.0, advertise_ip)
             .map_err(|e| Error::Sdp(e.to_string()))?
@@ -1304,6 +1415,8 @@ pub mod embedded {
         Ok(SdpNegotiationResult {
             sdp: sdp.serialize(),
             primary_codec: primary,
+            local_crypto: local_crypto.map(|(material, _)| material),
+            remote_crypto,
         })
     }
 

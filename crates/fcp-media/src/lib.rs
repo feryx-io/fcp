@@ -67,8 +67,9 @@ pub use dtmf_collector::{CollectionResult, DtmfCollector};
 pub use error::{Error, Result};
 pub use manager::{MediaManager, MediaManagerStats};
 pub use sdp::{
-    extract_codecs_from_sdp, extract_telephone_event_pt, parse_sdp_codecs, rewrite_sdp_for_anchoring,
-    SdpCodecInfo,
+    decode_sdes_key_params, extract_codecs_from_sdp, extract_telephone_event_pt,
+    generate_srtp_key_material, parse_sdes_crypto, parse_sdp_codecs,
+    rewrite_sdp_for_anchoring, sdes_suite_to_profile, SdesCryptoLine, SdpCodecInfo,
 };
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,

@@ -2,7 +2,9 @@
 //!
 //! Converts between sip-sdp and forge-media SDP formats
 
+use base64::{engine::general_purpose, Engine as _};
 use crate::{Error, Result};
+use forge_rtp::srtp::SrtpProfile;
 use std::collections::HashMap;
 
 /// Structured codec info extracted from SDP
@@ -14,6 +16,19 @@ pub struct SdpCodecInfo {
     pub encoding_name: String,
     /// Clock rate in Hz (e.g., 8000, 16000, 48000)
     pub clock_rate: u32,
+}
+
+/// Parsed SDES crypto line from SDP (RFC 4568).
+///
+/// Format: `a=crypto:<tag> <suite> <key-params> [session-params]`
+#[derive(Debug, Clone)]
+pub struct SdesCryptoLine {
+    /// Crypto tag (1-9 digits, identifies the crypto attribute)
+    pub tag: u32,
+    /// Crypto suite name (e.g., "AES_CM_128_HMAC_SHA1_80")
+    pub suite: String,
+    /// Key parameters (e.g., "inline:base64key|...")
+    pub key_params: String,
 }
 
 /// Parse audio codecs from SDP with payload types and clock rates.
@@ -154,6 +169,139 @@ fn parse_sdp_codecs_manual(sdp_body: &str) -> Vec<SdpCodecInfo> {
     }
 
     codecs
+}
+
+/// Parse all `a=crypto:` lines from an SDP body (RFC 4568).
+///
+/// Uses the `sip_sdp` parser first to extract media-level attributes, falling
+/// back to manual line scanning for malformed SDP.  Returns an empty vec if no
+/// crypto lines are found (plain RTP).
+pub fn parse_sdes_crypto(sdp_body: &str) -> Vec<SdesCryptoLine> {
+    // Try sip_sdp parser first (media-level attributes)
+    if let Ok(sdp) = sip_sdp::SessionDescription::parse(sdp_body) {
+        if let Some(audio) = sdp.find_media(sip_sdp::MediaType::Audio) {
+            let mut lines = Vec::new();
+            for attr in &audio.attributes {
+                if let sip_sdp::Attribute::Value { name, value } = attr {
+                    if name.as_str() == "crypto" {
+                        if let Some(parsed) = parse_crypto_value(value.as_str()) {
+                            lines.push(parsed);
+                        }
+                    }
+                }
+            }
+            if !lines.is_empty() {
+                return lines;
+            }
+        }
+    }
+    // Fallback: manual scan
+    parse_sdes_crypto_manual(sdp_body)
+}
+
+/// Parse a single crypto attribute value.
+///
+/// Format: `<tag> <suite> <key-params> [session-params]`
+fn parse_crypto_value(value: &str) -> Option<SdesCryptoLine> {
+    let parts: Vec<&str> = value.splitn(4, ' ').collect();
+    if parts.len() >= 3 {
+        Some(SdesCryptoLine {
+            tag: parts[0].parse().ok()?,
+            suite: parts[1].to_string(),
+            key_params: parts[2].to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Manual fallback for SDES crypto parsing from raw SDP lines.
+fn parse_sdes_crypto_manual(sdp_body: &str) -> Vec<SdesCryptoLine> {
+    sdp_body
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("a=crypto:")
+                .and_then(parse_crypto_value)
+        })
+        .collect()
+}
+
+/// Decode SDES inline key params to raw key+salt bytes.
+///
+/// Format: `"inline:base64(key||salt)[|lifetime][|MKI]"`
+///
+/// The `suite` parameter is used to determine expected key/salt lengths.
+/// Returns `(master_key, master_salt, profile)`.
+pub fn decode_sdes_key_params(
+    key_params: &str,
+    suite: &str,
+) -> Result<(Vec<u8>, Vec<u8>, SrtpProfile)> {
+    let b64_part = key_params
+        .strip_prefix("inline:")
+        .ok_or_else(|| Error::Sdp("SDES key_params must start with 'inline:'".into()))?;
+    // Strip lifetime/MKI if present (separated by |)
+    let b64_key = b64_part.split('|').next().unwrap_or(b64_part);
+    let decoded = general_purpose::STANDARD
+        .decode(b64_key)
+        .map_err(|e| Error::Sdp(format!("Failed to decode SDES key: {}", e)))?;
+
+    let profile = sdes_suite_to_profile(suite)
+        .ok_or_else(|| Error::Sdp(format!("Unsupported SDES suite: {}", suite)))?;
+
+    let key_len = profile.master_key_len();
+    let salt_len = profile.master_salt_len();
+    let expected = key_len + salt_len;
+
+    if decoded.len() != expected {
+        return Err(Error::Sdp(format!(
+            "SDES key material length mismatch for {}: expected {} bytes, got {}",
+            suite, expected, decoded.len()
+        )));
+    }
+
+    Ok((
+        decoded[..key_len].to_vec(),
+        decoded[key_len..].to_vec(),
+        profile,
+    ))
+}
+
+/// Map SDES crypto suite name to forge `SrtpProfile`.
+pub fn sdes_suite_to_profile(suite: &str) -> Option<SrtpProfile> {
+    match suite {
+        "AES_CM_128_HMAC_SHA1_80" => Some(SrtpProfile::Aes128CmHmacSha1_80),
+        "AES_CM_128_HMAC_SHA1_32" => Some(SrtpProfile::Aes128CmHmacSha1_32),
+        "AEAD_AES_128_GCM" => Some(SrtpProfile::AeadAes128Gcm),
+        "AEAD_AES_256_GCM" => Some(SrtpProfile::AeadAes256Gcm),
+        _ => None,
+    }
+}
+
+/// Generate random SRTP key material for AES_CM_128_HMAC_SHA1_80.
+///
+/// Returns `(SrtpKeyMaterial, base64_key_params_string)` suitable for
+/// embedding in an SDP `a=crypto:` line.
+pub fn generate_srtp_key_material() -> Result<(forge_rtp::srtp::SrtpKeyMaterial, String)> {
+    use rand::RngCore;
+
+    let profile = SrtpProfile::Aes128CmHmacSha1_80;
+    let mut key = vec![0u8; profile.master_key_len()];
+    let mut salt = vec![0u8; profile.master_salt_len()];
+    rand::thread_rng().fill_bytes(&mut key);
+    rand::thread_rng().fill_bytes(&mut salt);
+
+    // Concatenate key||salt and base64 encode for SDP
+    let mut combined = Vec::with_capacity(key.len() + salt.len());
+    combined.extend_from_slice(&key);
+    combined.extend_from_slice(&salt);
+    let b64 = general_purpose::STANDARD.encode(&combined);
+
+    let material = forge_rtp::srtp::SrtpKeyMaterial::new(key, salt, profile)
+        .map_err(|e| Error::ForgeMedia(e.to_string()))?;
+
+    Ok((material, b64))
 }
 
 /// Convert SIP SDP to forge-media SDP format
@@ -546,5 +694,137 @@ a=rtpmap:0 PCMU/8000
                             a=rtpmap:0 PCMU/8000\r\n";
 
         assert_eq!(extract_telephone_event_pt(sdp_without), None);
+    }
+
+    #[test]
+    fn test_parse_sdes_crypto_basic() {
+        let sdp = "v=0\r\n\
+                    o=- 123 1 IN IP4 10.0.0.1\r\n\
+                    s=Test\r\n\
+                    c=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 5000 RTP/SAVP 0\r\n\
+                    a=rtpmap:0 PCMU/8000\r\n\
+                    a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:dGVzdGtleW1hdGVyaWFsMTIzNDU2Nzg5MA==\r\n";
+
+        let crypto = parse_sdes_crypto(sdp);
+        assert_eq!(crypto.len(), 1);
+        assert_eq!(crypto[0].tag, 1);
+        assert_eq!(crypto[0].suite, "AES_CM_128_HMAC_SHA1_80");
+        assert!(crypto[0].key_params.starts_with("inline:"));
+    }
+
+    #[test]
+    fn test_parse_sdes_crypto_multiple() {
+        let sdp = "v=0\r\n\
+                    o=- 123 1 IN IP4 10.0.0.1\r\n\
+                    s=Test\r\n\
+                    c=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 5000 RTP/SAVP 0\r\n\
+                    a=rtpmap:0 PCMU/8000\r\n\
+                    a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:aWZpdGtleW1hdGVyaWFsMTIzNDU2Nzg5MA==\r\n\
+                    a=crypto:2 AES_CM_128_HMAC_SHA1_32 inline:c2Vjb25ka2V5bWF0ZXJpYWwxMjM0NTY3OA==\r\n";
+
+        let crypto = parse_sdes_crypto(sdp);
+        assert_eq!(crypto.len(), 2);
+        assert_eq!(crypto[0].tag, 1);
+        assert_eq!(crypto[0].suite, "AES_CM_128_HMAC_SHA1_80");
+        assert_eq!(crypto[1].tag, 2);
+        assert_eq!(crypto[1].suite, "AES_CM_128_HMAC_SHA1_32");
+    }
+
+    #[test]
+    fn test_parse_sdes_crypto_none() {
+        let sdp = "v=0\r\n\
+                    o=- 123 1 IN IP4 10.0.0.1\r\n\
+                    s=Test\r\n\
+                    c=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 5000 RTP/AVP 0\r\n\
+                    a=rtpmap:0 PCMU/8000\r\n";
+
+        let crypto = parse_sdes_crypto(sdp);
+        assert!(crypto.is_empty());
+    }
+
+    #[test]
+    fn test_decode_sdes_key_params() {
+        // 16-byte key + 14-byte salt = 30 bytes for AES_CM_128
+        let key_bytes = [0x01u8; 16];
+        let salt_bytes = [0x02u8; 14];
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&key_bytes);
+        combined.extend_from_slice(&salt_bytes);
+        let b64 = general_purpose::STANDARD.encode(&combined);
+        let key_params = format!("inline:{}", b64);
+
+        let (key, salt, profile) =
+            decode_sdes_key_params(&key_params, "AES_CM_128_HMAC_SHA1_80").unwrap();
+        assert_eq!(key.len(), 16);
+        assert_eq!(salt.len(), 14);
+        assert_eq!(key, key_bytes);
+        assert_eq!(salt, salt_bytes);
+        assert_eq!(profile, SrtpProfile::Aes128CmHmacSha1_80);
+    }
+
+    #[test]
+    fn test_decode_sdes_key_params_with_lifetime() {
+        let key_bytes = [0xAAu8; 16];
+        let salt_bytes = [0xBBu8; 14];
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&key_bytes);
+        combined.extend_from_slice(&salt_bytes);
+        let b64 = general_purpose::STANDARD.encode(&combined);
+        // Lifetime suffix after |
+        let key_params = format!("inline:{}|2^31", b64);
+
+        let (key, salt, _profile) =
+            decode_sdes_key_params(&key_params, "AES_CM_128_HMAC_SHA1_80").unwrap();
+        assert_eq!(key, key_bytes);
+        assert_eq!(salt, salt_bytes);
+    }
+
+    #[test]
+    fn test_decode_sdes_key_params_bad_prefix() {
+        let result = decode_sdes_key_params("notinline:abc", "AES_CM_128_HMAC_SHA1_80");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sdes_suite_to_profile() {
+        assert_eq!(
+            sdes_suite_to_profile("AES_CM_128_HMAC_SHA1_80"),
+            Some(SrtpProfile::Aes128CmHmacSha1_80)
+        );
+        assert_eq!(
+            sdes_suite_to_profile("AES_CM_128_HMAC_SHA1_32"),
+            Some(SrtpProfile::Aes128CmHmacSha1_32)
+        );
+        assert_eq!(
+            sdes_suite_to_profile("AEAD_AES_128_GCM"),
+            Some(SrtpProfile::AeadAes128Gcm)
+        );
+        assert_eq!(
+            sdes_suite_to_profile("AEAD_AES_256_GCM"),
+            Some(SrtpProfile::AeadAes256Gcm)
+        );
+        assert_eq!(sdes_suite_to_profile("UNKNOWN_SUITE"), None);
+    }
+
+    #[test]
+    fn test_generate_srtp_key_material() {
+        let (material, b64) = generate_srtp_key_material().unwrap();
+        assert_eq!(material.master_key.len(), 16);
+        assert_eq!(material.master_salt.len(), 14);
+        assert_eq!(material.profile, SrtpProfile::Aes128CmHmacSha1_80);
+        // Base64 of 30 bytes = 40 chars
+        assert_eq!(b64.len(), 40);
+
+        // Verify round-trip: decode the base64 back
+        let decoded = general_purpose::STANDARD.decode(&b64).unwrap();
+        assert_eq!(decoded.len(), 30);
+        assert_eq!(&decoded[..16], &material.master_key[..]);
+        assert_eq!(&decoded[16..], &material.master_salt[..]);
     }
 }

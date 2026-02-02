@@ -107,6 +107,37 @@ impl TrunkFailover {
     }
 }
 
+/// SRTP policy for a trunk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SrtpMode {
+    /// SRTP disabled — RTP/AVP only
+    #[default]
+    Disabled,
+    /// Prefer SRTP if the remote side offers it, but fall back to RTP
+    Preferred,
+    /// Require SRTP — reject calls that don't offer crypto
+    Required,
+}
+
+/// SRTP configuration for a trunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrunkSrtpConfig {
+    /// SRTP mode
+    pub mode: SrtpMode,
+    /// Allowed crypto suites (empty = all supported)
+    #[serde(default)]
+    pub allowed_suites: Vec<String>,
+}
+
+impl Default for TrunkSrtpConfig {
+    fn default() -> Self {
+        Self {
+            mode: SrtpMode::Disabled,
+            allowed_suites: Vec::new(),
+        }
+    }
+}
+
 /// A trunk (carrier) configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrunkConfig {
@@ -149,6 +180,10 @@ pub struct TrunkConfig {
     /// Names of HMR rules to apply for this trunk (empty = use all matching global rules).
     #[serde(default)]
     pub header_rules: Vec<String>,
+
+    /// SRTP configuration for this trunk
+    #[serde(default)]
+    pub srtp: TrunkSrtpConfig,
 }
 
 impl Default for TrunkConfig {
@@ -167,6 +202,7 @@ impl Default for TrunkConfig {
             failover: TrunkFailover::default(),
             max_concurrent_calls: 0,
             header_rules: Vec::new(),
+            srtp: TrunkSrtpConfig::default(),
         }
     }
 }
@@ -371,6 +407,41 @@ mod tests {
             realm: Some("example.com".into()),
         });
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_srtp_mode_serde() {
+        let modes = vec![SrtpMode::Disabled, SrtpMode::Preferred, SrtpMode::Required];
+        for mode in modes {
+            let json = serde_json::to_string(&mode).unwrap();
+            let deserialized: SrtpMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_trunk_config_with_srtp() {
+        let cfg = TrunkConfig {
+            name: "secure-trunk".into(),
+            hosts: vec!["sip.secure.com".into()],
+            srtp: TrunkSrtpConfig {
+                mode: SrtpMode::Required,
+                allowed_suites: vec!["AES_CM_128_HMAC_SHA1_80".into()],
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: TrunkConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+        assert_eq!(deserialized.srtp.mode, SrtpMode::Required);
+        assert_eq!(deserialized.srtp.allowed_suites.len(), 1);
+    }
+
+    #[test]
+    fn test_trunk_config_srtp_default() {
+        let cfg = TrunkConfig::default();
+        assert_eq!(cfg.srtp.mode, SrtpMode::Disabled);
+        assert!(cfg.srtp.allowed_suites.is_empty());
     }
 
     #[test]

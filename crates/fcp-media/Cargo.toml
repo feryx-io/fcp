@@ -1,6 +1,6 @@
 [package]
 name = "fcp-media"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["FCP Contributors"]
 description = "Media integration layer for FCP - bridges SIP signaling with forge-media engine"
@@ -59,9 +59,10 @@ chrono = "0.4"
 # UUIDs
 uuid = { workspace = true }
 
-# Cryptography (for TTS cache keys)
+# Cryptography (for TTS cache keys and SRTP key generation)
 sha2 = "0.10"
 base64 = "0.22"
+rand = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"

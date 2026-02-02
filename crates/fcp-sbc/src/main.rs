@@ -29,6 +29,7 @@ mod nat;
 mod registration_store;
 mod topology;
 mod siprec;
+mod srtp;
 
 use admission::AdmissionController;
 use cli::Cli;
@@ -70,10 +71,7 @@ async fn main() -> Result<()> {
 
     // 4b. Warn about unsupported media feature flags
     if sbc_config.nat.enable_srtp {
-        warn!(
-            "nat.enable_srtp is enabled but SRTP is not yet implemented — \
-             media will NOT be encrypted"
-        );
+        info!("SRTP support enabled (SDES-SRTP, RFC 4568)");
     }
     if sbc_config.nat.enable_transcoding {
         warn!(
