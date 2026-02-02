@@ -6,8 +6,10 @@
 
 use dashmap::DashMap;
 use fcp_core::CallId;
+use fcp_events::CallDirection;
 use fcp_sbc_core::siprec::{RecordingPolicy, RecordingServer, SiprecConfig};
 use fcp_sip::uac::SipUserAgentClient;
+use regex::Regex;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::warn;
@@ -28,6 +30,16 @@ struct RecordingSession {
     _started_at: SystemTime,
 }
 
+/// A pre-compiled selective recording rule ready for matching.
+struct CompiledRecordingRule {
+    #[allow(dead_code)]
+    name: String,
+    caller_regex: Option<Regex>,
+    callee_regex: Option<Regex>,
+    trunk_names: Option<Vec<String>>,
+    direction: Option<CallDirection>,
+}
+
 /// SIPREC recording session manager.
 ///
 /// Hooks into call lifecycle events to start/stop recording sessions
@@ -37,6 +49,7 @@ pub struct SiprecRecorder {
     uac: Arc<SipUserAgentClient>,
     pending_calls: DashMap<String, PendingCallInfo>,
     sessions: DashMap<String, RecordingSession>,
+    compiled_rules: Vec<CompiledRecordingRule>,
 }
 
 impl SiprecRecorder {
@@ -49,12 +62,68 @@ impl SiprecRecorder {
         if !config.servers.iter().any(|s| s.enabled) {
             return None;
         }
+
+        // Pre-compile selective recording rules
+        let compiled_rules: Vec<CompiledRecordingRule> = config
+            .rules
+            .iter()
+            .filter(|r| r.enabled)
+            .filter_map(|r| {
+                let caller_regex = r.caller_pattern.as_ref().and_then(|p| {
+                    Regex::new(p)
+                        .map_err(|e| warn!(rule = %r.name, pattern = %p, error = %e, "invalid caller_pattern regex"))
+                        .ok()
+                });
+                let callee_regex = r.callee_pattern.as_ref().and_then(|p| {
+                    Regex::new(p)
+                        .map_err(|e| warn!(rule = %r.name, pattern = %p, error = %e, "invalid callee_pattern regex"))
+                        .ok()
+                });
+                let direction = r.direction.as_deref().and_then(|d| match d {
+                    "inbound" => Some(CallDirection::Inbound),
+                    "outbound" => Some(CallDirection::Outbound),
+                    _ => {
+                        warn!(rule = %r.name, direction = %d, "invalid direction in recording rule");
+                        None
+                    }
+                });
+                Some(CompiledRecordingRule {
+                    name: r.name.clone(),
+                    caller_regex,
+                    callee_regex,
+                    trunk_names: r.trunk_names.clone(),
+                    direction,
+                })
+            })
+            .collect();
+
         Some(Self {
             config,
             uac,
             pending_calls: DashMap::new(),
             sessions: DashMap::new(),
+            compiled_rules,
         })
+    }
+
+    /// Check whether a call should be recorded based on the configured policy.
+    ///
+    /// Returns `true` for `All` policy, and checks compiled rules for `Selective`.
+    pub fn should_record(
+        &self,
+        from: &str,
+        to: &str,
+        direction: &CallDirection,
+        trunk_name: Option<&str>,
+    ) -> bool {
+        match self.config.policy {
+            RecordingPolicy::None => false,
+            RecordingPolicy::All => true,
+            RecordingPolicy::Selective => self
+                .compiled_rules
+                .iter()
+                .any(|rule| rule_matches(rule, from, to, direction, trunk_name)),
+        }
     }
 
     /// Select the best recording server (lowest priority among enabled).
@@ -68,7 +137,20 @@ impl SiprecRecorder {
 
     /// Called when a new call is initiated. Stores caller/callee info for
     /// later use when the call is answered.
-    pub fn on_call_initiated(&self, call_id: &CallId, from: &str, to: &str) {
+    ///
+    /// For `Selective` policy the call is only tracked (and later recorded)
+    /// when it matches at least one enabled rule.
+    pub fn on_call_initiated(
+        &self,
+        call_id: &CallId,
+        from: &str,
+        to: &str,
+        direction: &CallDirection,
+        trunk_name: Option<&str>,
+    ) {
+        if !self.should_record(from, to, direction, trunk_name) {
+            return;
+        }
         self.pending_calls.insert(
             call_id.to_string(),
             PendingCallInfo {
@@ -83,7 +165,15 @@ impl SiprecRecorder {
     /// Consumes pending call info, builds metadata XML and multipart body,
     /// and sends a SIPREC INVITE to the recording server. Failures are logged
     /// but never propagate to the call.
-    pub async fn start_recording(&self, call_id: &CallId) {
+    ///
+    /// `a_leg_sdp` and `b_leg_sdp` are the negotiated SDP bodies from the
+    /// call legs, used to extract the actual codec for the recording SDP.
+    pub async fn start_recording(
+        &self,
+        call_id: &CallId,
+        a_leg_sdp: Option<&str>,
+        b_leg_sdp: Option<&str>,
+    ) {
         let call_key = call_id.to_string();
         let pending = match self.pending_calls.remove(&call_key) {
             Some((_, info)) => info,
@@ -105,9 +195,10 @@ impl SiprecRecorder {
         let session_id = Uuid::new_v4().to_string();
         let boundary = format!("srec-{}", &recording_id[..8]);
 
-        // Build SDP for recording (placeholder — the recording server will
-        // provide the actual RTP targets in its answer)
-        let sdp = build_recording_sdp(&session_id);
+        // Build SDP for recording — uses negotiated codec from call legs
+        // when available, falls back to PCMU. The recording server will
+        // provide the actual RTP targets in its answer.
+        let sdp = build_recording_sdp(&session_id, a_leg_sdp, b_leg_sdp);
 
         // Build RFC 7865 metadata XML
         let metadata = generate_metadata_xml(
@@ -185,17 +276,104 @@ impl SiprecRecorder {
     }
 }
 
-/// Build a minimal SDP offer for the recording session.
-fn build_recording_sdp(session_id: &str) -> String {
+/// Check whether a compiled recording rule matches the given call parameters.
+///
+/// All non-`None` fields must match (AND logic). Fields that are `None` are
+/// treated as wildcards (always match).
+fn rule_matches(
+    rule: &CompiledRecordingRule,
+    from: &str,
+    to: &str,
+    direction: &CallDirection,
+    trunk_name: Option<&str>,
+) -> bool {
+    // Direction filter
+    if let Some(ref rule_dir) = rule.direction {
+        if rule_dir != direction {
+            return false;
+        }
+    }
+    // Trunk name filter
+    if let Some(ref names) = rule.trunk_names {
+        match trunk_name {
+            Some(tn) => {
+                if !names.iter().any(|n| n == tn) {
+                    return false;
+                }
+            }
+            None => return false, // rule requires a trunk but call has none
+        }
+    }
+    // Caller pattern
+    if let Some(ref re) = rule.caller_regex {
+        if !re.is_match(from) {
+            return false;
+        }
+    }
+    // Callee pattern
+    if let Some(ref re) = rule.callee_regex {
+        if !re.is_match(to) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Extract the first codec from an SDP body.
+///
+/// Parses `a=rtpmap:<pt> <name>/<rate>` lines and returns
+/// `(codec_name, payload_type, clock_rate)` for the first match.
+fn extract_first_codec(sdp_text: &str) -> Option<(String, u8, u32)> {
+    for line in sdp_text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("a=rtpmap:") {
+            // Format: "PT codec/rate" or "PT codec/rate/channels"
+            let mut parts = rest.splitn(2, ' ');
+            let pt_str = parts.next()?;
+            let codec_part = parts.next()?;
+            let pt: u8 = pt_str.parse().ok()?;
+            let mut codec_parts = codec_part.split('/');
+            let name = codec_parts.next()?;
+            let rate: u32 = codec_parts.next().and_then(|r| r.parse().ok()).unwrap_or(8000);
+            return Some((name.to_string(), pt, rate));
+        }
+    }
+    None
+}
+
+/// Build a SIPREC SDP offer for the recording session.
+///
+/// Per RFC 7866, the SRC (us) sends media to the SRS, so each stream
+/// uses `a=sendonly`. Two `m=audio` lines are included — one per
+/// participant (a-leg, b-leg) — with `a=label:` attributes.
+///
+/// When negotiated SDP is available, the actual codec is extracted;
+/// otherwise PCMU/8000 (payload type 0) is used as a safe fallback.
+fn build_recording_sdp(
+    session_id: &str,
+    a_leg_sdp: Option<&str>,
+    b_leg_sdp: Option<&str>,
+) -> String {
+    // Try to extract codec from either leg's negotiated SDP
+    let (codec_name, pt, rate) = a_leg_sdp
+        .and_then(extract_first_codec)
+        .or_else(|| b_leg_sdp.and_then(extract_first_codec))
+        .unwrap_or_else(|| ("PCMU".to_string(), 0, 8000));
+
     format!(
         "v=0\r\n\
-         o=- {} 1 IN IP4 0.0.0.0\r\n\
+         o=- {session_id} 1 IN IP4 0.0.0.0\r\n\
          s=SIPREC\r\n\
          c=IN IP4 0.0.0.0\r\n\
          t=0 0\r\n\
-         m=audio 0 RTP/AVP 0\r\n\
-         a=recvonly\r\n",
-        session_id
+         m=audio 0 RTP/AVP {pt}\r\n\
+         a=rtpmap:{pt} {codec_name}/{rate}\r\n\
+         a=sendonly\r\n\
+         a=label:a-leg\r\n\
+         m=audio 0 RTP/AVP {pt}\r\n\
+         a=rtpmap:{pt} {codec_name}/{rate}\r\n\
+         a=sendonly\r\n\
+         a=label:b-leg\r\n"
     )
 }
 
@@ -290,6 +468,7 @@ mod tests {
                 },
             ],
             include_metadata: true,
+            rules: vec![],
         }
     }
 
@@ -332,6 +511,7 @@ mod tests {
                 },
             ],
             include_metadata: true,
+            rules: vec![],
         };
         let server = select_server_from_config(&config).unwrap();
         assert_eq!(server.name, "enabled");
@@ -348,6 +528,7 @@ mod tests {
                 priority: 1,
             }],
             include_metadata: true,
+            rules: vec![],
         };
         assert!(!would_create_recorder(&config));
     }
@@ -386,10 +567,216 @@ mod tests {
 
     #[test]
     fn test_build_recording_sdp() {
-        let sdp = build_recording_sdp("sess-42");
+        let sdp = build_recording_sdp("sess-42", None, None);
         assert!(sdp.contains("v=0"));
         assert!(sdp.contains("sess-42"));
         assert!(sdp.contains("SIPREC"));
-        assert!(sdp.contains("a=recvonly"));
+        // RFC 7866: SRC sends to SRS, so sendonly
+        assert!(sdp.contains("a=sendonly"));
+        // Fallback to PCMU
+        assert!(sdp.contains("PCMU/8000"));
+        // Two m= lines (a-leg + b-leg)
+        assert!(sdp.contains("a=label:a-leg"));
+        assert!(sdp.contains("a=label:b-leg"));
+    }
+
+    #[test]
+    fn test_build_recording_sdp_with_negotiated() {
+        let a_sdp = "v=0\r\n\
+                      o=- 1 1 IN IP4 192.168.1.1\r\n\
+                      s=call\r\n\
+                      c=IN IP4 192.168.1.1\r\n\
+                      t=0 0\r\n\
+                      m=audio 5004 RTP/AVP 9\r\n\
+                      a=rtpmap:9 G722/8000\r\n";
+        let sdp = build_recording_sdp("sess-99", Some(a_sdp), None);
+        assert!(sdp.contains("G722/8000"));
+        assert!(sdp.contains("a=sendonly"));
+        assert!(sdp.contains("a=label:a-leg"));
+        assert!(sdp.contains("a=label:b-leg"));
+        // Should use pt 9
+        assert!(sdp.contains("RTP/AVP 9"));
+    }
+
+    #[test]
+    fn test_build_recording_sdp_fallback_to_pcmu() {
+        // SDP with no rtpmap lines
+        let bad_sdp = "v=0\r\nm=audio 5004 RTP/AVP 0\r\n";
+        let sdp = build_recording_sdp("sess-00", Some(bad_sdp), None);
+        assert!(sdp.contains("PCMU/8000"));
+        assert!(sdp.contains("RTP/AVP 0"));
+    }
+
+    #[test]
+    fn test_extract_first_codec() {
+        let sdp = "v=0\r\n\
+                    m=audio 5004 RTP/AVP 111\r\n\
+                    a=rtpmap:111 opus/48000/2\r\n\
+                    a=rtpmap:0 PCMU/8000\r\n";
+        let (name, pt, rate) = extract_first_codec(sdp).unwrap();
+        assert_eq!(name, "opus");
+        assert_eq!(pt, 111);
+        assert_eq!(rate, 48000);
+    }
+
+    #[test]
+    fn test_extract_first_codec_none() {
+        let sdp = "v=0\r\nm=audio 5004 RTP/AVP 0\r\n";
+        assert!(extract_first_codec(sdp).is_none());
+    }
+
+    // --- Selective recording rule matching ---
+
+    fn make_rule(
+        caller: Option<&str>,
+        callee: Option<&str>,
+        trunks: Option<Vec<&str>>,
+        direction: Option<CallDirection>,
+    ) -> CompiledRecordingRule {
+        CompiledRecordingRule {
+            name: "test-rule".into(),
+            caller_regex: caller.map(|p| Regex::new(p).unwrap()),
+            callee_regex: callee.map(|p| Regex::new(p).unwrap()),
+            trunk_names: trunks.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
+            direction,
+        }
+    }
+
+    #[test]
+    fn test_rule_matches_all_wildcards() {
+        let rule = make_rule(None, None, None, None);
+        assert!(rule_matches(
+            &rule,
+            "sip:alice@example.com",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            Some("trunk-1"),
+        ));
+    }
+
+    #[test]
+    fn test_rule_matches_direction() {
+        let rule = make_rule(None, None, None, Some(CallDirection::Inbound));
+        assert!(rule_matches(
+            &rule,
+            "sip:alice@example.com",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            None,
+        ));
+        assert!(!rule_matches(
+            &rule,
+            "sip:alice@example.com",
+            "sip:bob@example.com",
+            &CallDirection::Outbound,
+            None,
+        ));
+    }
+
+    #[test]
+    fn test_rule_matches_trunk() {
+        let rule = make_rule(None, None, Some(vec!["carrier-a", "carrier-b"]), None);
+        assert!(rule_matches(
+            &rule,
+            "sip:a@x.com",
+            "sip:b@y.com",
+            &CallDirection::Inbound,
+            Some("carrier-a"),
+        ));
+        assert!(!rule_matches(
+            &rule,
+            "sip:a@x.com",
+            "sip:b@y.com",
+            &CallDirection::Inbound,
+            Some("carrier-c"),
+        ));
+        // No trunk name when rule requires one
+        assert!(!rule_matches(
+            &rule,
+            "sip:a@x.com",
+            "sip:b@y.com",
+            &CallDirection::Inbound,
+            None,
+        ));
+    }
+
+    #[test]
+    fn test_rule_matches_caller_pattern() {
+        let rule = make_rule(Some(r"^\+1"), None, None, None);
+        assert!(rule_matches(
+            &rule,
+            "+15551234567",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            None,
+        ));
+        assert!(!rule_matches(
+            &rule,
+            "+442071234567",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            None,
+        ));
+    }
+
+    #[test]
+    fn test_rule_matches_callee_pattern() {
+        let rule = make_rule(None, Some(r"@sales\."), None, None);
+        assert!(rule_matches(
+            &rule,
+            "sip:alice@example.com",
+            "sip:bob@sales.example.com",
+            &CallDirection::Inbound,
+            None,
+        ));
+        assert!(!rule_matches(
+            &rule,
+            "sip:alice@example.com",
+            "sip:bob@support.example.com",
+            &CallDirection::Inbound,
+            None,
+        ));
+    }
+
+    #[test]
+    fn test_rule_matches_combined_filters() {
+        let rule = make_rule(
+            Some(r"^\+1"),
+            None,
+            Some(vec!["carrier-a"]),
+            Some(CallDirection::Inbound),
+        );
+        // All match
+        assert!(rule_matches(
+            &rule,
+            "+15551234567",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            Some("carrier-a"),
+        ));
+        // Wrong direction
+        assert!(!rule_matches(
+            &rule,
+            "+15551234567",
+            "sip:bob@example.com",
+            &CallDirection::Outbound,
+            Some("carrier-a"),
+        ));
+        // Wrong trunk
+        assert!(!rule_matches(
+            &rule,
+            "+15551234567",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            Some("carrier-b"),
+        ));
+        // Wrong caller pattern
+        assert!(!rule_matches(
+            &rule,
+            "+442071234567",
+            "sip:bob@example.com",
+            &CallDirection::Inbound,
+            Some("carrier-a"),
+        ));
     }
 }

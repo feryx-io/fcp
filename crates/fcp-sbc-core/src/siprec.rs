@@ -16,8 +16,44 @@ pub enum RecordingPolicy {
     /// Record all calls.
     All,
 
-    /// Record calls matching specific criteria (future: rules engine).
+    /// Record calls matching selective recording rules.
     Selective,
+}
+
+/// A selective recording rule that matches calls by caller/callee pattern,
+/// trunk name, and/or call direction.
+///
+/// When policy is `Selective`, a call is recorded if it matches at least
+/// one enabled rule. All non-`None` fields must match (AND logic within
+/// a rule); any rule matching is sufficient (OR logic across rules).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectiveRecordingRule {
+    /// Rule name (for display/logging).
+    pub name: String,
+
+    /// Whether this rule is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Regex pattern matched against the caller URI (From).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pattern: Option<String>,
+
+    /// Regex pattern matched against the callee URI (To).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee_pattern: Option<String>,
+
+    /// Trunk names that this rule applies to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trunk_names: Option<Vec<String>>,
+
+    /// Call direction filter: "inbound" or "outbound".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A SIPREC recording server definition.
@@ -47,6 +83,10 @@ pub struct SiprecConfig {
 
     /// Include call metadata in SIPREC sessions.
     pub include_metadata: bool,
+
+    /// Selective recording rules (used when policy is `Selective`).
+    #[serde(default)]
+    pub rules: Vec<SelectiveRecordingRule>,
 }
 
 impl Default for SiprecConfig {
@@ -55,6 +95,7 @@ impl Default for SiprecConfig {
             policy: RecordingPolicy::None,
             servers: Vec::new(),
             include_metadata: true,
+            rules: Vec::new(),
         }
     }
 }
@@ -66,6 +107,8 @@ impl SiprecConfig {
     /// - Policy is not `None` but no enabled servers are configured
     /// - Any server URI does not start with "sip:" or "sips:"
     /// - Any server name is empty or contains CR/LF
+    /// - Policy is `Selective` but no enabled rules are configured
+    /// - Any rule has an invalid `direction` value
     pub fn validate(&self) -> Result<(), String> {
         if self.policy != RecordingPolicy::None {
             let has_enabled = self.servers.iter().any(|s| s.enabled);
@@ -91,6 +134,25 @@ impl SiprecConfig {
                 ));
             }
         }
+        // Selective policy requires at least one enabled rule
+        if self.policy == RecordingPolicy::Selective {
+            let has_enabled_rule = self.rules.iter().any(|r| r.enabled);
+            if !has_enabled_rule {
+                return Err(
+                    "at least one enabled rule is required when policy is Selective".into(),
+                );
+            }
+        }
+        // Validate rule direction values
+        for (i, rule) in self.rules.iter().enumerate() {
+            if let Some(ref dir) = rule.direction {
+                if dir != "inbound" && dir != "outbound" {
+                    return Err(format!(
+                        "rules[{i}]: direction must be \"inbound\" or \"outbound\", got \"{dir}\""
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -99,12 +161,33 @@ impl SiprecConfig {
 mod tests {
     use super::*;
 
+    fn one_server() -> Vec<RecordingServer> {
+        vec![RecordingServer {
+            name: "recorder-1".into(),
+            uri: "sip:recorder@example.com".into(),
+            enabled: true,
+            priority: 1,
+        }]
+    }
+
+    fn one_rule() -> SelectiveRecordingRule {
+        SelectiveRecordingRule {
+            name: "record-all-inbound".into(),
+            enabled: true,
+            caller_pattern: None,
+            callee_pattern: None,
+            trunk_names: None,
+            direction: Some("inbound".into()),
+        }
+    }
+
     #[test]
     fn test_default() {
         let cfg = SiprecConfig::default();
         assert_eq!(cfg.policy, RecordingPolicy::None);
         assert!(cfg.servers.is_empty());
         assert!(cfg.include_metadata);
+        assert!(cfg.rules.is_empty());
     }
 
     #[test]
@@ -116,13 +199,9 @@ mod tests {
     fn test_validate_valid_all() {
         let cfg = SiprecConfig {
             policy: RecordingPolicy::All,
-            servers: vec![RecordingServer {
-                name: "recorder-1".into(),
-                uri: "sip:recorder@example.com".into(),
-                enabled: true,
-                priority: 1,
-            }],
+            servers: one_server(),
             include_metadata: true,
+            rules: vec![],
         };
         assert!(cfg.validate().is_ok());
     }
@@ -138,6 +217,7 @@ mod tests {
                 priority: 1,
             }],
             include_metadata: true,
+            rules: vec![],
         };
         assert!(cfg.validate().is_ok());
     }
@@ -153,6 +233,7 @@ mod tests {
                 priority: 1,
             }],
             include_metadata: true,
+            rules: vec![],
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("enabled recording server"));
@@ -164,6 +245,7 @@ mod tests {
             policy: RecordingPolicy::Selective,
             servers: Vec::new(),
             include_metadata: true,
+            rules: vec![one_rule()],
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("enabled recording server"));
@@ -180,6 +262,7 @@ mod tests {
                 priority: 1,
             }],
             include_metadata: true,
+            rules: vec![],
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("sip:"));
@@ -196,6 +279,7 @@ mod tests {
                 priority: 1,
             }],
             include_metadata: true,
+            rules: vec![],
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("name"));
@@ -212,6 +296,7 @@ mod tests {
                 priority: 1,
             }],
             include_metadata: true,
+            rules: vec![],
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("CR/LF"));
@@ -219,11 +304,11 @@ mod tests {
 
     #[test]
     fn test_validate_none_policy_skips_server_count() {
-        // None policy doesn't require servers
         let cfg = SiprecConfig {
             policy: RecordingPolicy::None,
             servers: Vec::new(),
             include_metadata: true,
+            rules: vec![],
         };
         assert!(cfg.validate().is_ok());
     }
@@ -232,13 +317,83 @@ mod tests {
     fn test_serde_roundtrip() {
         let cfg = SiprecConfig {
             policy: RecordingPolicy::All,
-            servers: vec![RecordingServer {
-                name: "recorder-1".into(),
-                uri: "sip:recorder@example.com".into(),
-                enabled: true,
-                priority: 1,
-            }],
+            servers: one_server(),
             include_metadata: false,
+            rules: vec![],
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SiprecConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+    }
+
+    // --- Selective recording rule validation ---
+
+    #[test]
+    fn test_validate_selective_requires_rules() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::Selective,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![], // no rules
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("enabled rule"));
+    }
+
+    #[test]
+    fn test_validate_selective_with_rule() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::Selective,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![one_rule()],
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_selective_disabled_rules_not_counted() {
+        let mut rule = one_rule();
+        rule.enabled = false;
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::Selective,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![rule],
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("enabled rule"));
+    }
+
+    #[test]
+    fn test_validate_invalid_rule_direction() {
+        let mut rule = one_rule();
+        rule.direction = Some("bidirectional".into()); // invalid
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::All,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![rule],
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("direction"));
+        assert!(err.contains("bidirectional"));
+    }
+
+    #[test]
+    fn test_serde_roundtrip_with_rules() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::Selective,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![SelectiveRecordingRule {
+                name: "record-sales".into(),
+                enabled: true,
+                caller_pattern: Some("^\\+1".into()),
+                callee_pattern: None,
+                trunk_names: Some(vec!["carrier-a".into()]),
+                direction: Some("inbound".into()),
+            }],
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: SiprecConfig = serde_json::from_str(&json).unwrap();

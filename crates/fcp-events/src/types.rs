@@ -71,6 +71,10 @@ pub enum CallEvent {
         #[serde(with = "system_time_serde")]
         answer_time: SystemTime,
         codec: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        a_leg_sdp: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        b_leg_sdp: Option<String>,
     },
 
     /// Call ended (BYE/timeout/error)

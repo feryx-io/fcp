@@ -25,7 +25,7 @@ pub use metrics::{SbcMetricsConfig, SbcMetricsSnapshot, TrunkHealthStatus};
 pub use nat::{NatConfig, StunServerConfig, TurnServerConfig};
 pub use rate_limit::{MethodRateLimits, RateLimitEntry, RateLimitPolicyConfig};
 pub use security::{AclAction, IpAcl, IpAclEntry, MalformedSipPolicy, SecurityConfig};
-pub use siprec::{RecordingPolicy, RecordingServer, SiprecConfig};
+pub use siprec::{RecordingPolicy, RecordingServer, SelectiveRecordingRule, SiprecConfig};
 pub use hmr::{
     HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection,
     HmrMessageType, HmrRule,

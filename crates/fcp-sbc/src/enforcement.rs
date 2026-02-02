@@ -4,9 +4,11 @@
 //! (IP ACL, message size, rate limiting, admission control) before
 //! delegating to the inner B2BUA handler.
 //!
-//! SIP responses (starting with "SIP/") bypass enforcement — they are
-//! replies to our own outbound requests and must reach the transaction
-//! layer to avoid timeouts.
+//! SIP responses (starting with "SIP/") bypass security enforcement — they
+//! are replies to our own outbound requests and must reach the transaction
+//! layer to avoid timeouts. However, ingress header manipulation rules are
+//! still applied to responses so that trunk-specific header stripping
+//! (e.g. removing `Server` headers) works for both requests and responses.
 
 use crate::admission::AdmissionController;
 use crate::hmr::HeaderManipulationEngine;
@@ -27,13 +29,15 @@ use tracing::{debug, warn};
 /// Enforcement decorator wrapping the inner SIP message handler.
 ///
 /// Enforces (in order):
-/// 1. Response bypass (SIP responses skip enforcement)
+/// 1. Response bypass (SIP responses skip security enforcement but get
+///    ingress HMR applied before delegation)
 /// 2. IP ACL check
 /// 3. Message size limit
 /// 4. Rate limiting (per-IP via `sip-ratelimit`)
 /// 5. Malformed SIP structure check
 /// 6. Method-specific rate limiting + admission control
-/// 7. Delegate to inner `SipMessageHandler`
+/// 7. Apply ingress header manipulation rules (requests and responses)
+/// 8. Delegate to inner `SipMessageHandler`
 pub struct SbcEnforcementHandler {
     inner: Arc<SipMessageHandler>,
     security: SecurityConfig,
@@ -109,9 +113,22 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         payload: Bytes,
         stream: Option<mpsc::Sender<Bytes>>,
     ) -> anyhow::Result<()> {
-        // 0. SIP responses bypass enforcement — they are replies to our own
-        //    outbound requests and must reach the transaction layer.
+        // 0. SIP responses bypass security enforcement — they are replies to
+        //    our own outbound requests and must reach the transaction layer.
+        //    However, ingress HMR is still applied so trunk-specific header
+        //    stripping works on responses too.
         if payload.starts_with(b"SIP/") {
+            let payload = if let Some(ref engine) = self.hmr_engine {
+                let trunk = self.identify_trunk_by_peer(peer);
+                if let Some(mut resp) = sip_parse::parse_response(&payload) {
+                    engine.apply_response_ingress(&mut resp, trunk);
+                    sip_parse::serialize_response(&resp)
+                } else {
+                    payload
+                }
+            } else {
+                payload
+            };
             return self
                 .inner
                 .handle_inbound(transport, peer, payload, stream)
@@ -557,5 +574,60 @@ mod tests {
             CSeq: 1 INVITE\r\n\
             \r\n";
         assert!(!validate_sip_structure(payload));
+    }
+
+    // --- Ingress HMR on SIP responses ---
+
+    #[test]
+    fn test_response_ingress_hmr_removes_server_header() {
+        use crate::hmr::HeaderManipulationEngine;
+        use fcp_sbc_core::hmr::*;
+
+        // Build an HMR rule that removes the Server header on ingress responses
+        let cfg = HeaderManipulationConfig {
+            enabled: true,
+            rules: vec![HmrRule {
+                name: "strip-server".into(),
+                priority: 10,
+                enabled: true,
+                direction: HmrDirection::Ingress,
+                message_type: HmrMessageType::Response,
+                methods: vec![],
+                conditions: vec![],
+                actions: vec![HmrAction {
+                    action_type: HmrActionType::Remove,
+                    header_name: "Server".into(),
+                    value: None,
+                    pattern: None,
+                }],
+            }],
+        };
+        let engine = HeaderManipulationEngine::new(&cfg, &[]).unwrap();
+
+        // Build a raw SIP response with a Server header
+        let raw = Bytes::from(
+            "SIP/2.0 200 OK\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:bob@example.com>;tag=xyz\r\n\
+             Call-ID: test123@10.0.0.1\r\n\
+             CSeq: 1 INVITE\r\n\
+             Server: BadServer/1.0\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        );
+
+        // Parse → apply HMR → serialize (same pipeline as enforcement handler)
+        let mut resp = sip_parse::parse_response(&raw).expect("should parse response");
+        assert!(resp.headers().get("Server").is_some());
+
+        engine.apply_response_ingress(&mut resp, None);
+        assert!(resp.headers().get("Server").is_none());
+
+        let serialized = sip_parse::serialize_response(&resp);
+        let text = std::str::from_utf8(&serialized).unwrap();
+        assert!(text.starts_with("SIP/2.0 200 OK\r\n"));
+        assert!(!text.contains("Server:"));
+        assert!(!text.contains("BadServer"));
     }
 }

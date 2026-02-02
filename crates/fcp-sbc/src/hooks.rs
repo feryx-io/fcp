@@ -62,21 +62,45 @@ impl EventPublisher for SbcEventHooks {
         if let PlatformEvent::Call(ref call_event) = event {
             match call_event {
                 CallEvent::Initiated {
-                    call_id, from, to, ..
+                    call_id,
+                    from,
+                    to,
+                    direction,
+                    trunk_name,
+                    ..
                 } => {
                     self.admission.call_started();
                     debug!("SBC: call started, concurrent count incremented");
 
                     if let Some(ref recorder) = self.recorder {
-                        recorder.on_call_initiated(call_id, from, to);
+                        recorder.on_call_initiated(
+                            call_id,
+                            from,
+                            to,
+                            direction,
+                            trunk_name.as_deref(),
+                        );
                     }
                 }
-                CallEvent::Answered { call_id, .. } => {
+                CallEvent::Answered {
+                    call_id,
+                    a_leg_sdp,
+                    b_leg_sdp,
+                    ..
+                } => {
                     if let Some(ref recorder) = self.recorder {
                         let recorder = Arc::clone(recorder);
                         let call_id = call_id.clone();
+                        let a_sdp = a_leg_sdp.clone();
+                        let b_sdp = b_leg_sdp.clone();
                         tokio::spawn(async move {
-                            recorder.start_recording(&call_id).await;
+                            recorder
+                                .start_recording(
+                                    &call_id,
+                                    a_sdp.as_deref(),
+                                    b_sdp.as_deref(),
+                                )
+                                .await;
                         });
                     }
                 }

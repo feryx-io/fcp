@@ -158,6 +158,8 @@ impl CallManager {
                             .established_at
                             .unwrap_or_else(std::time::SystemTime::now),
                         codec,
+                        a_leg_sdp: updated_call.a_leg.sdp.clone(),
+                        b_leg_sdp: updated_call.b_leg.as_ref().and_then(|b| b.sdp.clone()),
                     }))
                 }
                 _ => None,
