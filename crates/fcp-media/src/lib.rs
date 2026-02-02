@@ -66,7 +66,10 @@ pub use decision::{should_anchor_media, MediaAnchoringDecision, MediaDecisionCon
 pub use dtmf_collector::{CollectionResult, DtmfCollector};
 pub use error::{Error, Result};
 pub use manager::{MediaManager, MediaManagerStats};
-pub use sdp::{extract_codecs_from_sdp, rewrite_sdp_for_anchoring};
+pub use sdp::{
+    extract_codecs_from_sdp, extract_telephone_event_pt, parse_sdp_codecs, rewrite_sdp_for_anchoring,
+    SdpCodecInfo,
+};
 pub use session::{
     DtmfMode, MediaSession, MediaSessionConfig, MediaSessionState, MediaSessionStats,
 };

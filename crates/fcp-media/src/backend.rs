@@ -211,6 +211,8 @@ pub mod embedded {
         participant_b: ParticipantId,
         /// FCP dialog ID
         dialog_id: fcp_core::DialogId,
+        /// Cached FCP MediaSession wrapper (preserves SDP state across calls)
+        fcp_session: Arc<MediaSession>,
     }
 
     /// Parse remote RTP endpoint from SDP
@@ -396,17 +398,6 @@ pub mod embedded {
                 .await
                 .map_err(|e| Error::ForgeMedia(e.to_string()))?;
 
-            // Store session info
-            let session_info = SessionInfo {
-                forge_session: forge_session.clone(),
-                forge_call_id: forge_call_id.clone(),
-                participant_a: participant_a.clone(),
-                participant_b: participant_b.clone(),
-                dialog_id: dialog_id.clone(),
-            };
-
-            self.sessions.insert(call_id.clone(), session_info);
-
             // Start RTP forwarding (required for media to flow)
             forge_session
                 .start_forwarding()
@@ -419,7 +410,7 @@ pub mod embedded {
             // Create FCP MediaSession wrapper
             let fcp_session = Arc::new(MediaSession::new(
                 call_id.clone(),
-                dialog_id,
+                dialog_id.clone(),
                 forge_call_id.0.clone(), // Use forge CallId string as session ID
                 config,
                 ports.rtp_port,
@@ -430,6 +421,18 @@ pub mod embedded {
             fcp_session
                 .set_state(crate::session::MediaSessionState::Active)
                 .await;
+
+            // Store session info with cached FCP session
+            let session_info = SessionInfo {
+                forge_session: forge_session.clone(),
+                forge_call_id: forge_call_id.clone(),
+                participant_a: participant_a.clone(),
+                participant_b: participant_b.clone(),
+                dialog_id,
+                fcp_session: fcp_session.clone(),
+            };
+
+            self.sessions.insert(call_id.clone(), session_info);
 
             info!(
                 ?call_id,
@@ -447,23 +450,7 @@ pub mod embedded {
                 .sessions
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
-
-            // Get RTP/RTCP ports from forge-media session
-            let ports = session_info.forge_session.ports();
-
-            // Reconstruct FCP MediaSession from stored info
-            // In a real implementation, we'd cache the FCP session too
-            let config = MediaSessionConfig::default(); // TODO: Store original config
-            let fcp_session = Arc::new(MediaSession::new(
-                call_id.clone(),
-                session_info.dialog_id.clone(),
-                session_info.forge_call_id.0.clone(),
-                config,
-                ports.rtp_port,
-                ports.rtcp_port,
-            ));
-
-            Ok(fcp_session)
+            Ok(session_info.fcp_session.clone())
         }
 
         async fn update_session(
@@ -478,27 +465,34 @@ pub mod embedded {
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
-            // Parse remote SDP to extract client's RTP endpoint
-            // This is critical for IVR scenarios where server sends audio first
-            if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
-                // Set participant_a's remote address (the caller in IVR mode)
-                // Leave participant_b's endpoint unset - there's no B-leg in IVR
-                let participant_a = session_info.forge_session.participant_a();
-                participant_a.write().await.remote_addr = Some(remote_endpoint);
+            // Generate negotiated SDP (intersects remote codecs with our supported set)
+            let result =
+                generate_negotiated_sdp(&session_info, &remote_sdp, &self.advertise_ip)?;
 
+            // Parse remote SDP to extract client's RTP endpoint and set codec config
+            if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
+                let mut pa = session_info.forge_session.participant_a().write().await;
+                pa.remote_addr = Some(remote_endpoint);
+                pa.codec_config = sdp_codec_to_forge_config(&result.primary_codec);
+                pa.payload_type = result.primary_codec.payload_type;
                 info!(
                     ?call_id,
                     endpoint = %remote_endpoint,
-                    "Set remote RTP endpoint from SDP"
+                    codec = %result.primary_codec.encoding_name,
+                    "Set A-leg endpoint and codec from SDP"
                 );
             } else {
                 warn!(?call_id, "Failed to parse remote endpoint from SDP - will rely on symmetric RTP learning");
             }
 
-            // Generate local SDP
-            let local_sdp = generate_simple_sdp(&session_info, &remote_sdp, &self.advertise_ip)?;
+            // Update cached session state
+            session_info.fcp_session.set_remote_sdp(remote_sdp).await;
+            session_info
+                .fcp_session
+                .set_local_sdp(result.sdp.clone())
+                .await;
 
-            Ok(local_sdp)
+            Ok(result.sdp)
         }
 
         async fn update_session_b_leg(
@@ -513,14 +507,27 @@ pub mod embedded {
                 .get(call_id)
                 .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
 
+            let b_leg_codecs = crate::sdp::parse_sdp_codecs(&remote_sdp);
+
             if let Ok(remote_endpoint) = parse_remote_endpoint_from_sdp(&remote_sdp) {
-                let participant_b = session_info.forge_session.participant_b();
-                participant_b.write().await.remote_addr = Some(remote_endpoint);
-                info!(
-                    ?call_id,
-                    endpoint = %remote_endpoint,
-                    "Set B-leg remote RTP endpoint from SDP"
-                );
+                let mut pb = session_info.forge_session.participant_b().write().await;
+                pb.remote_addr = Some(remote_endpoint);
+                if let Some(first) = b_leg_codecs.first() {
+                    pb.codec_config = sdp_codec_to_forge_config(first);
+                    pb.payload_type = first.payload_type;
+                    info!(
+                        ?call_id,
+                        endpoint = %remote_endpoint,
+                        codec = %first.encoding_name,
+                        "Set B-leg endpoint and codec from SDP"
+                    );
+                } else {
+                    info!(
+                        ?call_id,
+                        endpoint = %remote_endpoint,
+                        "Set B-leg endpoint from SDP (no codecs parsed)"
+                    );
+                }
             } else {
                 warn!(?call_id, "Failed to parse B-leg remote endpoint from SDP");
             }
@@ -1208,29 +1215,114 @@ pub mod embedded {
         }
     }
 
-    /// Generate a simple SDP for testing
-    /// TODO: Use forge-sdp for proper SDP generation
-    fn generate_simple_sdp(
+    /// Result of SDP negotiation: the generated SDP string and the primary codec selected.
+    struct SdpNegotiationResult {
+        sdp: String,
+        primary_codec: crate::sdp::SdpCodecInfo,
+    }
+
+    /// Generate a negotiated SDP answer based on the remote offer.
+    ///
+    /// Intersects remote codecs with locally supported codecs (preserving remote
+    /// preference order), always appends telephone-event PT 101 for DTMF, and
+    /// falls back to PCMU+PCMA if no common codecs are found.
+    fn generate_negotiated_sdp(
         session_info: &SessionInfo,
-        _remote_sdp: &str,
+        remote_sdp: &str,
         advertise_ip: &str,
-    ) -> Result<String> {
+    ) -> Result<SdpNegotiationResult> {
         let ports = session_info.forge_session.ports();
+        let remote_codecs = crate::sdp::parse_sdp_codecs(remote_sdp);
+        let supported = crate::codec::supported_codec_registry();
 
-        let sdp = format!(
-            "v=0\r\n\
-             o=- {} 1 IN IP4 {}\r\n\
-             s=FCP Media Session\r\n\
-             c=IN IP4 {}\r\n\
-             t=0 0\r\n\
-             m=audio {} RTP/AVP 0 8\r\n\
-             a=rtpmap:0 PCMU/8000\r\n\
-             a=rtpmap:8 PCMA/8000\r\n\
-             a=sendrecv\r\n",
-            session_info.forge_call_id.0, advertise_ip, advertise_ip, ports.rtp_port
-        );
+        // Intersect: keep remote preference order, filter to supported
+        let mut negotiated: Vec<crate::sdp::SdpCodecInfo> = Vec::new();
+        for rc in &remote_codecs {
+            let canonical = crate::codec::canonical_codec_name(&rc.encoding_name);
+            if supported.contains_key(&canonical) {
+                negotiated.push(rc.clone());
+            }
+        }
 
-        Ok(sdp)
+        // Fallback if no common codecs
+        if negotiated.is_empty() {
+            negotiated.push(crate::sdp::SdpCodecInfo {
+                payload_type: 0,
+                encoding_name: "PCMU".into(),
+                clock_rate: 8000,
+            });
+            negotiated.push(crate::sdp::SdpCodecInfo {
+                payload_type: 8,
+                encoding_name: "PCMA".into(),
+                clock_rate: 8000,
+            });
+        }
+
+        let primary = negotiated[0].clone();
+
+        // Build SDP with sip-sdp builder
+        let mut audio = sip_sdp::MediaDescription::audio(ports.rtp_port);
+        for codec in &negotiated {
+            audio = audio
+                .add_format(codec.payload_type)
+                .map_err(|e| Error::Sdp(e.to_string()))?;
+            audio = audio
+                .add_rtpmap(
+                    codec.payload_type,
+                    &codec.encoding_name,
+                    codec.clock_rate,
+                    None,
+                )
+                .map_err(|e| Error::Sdp(e.to_string()))?;
+        }
+        // Always add telephone-event at PT 101 (forge-engine hardcodes this PT)
+        audio = audio
+            .add_format(101)
+            .map_err(|e| Error::Sdp(e.to_string()))?;
+        audio = audio
+            .add_rtpmap(101, "telephone-event", 8000, None)
+            .map_err(|e| Error::Sdp(e.to_string()))?;
+        audio = audio
+            .add_attribute("fmtp", "101 0-15")
+            .map_err(|e| Error::Sdp(e.to_string()))?;
+        audio = audio
+            .add_property("sendrecv")
+            .map_err(|e| Error::Sdp(e.to_string()))?;
+
+        let sdp = sip_sdp::SessionDescription::builder()
+            .origin("-", &session_info.forge_call_id.0, advertise_ip)
+            .map_err(|e| Error::Sdp(e.to_string()))?
+            .session_name("FCP Media Session")
+            .map_err(|e| Error::Sdp(e.to_string()))?
+            .connection(advertise_ip)
+            .map_err(|e| Error::Sdp(e.to_string()))?
+            .time(0, 0)
+            .media(audio)
+            .map_err(|e| Error::Sdp(e.to_string()))?
+            .build();
+
+        Ok(SdpNegotiationResult {
+            sdp: sdp.serialize(),
+            primary_codec: primary,
+        })
+    }
+
+    /// Convert an `SdpCodecInfo` to a forge-engine `ParticipantCodecConfig`.
+    fn sdp_codec_to_forge_config(
+        info: &crate::sdp::SdpCodecInfo,
+    ) -> ParticipantCodecConfig {
+        let codec = match info.encoding_name.to_uppercase().as_str() {
+            "PCMU" => forge_core::AudioCodec::PCMU,
+            "PCMA" => forge_core::AudioCodec::PCMA,
+            "G722" => forge_core::AudioCodec::G722,
+            "OPUS" => forge_core::AudioCodec::Opus,
+            _ => forge_core::AudioCodec::PCMU,
+        };
+        ParticipantCodecConfig {
+            payload_type: info.payload_type,
+            codec,
+            clock_rate: info.clock_rate,
+        }
     }
 }
 

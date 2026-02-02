@@ -1,5 +1,7 @@
 //! Codec utilities
 
+use std::collections::HashMap;
+
 /// Codec priority for negotiation
 pub const CODEC_PRIORITY: &[&str] = &[
     "opus", // Highest quality, best for VoIP
@@ -35,6 +37,18 @@ pub fn select_best_codec(available: &[String]) -> Option<String> {
     }
 
     available.first().cloned()
+}
+
+/// Registry of codecs FCP+forge-engine can handle, with standard payload types and clock rates.
+///
+/// Returns a map from canonical codec name to `(payload_type, clock_rate)`.
+pub fn supported_codec_registry() -> HashMap<String, (u8, u32)> {
+    let mut m = HashMap::new();
+    m.insert("PCMU".into(), (0, 8000));
+    m.insert("PCMA".into(), (8, 8000));
+    m.insert("G722".into(), (9, 16000));
+    m.insert("opus".into(), (111, 48000));
+    m
 }
 
 /// Find a common codec between two codec lists

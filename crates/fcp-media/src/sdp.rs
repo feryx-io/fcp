@@ -5,6 +5,157 @@
 use crate::{Error, Result};
 use std::collections::HashMap;
 
+/// Structured codec info extracted from SDP
+#[derive(Debug, Clone)]
+pub struct SdpCodecInfo {
+    /// RTP payload type number (0-127)
+    pub payload_type: u8,
+    /// Encoding name as it appears in SDP (e.g., "PCMU", "PCMA", "G722", "opus")
+    pub encoding_name: String,
+    /// Clock rate in Hz (e.g., 8000, 16000, 48000)
+    pub clock_rate: u32,
+}
+
+/// Parse audio codecs from SDP with payload types and clock rates.
+///
+/// Uses `sip_sdp::SessionDescription::parse()` for robust parsing, with a
+/// manual fallback for malformed SDP. Filters out telephone-event entries.
+pub fn parse_sdp_codecs(sdp_body: &str) -> Vec<SdpCodecInfo> {
+    // Try sip_sdp parser first
+    if let Ok(sdp) = sip_sdp::SessionDescription::parse(sdp_body) {
+        if let Some(audio) = sdp.find_media(sip_sdp::MediaType::Audio) {
+            let mut codecs = Vec::new();
+            for fmt in &audio.formats {
+                if let Ok(pt) = fmt.as_str().parse::<u8>() {
+                    if let Some(rtpmap) = audio.rtpmaps.get(&pt) {
+                        if !rtpmap
+                            .encoding_name
+                            .as_str()
+                            .eq_ignore_ascii_case("telephone-event")
+                        {
+                            codecs.push(SdpCodecInfo {
+                                payload_type: pt,
+                                encoding_name: rtpmap.encoding_name.to_string(),
+                                clock_rate: rtpmap.clock_rate,
+                            });
+                        }
+                    } else if pt < 96 {
+                        // Static PT without rtpmap — infer codec
+                        if let Some((name, rate)) = static_pt_info(pt) {
+                            codecs.push(SdpCodecInfo {
+                                payload_type: pt,
+                                encoding_name: name.to_string(),
+                                clock_rate: rate,
+                            });
+                        }
+                    }
+                }
+            }
+            return codecs;
+        }
+    }
+    // Fallback: manual parsing (tolerant of malformed SDP)
+    parse_sdp_codecs_manual(sdp_body)
+}
+
+/// Extract telephone-event payload type from SDP. Returns `None` if absent.
+pub fn extract_telephone_event_pt(sdp_body: &str) -> Option<u8> {
+    // Try sip_sdp parser first
+    if let Ok(sdp) = sip_sdp::SessionDescription::parse(sdp_body) {
+        if let Some(audio) = sdp.find_media(sip_sdp::MediaType::Audio) {
+            for (pt, rtpmap) in &audio.rtpmaps {
+                if rtpmap
+                    .encoding_name
+                    .as_str()
+                    .eq_ignore_ascii_case("telephone-event")
+                {
+                    return Some(*pt);
+                }
+            }
+        }
+        return None;
+    }
+    // Fallback: manual scan
+    for line in sdp_body.lines() {
+        let line = line.trim();
+        if line.starts_with("a=rtpmap:") {
+            let rtpmap_data = &line[9..];
+            if let Some((pt_str, codec_info)) = rtpmap_data.split_once(' ') {
+                let codec_name = codec_info.split('/').next().unwrap_or(codec_info);
+                if codec_name.eq_ignore_ascii_case("telephone-event") {
+                    if let Ok(pt) = pt_str.parse::<u8>() {
+                        return Some(pt);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Map well-known static payload types to codec info.
+fn static_pt_info(pt: u8) -> Option<(&'static str, u32)> {
+    match pt {
+        0 => Some(("PCMU", 8000)),
+        8 => Some(("PCMA", 8000)),
+        9 => Some(("G722", 16000)),
+        18 => Some(("G729", 8000)),
+        _ => None,
+    }
+}
+
+/// Manual fallback parser for malformed SDP — returns `SdpCodecInfo` entries.
+fn parse_sdp_codecs_manual(sdp_body: &str) -> Vec<SdpCodecInfo> {
+    let mut payload_types: Vec<String> = Vec::new();
+    let mut rtpmap_info: HashMap<String, (String, u32)> = HashMap::new();
+
+    for line in sdp_body.lines() {
+        let line = line.trim();
+
+        if line.starts_with("m=audio") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() > 3 {
+                payload_types = parts[3..].iter().map(|s| s.to_string()).collect();
+            }
+        }
+
+        if line.starts_with("a=rtpmap:") {
+            let rtpmap_data = &line[9..];
+            if let Some((pt, codec_info)) = rtpmap_data.split_once(' ') {
+                let parts: Vec<&str> = codec_info.split('/').collect();
+                let codec_name = parts[0];
+                let clock_rate = parts.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(8000);
+                rtpmap_info.insert(pt.to_string(), (codec_name.to_string(), clock_rate));
+            }
+        }
+    }
+
+    let mut codecs = Vec::new();
+    for pt_str in &payload_types {
+        if let Ok(pt) = pt_str.parse::<u8>() {
+            if let Some((name, rate)) = rtpmap_info.get(pt_str) {
+                if !name.eq_ignore_ascii_case("telephone-event") {
+                    codecs.push(SdpCodecInfo {
+                        payload_type: pt,
+                        encoding_name: name.clone(),
+                        clock_rate: *rate,
+                    });
+                }
+            } else if pt < 96 {
+                if let Some((name, rate)) = static_pt_info(pt) {
+                    codecs.push(SdpCodecInfo {
+                        payload_type: pt,
+                        encoding_name: name.to_string(),
+                        clock_rate: rate,
+                    });
+                }
+            }
+        }
+    }
+
+    codecs
+}
+
 /// Convert SIP SDP to forge-media SDP format
 ///
 /// This is a placeholder - actual implementation will depend on
@@ -308,5 +459,92 @@ a=rtpmap:0 PCMU/8000
 
         let result = negotiate_codecs(&offer, &answer).unwrap();
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_sdp_codecs_basic() {
+        let sdp = "v=0\r\n\
+                    o=- 123 1 IN IP4 192.168.1.100\r\n\
+                    s=Test\r\n\
+                    c=IN IP4 192.168.1.100\r\n\
+                    t=0 0\r\n\
+                    m=audio 10000 RTP/AVP 0 8 101\r\n\
+                    a=rtpmap:0 PCMU/8000\r\n\
+                    a=rtpmap:8 PCMA/8000\r\n\
+                    a=rtpmap:101 telephone-event/8000\r\n\
+                    a=fmtp:101 0-15\r\n";
+
+        let codecs = parse_sdp_codecs(sdp);
+        assert_eq!(codecs.len(), 2);
+        assert_eq!(codecs[0].encoding_name, "PCMU");
+        assert_eq!(codecs[0].payload_type, 0);
+        assert_eq!(codecs[0].clock_rate, 8000);
+        assert_eq!(codecs[1].encoding_name, "PCMA");
+        assert_eq!(codecs[1].payload_type, 8);
+        assert_eq!(codecs[1].clock_rate, 8000);
+    }
+
+    #[test]
+    fn test_parse_sdp_codecs_dynamic() {
+        let sdp = "v=0\r\n\
+                    o=- 123 1 IN IP4 10.0.0.1\r\n\
+                    s=Test\r\n\
+                    c=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 5000 RTP/AVP 9 111\r\n\
+                    a=rtpmap:9 G722/16000\r\n\
+                    a=rtpmap:111 opus/48000/2\r\n";
+
+        let codecs = parse_sdp_codecs(sdp);
+        assert_eq!(codecs.len(), 2);
+        assert_eq!(codecs[0].encoding_name, "G722");
+        assert_eq!(codecs[0].payload_type, 9);
+        assert_eq!(codecs[0].clock_rate, 16000);
+        assert_eq!(codecs[1].encoding_name, "opus");
+        assert_eq!(codecs[1].payload_type, 111);
+        assert_eq!(codecs[1].clock_rate, 48000);
+    }
+
+    #[test]
+    fn test_parse_sdp_codecs_static_no_rtpmap() {
+        let sdp = "v=0\r\n\
+                    o=- 123 1 IN IP4 10.0.0.1\r\n\
+                    s=Test\r\n\
+                    c=IN IP4 10.0.0.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 5000 RTP/AVP 0 8\r\n";
+
+        let codecs = parse_sdp_codecs(sdp);
+        assert_eq!(codecs.len(), 2);
+        assert_eq!(codecs[0].encoding_name, "PCMU");
+        assert_eq!(codecs[0].payload_type, 0);
+        assert_eq!(codecs[0].clock_rate, 8000);
+        assert_eq!(codecs[1].encoding_name, "PCMA");
+        assert_eq!(codecs[1].payload_type, 8);
+        assert_eq!(codecs[1].clock_rate, 8000);
+    }
+
+    #[test]
+    fn test_extract_telephone_event_pt() {
+        let sdp_with = "v=0\r\n\
+                         o=- 123 1 IN IP4 10.0.0.1\r\n\
+                         s=Test\r\n\
+                         c=IN IP4 10.0.0.1\r\n\
+                         t=0 0\r\n\
+                         m=audio 5000 RTP/AVP 0 101\r\n\
+                         a=rtpmap:0 PCMU/8000\r\n\
+                         a=rtpmap:101 telephone-event/8000\r\n";
+
+        assert_eq!(extract_telephone_event_pt(sdp_with), Some(101));
+
+        let sdp_without = "v=0\r\n\
+                            o=- 123 1 IN IP4 10.0.0.1\r\n\
+                            s=Test\r\n\
+                            c=IN IP4 10.0.0.1\r\n\
+                            t=0 0\r\n\
+                            m=audio 5000 RTP/AVP 0\r\n\
+                            a=rtpmap:0 PCMU/8000\r\n";
+
+        assert_eq!(extract_telephone_event_pt(sdp_without), None);
     }
 }
