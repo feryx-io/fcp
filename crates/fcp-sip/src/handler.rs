@@ -889,6 +889,20 @@ impl SipMessageHandler {
         self.ensure_response_hygiene(request, &mut trying);
         handle.send_provisional(trying).await;
 
+        // Validate incoming Session-Expires per RFC 4028 §7
+        if self.b2bua_config.session_timer.enabled {
+            if let Err(reject) = sip_uas::UserAgentServer::validate_session_timer(
+                request,
+                Some(Duration::from_secs(
+                    self.b2bua_config.session_timer.min_se_secs as u64,
+                )),
+            ) {
+                debug!("Rejecting INVITE with 422: Session-Expires below Min-SE");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        }
+
         // Check routing policy if routing service is configured
         if let Some(routing_service) = &self.routing_service {
             match self
@@ -3047,7 +3061,7 @@ impl SipMessageHandler {
 
             // Create 200 OK response manually to ensure To-tag consistency
             // CRITICAL: Must reuse the To-tag from the provisional response (RFC 3261 §12.1.1)
-            let a_leg_response = if let Some(ref saved_tag) = a_leg_to_tag {
+            let mut a_leg_response = if let Some(ref saved_tag) = a_leg_to_tag {
                 // Build 200 OK with the SAME To-tag as the provisional
                 let mut resp = self.uas.create_ok(&request, b_leg_sdp.as_deref())?;
 
@@ -3068,6 +3082,12 @@ impl SipMessageHandler {
                 warn!(call_id = %call_id, "No A-leg To-tag saved, generating new one (dialog mismatch possible)");
                 self.uas.create_ok(&request, b_leg_sdp.as_deref())?
             };
+
+            // Inject RFC 4028 session timer headers into A-leg 200 OK
+            inject_session_timer_headers(
+                &self.b2bua_config,
+                &mut a_leg_response,
+            );
 
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
@@ -3595,6 +3615,12 @@ impl SipMessageHandler {
 
             self.ensure_response_hygiene(&request, &mut ok_response);
 
+            // Inject RFC 4028 session timer headers into forked 200 OK
+            inject_session_timer_headers(
+                &self.b2bua_config,
+                &mut ok_response,
+            );
+
             // Create A-leg dialog from the 200 OK response
             let a_leg_dialog = match sip_dialog::Dialog::new_uas(
                 &request,
@@ -3704,6 +3730,12 @@ impl SipMessageHandler {
 
                 let mut response = response;
                 self.ensure_response_hygiene(request, &mut response);
+
+                // Inject RFC 4028 session timer headers into single-leg 200 OK
+                inject_session_timer_headers(
+                    &self.b2bua_config,
+                    &mut response,
+                );
 
                 // Update call with A-leg dialog
                 let _ = self.call_manager.update_call(&call_id, |call| {
@@ -6228,6 +6260,13 @@ impl SipMessageHandler {
             let is_refresher = Self::dialog_is_refresher(dialog);
             self.session_timer_manager
                 .start_timer(dialog.id().clone(), expires, is_refresher);
+        } else if self.b2bua_config.session_timer.enabled {
+            let expires = Duration::from_secs(
+                self.b2bua_config.session_timer.session_expires_secs as u64,
+            );
+            // SBC is always refresher when forcing session timers
+            self.session_timer_manager
+                .start_timer(dialog.id().clone(), expires, true);
         }
     }
 
@@ -7042,6 +7081,62 @@ fn extract_uri_from_header(header_value: &str) -> &str {
             header_value.split(';').next()
         })
         .unwrap_or(header_value)
+}
+
+/// Inject RFC 4028 session timer headers into a 200 OK response.
+///
+/// Adds `Session-Expires`, `Min-SE`, and ensures `Supported: timer` when
+/// session timer enforcement is enabled and the headers are not already present.
+fn inject_session_timer_headers(
+    config: &B2buaConfig,
+    response: &mut sip_core::Response,
+) {
+    if !config.session_timer.enabled {
+        return;
+    }
+
+    if response.headers().get("Session-Expires").is_none() {
+        let se_value = format!(
+            "{};refresher=uas",
+            config.session_timer.session_expires_secs
+        );
+        let _ = response
+            .headers_mut()
+            .push(SmolStr::new("Session-Expires"), SmolStr::new(&se_value));
+    }
+
+    if response.headers().get("Min-SE").is_none() {
+        let _ = response.headers_mut().push(
+            SmolStr::new("Min-SE"),
+            SmolStr::new(config.session_timer.min_se_secs.to_string()),
+        );
+    }
+
+    ensure_supported_timer(response);
+}
+
+/// Ensure the `Supported` header includes "timer".
+///
+/// If a `Supported` header already exists and contains "timer", this is a no-op.
+/// If it exists without "timer", appends ", timer". If absent, adds it.
+fn ensure_supported_timer(response: &mut sip_core::Response) {
+    if let Some(supported) = response.headers().get("Supported") {
+        if supported
+            .split(',')
+            .any(|t| t.trim().eq_ignore_ascii_case("timer"))
+        {
+            return; // already present
+        }
+        let new_val = format!("{}, timer", supported);
+        response.headers_mut().remove("Supported");
+        let _ = response
+            .headers_mut()
+            .push(SmolStr::new("Supported"), SmolStr::new(&new_val));
+    } else {
+        let _ = response
+            .headers_mut()
+            .push(SmolStr::new("Supported"), SmolStr::new("timer"));
+    }
 }
 
 #[cfg(test)]

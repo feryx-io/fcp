@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 
 use fcp_b2bua_core::forking::ForkingConfig;
 use fcp_b2bua_core::media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
-use fcp_b2bua_core::session::B2buaConfig;
+use fcp_b2bua_core::session::{B2buaConfig, SessionTimerConfig};
 use fcp_b2bua_core::topology::{TopologyHidingConfig, TopologyHidingMode};
 use fcp_b2bua_core::transfer::TransferConfig;
 use fcp_core::transport::TransportType;
@@ -133,6 +133,11 @@ impl Default for SbcConfig {
                 max_forwards: 70,
                 relay_provisional_responses: true,
                 insert_record_route: true,
+                session_timer: SessionTimerConfig {
+                    enabled: true,
+                    session_expires_secs: 1800,
+                    min_se_secs: 90,
+                },
             },
             admission: AdmissionConfig::default(),
             rate_limit: RateLimitPolicyConfig::default(),
@@ -165,6 +170,7 @@ impl SbcConfig {
         self.b2bua.topology_hiding.validate()?;
         self.b2bua.forking.validate()?;
         self.b2bua.transfer.validate()?;
+        self.b2bua.session_timer.validate()?;
 
         // SBC sub-configs
         self.admission.validate()?;
@@ -242,6 +248,11 @@ mod tests {
         assert_eq!(cfg.b2bua.max_forwards, 70);
         assert!(cfg.b2bua.relay_provisional_responses);
         assert!(cfg.b2bua.insert_record_route);
+
+        // Session timer: SBC default has it enabled
+        assert!(cfg.b2bua.session_timer.enabled);
+        assert_eq!(cfg.b2bua.session_timer.session_expires_secs, 1800);
+        assert_eq!(cfg.b2bua.session_timer.min_se_secs, 90);
 
         // SBC defaults
         assert!(cfg.trunks.is_empty());

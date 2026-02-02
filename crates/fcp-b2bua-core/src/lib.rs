@@ -63,6 +63,6 @@ pub use call::{Call, CallDirection, CallId, CallLeg, CallState};
 pub use call_manager::{CallManager, CallStats};
 pub use forking::{EarlyMediaPolicy, ForkingConfig, ForkingMode};
 pub use media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
-pub use session::{B2buaConfig, B2buaSession};
+pub use session::{B2buaConfig, B2buaSession, SessionTimerConfig};
 pub use topology::{TopologyHidingConfig, TopologyHidingMode};
 pub use transfer::{TransferConfig, TransferPolicy, TransferResult, TransferType};

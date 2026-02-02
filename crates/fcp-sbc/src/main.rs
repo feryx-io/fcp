@@ -90,6 +90,19 @@ async fn main() -> Result<()> {
         );
     }
 
+    if sbc_config.b2bua.session_timer.enabled {
+        info!(
+            session_expires = sbc_config.b2bua.session_timer.session_expires_secs,
+            min_se = sbc_config.b2bua.session_timer.min_se_secs,
+            "RFC 4028 session timer enforcement enabled"
+        );
+    } else {
+        warn!(
+            "RFC 4028 session timer enforcement is disabled — long-running \
+             calls with dead endpoints will not be automatically cleaned up"
+        );
+    }
+
     // 5. Create UDP socket with SO_REUSEADDR
     let bind_addr: std::net::SocketAddr = cli.bind.parse().context("Invalid bind address")?;
 

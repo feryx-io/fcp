@@ -16,6 +16,77 @@ use crate::media_anchoring::MediaAnchoringConfig;
 use crate::topology::TopologyHidingConfig;
 use crate::transfer::TransferConfig;
 
+/// RFC 4028 session timer enforcement configuration.
+///
+/// When enabled, the B2BUA forces session timers on all confirmed dialogs
+/// even if neither endpoint negotiated them. The SBC acts as refresher and
+/// periodically re-INVITEs/UPDATEs both legs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTimerConfig {
+    /// Enable session timer enforcement. When true, all confirmed dialogs
+    /// get a session timer even if neither endpoint negotiated one.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Session interval in seconds. Both legs are refreshed at interval/2.
+    /// Range: 90–86400. Default: 1800 (30 minutes).
+    #[serde(default = "default_session_expires_secs")]
+    pub session_expires_secs: u32,
+
+    /// Minimum acceptable Session-Expires from remote endpoints (Min-SE).
+    /// INVITEs with Session-Expires below this value are rejected with 422.
+    /// Range: 90–7200. Default: 90.
+    #[serde(default = "default_min_se_secs")]
+    pub min_se_secs: u32,
+}
+
+fn default_session_expires_secs() -> u32 {
+    1800
+}
+
+fn default_min_se_secs() -> u32 {
+    90
+}
+
+impl Default for SessionTimerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            session_expires_secs: default_session_expires_secs(),
+            min_se_secs: default_min_se_secs(),
+        }
+    }
+}
+
+impl SessionTimerConfig {
+    /// Validate the session timer configuration.
+    ///
+    /// - `session_expires_secs` must be in 90..=86400
+    /// - `min_se_secs` must be in 90..=7200
+    /// - `session_expires_secs` must be >= `min_se_secs`
+    pub fn validate(&self) -> Result<(), String> {
+        if self.session_expires_secs < 90 || self.session_expires_secs > 86400 {
+            return Err(format!(
+                "session_expires_secs must be 90..=86400, got {}",
+                self.session_expires_secs
+            ));
+        }
+        if self.min_se_secs < 90 || self.min_se_secs > 7200 {
+            return Err(format!(
+                "min_se_secs must be 90..=7200, got {}",
+                self.min_se_secs
+            ));
+        }
+        if self.session_expires_secs < self.min_se_secs {
+            return Err(format!(
+                "session_expires_secs ({}) must be >= min_se_secs ({})",
+                self.session_expires_secs, self.min_se_secs
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Unified B2BUA configuration.
 ///
 /// Aggregates all sub-configurations that control B2BUA behavior. Each
@@ -43,6 +114,10 @@ pub struct B2buaConfig {
 
     /// Whether to insert Record-Route headers for mid-dialog routing.
     pub insert_record_route: bool,
+
+    /// RFC 4028 session timer enforcement.
+    #[serde(default)]
+    pub session_timer: SessionTimerConfig,
 }
 
 impl Default for B2buaConfig {
@@ -55,6 +130,7 @@ impl Default for B2buaConfig {
             max_forwards: 70,
             relay_provisional_responses: true,
             insert_record_route: true,
+            session_timer: SessionTimerConfig::default(),
         }
     }
 }
@@ -116,6 +192,8 @@ mod tests {
         assert_eq!(cfg.media_anchoring, MediaAnchoringConfig::default());
         assert_eq!(cfg.forking, ForkingConfig::default());
         assert_eq!(cfg.transfer, TransferConfig::default());
+        assert_eq!(cfg.session_timer, SessionTimerConfig::default());
+        assert!(!cfg.session_timer.enabled);
     }
 
     #[test]
@@ -139,6 +217,7 @@ mod tests {
             media_anchoring: MediaAnchoringConfig::sbc_defaults(),
             forking: ForkingConfig::sbc_defaults(),
             transfer: TransferConfig::sbc_defaults(),
+            session_timer: SessionTimerConfig::default(),
         };
         let session = B2buaSession::with_config(call_id, config.clone());
         assert_eq!(session.call_id, call_id);
@@ -178,9 +257,123 @@ mod tests {
             media_anchoring: MediaAnchoringConfig::sbc_defaults(),
             forking: ForkingConfig::pbx_parallel(),
             transfer: TransferConfig::sbc_defaults(),
+            session_timer: SessionTimerConfig {
+                enabled: true,
+                session_expires_secs: 900,
+                min_se_secs: 120,
+            },
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_session_timer_config_defaults() {
+        let cfg = SessionTimerConfig::default();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.session_expires_secs, 1800);
+        assert_eq!(cfg.min_se_secs, 90);
+    }
+
+    #[test]
+    fn test_session_timer_config_validate_valid() {
+        let cfg = SessionTimerConfig::default();
+        assert!(cfg.validate().is_ok());
+
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 1800,
+            min_se_secs: 90,
+        };
+        assert!(cfg.validate().is_ok());
+
+        // Edge cases: minimum valid values
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 90,
+            min_se_secs: 90,
+        };
+        assert!(cfg.validate().is_ok());
+
+        // Edge cases: maximum valid values
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 86400,
+            min_se_secs: 7200,
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_session_timer_config_validate_session_expires_out_of_range() {
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 89,
+            min_se_secs: 90,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("session_expires_secs"));
+
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 86401,
+            min_se_secs: 90,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("session_expires_secs"));
+    }
+
+    #[test]
+    fn test_session_timer_config_validate_min_se_out_of_range() {
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 1800,
+            min_se_secs: 89,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("min_se_secs"));
+
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 7201,
+            min_se_secs: 7201,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("min_se_secs"));
+    }
+
+    #[test]
+    fn test_session_timer_config_validate_expires_less_than_min_se() {
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 100,
+            min_se_secs: 200,
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("session_expires_secs"));
+        assert!(err.contains("min_se_secs"));
+    }
+
+    #[test]
+    fn test_session_timer_config_serde_roundtrip() {
+        let cfg = SessionTimerConfig {
+            enabled: true,
+            session_expires_secs: 900,
+            min_se_secs: 120,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SessionTimerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_session_timer_config_serde_defaults() {
+        // When fields are missing in JSON, serde defaults should apply
+        let json = "{}";
+        let cfg: SessionTimerConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.session_expires_secs, 1800);
+        assert_eq!(cfg.min_se_secs, 90);
     }
 }
