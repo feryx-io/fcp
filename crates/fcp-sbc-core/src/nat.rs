@@ -82,6 +82,23 @@ pub struct NatConfig {
     /// Force rport parameter in Via headers (RFC 3581).
     pub force_rport: bool,
 
+    /// Enable SRTP media encryption. Not yet implemented — enabling this will
+    /// log a warning at startup.
+    #[serde(default)]
+    pub enable_srtp: bool,
+
+    /// Enable codec transcoding (requires media anchoring).
+    /// The SBC media stack does not currently transcode — enabling this will
+    /// log a warning at startup.
+    #[serde(default)]
+    pub enable_transcoding: bool,
+
+    /// Enable DTMF detection/relay (RFC 2833 + inband).
+    /// The SBC media stack does not currently process DTMF — enabling this
+    /// will log a warning at startup.
+    #[serde(default)]
+    pub enable_dtmf: bool,
+
     /// Enable XDP kernel-level RTP forwarding (Linux only, requires CAP_NET_ADMIN).
     #[serde(default)]
     pub xdp_enabled: bool,
@@ -114,6 +131,9 @@ impl Default for NatConfig {
             stun_servers: Vec::new(),
             turn_servers: Vec::new(),
             force_rport: true,
+            enable_srtp: false,
+            enable_transcoding: false,
+            enable_dtmf: false,
             xdp_enabled: false,
             xdp_interface: default_xdp_interface(),
             xdp_mode: default_xdp_mode(),
@@ -188,6 +208,9 @@ mod tests {
         assert!(cfg.stun_servers.is_empty());
         assert!(cfg.turn_servers.is_empty());
         assert!(cfg.force_rport);
+        assert!(!cfg.enable_srtp);
+        assert!(!cfg.enable_transcoding);
+        assert!(!cfg.enable_dtmf);
     }
 
     #[test]
@@ -333,5 +356,32 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: NatConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_default_media_flags_false() {
+        let cfg = NatConfig::default();
+        assert!(!cfg.enable_srtp, "enable_srtp must default to false");
+        assert!(
+            !cfg.enable_transcoding,
+            "enable_transcoding must default to false"
+        );
+        assert!(!cfg.enable_dtmf, "enable_dtmf must default to false");
+    }
+
+    #[test]
+    fn test_serde_roundtrip_media_flags() {
+        let cfg = NatConfig {
+            enable_srtp: true,
+            enable_transcoding: true,
+            enable_dtmf: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: NatConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+        assert!(deserialized.enable_srtp);
+        assert!(deserialized.enable_transcoding);
+        assert!(deserialized.enable_dtmf);
     }
 }

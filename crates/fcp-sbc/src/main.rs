@@ -70,6 +70,26 @@ async fn main() -> Result<()> {
         warn!(%e, "SBC configuration validation warning");
     }
 
+    // 4b. Warn about unsupported media feature flags
+    if sbc_config.nat.enable_srtp {
+        warn!(
+            "nat.enable_srtp is enabled but SRTP is not yet implemented — \
+             media will NOT be encrypted"
+        );
+    }
+    if sbc_config.nat.enable_transcoding {
+        warn!(
+            "nat.enable_transcoding is enabled but the SBC media stack does \
+             not currently support codec transcoding"
+        );
+    }
+    if sbc_config.nat.enable_dtmf {
+        warn!(
+            "nat.enable_dtmf is enabled but the SBC media stack does not \
+             currently process DTMF events"
+        );
+    }
+
     // 5. Create UDP socket with SO_REUSEADDR
     let bind_addr: std::net::SocketAddr = cli.bind.parse().context("Invalid bind address")?;
 

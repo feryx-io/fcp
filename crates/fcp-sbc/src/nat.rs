@@ -38,13 +38,18 @@ pub fn build_fcp_media_config(
         backend: fcp_media::config::BackendType::Embedded,
         rtp_port_start: nat.rtp_port_start,
         rtp_port_end: nat.rtp_port_end,
+        enable_srtp: nat.enable_srtp,
+        enable_transcoding: nat.enable_transcoding,
+        enable_recording: false, // SBC uses SIPREC, not media-layer recording
+        enable_dtmf: nat.enable_dtmf,
+        recording_dir: "./recordings".to_string(),
+        recording_format: "wav".to_string(),
         public_ip: Some(effective_ip.to_string()),
         stun_server,
         turn_server,
         xdp_enabled: nat.xdp_enabled,
         xdp_interface: nat.xdp_interface.clone(),
         xdp_mode: nat.xdp_mode.clone(),
-        ..Default::default()
     }
 }
 
@@ -64,10 +69,10 @@ pub fn build_fcp_core_media_config(
         enabled: nat.enabled && nat.rewrite_sdp,
         rtp_port_start: nat.rtp_port_start,
         rtp_port_end: nat.rtp_port_end,
-        enable_srtp: false,
-        enable_transcoding: false,
+        enable_srtp: nat.enable_srtp,
+        enable_transcoding: nat.enable_transcoding,
         enable_recording: false,
-        enable_dtmf: false,
+        enable_dtmf: nat.enable_dtmf,
         public_ip: Some(effective_ip.to_string()),
         stun_server,
         turn_server,
@@ -148,6 +153,24 @@ mod tests {
         assert_eq!(cfg.public_ip.as_deref(), Some("203.0.113.1"));
         assert_eq!(cfg.stun_server.as_deref(), Some("stun.example.com:3478"));
         assert_eq!(cfg.turn_server.as_deref(), Some("turn.example.com:3479"));
+        // Media flags default to false
+        assert!(!cfg.enable_srtp);
+        assert!(!cfg.enable_transcoding);
+        assert!(!cfg.enable_dtmf);
+    }
+
+    #[test]
+    fn build_fcp_media_config_propagates_media_flags() {
+        let nat = NatConfig {
+            enable_srtp: true,
+            enable_transcoding: true,
+            enable_dtmf: true,
+            ..Default::default()
+        };
+        let cfg = build_fcp_media_config(&nat, "10.0.0.1");
+        assert!(cfg.enable_srtp);
+        assert!(cfg.enable_transcoding);
+        assert!(cfg.enable_dtmf);
     }
 
     #[test]
@@ -182,6 +205,36 @@ mod tests {
         let cfg = build_fcp_core_media_config(&nat, "10.0.0.1");
         assert_eq!(cfg.rtp_port_start, 20000);
         assert_eq!(cfg.rtp_port_end, 30000);
+    }
+
+    #[test]
+    fn build_fcp_core_media_config_propagates_media_flags() {
+        let nat = NatConfig {
+            enable_srtp: true,
+            enable_transcoding: true,
+            enable_dtmf: true,
+            ..Default::default()
+        };
+        let cfg = build_fcp_core_media_config(&nat, "10.0.0.1");
+        assert!(cfg.enable_srtp);
+        assert!(cfg.enable_transcoding);
+        assert!(cfg.enable_dtmf);
+    }
+
+    #[test]
+    fn build_configs_default_media_flags_false() {
+        // Ensures the old `..Default::default()` trap is gone: when NatConfig
+        // defaults are used, all three media flags must be false in both configs.
+        let nat = NatConfig::default();
+        let media_cfg = build_fcp_media_config(&nat, "10.0.0.1");
+        let core_cfg = build_fcp_core_media_config(&nat, "10.0.0.1");
+
+        assert!(!media_cfg.enable_srtp);
+        assert!(!media_cfg.enable_transcoding);
+        assert!(!media_cfg.enable_dtmf);
+        assert!(!core_cfg.enable_srtp);
+        assert!(!core_cfg.enable_transcoding);
+        assert!(!core_cfg.enable_dtmf);
     }
 
     #[test]
