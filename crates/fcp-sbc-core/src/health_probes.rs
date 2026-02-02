@@ -2,7 +2,7 @@
 
 use crate::trunk_health::TrunkHealthMonitor;
 use fcp_core::transport::TransportType;
-use fcp_sbc_core::trunk::TrunkConfig;
+use crate::trunk::TrunkConfig;
 use fcp_sip::uac::SipUserAgentClient;
 use sip_dns::{DnsTarget, Transport as DnsTransport};
 use std::sync::Arc;

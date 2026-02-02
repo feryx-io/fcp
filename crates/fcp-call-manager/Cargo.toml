@@ -24,6 +24,7 @@ path = "src/main.rs"
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip" }
+fcp-sbc-core = { path = "../fcp-sbc-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-routing = { path = "../fcp-routing" }
 fcp-media = { path = "../fcp-media" }
@@ -42,6 +43,7 @@ sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
 sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
 sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
 sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 

@@ -10,9 +10,12 @@ repository.workspace = true
 # FCP dependencies
 fcp-core = { path = "../fcp-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+fcp-sip = { path = "../fcp-sip" }
 
 # SIP stack dependencies (from siphon-rs)
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 
 # Serialization
 serde.workspace = true
@@ -23,6 +26,12 @@ tracing.workspace = true
 
 # IP network parsing
 ipnetwork = "0.20"
+
+# Runtime infrastructure
+dashmap = "6"
+async-trait = "0.1"
+rand = "0.8"
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

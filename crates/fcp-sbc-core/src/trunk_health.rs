@@ -4,8 +4,8 @@
 //! status transitions. Optionally runs periodic OPTIONS probe health checks.
 
 use dashmap::{DashMap, DashSet};
-use fcp_sbc_core::metrics::TrunkHealthStatus;
-use fcp_sbc_core::trunk::TrunkConfig;
+use crate::metrics::TrunkHealthStatus;
+use crate::trunk::TrunkConfig;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -281,7 +281,7 @@ mod tests {
         vec![TrunkConfig {
             name: "carrier-a".into(),
             hosts: vec!["sip.carrier.com".into()],
-            failover: fcp_sbc_core::trunk::TrunkFailover {
+            failover: crate::trunk::TrunkFailover {
                 max_failures: 3,
                 ..Default::default()
             },
@@ -350,7 +350,7 @@ mod tests {
             TrunkConfig {
                 name: "a".into(),
                 hosts: vec!["h".into()],
-                failover: fcp_sbc_core::trunk::TrunkFailover {
+                failover: crate::trunk::TrunkFailover {
                     max_failures: 1,
                     ..Default::default()
                 },
@@ -395,7 +395,7 @@ mod tests {
         let trunks = vec![TrunkConfig {
             name: "no-probe".into(),
             hosts: vec!["h".into()],
-            failover: fcp_sbc_core::trunk::TrunkFailover {
+            failover: crate::trunk::TrunkFailover {
                 health_check_enabled: false,
                 ..Default::default()
             },
@@ -410,7 +410,7 @@ mod tests {
         let trunks = vec![TrunkConfig {
             name: "recent".into(),
             hosts: vec!["h".into()],
-            failover: fcp_sbc_core::trunk::TrunkFailover {
+            failover: crate::trunk::TrunkFailover {
                 health_check_interval_secs: 60,
                 ..Default::default()
             },
@@ -456,7 +456,7 @@ mod tests {
         let trunks = vec![TrunkConfig {
             name: "trunk-a".into(),
             hosts: vec!["h".into()],
-            failover: fcp_sbc_core::trunk::TrunkFailover {
+            failover: crate::trunk::TrunkFailover {
                 max_failures: 4,
                 recovery_interval_secs: 60,
                 ..Default::default()
@@ -479,7 +479,7 @@ mod tests {
         let trunks = vec![TrunkConfig {
             name: "trunk-a".into(),
             hosts: vec!["h".into()],
-            failover: fcp_sbc_core::trunk::TrunkFailover {
+            failover: crate::trunk::TrunkFailover {
                 max_failures: 4,
                 recovery_interval_secs: 0,
                 ..Default::default()
@@ -504,7 +504,7 @@ mod tests {
         let trunks = vec![TrunkConfig {
             name: "trunk-a".into(),
             hosts: vec!["h".into()],
-            failover: fcp_sbc_core::trunk::TrunkFailover {
+            failover: crate::trunk::TrunkFailover {
                 max_failures: 4,
                 recovery_interval_secs: 3600, // 1 hour
                 ..Default::default()

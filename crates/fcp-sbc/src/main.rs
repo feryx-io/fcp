@@ -21,7 +21,6 @@ mod cli;
 mod config;
 mod enforcement;
 mod health;
-mod health_probes;
 mod hmr;
 mod hmr_dispatcher;
 mod hooks;
@@ -30,22 +29,21 @@ mod nat;
 mod registration_store;
 mod topology;
 mod siprec;
-mod trunk_health;
-mod trunk_auth;
-mod trunk_registration;
-mod trunk_router;
 
 use admission::AdmissionController;
 use cli::Cli;
 use enforcement::SbcEnforcementHandler;
+use fcp_sbc_core::health_probes;
+use fcp_sbc_core::trunk_auth;
+use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
+use fcp_sbc_core::trunk_registration::{self, TrunkRegistrar};
+use fcp_sbc_core::trunk_router::TrunkRouter;
+use fcp_sbc_core::CpsChecker;
 use health::HealthState;
 use hmr::HeaderManipulationEngine;
 use hooks::SbcEventHooks;
 use metrics::SbcRuntimeMetrics;
 use registration_store::InMemoryRegistrationStore;
-use trunk_health::TrunkHealthMonitor;
-use trunk_registration::TrunkRegistrar;
-use trunk_router::TrunkRouter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -268,7 +266,7 @@ async fn main() -> Result<()> {
     let trunk_router = Arc::new(TrunkRouter::new(
         sbc_config.trunks.clone(),
         Arc::clone(&trunk_health),
-        Arc::clone(&admission),
+        Arc::clone(&admission) as Arc<dyn CpsChecker>,
     ));
 
     // 14. Create RateLimiterSet from sip-ratelimit config

@@ -4,7 +4,7 @@
 //! can automatically retry on 401/407 challenges from upstream trunks.
 
 use async_trait::async_trait;
-use fcp_sbc_core::trunk::TrunkConfig;
+use crate::trunk::TrunkConfig;
 use sip_uac::CredentialProvider;
 use std::collections::HashMap;
 
@@ -56,7 +56,7 @@ impl CredentialProvider for TrunkCredentialProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fcp_sbc_core::trunk::TrunkCredentials;
+    use crate::trunk::TrunkCredentials;
 
     fn make_trunk(
         name: &str,

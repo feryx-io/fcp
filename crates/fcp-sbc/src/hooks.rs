@@ -12,7 +12,7 @@
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
-use crate::trunk_health::TrunkHealthMonitor;
+use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use anyhow::Result;
 use async_trait::async_trait;
 use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};

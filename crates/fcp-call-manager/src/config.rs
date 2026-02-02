@@ -49,6 +49,11 @@ pub struct CallManagerConfig {
     /// Events configuration
     #[serde(default)]
     pub events: EventsSection,
+
+    /// SIP trunk configurations (session-manager mode).
+    /// When non-empty and registrar.enabled=false, operates as session manager.
+    #[serde(default)]
+    pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
 }
 
 /// Service identification.
@@ -114,6 +119,10 @@ impl Default for SipSection {
 /// Registrar behavior configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistrarSection {
+    /// Enable the SIP registrar. Set to false for session-manager mode.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
     /// Enable SIP Digest authentication
     #[serde(default)]
     pub auth_enabled: bool,
@@ -154,6 +163,7 @@ fn default_max_expires() -> u32 {
 impl Default for RegistrarSection {
     fn default() -> Self {
         Self {
+            enabled: true,
             auth_enabled: false,
             realm: default_realm(),
             default_expires: default_expires(),
@@ -389,12 +399,14 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
         tcp_bind = %config.sip.tcp_bind,
+        registrar_enabled = config.registrar.enabled,
         auth_enabled = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
         storage_backend = %config.storage.backend,
         http_bind = %config.http.bind_address,
         max_calls = config.calls.max_concurrent_calls,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        trunks = config.trunks.len(),
         "Configuration loaded"
     );
 
@@ -422,6 +434,7 @@ mod tests {
         assert_eq!(config.service.service_type, "call-manager");
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
+        assert!(config.registrar.enabled);
         assert!(!config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "fcp.local");
         assert_eq!(config.registrar.default_expires, 3600);
@@ -437,6 +450,7 @@ mod tests {
         assert!(config.routing.rules_file.is_none());
         assert!(!config.routing.hot_reload);
         assert!(config.events.server_url.is_none());
+        assert!(config.trunks.is_empty());
     }
 
     #[test]

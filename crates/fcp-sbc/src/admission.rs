@@ -242,6 +242,16 @@ impl AdmissionController {
     }
 }
 
+impl fcp_sbc_core::CpsChecker for AdmissionController {
+    fn is_trunk_within_cps(&self, trunk_name: &str) -> bool {
+        self.is_trunk_within_cps(trunk_name)
+    }
+
+    fn record_trunk_call(&self, trunk_name: &str) {
+        self.record_trunk_call(trunk_name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

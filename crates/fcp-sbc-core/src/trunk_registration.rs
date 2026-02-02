@@ -11,7 +11,7 @@
 use crate::trunk_health::TrunkHealthMonitor;
 use dashmap::DashMap;
 use fcp_core::transport::TransportType;
-use fcp_sbc_core::trunk::TrunkConfig;
+use crate::trunk::TrunkConfig;
 use fcp_sip::uac::SipUserAgentClient;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -318,7 +318,7 @@ async fn deregister_all(registrar: &TrunkRegistrar, uac: &SipUserAgentClient) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fcp_sbc_core::trunk::TrunkTransport;
+    use crate::trunk::TrunkTransport;
 
     fn make_trunk(name: &str, register: bool, register_expiry: Option<u32>) -> TrunkConfig {
         TrunkConfig {

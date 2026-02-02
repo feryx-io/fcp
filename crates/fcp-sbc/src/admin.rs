@@ -620,7 +620,7 @@ mod tests {
 
     fn test_state_with_trunks(trunks: Vec<fcp_sbc_core::TrunkConfig>) -> Arc<HealthState> {
         let admission = Arc::new(crate::admission::AdmissionController::new(Default::default()));
-        let health_monitor = Arc::new(crate::trunk_health::TrunkHealthMonitor::new(&trunks));
+        let health_monitor = Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&trunks));
         let metrics = Arc::new(crate::metrics::SbcRuntimeMetrics::new());
         let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
 

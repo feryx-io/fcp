@@ -1,8 +1,11 @@
 //! fcp-call-manager — Combined SIP registrar and B2BUA call handler.
 //!
-//! Users register their devices and place/receive calls through the same binary.
-//! Local user-to-user calls are handled directly via B2BUA; the architecture
-//! supports future fcp-sme integration for cross-node and PSTN routing.
+//! Supports two operating modes:
+//! - **Call Manager mode** (default): SIP registrar + B2BUA for user devices
+//! - **Session Manager mode**: SIP trunk termination + call routing (no registrar)
+//!
+//! Mode is determined by configuration: when `registrar.enabled = false` and
+//! trunks are configured, the binary operates as a session manager.
 //!
 //! This binary wires up existing fcp-sip components (SipMessageHandler,
 //! TransportListener, FcpRegistrar) with storage, config, and an HTTP API.
@@ -12,13 +15,14 @@ use clap::Parser;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
+use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 mod cli;
@@ -132,19 +136,81 @@ async fn main() -> Result<()> {
     let transaction_manager_ref = Arc::clone(transaction_service.manager());
     let dialog_manager_ref = Arc::clone(dialog_service.manager());
 
-    // 10. Create UAC for outbound calls (B-leg)
-    let uac = create_uac(&config, Arc::clone(&transaction_manager_ref), dispatcher).await?;
+    // 10. Build credential provider from trunks (if any) so UAC can handle 401/407 challenges
+    let trunk_cred_provider: Option<Arc<TrunkCredentialProvider>> = if !config.trunks.is_empty() {
+        Some(Arc::new(TrunkCredentialProvider::from_trunks(&config.trunks)))
+    } else {
+        None
+    };
 
-    // 11. Create event bus (needed by registrar and call manager)
+    // 11. Create UAC for outbound calls (B-leg)
+    let uac = create_uac(
+        &config,
+        Arc::clone(&transaction_manager_ref),
+        dispatcher,
+        trunk_cred_provider,
+    )
+    .await?;
+
+    // 12. Create event bus (needed by registrar and call manager)
     let event_bus = Arc::new(InMemoryEventBus::new());
     info!("Event bus initialized (in-memory)");
 
-    // 12. Create FcpRegistrar (with event publishing)
-    let registrar = create_registrar(
-        &config,
-        &dyn_storage,
-        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
-    );
+    // 13. Create FcpRegistrar (conditional — disabled in session-manager mode)
+    let registrar = if config.registrar.enabled {
+        Some(create_registrar(
+            &config,
+            &dyn_storage,
+            Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        ))
+    } else {
+        info!("Registrar disabled (session-manager mode)");
+        None
+    };
+
+    // 13b. Trunk infrastructure (session-manager mode)
+    let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
+    let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> =
+        if !config.trunks.is_empty() {
+            let health = Arc::new(TrunkHealthMonitor::new(&config.trunks));
+            let cps: Arc<dyn CpsChecker> = Arc::new(NoCpsLimit);
+            let router = Arc::new(TrunkRouter::new(
+                config.trunks.clone(),
+                Arc::clone(&health),
+                cps,
+            ));
+
+            // Spawn health probes
+            let health_clone = Arc::clone(&health);
+            let trunks_clone = config.trunks.clone();
+            let uac_clone = Arc::clone(&uac);
+            tokio::spawn(fcp_sbc_core::run_health_probes(
+                health_clone,
+                trunks_clone,
+                uac_clone,
+            ));
+
+            // Spawn trunk registration task
+            let trunk_registrar = Arc::new(TrunkRegistrar::new(&config.trunks));
+            if trunk_registrar.has_registerable_trunks() {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                let reg = Arc::clone(&trunk_registrar);
+                let reg_health = Arc::clone(&health);
+                let reg_uac = Arc::clone(&uac);
+                tokio::spawn(fcp_sbc_core::run_trunk_registration(
+                    reg, reg_health, reg_uac, rx,
+                ));
+                trunk_shutdown_tx = Some(tx);
+            } else {
+                trunk_shutdown_tx = None;
+            }
+
+            info!(count = config.trunks.len(), "Trunk routing enabled");
+            Some(router as Arc<dyn fcp_sip::OutboundRouteProvider>)
+        } else {
+            trunk_shutdown_tx = None;
+            None
+        };
 
     // 13. Create routing service (if configured)
     let routing_service = if let Some(ref rules_file) = config.routing.rules_file {
@@ -193,7 +259,7 @@ async fn main() -> Result<()> {
         media_profile,
         local_addr,
         config.media.rtp_port_start,
-        Some(Arc::clone(&registrar)),
+        registrar.as_ref().map(Arc::clone),
         routing_service, // routing service from config
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
@@ -208,7 +274,7 @@ async fn main() -> Result<()> {
         }),
         None, // flow_handler — add when flow config is present
         fcp_b2bua_core::B2buaConfig::default(),
-        None, // No outbound route provider
+        outbound_route_provider,
     ));
 
     // 16. Create and start TransportListener
@@ -284,24 +350,26 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 19. Spawn registration cleanup task
-    let cleanup_storage: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(&dyn_storage) as _;
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        loop {
-            interval.tick().await;
-            match cleanup_storage.cleanup_expired().await {
-                Ok(count) => {
-                    if count > 0 {
-                        info!(count, "Cleaned up expired registrations");
+    // 19. Spawn registration cleanup task (only when registrar is enabled)
+    if config.registrar.enabled {
+        let cleanup_storage: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(&dyn_storage) as _;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                match cleanup_storage.cleanup_expired().await {
+                    Ok(count) => {
+                        if count > 0 {
+                            info!(count, "Cleaned up expired registrations");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(%e, "Failed to cleanup expired registrations");
                     }
                 }
-                Err(e) => {
-                    warn!(%e, "Failed to cleanup expired registrations");
-                }
             }
-        }
-    });
+        });
+    }
 
     // 20. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
@@ -315,13 +383,24 @@ async fn main() -> Result<()> {
         info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
     }
 
+    // Log operating mode
+    if !config.trunks.is_empty() && !config.registrar.enabled {
+        info!(trunks = config.trunks.len(), "Operating in session-manager mode");
+    } else if !config.trunks.is_empty() {
+        info!(trunks = config.trunks.len(), "Operating in call-manager mode with trunks");
+    } else {
+        info!("Operating in call-manager mode");
+    }
+
     info!(
         udp = %config.sip.udp_bind,
         tcp = %config.sip.tcp_bind,
         http = %config.http.bind_address,
+        registrar = config.registrar.enabled,
         auth = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        trunks = config.trunks.len(),
         routing = config.routing.rules_file.is_some(),
         events_forwarding = config.events.server_url.is_some(),
         "fcp-call-manager ready — listening for SIP messages"
@@ -341,6 +420,12 @@ async fn main() -> Result<()> {
     }
 
     // 21. Graceful shutdown
+    // Signal trunk registration task to de-register (if running)
+    if let Some(tx) = trunk_shutdown_tx {
+        let _ = tx.send(true);
+        // Wait briefly for de-registration attempts
+        tokio::time::sleep(Duration::from_secs(4)).await;
+    }
     listener.stop().await?;
     info!("Shutdown complete");
     Ok(())
@@ -401,10 +486,14 @@ async fn create_transport_dispatcher(
 }
 
 /// Create a UAC for outbound calls (B-leg).
+///
+/// If `credential_provider` is provided (from trunk config), the UAC will
+/// automatically handle 401/407 digest challenges from upstream trunks.
 async fn create_uac(
     config: &CallManagerConfig,
     transaction_manager: Arc<TransactionManager>,
     dispatcher: Arc<fcp_sip::transport::RealTransportDispatcher>,
+    credential_provider: Option<Arc<TrunkCredentialProvider>>,
 ) -> Result<Arc<SipUserAgentClient>> {
     let local_uri = create_local_uri(config)?;
 
@@ -432,15 +521,20 @@ async fn create_uac(
 
     let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
 
-    let integrated_uac = IntegratedUAC::builder()
+    let mut builder = IntegratedUAC::builder();
+    builder = builder
         .local_uri(local_uri.as_str())
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)
         .resolver(resolver)
-        .dispatcher(dispatcher)
-        .build()
-        .context("Failed to build IntegratedUAC")?;
+        .dispatcher(dispatcher);
+
+    if let Some(cred_provider) = credential_provider {
+        builder = builder.credential_provider(cred_provider);
+    }
+
+    let integrated_uac = builder.build().context("Failed to build IntegratedUAC")?;
 
     Ok(Arc::new(SipUserAgentClient::new(Arc::new(integrated_uac))))
 }

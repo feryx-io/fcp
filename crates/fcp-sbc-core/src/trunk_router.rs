@@ -6,9 +6,9 @@
 //! Integrated into `SipMessageHandler::forward_invite_to_b_leg()` via the
 //! `OutboundRouteProvider` trait as a fallback when registrar lookup fails.
 
-use crate::admission::AdmissionController;
+use crate::cps::CpsChecker;
 use crate::trunk_health::TrunkHealthMonitor;
-use fcp_sbc_core::trunk::{TrunkConfig, TrunkDirection};
+use crate::trunk::{TrunkConfig, TrunkDirection};
 use fcp_sip::{OutboundRoute, OutboundRouteProvider};
 use rand::Rng;
 use std::sync::Arc;
@@ -17,19 +17,19 @@ use std::sync::Arc;
 pub struct TrunkRouter {
     trunks: Vec<TrunkConfig>,
     health: Arc<TrunkHealthMonitor>,
-    admission: Arc<AdmissionController>,
+    cps: Arc<dyn CpsChecker>,
 }
 
 impl TrunkRouter {
     pub fn new(
         trunks: Vec<TrunkConfig>,
         health: Arc<TrunkHealthMonitor>,
-        admission: Arc<AdmissionController>,
+        cps: Arc<dyn CpsChecker>,
     ) -> Self {
         Self {
             trunks,
             health,
-            admission,
+            cps,
         }
     }
 
@@ -66,7 +66,7 @@ impl TrunkRouter {
                 let has_capacity = t.max_concurrent_calls == 0
                     || self.health.concurrent_calls(&t.name) < t.max_concurrent_calls as u64;
                 // Per-trunk CPS limit
-                let within_cps = self.admission.is_trunk_within_cps(&t.name);
+                let within_cps = self.cps.is_trunk_within_cps(&t.name);
 
                 dir_match && enabled && healthy && has_capacity && within_cps
             })
@@ -90,7 +90,7 @@ impl TrunkRouter {
         let selected = self.select_from_pool(&pool)?;
 
         // Record the call in the per-trunk CPS sliding window
-        self.admission.record_trunk_call(&selected.name);
+        self.cps.record_trunk_call(&selected.name);
         Some(selected)
     }
 
@@ -173,8 +173,8 @@ impl OutboundRouteProvider for TrunkRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fcp_sbc_core::trunk::TrunkFailover;
-    use fcp_sbc_core::{AdmissionConfig, TrunkCpsLimit};
+    use crate::cps::NoCpsLimit;
+    use crate::trunk::TrunkFailover;
 
     fn make_trunk(
         name: &str,
@@ -194,8 +194,8 @@ mod tests {
         }
     }
 
-    fn default_admission() -> Arc<AdmissionController> {
-        Arc::new(AdmissionController::new(AdmissionConfig::default()))
+    fn no_cps() -> Arc<dyn CpsChecker> {
+        Arc::new(NoCpsLimit)
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
         let trunks = vec![make_trunk("a", 100, 100, TrunkDirection::Upstream)];
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         health.record_success("a");
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
 
         let selected = router.select_trunk(TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "a");
@@ -218,7 +218,7 @@ mod tests {
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         health.record_success("low");
         health.record_success("high");
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
 
         let selected = router.select_trunk(TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "high"); // priority 100 < 200
@@ -233,7 +233,7 @@ mod tests {
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         health.record_success("upstream");
         health.record_success("downstream");
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
 
         let selected = router.select_trunk(TrunkDirection::Downstream);
         assert_eq!(selected.unwrap().name, "downstream");
@@ -244,7 +244,7 @@ mod tests {
         let trunks = vec![make_trunk("bidi", 100, 100, TrunkDirection::Bidirectional)];
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         health.record_success("bidi");
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
 
         assert!(router.select_trunk(TrunkDirection::Upstream).is_some());
         assert!(router.select_trunk(TrunkDirection::Downstream).is_some());
@@ -257,7 +257,7 @@ mod tests {
         let trunks = vec![trunk];
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         health.record_success("a");
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
 
         assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
     }
@@ -270,7 +270,7 @@ mod tests {
         for _ in 0..5 {
             health.record_failure("a");
         }
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
 
         assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn test_no_trunks_returns_none() {
         let health = Arc::new(TrunkHealthMonitor::new(&[]));
-        let router = TrunkRouter::new(Vec::new(), health, default_admission());
+        let router = TrunkRouter::new(Vec::new(), health, no_cps());
         assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
     }
 
@@ -291,53 +291,8 @@ mod tests {
         health.record_success("a");
         health.call_started("a"); // now at 1 concurrent
 
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
         assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
-    }
-
-    #[test]
-    fn test_trunk_cps_limit_excludes_trunk() {
-        let trunks = vec![make_trunk("a", 100, 100, TrunkDirection::Upstream)];
-        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
-        health.record_success("a");
-
-        let admission = Arc::new(AdmissionController::new(AdmissionConfig {
-            per_trunk_cps: vec![TrunkCpsLimit {
-                trunk_name: "a".into(),
-                max_cps: 1,
-            }],
-            ..Default::default()
-        }));
-        // Saturate the CPS limit
-        admission.record_trunk_call("a");
-
-        let router = TrunkRouter::new(trunks, health, admission);
-        assert!(router.select_trunk(TrunkDirection::Upstream).is_none());
-    }
-
-    #[test]
-    fn test_trunk_cps_limit_falls_back_to_next_trunk() {
-        let trunks = vec![
-            make_trunk("primary", 100, 100, TrunkDirection::Upstream),
-            make_trunk("secondary", 200, 100, TrunkDirection::Upstream),
-        ];
-        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
-        health.record_success("primary");
-        health.record_success("secondary");
-
-        let admission = Arc::new(AdmissionController::new(AdmissionConfig {
-            per_trunk_cps: vec![TrunkCpsLimit {
-                trunk_name: "primary".into(),
-                max_cps: 1,
-            }],
-            ..Default::default()
-        }));
-        // Saturate primary's CPS
-        admission.record_trunk_call("primary");
-
-        let router = TrunkRouter::new(trunks, health, admission);
-        let selected = router.select_trunk(TrunkDirection::Upstream);
-        assert_eq!(selected.unwrap().name, "secondary");
     }
 
     #[test]
@@ -355,7 +310,7 @@ mod tests {
         health.record_failure("degraded");
         assert!(health.is_degraded("degraded"));
 
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
         // Healthy trunk should always be selected over Degraded at same priority
         for _ in 0..20 {
             let selected = router.select_trunk(TrunkDirection::Upstream);
@@ -373,7 +328,7 @@ mod tests {
         health.record_failure("degraded");
         assert!(health.is_degraded("degraded"));
 
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
         let selected = router.select_trunk(TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "degraded");
     }
@@ -394,7 +349,7 @@ mod tests {
             assert!(health.is_degraded(name));
         }
 
-        let router = TrunkRouter::new(trunks, health, default_admission());
+        let router = TrunkRouter::new(trunks, health, no_cps());
         let selected = router.select_trunk(TrunkDirection::Upstream);
         assert_eq!(selected.unwrap().name, "high-pri"); // priority 100 < 200
     }

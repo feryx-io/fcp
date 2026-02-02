@@ -2,8 +2,8 @@
 
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
-use crate::trunk_health::TrunkHealthMonitor;
-use crate::trunk_registration::TrunkRegistrar;
+use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
+use fcp_sbc_core::trunk_registration::TrunkRegistrar;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::{extract::State, routing::get, Json, Router};
@@ -165,7 +165,7 @@ mod tests {
 
         let state = Arc::new(HealthState {
             admission: Arc::new(crate::admission::AdmissionController::new(Default::default())),
-            health_monitor: Arc::new(crate::trunk_health::TrunkHealthMonitor::new(&[])),
+            health_monitor: Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&[])),
             metrics,
             call_manager: Arc::new(fcp_b2bua_core::CallManager::new()),
             trunk_configs: vec![],

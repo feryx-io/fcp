@@ -1,13 +1,14 @@
-//! SBC (Session Border Controller) policy-level configuration library.
+//! SBC (Session Border Controller) configuration and shared trunk runtime library.
 //!
 //! Provides config types for all SBC subsystems: call admission control,
 //! rate limiting, security (IP ACLs, malformed SIP policy), trunk/carrier
 //! definitions, NAT traversal, SIPREC recording, and metrics.
 //!
-//! This crate contains no async code or runtime state -- it is purely
-//! configuration types with `Serialize`/`Deserialize`, `Default` impls,
-//! and `validate()` methods.
+//! Also provides shared trunk runtime infrastructure (health monitoring,
+//! authentication, registration, routing, health probes) used by both
+//! fcp-sbc and fcp-call-manager (session-manager mode).
 
+// Configuration modules
 pub mod admission;
 pub mod config;
 pub mod hmr;
@@ -18,7 +19,15 @@ pub mod security;
 pub mod siprec;
 pub mod trunk;
 
-// Re-export key types for convenience
+// Shared trunk runtime modules
+pub mod cps;
+pub mod health_probes;
+pub mod trunk_auth;
+pub mod trunk_health;
+pub mod trunk_registration;
+pub mod trunk_router;
+
+// Re-export config types for convenience
 pub use admission::{AdmissionAction, AdmissionConfig, TrunkCpsLimit};
 pub use config::{SbcConfig, SbcStorageConfig};
 pub use metrics::{SbcMetricsConfig, SbcMetricsSnapshot, TrunkHealthStatus};
@@ -31,3 +40,11 @@ pub use hmr::{
     HmrMessageType, HmrRule,
 };
 pub use trunk::{TrunkConfig, TrunkCredentials, TrunkDirection, TrunkFailover, TrunkTransport};
+
+// Re-export trunk runtime types for convenience
+pub use cps::{CpsChecker, NoCpsLimit};
+pub use trunk_auth::TrunkCredentialProvider;
+pub use trunk_health::TrunkHealthMonitor;
+pub use trunk_registration::{TrunkRegistrar, RegistrationState, run_trunk_registration};
+pub use trunk_router::TrunkRouter;
+pub use health_probes::run_health_probes;
