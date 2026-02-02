@@ -355,6 +355,8 @@ async fn main() -> Result<()> {
         call_manager: Arc::clone(&call_manager),
         trunk_configs: sbc_config.trunks.clone(),
         trunk_registrar: Some(Arc::clone(&trunk_registrar)),
+        uac: Some(Arc::clone(&uac)),
+        dialog_manager: Arc::clone(&dialog_manager_ref),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {

@@ -10,7 +10,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 // ── Response types ──────────────────────────────────────────────────────────
 
@@ -437,16 +438,69 @@ async fn terminate_call(
         .parse()
         .map_err(|_| admin_err(StatusCode::BAD_REQUEST, "invalid call ID"))?;
 
+    // Get call state before termination so we can extract dialog references.
+    let call = state
+        .call_manager
+        .get_call(&call_id)
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "call not found"))?;
+
+    // Collect dialogs from both legs (cloned from the call snapshot).
+    let a_dialog = call.a_leg.dialog.clone();
+    let b_dialog = call.b_leg.as_ref().and_then(|leg| leg.dialog.clone());
+
+    // Terminate internal state immediately (CDR, events, removal from map).
     state
         .call_manager
         .terminate_call(&call_id, Some("admin API termination".to_string()))
         .map_err(|e| admin_err_detail(StatusCode::NOT_FOUND, "call not found", &e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "call_id": call_id.to_string(),
-        "action": "terminated",
-        "note": "Internal state updated. On-wire BYE signaling is a future enhancement."
-    })))
+    // Send on-wire BYE for each established dialog (best-effort, background).
+    if let Some(ref uac) = state.uac {
+        let dialogs: Vec<sip_dialog::Dialog> = [a_dialog, b_dialog]
+            .into_iter()
+            .flatten()
+            .collect();
+        let bye_count = dialogs.len() as u32;
+
+        for dialog in dialogs {
+            let uac = Arc::clone(uac);
+            let dm = Arc::clone(&state.dialog_manager);
+            tokio::spawn(async move {
+                let dialog_id_str = format!("{:?}", dialog.id());
+                match uac.bye(&dialog).await {
+                    Ok(_) => {
+                        dm.remove(dialog.id());
+                    }
+                    Err(_) => {
+                        // Retry once after 200ms
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        if let Err(e) = uac.bye(&dialog).await {
+                            warn!(
+                                dialog_id = %dialog_id_str,
+                                error = %e,
+                                "admin BYE retry failed"
+                            );
+                        }
+                        dm.remove(dialog.id());
+                    }
+                }
+            });
+        }
+
+        Ok(Json(serde_json::json!({
+            "call_id": call_id.to_string(),
+            "action": "terminated",
+            "bye_sent": bye_count,
+        })))
+    } else {
+        // No UAC available — internal-only termination.
+        Ok(Json(serde_json::json!({
+            "call_id": call_id.to_string(),
+            "action": "terminated",
+            "bye_sent": 0,
+            "note": "No UAC available; internal state terminated without on-wire BYE."
+        })))
+    }
 }
 
 // ── Admission handlers ──────────────────────────────────────────────────────
@@ -577,6 +631,8 @@ mod tests {
             call_manager,
             trunk_configs: trunks,
             trunk_registrar: None,
+            uac: None,
+            dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
         })
     }
 

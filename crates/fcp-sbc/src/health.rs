@@ -19,6 +19,8 @@ pub struct HealthState {
     pub call_manager: Arc<fcp_b2bua_core::CallManager>,
     pub trunk_configs: Vec<fcp_sbc_core::TrunkConfig>,
     pub trunk_registrar: Option<Arc<TrunkRegistrar>>,
+    pub uac: Option<Arc<fcp_sip::uac::SipUserAgentClient>>,
+    pub dialog_manager: Arc<sip_dialog::DialogManager>,
 }
 
 /// Build the health/readiness/metrics router with admin API.
@@ -168,6 +170,8 @@ mod tests {
             call_manager: Arc::new(fcp_b2bua_core::CallManager::new()),
             trunk_configs: vec![],
             trunk_registrar: None,
+            uac: None,
+            dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();
