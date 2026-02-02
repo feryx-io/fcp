@@ -180,6 +180,9 @@ pub struct MediaSessionConfig {
 
     /// Enable echo cancellation
     pub enable_echo_cancellation: bool,
+
+    /// Whether to relay RFC 2833 telephone-event packets between legs
+    pub enable_relay_rfc2833: bool,
 }
 
 impl Default for MediaSessionConfig {
@@ -199,6 +202,7 @@ impl Default for MediaSessionConfig {
             jitter_buffer_ms: 50,
             enable_plc: true,
             enable_echo_cancellation: false,
+            enable_relay_rfc2833: false,
         }
     }
 }

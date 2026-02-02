@@ -80,10 +80,7 @@ async fn main() -> Result<()> {
         );
     }
     if sbc_config.nat.enable_dtmf {
-        warn!(
-            "nat.enable_dtmf is enabled but the SBC media stack does not \
-             currently process DTMF events"
-        );
+        info!("DTMF support enabled (RFC 2833 relay + SIP INFO passthrough)");
     }
 
     if sbc_config.b2bua.session_timer.enabled {

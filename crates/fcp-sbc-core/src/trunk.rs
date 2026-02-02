@@ -138,6 +138,33 @@ impl Default for TrunkSrtpConfig {
     }
 }
 
+/// DTMF handling mode for a trunk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TrunkDtmfMode {
+    /// DTMF detection and relay disabled
+    #[default]
+    Disabled,
+    /// Detect DTMF events but don't relay (publish to EventBus only)
+    Detect,
+    /// Relay RFC 2833 telephone-event packets between legs
+    Relay,
+}
+
+/// DTMF configuration for a trunk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrunkDtmfConfig {
+    /// DTMF handling mode
+    pub mode: TrunkDtmfMode,
+}
+
+impl Default for TrunkDtmfConfig {
+    fn default() -> Self {
+        Self {
+            mode: TrunkDtmfMode::Disabled,
+        }
+    }
+}
+
 /// A trunk (carrier) configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrunkConfig {
@@ -184,6 +211,10 @@ pub struct TrunkConfig {
     /// SRTP configuration for this trunk
     #[serde(default)]
     pub srtp: TrunkSrtpConfig,
+
+    /// DTMF configuration for this trunk
+    #[serde(default)]
+    pub dtmf: TrunkDtmfConfig,
 }
 
 impl Default for TrunkConfig {
@@ -203,6 +234,7 @@ impl Default for TrunkConfig {
             max_concurrent_calls: 0,
             header_rules: Vec::new(),
             srtp: TrunkSrtpConfig::default(),
+            dtmf: TrunkDtmfConfig::default(),
         }
     }
 }
@@ -467,5 +499,41 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: TrunkConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_dtmf_mode_serde() {
+        let modes = vec![
+            TrunkDtmfMode::Disabled,
+            TrunkDtmfMode::Detect,
+            TrunkDtmfMode::Relay,
+        ];
+        for mode in modes {
+            let json = serde_json::to_string(&mode).unwrap();
+            let deserialized: TrunkDtmfMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_trunk_config_with_dtmf() {
+        let cfg = TrunkConfig {
+            name: "dtmf-trunk".into(),
+            hosts: vec!["sip.example.com".into()],
+            dtmf: TrunkDtmfConfig {
+                mode: TrunkDtmfMode::Relay,
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: TrunkConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+        assert_eq!(deserialized.dtmf.mode, TrunkDtmfMode::Relay);
+    }
+
+    #[test]
+    fn test_trunk_config_dtmf_default() {
+        let cfg = TrunkConfig::default();
+        assert_eq!(cfg.dtmf.mode, TrunkDtmfMode::Disabled);
     }
 }

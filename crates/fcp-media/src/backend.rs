@@ -398,6 +398,12 @@ pub mod embedded {
                 .await
                 .map_err(|e| Error::ForgeMedia(e.to_string()))?;
 
+            // Enable RFC 2833 relay if configured
+            if config.enable_relay_rfc2833 {
+                forge_session.set_relay_rfc2833(true);
+                debug!(?call_id, "RFC 2833 DTMF relay enabled");
+            }
+
             // Start RTP forwarding (required for media to flow)
             forge_session
                 .start_forwarding()
@@ -489,6 +495,12 @@ pub mod embedded {
                 warn!(?call_id, "Failed to parse remote endpoint from SDP - will rely on symmetric RTP learning");
             }
 
+            // Extract telephone-event PT from A-leg's SDP and store on forge session
+            if let Some(te_pt) = crate::sdp::extract_telephone_event_pt(&remote_sdp) {
+                session_info.forge_session.set_telephone_event_pt_a(te_pt);
+                debug!(?call_id, te_pt, "A-leg telephone-event PT set from SDP");
+            }
+
             // Wire SRTP keys for A-leg if SRTP was negotiated
             if let (Some(ref local_material), Some(ref remote_crypto)) =
                 (&result.local_crypto, &result.remote_crypto)
@@ -566,6 +578,12 @@ pub mod embedded {
                 }
             } else {
                 warn!(?call_id, "Failed to parse B-leg remote endpoint from SDP");
+            }
+
+            // Extract telephone-event PT from B-leg's SDP and store on forge session
+            if let Some(te_pt) = crate::sdp::extract_telephone_event_pt(&remote_sdp) {
+                session_info.forge_session.set_telephone_event_pt_b(te_pt);
+                debug!(?call_id, te_pt, "B-leg telephone-event PT set from SDP");
             }
 
             // Wire SRTP keys for B-leg if remote offered crypto

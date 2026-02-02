@@ -39,7 +39,7 @@ pub use hmr::{
     HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection,
     HmrMessageType, HmrRule,
 };
-pub use trunk::{SrtpMode, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
+pub use trunk::{SrtpMode, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
 
 // Re-export trunk runtime types for convenience
 pub use cps::{CpsChecker, NoCpsLimit};
