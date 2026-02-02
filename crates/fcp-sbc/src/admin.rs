@@ -25,6 +25,8 @@ pub struct TrunkSummary {
     pub max_concurrent_calls: u32,
     pub priority: u32,
     pub weight: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_state: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,6 +46,10 @@ pub struct TrunkDetail {
     pub consecutive_failures: u32,
     pub has_credentials: bool,
     pub register: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -149,6 +155,10 @@ pub fn admin_router() -> Router<Arc<HealthState>> {
         .route("/trunks/:name", get(get_trunk))
         .route("/trunks/:name/disable", axum::routing::post(disable_trunk))
         .route("/trunks/:name/enable", axum::routing::post(enable_trunk))
+        .route(
+            "/trunks/:name/register",
+            axum::routing::post(force_register),
+        )
         .route("/calls", get(list_calls))
         .route("/calls/stats", get(call_stats))
         .route("/calls/:id", get(get_call).delete(terminate_call))
@@ -234,6 +244,11 @@ async fn list_trunks(
                 .health_monitor
                 .status(&tc.name)
                 .unwrap_or(fcp_sbc_core::metrics::TrunkHealthStatus::Unknown);
+            let registration_state = state
+                .trunk_registrar
+                .as_ref()
+                .and_then(|r| r.registration_state(&tc.name))
+                .map(|s| s.to_string());
             TrunkSummary {
                 name: tc.name.clone(),
                 enabled: tc.enabled,
@@ -244,6 +259,7 @@ async fn list_trunks(
                 max_concurrent_calls: tc.max_concurrent_calls,
                 priority: tc.priority,
                 weight: tc.weight,
+                registration_state,
             }
         })
         .collect();
@@ -265,6 +281,16 @@ async fn get_trunk(
         .status(&tc.name)
         .unwrap_or(fcp_sbc_core::metrics::TrunkHealthStatus::Unknown);
 
+    let registration_state = state
+        .trunk_registrar
+        .as_ref()
+        .and_then(|r| r.registration_state(&tc.name))
+        .map(|s| s.to_string());
+    let registration_error = state
+        .trunk_registrar
+        .as_ref()
+        .and_then(|r| r.last_error(&tc.name));
+
     Ok(Json(TrunkDetail {
         name: tc.name.clone(),
         enabled: tc.enabled,
@@ -281,6 +307,8 @@ async fn get_trunk(
         consecutive_failures: state.health_monitor.consecutive_failures(&tc.name),
         has_credentials: tc.credentials.is_some(),
         register: tc.register,
+        registration_state,
+        registration_error,
     }))
 }
 
@@ -308,6 +336,32 @@ async fn enable_trunk(
     Ok(Json(TrunkActionResponse {
         name,
         action: "enabled".to_string(),
+        admin_disabled: false,
+    }))
+}
+
+async fn force_register(
+    State(state): State<Arc<HealthState>>,
+    Path(name): Path<String>,
+) -> Result<Json<TrunkActionResponse>, (StatusCode, Json<AdminError>)> {
+    let registrar = state
+        .trunk_registrar
+        .as_ref()
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "no trunk registrar configured"))?;
+
+    if registrar.registration_state(&name).is_none() {
+        return Err(admin_err(
+            StatusCode::NOT_FOUND,
+            "trunk not found or does not require registration",
+        ));
+    }
+
+    // Mark unregistered so the background task picks it up on the next tick
+    registrar.mark_unregistered(&name);
+
+    Ok(Json(TrunkActionResponse {
+        name,
+        action: "re-registration queued".to_string(),
         admin_disabled: false,
     }))
 }
@@ -522,6 +576,7 @@ mod tests {
             metrics,
             call_manager,
             trunk_configs: trunks,
+            trunk_registrar: None,
         })
     }
 

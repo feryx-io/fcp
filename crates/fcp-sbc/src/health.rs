@@ -3,6 +3,7 @@
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::trunk_health::TrunkHealthMonitor;
+use crate::trunk_registration::TrunkRegistrar;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::{extract::State, routing::get, Json, Router};
@@ -17,6 +18,7 @@ pub struct HealthState {
     pub metrics: Arc<SbcRuntimeMetrics>,
     pub call_manager: Arc<fcp_b2bua_core::CallManager>,
     pub trunk_configs: Vec<fcp_sbc_core::TrunkConfig>,
+    pub trunk_registrar: Option<Arc<TrunkRegistrar>>,
 }
 
 /// Build the health/readiness/metrics router with admin API.
@@ -165,6 +167,7 @@ mod tests {
             metrics,
             call_manager: Arc::new(fcp_b2bua_core::CallManager::new()),
             trunk_configs: vec![],
+            trunk_registrar: None,
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();

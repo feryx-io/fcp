@@ -32,6 +32,7 @@ mod topology;
 mod siprec;
 mod trunk_health;
 mod trunk_auth;
+mod trunk_registration;
 mod trunk_router;
 
 use admission::AdmissionController;
@@ -43,6 +44,7 @@ use hooks::SbcEventHooks;
 use metrics::SbcRuntimeMetrics;
 use registration_store::InMemoryRegistrationStore;
 use trunk_health::TrunkHealthMonitor;
+use trunk_registration::TrunkRegistrar;
 use trunk_router::TrunkRouter;
 
 #[tokio::main]
@@ -166,6 +168,10 @@ async fn main() -> Result<()> {
     let admission = Arc::new(AdmissionController::new(sbc_config.admission.clone()));
     let trunk_health = Arc::new(TrunkHealthMonitor::new(&sbc_config.trunks));
     let sbc_metrics = Arc::new(SbcRuntimeMetrics::new());
+
+    // 11b. Create TrunkRegistrar and shutdown channel for graceful de-registration
+    let trunk_registrar = Arc::new(TrunkRegistrar::new(&sbc_config.trunks));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     // 12. Create SIPREC recorder (if configured)
     let siprec_recorder = siprec::SiprecRecorder::new(
@@ -348,6 +354,7 @@ async fn main() -> Result<()> {
         metrics: Arc::clone(&sbc_metrics),
         call_manager: Arc::clone(&call_manager),
         trunk_configs: sbc_config.trunks.clone(),
+        trunk_registrar: Some(Arc::clone(&trunk_registrar)),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {
@@ -378,6 +385,19 @@ async fn main() -> Result<()> {
         health_probes::run_health_probes(probe_monitor, probe_trunks, probe_uac).await;
     });
 
+    // Spawn trunk registration task (maintains REGISTER bindings for trunks
+    // that require registration with their remote peers)
+    if trunk_registrar.has_registerable_trunks() {
+        let reg = Arc::clone(&trunk_registrar);
+        let reg_health = Arc::clone(&trunk_health);
+        let reg_uac = Arc::clone(&uac);
+        let reg_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            trunk_registration::run_trunk_registration(reg, reg_health, reg_uac, reg_shutdown)
+                .await;
+        });
+    }
+
     info!(
         udp = %cli.bind,
         tcp = %cli.bind,
@@ -399,7 +419,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 24. Graceful shutdown
+    // 24. Graceful shutdown — signal registration task to de-register trunks,
+    //     then wait briefly for de-registration before stopping the listener.
+    let _ = shutdown_tx.send(true);
+    if trunk_registrar.has_registerable_trunks() {
+        tokio::time::sleep(Duration::from_secs(4)).await;
+    }
     listener.stop().await?;
     info!("Shutdown complete");
     Ok(())
