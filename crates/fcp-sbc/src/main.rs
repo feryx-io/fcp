@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_sip::prelude::*;
+use std::collections::HashMap;
 use fcp_sip::registrar::FcpRegistrar;
 use fcp_sip::service::{DialogService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
@@ -32,6 +33,7 @@ mod registration_store;
 mod topology;
 mod siprec;
 mod srtp;
+mod stir_shaken;
 
 use admission::AdmissionController;
 use cli::Cli;
@@ -161,7 +163,41 @@ async fn main() -> Result<()> {
         Arc::clone(&dispatcher) as Arc<dyn TransportDispatcher>
     };
 
-    // 8. Create TransactionManager (uses effective dispatcher for HMR egress)
+    // 7c. STIR/SHAKEN verifier, signer, metrics (created early so signer can wrap dispatcher)
+    let stir_metrics = if sbc_config.stir_shaken.enabled {
+        Some(Arc::new(stir_shaken::StirMetrics::new()))
+    } else {
+        None
+    };
+    let stir_verifier = if sbc_config.stir_shaken.enabled {
+        Some(Arc::new(stir_shaken::StirVerifier::new(
+            &sbc_config.stir_shaken,
+        )))
+    } else {
+        None
+    };
+    let stir_signer = if sbc_config.stir_shaken.enabled {
+        stir_shaken::StirSigner::new(&sbc_config.stir_shaken)
+            .map_err(|e| anyhow::anyhow!("Failed to load STIR/SHAKEN signing key: {e}"))?
+            .map(Arc::new)
+    } else {
+        None
+    };
+
+    // 7d. Wrap dispatcher with STIR/SHAKEN signing (after HMR, before TransactionManager)
+    let effective_dispatcher: Arc<dyn TransportDispatcher> =
+        if let Some(ref signer) = stir_signer {
+            Arc::new(stir_shaken::StirTransportDispatcher::new(
+                effective_dispatcher,
+                Arc::clone(signer),
+                &sbc_config.trunks,
+                Arc::clone(stir_metrics.as_ref().unwrap()),
+            ))
+        } else {
+            effective_dispatcher
+        };
+
+    // 8. Create TransactionManager (uses effective dispatcher for HMR + STIR egress)
     let transaction_manager =
         TransactionManager::new_with_pool(effective_dispatcher.clone(), tcp_pool);
     let transaction_service = TransactionService::new(transaction_manager);
@@ -381,7 +417,14 @@ async fn main() -> Result<()> {
     //     implementation that also resolves FQDN hosts via DNS)
     let peer_trunk_map = hmr_dispatcher::build_peer_trunk_map(&sbc_config.trunks);
 
-    // 19b. Create SbcEnforcementHandler (wraps SipMessageHandler)
+    // 19b. Build per-trunk STIR/SHAKEN config map for enforcement handler
+    let trunk_stir_configs: HashMap<String, fcp_sbc_core::TrunkStirShakenConfig> = sbc_config
+        .trunks
+        .iter()
+        .map(|t| (t.name.clone(), t.stir_shaken.clone()))
+        .collect();
+
+    // 19c. Create SbcEnforcementHandler (wraps SipMessageHandler)
     let enforcement_handler = Arc::new(SbcEnforcementHandler::new(
         handler as Arc<dyn InboundMessageHandler>,
         sbc_config.security.clone(),
@@ -391,6 +434,9 @@ async fn main() -> Result<()> {
         Arc::clone(&dispatcher),
         hmr_engine,
         peer_trunk_map,
+        stir_verifier.clone(),
+        trunk_stir_configs,
+        stir_metrics.clone(),
     ));
 
     // 20. Resolve TLS config: CLI args override config file
@@ -470,6 +516,8 @@ async fn main() -> Result<()> {
         recording_store,
         quality_tracker: quality_tracker.clone(),
         lcr_routes: sbc_config.lcr.routes.clone(),
+        stir_metrics: stir_metrics.clone(),
+        stir_verifier: stir_verifier.clone(),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {
@@ -511,6 +559,25 @@ async fn main() -> Result<()> {
             trunk_registration::run_trunk_registration(reg, reg_health, reg_uac, reg_shutdown)
                 .await;
         });
+    }
+
+    if sbc_config.stir_shaken.enabled {
+        let verify_trunks = sbc_config
+            .trunks
+            .iter()
+            .filter(|t| t.stir_shaken.verify_mode != fcp_sbc_core::StirVerifyMode::Disabled)
+            .count();
+        let sign_trunks = sbc_config
+            .trunks
+            .iter()
+            .filter(|t| t.stir_shaken.sign_mode != fcp_sbc_core::StirSignMode::Disabled)
+            .count();
+        info!(
+            signing = stir_signer.is_some(),
+            verify_trunks = verify_trunks,
+            sign_trunks = sign_trunks,
+            "STIR/SHAKEN enabled (RFC 8224/8225/8588)"
+        );
     }
 
     info!(

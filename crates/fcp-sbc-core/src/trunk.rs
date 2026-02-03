@@ -3,6 +3,7 @@
 //! Defines trunk direction, transport settings, credentials, failover
 //! policy, and the main `TrunkConfig` struct.
 
+use crate::stir_shaken::TrunkStirShakenConfig;
 use fcp_core::transport::TransportType;
 use serde::{Deserialize, Serialize};
 
@@ -215,6 +216,10 @@ pub struct TrunkConfig {
     /// DTMF configuration for this trunk
     #[serde(default)]
     pub dtmf: TrunkDtmfConfig,
+
+    /// STIR/SHAKEN caller ID verification and signing configuration
+    #[serde(default)]
+    pub stir_shaken: TrunkStirShakenConfig,
 }
 
 impl Default for TrunkConfig {
@@ -235,6 +240,7 @@ impl Default for TrunkConfig {
             header_rules: Vec::new(),
             srtp: TrunkSrtpConfig::default(),
             dtmf: TrunkDtmfConfig::default(),
+            stir_shaken: TrunkStirShakenConfig::default(),
         }
     }
 }
@@ -290,6 +296,9 @@ impl TrunkConfig {
             }
         }
         self.failover
+            .validate()
+            .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
+        self.stir_shaken
             .validate()
             .map_err(|e| format!("trunk {:?}: {e}", self.name))?;
         Ok(())

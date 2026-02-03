@@ -13,8 +13,10 @@
 use crate::admission::AdmissionController;
 use crate::hmr::HeaderManipulationEngine;
 use crate::metrics::SbcRuntimeMetrics;
+use crate::stir_shaken::{StirMetrics, StirVerifier, VerificationResult};
 use bytes::Bytes;
 use fcp_sbc_core::security::{AclAction, MalformedSipPolicy, SecurityConfig};
+use fcp_sbc_core::stir_shaken::{StirVerifyMode, TrunkStirShakenConfig};
 use fcp_sip::listener::InboundMessageHandler;
 use fcp_sip::transport::RealTransportDispatcher;
 use sip_ratelimit::RateLimiterSet;
@@ -23,7 +25,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Enforcement decorator wrapping the inner SIP message handler.
 ///
@@ -47,6 +49,12 @@ pub struct SbcEnforcementHandler {
     hmr_engine: Option<Arc<HeaderManipulationEngine>>,
     /// Maps peer IP to trunk name for trunk identification on ingress.
     peer_trunk_map: HashMap<IpAddr, String>,
+    /// STIR/SHAKEN verifier for inbound calls.
+    stir_verifier: Option<Arc<StirVerifier>>,
+    /// Per-trunk STIR/SHAKEN verification configuration.
+    trunk_stir_configs: HashMap<String, TrunkStirShakenConfig>,
+    /// STIR/SHAKEN metrics.
+    stir_metrics: Option<Arc<StirMetrics>>,
 }
 
 impl SbcEnforcementHandler {
@@ -59,6 +67,9 @@ impl SbcEnforcementHandler {
         dispatcher: Arc<RealTransportDispatcher>,
         hmr_engine: Option<Arc<HeaderManipulationEngine>>,
         peer_trunk_map: HashMap<IpAddr, String>,
+        stir_verifier: Option<Arc<StirVerifier>>,
+        trunk_stir_configs: HashMap<String, TrunkStirShakenConfig>,
+        stir_metrics: Option<Arc<StirMetrics>>,
     ) -> Self {
         Self {
             inner,
@@ -69,6 +80,9 @@ impl SbcEnforcementHandler {
             dispatcher,
             hmr_engine,
             peer_trunk_map,
+            stir_verifier,
+            trunk_stir_configs,
+            stir_metrics,
         }
     }
 
@@ -273,6 +287,98 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         } else {
             payload
         };
+
+        // 7b. STIR/SHAKEN verification (INVITE only)
+        if let Some(ref verifier) = self.stir_verifier {
+            if let Some(method) = extract_method_from_payload(&payload) {
+                if method == "INVITE" {
+                    let trunk_name = self.identify_trunk_by_peer(peer);
+                    let trunk_config = trunk_name
+                        .and_then(|name| self.trunk_stir_configs.get(name));
+                    let verify_mode = trunk_config
+                        .map(|c| c.verify_mode)
+                        .unwrap_or(StirVerifyMode::Disabled);
+
+                    if verify_mode != StirVerifyMode::Disabled {
+                        let max_iat_age = trunk_config
+                            .map(|c| c.max_iat_age_secs)
+                            .unwrap_or(60);
+
+                        let identity = fcp_sbc_core::stir_shaken::extract_header_from_payload(
+                            &payload, "Identity",
+                        );
+                        let from = fcp_sbc_core::stir_shaken::extract_header_from_payload(
+                            &payload, "From",
+                        )
+                        .or_else(|| {
+                            fcp_sbc_core::stir_shaken::extract_header_from_payload(&payload, "f")
+                        })
+                        .unwrap_or_default();
+                        let to = fcp_sbc_core::stir_shaken::extract_header_from_payload(
+                            &payload, "To",
+                        )
+                        .or_else(|| {
+                            fcp_sbc_core::stir_shaken::extract_header_from_payload(&payload, "t")
+                        })
+                        .unwrap_or_default();
+
+                        if let Some(identity_value) = identity {
+                            let result = verifier
+                                .verify(&identity_value, &from, &to, max_iat_age)
+                                .await;
+
+                            match result {
+                                VerificationResult::Verified { attestation } => {
+                                    info!(
+                                        %peer,
+                                        attestation = attestation.as_str(),
+                                        "STIR/SHAKEN verification succeeded"
+                                    );
+                                    if let Some(ref m) = self.stir_metrics {
+                                        m.record_verification_success();
+                                    }
+                                }
+                                VerificationResult::Failed(ref err) => {
+                                    warn!(
+                                        %peer,
+                                        error = %err,
+                                        mode = ?verify_mode,
+                                        "STIR/SHAKEN verification failed"
+                                    );
+                                    if let Some(ref m) = self.stir_metrics {
+                                        m.record_verification_failure();
+                                    }
+                                    if verify_mode == StirVerifyMode::Enforce {
+                                        self.send_rejection(
+                                            transport,
+                                            peer,
+                                            &payload,
+                                            &stream,
+                                            438,
+                                            "Invalid Identity Header",
+                                        )
+                                        .await;
+                                        return Ok(());
+                                    }
+                                    // LogOnly: warn logged above, continue
+                                }
+                                VerificationResult::NoIdentity => {
+                                    // Should not happen here since we checked identity above
+                                    if let Some(ref m) = self.stir_metrics {
+                                        m.record_verification_no_identity();
+                                    }
+                                }
+                            }
+                        } else {
+                            debug!(%peer, "STIR/SHAKEN: no Identity header present");
+                            if let Some(ref m) = self.stir_metrics {
+                                m.record_verification_no_identity();
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // 8. Delegate to inner handler
         self.inner
@@ -723,6 +829,9 @@ mod tests {
             dispatcher,
             hmr_engine,
             HashMap::new(),
+            None,
+            HashMap::new(),
+            None,
         )
     }
 
@@ -1140,6 +1249,25 @@ mod tests {
         let forwarded = std::str::from_utf8(&recorded[0].2).unwrap();
         assert!(!forwarded.contains("X-Custom"));
         assert!(!forwarded.contains("should-be-removed"));
+    }
+
+    #[test]
+    fn test_extract_header_from_payload() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+            Identity: token;info=<url>\r\n\
+            From: <sip:+15551001@example.com>;tag=abc\r\n\
+            To: <sip:+15551002@example.com>\r\n\
+            Call-ID: test123\r\n\
+            CSeq: 1 INVITE\r\n\
+            \r\n";
+
+        let identity = fcp_sbc_core::stir_shaken::extract_header_from_payload(payload, "Identity");
+        assert!(identity.is_some());
+        assert!(identity.unwrap().starts_with("token"));
+
+        let missing =
+            fcp_sbc_core::stir_shaken::extract_header_from_payload(payload, "X-Missing");
+        assert!(missing.is_none());
     }
 
     #[tokio::test]

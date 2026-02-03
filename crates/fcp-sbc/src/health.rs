@@ -3,6 +3,7 @@
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::recording_store::RecordingStore;
+use crate::stir_shaken::{StirMetrics, StirVerifier};
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_registration::TrunkRegistrar;
 use axum::http::header;
@@ -25,6 +26,8 @@ pub struct HealthState {
     pub recording_store: Option<Arc<RecordingStore>>,
     pub quality_tracker: Option<Arc<fcp_sbc_core::TrunkQualityTracker>>,
     pub lcr_routes: Vec<fcp_sbc_core::LcrRouteEntry>,
+    pub stir_metrics: Option<Arc<StirMetrics>>,
+    pub stir_verifier: Option<Arc<StirVerifier>>,
 }
 
 /// Build the health/readiness/metrics router with admin API.
@@ -156,6 +159,51 @@ async fn metrics_snapshot(State(state): State<Arc<HealthState>>) -> impl IntoRes
         }
     }
 
+    // STIR/SHAKEN metrics
+    if let Some(ref stir_metrics) = state.stir_metrics {
+        let stir_snap = stir_metrics.snapshot();
+        let _ = writeln!(buf);
+        prom_counter(
+            &mut buf,
+            "fcp_sbc_stir_verifications_success_total",
+            "Total STIR/SHAKEN verifications succeeded",
+            stir_snap.verifications_success,
+        );
+        prom_counter(
+            &mut buf,
+            "fcp_sbc_stir_verifications_failed_total",
+            "Total STIR/SHAKEN verifications failed",
+            stir_snap.verifications_failed,
+        );
+        prom_counter(
+            &mut buf,
+            "fcp_sbc_stir_verifications_no_identity_total",
+            "Total STIR/SHAKEN calls with no Identity header",
+            stir_snap.verifications_no_identity,
+        );
+        prom_counter(
+            &mut buf,
+            "fcp_sbc_stir_signings_success_total",
+            "Total STIR/SHAKEN signings succeeded",
+            stir_snap.signings_success,
+        );
+        prom_counter(
+            &mut buf,
+            "fcp_sbc_stir_signings_failed_total",
+            "Total STIR/SHAKEN signings failed",
+            stir_snap.signings_failed,
+        );
+
+        if let Some(ref verifier) = state.stir_verifier {
+            prom_gauge(
+                &mut buf,
+                "fcp_sbc_stir_cert_cache_entries",
+                "Current STIR/SHAKEN certificate cache entries",
+                verifier.cache().len() as u64,
+            );
+        }
+    }
+
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], buf)
 }
 
@@ -200,6 +248,8 @@ mod tests {
             recording_store: None,
             quality_tracker: None,
             lcr_routes: vec![],
+            stir_metrics: None,
+            stir_verifier: None,
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();

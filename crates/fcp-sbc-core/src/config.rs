@@ -23,6 +23,7 @@ use crate::nat::NatConfig;
 use crate::rate_limit::RateLimitPolicyConfig;
 use crate::security::SecurityConfig;
 use crate::siprec::SiprecConfig;
+use crate::stir_shaken::StirShakenConfig;
 use crate::trunk::TrunkConfig;
 
 /// Optional storage configuration for CDR persistence.
@@ -99,6 +100,10 @@ pub struct SbcConfig {
     #[serde(default)]
     pub storage: SbcStorageConfig,
 
+    /// STIR/SHAKEN caller ID verification and signing (RFC 8224/8225/8588).
+    #[serde(default)]
+    pub stir_shaken: StirShakenConfig,
+
     /// TLS bind address (e.g. "0.0.0.0:5061"). None = TLS disabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_bind: Option<String>,
@@ -155,6 +160,7 @@ impl Default for SbcConfig {
             external_domain: String::new(),
             transports: vec![TransportType::Udp, TransportType::Tcp],
             header_manipulation: HeaderManipulationConfig::default(),
+            stir_shaken: StirShakenConfig::default(),
             storage: SbcStorageConfig::default(),
             tls_bind: None,
             tls_cert: None,
@@ -187,6 +193,7 @@ impl SbcConfig {
         self.metrics.validate()?;
 
         self.header_manipulation.validate()?;
+        self.stir_shaken.validate()?;
 
         self.lcr.validate()?;
         // Validate LCR route trunk_name references

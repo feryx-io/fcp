@@ -196,6 +196,11 @@ pub fn admin_router() -> Router<Arc<HealthState>> {
         .route("/quality", get(get_quality_metrics))
         .route("/quality/:trunk_name", get(get_trunk_quality))
         .route("/lcr/routes", get(list_lcr_routes))
+        .route("/stir-shaken", get(get_stir_shaken_status))
+        .route(
+            "/stir-shaken/cache/clear",
+            axum::routing::post(clear_stir_cache),
+        )
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -806,6 +811,56 @@ pub struct LcrRouteView {
     pub enabled: bool,
 }
 
+// ── STIR/SHAKEN handlers ────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct StirShakenStatus {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<crate::stir_shaken::StirMetricsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cert_cache_entries: Option<usize>,
+}
+
+async fn get_stir_shaken_status(
+    State(state): State<Arc<HealthState>>,
+) -> Json<StirShakenStatus> {
+    match (&state.stir_metrics, &state.stir_verifier) {
+        (Some(metrics), Some(verifier)) => Json(StirShakenStatus {
+            enabled: true,
+            metrics: Some(metrics.snapshot()),
+            cert_cache_entries: Some(verifier.cache().len()),
+        }),
+        (Some(metrics), None) => Json(StirShakenStatus {
+            enabled: true,
+            metrics: Some(metrics.snapshot()),
+            cert_cache_entries: None,
+        }),
+        _ => Json(StirShakenStatus {
+            enabled: false,
+            metrics: None,
+            cert_cache_entries: None,
+        }),
+    }
+}
+
+async fn clear_stir_cache(
+    State(state): State<Arc<HealthState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<AdminError>)> {
+    let verifier = state
+        .stir_verifier
+        .as_ref()
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "STIR/SHAKEN not enabled"))?;
+
+    let prev_size = verifier.cache().len();
+    verifier.cache().clear();
+
+    Ok(Json(serde_json::json!({
+        "action": "cache_cleared",
+        "entries_removed": prev_size,
+    })))
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -837,6 +892,8 @@ mod tests {
             recording_store: None,
             quality_tracker: None,
             lcr_routes: vec![],
+            stir_metrics: None,
+            stir_verifier: None,
         })
     }
 
@@ -1058,5 +1115,30 @@ mod tests {
         let (status, json) = get_json(app(state), "/recordings/call-1").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(json["error"].as_str().unwrap().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn test_stir_shaken_status_disabled() {
+        let state = test_state();
+        let (status, json) = get_json(app(state), "/stir-shaken").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn test_stir_shaken_status_enabled() {
+        let stir_metrics = Arc::new(crate::stir_shaken::StirMetrics::new());
+        stir_metrics.record_verification_success();
+        stir_metrics.record_signing_success();
+
+        let mut state = test_state_with_trunks(vec![]);
+        let inner = Arc::get_mut(&mut state).unwrap();
+        inner.stir_metrics = Some(stir_metrics);
+
+        let (status, json) = get_json(app(state), "/stir-shaken").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["metrics"]["verifications_success"], 1);
+        assert_eq!(json["metrics"]["signings_success"], 1);
     }
 }

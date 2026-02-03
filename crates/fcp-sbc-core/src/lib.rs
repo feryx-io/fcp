@@ -17,6 +17,7 @@ pub mod nat;
 pub mod rate_limit;
 pub mod security;
 pub mod siprec;
+pub mod stir_shaken;
 pub mod trunk;
 
 // Shared trunk runtime modules
@@ -40,6 +41,10 @@ pub use siprec::{RecordingPolicy, RecordingServer, SelectiveRecordingRule, Sipre
 pub use hmr::{
     HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection,
     HmrMessageType, HmrRule,
+};
+pub use stir_shaken::{
+    AttestationLevel, StirShakenConfig, StirSignMode, StirVerifyMode,
+    TrunkStirShakenConfig,
 };
 pub use trunk::{SrtpMode, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
 

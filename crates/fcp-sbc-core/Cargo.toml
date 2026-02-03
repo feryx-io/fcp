@@ -17,6 +17,12 @@ sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
 sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 
+# STIR/SHAKEN (PASSporT signing/verification)
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+base64 = "0.22"
+uuid = { workspace = true }
+thiserror = { workspace = true }
+
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
