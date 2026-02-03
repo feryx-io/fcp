@@ -557,7 +557,7 @@ async fn create_and_insert_cdr(storage: &fcp_core::DynStorage, call: &Call) -> R
         recording_url: None, // TODO: Phase 2 - recording integration
         cost: None,          // TODO: Phase 4 - billing integration
         currency: None,
-        custom_data: None, // No custom data in MVP
+        custom_data: call.custom_data.clone(),
     };
 
     // Insert CDR into storage

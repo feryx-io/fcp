@@ -1,0 +1,33 @@
+[package]
+name = "fcp-pbx"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "PBX feature library for FCP: hunt groups, parking, pickup, intercom, CMC/FAC"
+
+[dependencies]
+# FCP dependencies (no SIP crate dependencies — this is a decision library)
+fcp-core = { path = "../fcp-core" }
+fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utility
+uuid = { workspace = true }
+dashmap = "6"
+rand = "0.8"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+toml = "0.8"

@@ -241,6 +241,10 @@ pub struct Call {
     /// When the A-leg sends CANCEL before any B-leg answers, the CANCEL handler
     /// notifies this to wake up the forking task so it can CANCEL all B-legs immediately.
     pub cancel_notify: Option<Arc<Notify>>,
+
+    /// Arbitrary custom data attached to this call (flows through to CDR).
+    /// Used by PBX features such as CMC/FAC billing codes.
+    pub custom_data: Option<serde_json::Value>,
 }
 
 impl fmt::Debug for CallLeg {
@@ -276,6 +280,7 @@ impl fmt::Debug for Call {
             .field("ended_at", &self.ended_at)
             .field("failure_reason", &self.failure_reason)
             .field("trunk_name", &self.trunk_name)
+            .field("custom_data", &self.custom_data)
             .finish()
     }
 }
@@ -309,6 +314,7 @@ impl Call {
             flow_current_node: None,
             trunk_name: None,
             cancel_notify: None,
+            custom_data: None,
         }
     }
 

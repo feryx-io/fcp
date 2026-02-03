@@ -58,6 +58,10 @@ pub struct CallManagerConfig {
     /// When non-empty and registrar.enabled=false, operates as session manager.
     #[serde(default)]
     pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
+
+    /// PBX features (hunt groups, parking, pickup, intercom, CMC/FAC).
+    #[serde(default)]
+    pub pbx: fcp_pbx::PbxConfig,
 }
 
 /// Service identification.
@@ -455,6 +459,9 @@ mod tests {
         assert!(!config.routing.hot_reload);
         assert!(config.events.server_url.is_none());
         assert!(config.trunks.is_empty());
+        // PBX defaults
+        assert!(!config.pbx.enabled);
+        assert!(config.pbx.hunt_groups.is_empty());
     }
 
     #[test]

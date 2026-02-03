@@ -312,6 +312,9 @@ pub struct SipMessageHandler {
     /// When the registrar has no binding for the destination, this provider
     /// is consulted before returning 480 Temporarily Unavailable.
     outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
+
+    /// Optional PBX handler for hunt groups, parking, pickup, intercom, CMC/FAC.
+    pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
 }
 
 #[derive(Clone)]
@@ -433,6 +436,7 @@ impl SipMessageHandler {
         flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
         b2bua_config: B2buaConfig,
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
+        pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
     ) -> Self {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -453,6 +457,7 @@ impl SipMessageHandler {
             settings,
             b2bua_config,
             outbound_route_provider,
+            pbx_handler,
         )
     }
 
@@ -474,6 +479,7 @@ impl SipMessageHandler {
         settings: ServerSettings,
         b2bua_config: B2buaConfig,
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
+        pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
     ) -> Self {
         // Validate settings early to catch configuration errors at startup
         if let Err(e) = settings.validate() {
@@ -608,6 +614,7 @@ impl SipMessageHandler {
             rate_limits: Arc::new(dashmap::DashMap::new()),
             flow_handler,
             outbound_route_provider,
+            pbx_handler,
         };
 
         // Start session timer event loop
@@ -1018,6 +1025,22 @@ impl SipMessageHandler {
 
         // Evaluate media anchoring decision
         self.evaluate_media_anchoring(request, &call_id).await;
+
+        // Check if this is a PBX feature code (e.g., *8 pickup, *70 park, *81 intercom)
+        if let Some(pbx) = &self.pbx_handler {
+            if pbx.is_enabled() {
+                // Extract the dialed string from the Request-URI
+                let dialed = request.start_line().uri().to_string();
+                if let Some(action) = pbx.parse_feature_code(&dialed) {
+                    info!(
+                        call_id = %call_id,
+                        action = ?action,
+                        "PBX feature code detected"
+                    );
+                    return self.handle_pbx_feature_code(request, &handle, &call_id, action).await;
+                }
+            }
+        }
 
         // Check if there's a flow configured for this DID
         if let Some(flow_handler) = &self.flow_handler {
@@ -2026,6 +2049,27 @@ impl SipMessageHandler {
                 .split('@')
                 .next()
                 .unwrap_or(&normalized_aor);
+
+            // Check if this extension is a PBX hunt group
+            if let Some(pbx) = &self.pbx_handler {
+                if pbx.is_enabled() {
+                    if let Some(plan) = pbx.resolve_hunt_group(extension_number) {
+                        info!(
+                            call_id = %call_id,
+                            extension = %extension_number,
+                            phases = plan.ring_phases.len(),
+                            "Routing to hunt group"
+                        );
+                        return self.execute_hunt_group_plan(
+                            request,
+                            a_leg_handle,
+                            call_id,
+                            plan,
+                            uac,
+                        ).await;
+                    }
+                }
+            }
 
             // Try extension lookup if storage is available
             let mut extension_contacts = Vec::new();
@@ -6313,6 +6357,392 @@ impl SipMessageHandler {
         // rejected with "481 Subscription Does Not Exist", which is the correct behavior.
         None
     }
+
+    // ============================================================================
+    // PBX Feature Handlers
+    // ============================================================================
+
+    /// Dispatch a PBX feature code action.
+    async fn handle_pbx_feature_code(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        action: fcp_pbx::FeatureCodeAction,
+    ) -> Result<()> {
+        match action {
+            fcp_pbx::FeatureCodeAction::GroupPickup => {
+                self.handle_group_pickup(request, handle, call_id).await
+            }
+            fcp_pbx::FeatureCodeAction::DirectedPickup { extension } => {
+                self.handle_directed_pickup(request, handle, call_id, &extension).await
+            }
+            fcp_pbx::FeatureCodeAction::ParkCall => {
+                self.handle_park_call(request, handle, call_id).await
+            }
+            fcp_pbx::FeatureCodeAction::RetrieveParkedCall { orbit } => {
+                self.handle_retrieve_parked(request, handle, call_id, orbit).await
+            }
+            fcp_pbx::FeatureCodeAction::IntercomOneWay { extension } => {
+                self.handle_intercom(request, handle, call_id, &extension, fcp_pbx::IntercomMode::OneWay).await
+            }
+            fcp_pbx::FeatureCodeAction::IntercomTwoWay { extension } => {
+                self.handle_intercom(request, handle, call_id, &extension, fcp_pbx::IntercomMode::TwoWay).await
+            }
+        }
+    }
+
+    /// Handle group pickup (*8): find a ringing call in the caller's pickup group.
+    async fn handle_group_pickup(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Result<()> {
+        let pbx = self.pbx_handler.as_ref().unwrap();
+
+        // Determine the caller's extension from From header
+        let caller_ext = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+
+        match pbx.find_ringing_in_group(&caller_ext, &self.call_manager) {
+            Some(ringing_call_id) => {
+                info!(
+                    call_id = %call_id,
+                    ringing_call = %ringing_call_id,
+                    caller_ext = %caller_ext,
+                    "Group pickup: found ringing call"
+                );
+                // TODO: Phase 2 — CANCEL the ringing B-leg and bridge the picker to the A-leg
+                let response = self.create_simple_response(request, 501, "Pickup Not Yet Implemented");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("Group pickup not yet fully implemented".to_string()));
+            }
+            None => {
+                info!(call_id = %call_id, caller_ext = %caller_ext, "Group pickup: no ringing call found");
+                let response = self.create_simple_response(request, 480, "No Ringing Call");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("No ringing call in pickup group".to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle directed pickup (*9ext): find a ringing call targeting a specific extension.
+    async fn handle_directed_pickup(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        target_extension: &str,
+    ) -> Result<()> {
+        let pbx = self.pbx_handler.as_ref().unwrap();
+
+        match pbx.find_ringing_for_extension(target_extension, &self.call_manager) {
+            Some(ringing_call_id) => {
+                info!(
+                    call_id = %call_id,
+                    ringing_call = %ringing_call_id,
+                    target = %target_extension,
+                    "Directed pickup: found ringing call"
+                );
+                // TODO: Phase 2 — CANCEL the ringing B-leg and bridge the picker to the A-leg
+                let response = self.create_simple_response(request, 501, "Pickup Not Yet Implemented");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("Directed pickup not yet fully implemented".to_string()));
+            }
+            None => {
+                info!(call_id = %call_id, target = %target_extension, "Directed pickup: no ringing call found");
+                let response = self.create_simple_response(request, 480, "No Ringing Call");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some(format!("No ringing call for extension {}", target_extension)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle park call (*70): park the current call in the next available orbit.
+    async fn handle_park_call(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Result<()> {
+        let pbx = self.pbx_handler.as_ref().unwrap();
+
+        let caller_ext = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+
+        let tenant_id = self
+            .call_manager
+            .get_call(call_id)
+            .map(|c| c.tenant_id)
+            .unwrap_or_else(fcp_core::TenantId::nil);
+
+        match pbx.park_call(*call_id, caller_ext.clone(), tenant_id) {
+            Ok(orbit) => {
+                info!(
+                    call_id = %call_id,
+                    orbit = orbit,
+                    parker = %caller_ext,
+                    "Call parked successfully"
+                );
+                // TODO: Phase 2 — put A-leg on hold (re-INVITE with sendonly), respond to parker
+                let response = self.create_simple_response(request, 501, "Park Not Yet Implemented");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some(format!("Call parked in orbit {} (hold not yet implemented)", orbit)));
+            }
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Failed to park call");
+                let response = self.create_simple_response(request, 503, "No Parking Orbits Available");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some(format!("Park failed: {}", e)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle retrieve parked call (*71orbit): retrieve a call from a parking orbit.
+    async fn handle_retrieve_parked(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        orbit: u16,
+    ) -> Result<()> {
+        let pbx = self.pbx_handler.as_ref().unwrap();
+
+        match pbx.retrieve_parked_call(orbit) {
+            Ok(parked) => {
+                info!(
+                    call_id = %call_id,
+                    orbit = orbit,
+                    parked_call = %parked.call_id,
+                    "Retrieved parked call"
+                );
+                // TODO: Phase 2 — take parked A-leg off hold, bridge to retriever
+                let response = self.create_simple_response(request, 501, "Retrieve Not Yet Implemented");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some(format!("Retrieved orbit {} (bridge not yet implemented)", orbit)));
+            }
+            Err(e) => {
+                info!(call_id = %call_id, orbit = orbit, error = %e, "Failed to retrieve parked call");
+                let response = self.create_simple_response(request, 480, "Orbit Not Occupied");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some(format!("Retrieve failed: {}", e)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle intercom (*80ext / *81ext): send INVITE with auto-answer headers.
+    async fn handle_intercom(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        target_extension: &str,
+        mode: fcp_pbx::IntercomMode,
+    ) -> Result<()> {
+        let pbx = self.pbx_handler.as_ref().unwrap();
+        let params = pbx.build_intercom_params(target_extension, mode);
+
+        info!(
+            call_id = %call_id,
+            target = %params.target_extension,
+            mode = ?params.mode,
+            extra_headers = params.extra_headers.len(),
+            "Intercom: routing to extension with auto-answer headers"
+        );
+
+        // TODO: Phase 2 — resolve extension to contact, send INVITE with extra_headers,
+        // and for one-way mode, modify SDP direction to sendonly on the intercom leg.
+        let response = self.create_simple_response(request, 501, "Intercom Not Yet Implemented");
+        handle.send_final(response).await;
+        let _ = self.call_manager.terminate_call(call_id, Some("Intercom not yet fully implemented".to_string()));
+        Ok(())
+    }
+
+    /// Execute a hunt group plan (ring members in phases).
+    async fn execute_hunt_group_plan(
+        &self,
+        request: &sip_core::Request,
+        a_leg_handle: &ServerTransactionHandle,
+        call_id: fcp_b2bua_core::CallId,
+        plan: fcp_pbx::HuntGroupPlan,
+        uac: Arc<SipUserAgentClient>,
+    ) -> Result<()> {
+        // For each phase, resolve member extensions to SIP contacts
+        for (phase_idx, phase) in plan.ring_phases.iter().enumerate() {
+            debug!(
+                call_id = %call_id,
+                phase = phase_idx,
+                members = ?phase.members,
+                simultaneous = phase.simultaneous,
+                "Executing hunt group ring phase"
+            );
+
+            // Resolve member extensions to registered contacts
+            let mut contacts = Vec::new();
+            if let Some(registrar) = &self.registrar {
+                for member in &phase.members {
+                    let member_aor = format!("sip:{}@{}", member, self.local_addr);
+                    match registrar.get_registrations(&member_aor).await {
+                        Ok(bindings) if !bindings.is_empty() => {
+                            for binding in bindings {
+                                contacts.push((member.clone(), binding));
+                            }
+                        }
+                        _ => {
+                            debug!(
+                                call_id = %call_id,
+                                member = %member,
+                                "Hunt group member not registered, skipping"
+                            );
+                        }
+                    }
+                }
+            }
+
+            if contacts.is_empty() {
+                debug!(
+                    call_id = %call_id,
+                    phase = phase_idx,
+                    "No registered members in this phase, trying next"
+                );
+                continue;
+            }
+
+            if phase.simultaneous && contacts.len() > 1 {
+                // Use existing parallel forking infrastructure
+                info!(
+                    call_id = %call_id,
+                    contacts = contacts.len(),
+                    "Hunt group: forking to {} contacts simultaneously",
+                    contacts.len()
+                );
+
+                // Build outbound calls for each contact
+                let mut b_leg_calls = Vec::new();
+                for (member, binding) in &contacts {
+                    let target_uri = binding.contact().to_string();
+                    match self.create_outbound_call(request, &target_uri, &uac).await {
+                        Ok(outbound_call) => {
+                            b_leg_calls.push((member.clone(), outbound_call));
+                        }
+                        Err(e) => {
+                            warn!(
+                                call_id = %call_id,
+                                member = %member,
+                                error = %e,
+                                "Failed to create outbound call for hunt group member"
+                            );
+                        }
+                    }
+                }
+
+                if b_leg_calls.is_empty() {
+                    continue;
+                }
+
+                // Race all B-legs using existing parallel forking
+                let cancel_notify = Arc::new(tokio::sync::Notify::new());
+                let _ = self.call_manager.update_call(&call_id, |call| {
+                    call.cancel_notify = Some(Arc::clone(&cancel_notify));
+                });
+
+                return self
+                    .handle_parallel_forking(
+                        request.clone(),
+                        Arc::new(a_leg_handle.clone()),
+                        b_leg_calls,
+                        call_id,
+                        cancel_notify,
+                    )
+                    .await;
+            } else {
+                // Sequential: try one contact at a time
+                for (member, binding) in &contacts {
+                    let target_uri = binding.contact().to_string();
+                    info!(
+                        call_id = %call_id,
+                        member = %member,
+                        target = %target_uri,
+                        "Hunt group: trying member sequentially"
+                    );
+
+                    // Try single B-leg with timeout
+                    match self.create_outbound_call(request, &target_uri, &uac).await {
+                        Ok(outbound_call) => {
+                            let cancel_notify = Arc::new(tokio::sync::Notify::new());
+                            let _ = self.call_manager.update_call(&call_id, |call| {
+                                call.cancel_notify = Some(Arc::clone(&cancel_notify));
+                            });
+
+                            return self
+                                .handle_parallel_forking(
+                                    request.clone(),
+                                    Arc::new(a_leg_handle.clone()),
+                                    vec![(member.clone(), outbound_call)],
+                                    call_id,
+                                    cancel_notify,
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            warn!(
+                                call_id = %call_id,
+                                member = %member,
+                                error = %e,
+                                "Failed to create outbound call, trying next member"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // All phases exhausted — route to no_answer_destination or 480
+        if let Some(ref dest) = plan.no_answer_destination {
+            info!(
+                call_id = %call_id,
+                destination = %dest,
+                "Hunt group: no answer, routing to fallback destination"
+            );
+            // TODO: Phase 2 — route to voicemail or other destination
+        }
+
+        let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
+        a_leg_handle.send_final(response).await;
+        let _ = self.call_manager.terminate_call(
+            &call_id,
+            Some("Hunt group: no members answered".to_string()),
+        );
+        Ok(())
+    }
+
+    /// Create an outbound call to a target URI via the UAC.
+    ///
+    /// Extracts SDP from the A-leg request (if present) and sends INVITE to the
+    /// target URI. Returns an Arc<OutboundCall> ready for `handle_parallel_forking()`.
+    async fn create_outbound_call(
+        &self,
+        request: &sip_core::Request,
+        target_uri: &str,
+        uac: &Arc<SipUserAgentClient>,
+    ) -> Result<Arc<crate::uac::OutboundCall>> {
+        // Extract SDP from A-leg request
+        let a_leg_sdp = if !request.body().is_empty() {
+            Some(String::from_utf8_lossy(request.body()).to_string())
+        } else {
+            None
+        };
+
+        let call = uac.invite(target_uri, a_leg_sdp.as_deref()).await?;
+        Ok(Arc::new(call))
+    }
 }
 
 #[async_trait::async_trait]
@@ -7215,6 +7645,7 @@ mod tests {
             None, // No flow handler
             B2buaConfig::default(),
             None, // No outbound route provider
+            None, // No PBX handler
         );
 
         // Create a REGISTER request
@@ -7280,6 +7711,7 @@ mod tests {
             None, // No flow handler
             B2buaConfig::default(),
             None, // No outbound route provider
+            None, // No PBX handler
         );
 
         let mut headers = Headers::new();
@@ -7345,6 +7777,7 @@ mod tests {
             None, // No flow handler
             B2buaConfig::default(),
             None, // No outbound route provider
+            None, // No PBX handler
         );
 
         let mut headers = Headers::new();
@@ -7513,6 +7946,7 @@ mod tests {
             None, // No flow handler
             B2buaConfig::default(),
             None, // No outbound route provider
+            None, // No PBX handler
         );
 
         // Create a REGISTER request

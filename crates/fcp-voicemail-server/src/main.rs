@@ -334,6 +334,7 @@ async fn main() -> Result<()> {
         Some(Arc::clone(&flow_handler)),
         config.b2bua.clone(),
         outbound_route_provider,
+        None, // No PBX handler
     ));
 
     // 20. Create and start TransportListener

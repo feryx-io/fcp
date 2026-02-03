@@ -30,6 +30,7 @@ fcp-routing = { path = "../fcp-routing" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
 fcp-flow = { path = "../fcp-flow" }
+fcp-pbx = { path = "../fcp-pbx" }
 
 # Storage backends (optional)
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }

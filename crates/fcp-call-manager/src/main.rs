@@ -238,7 +238,23 @@ async fn main() -> Result<()> {
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
     ));
 
-    // 16. Create SipMessageHandler (wires all components together)
+    // 16. Create PBX handler (if enabled)
+    let pbx_handler: Option<Arc<fcp_pbx::PbxHandler>> = if config.pbx.enabled {
+        let handler = Arc::new(fcp_pbx::PbxHandler::new(config.pbx.clone()));
+        info!(
+            hunt_groups = config.pbx.hunt_groups.len(),
+            pickup_groups = config.pbx.pickup_groups.len(),
+            parking = config.pbx.parking.enabled,
+            cmc = config.pbx.cmc.enabled,
+            fac = config.pbx.fac.enabled,
+            "PBX features enabled"
+        );
+        Some(handler)
+    } else {
+        None
+    };
+
+    // 17. Create SipMessageHandler (wires all components together)
     let local_uri = create_local_uri(&config)?;
     let media_profile = if config.calls.enable_sdp {
         Some(MediaProfileBuilder::audio_only())
@@ -275,6 +291,7 @@ async fn main() -> Result<()> {
         None, // flow_handler — add when flow config is present
         config.b2bua.clone(),
         outbound_route_provider,
+        pbx_handler.clone(),
     ));
 
     // 16. Create and start TransportListener
@@ -371,7 +388,32 @@ async fn main() -> Result<()> {
         });
     }
 
-    // 20. Spawn event forwarding task (if configured)
+    // 20. Spawn parking timeout monitor (if PBX parking is enabled)
+    if let Some(ref pbx) = pbx_handler {
+        if pbx.parking_manager().is_enabled() {
+            let pbx_clone = Arc::clone(pbx);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    let expired = pbx_clone.parking_manager().expired_calls();
+                    for parked in expired {
+                        warn!(
+                            orbit = parked.orbit,
+                            call_id = %parked.call_id,
+                            parker = %parked.parker_extension,
+                            "Parked call expired — caller should be notified"
+                        );
+                        // TODO: Phase 2 — route expired parked calls back to the parker
+                        // or to a configured timeout destination
+                    }
+                }
+            });
+            info!("Parking timeout monitor started (5s interval)");
+        }
+    }
+
+    // 21. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);
@@ -403,6 +445,7 @@ async fn main() -> Result<()> {
         trunks = config.trunks.len(),
         routing = config.routing.rules_file.is_some(),
         events_forwarding = config.events.server_url.is_some(),
+        pbx = config.pbx.enabled,
         "fcp-call-manager ready — listening for SIP messages"
     );
 
