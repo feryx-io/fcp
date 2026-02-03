@@ -249,21 +249,41 @@ async fn main() -> Result<()> {
     );
     let siprec_recorder = siprec_recorder.map(Arc::new);
 
+    // 12b2. Create quality tracker early (needed by hooks AND TrunkRouter)
+    let quality_tracker = if sbc_config.lcr.enabled || sbc_config.metrics.per_trunk_metrics {
+        let trunk_names: Vec<String> = sbc_config.trunks.iter().map(|t| t.name.clone()).collect();
+        Some(Arc::new(fcp_sbc_core::TrunkQualityTracker::new(
+            &trunk_names,
+            sbc_config.lcr.quality_window_secs,
+        )))
+    } else {
+        None
+    };
+
     // 12c. Create event hooks so call/registration lifecycle updates admission/metrics/trunk health
-    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = match &siprec_recorder {
-        Some(recorder) => Arc::new(SbcEventHooks::with_recorder(
-            Arc::clone(&admission),
-            Arc::clone(&sbc_metrics),
-            Arc::clone(recorder),
-            Some(Arc::clone(&trunk_health)),
-            local_capture,
-        )),
-        None => Arc::new(SbcEventHooks::new(
-            Arc::clone(&admission),
-            Arc::clone(&sbc_metrics),
-            Some(Arc::clone(&trunk_health)),
-            local_capture,
-        )),
+    let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = {
+        let hooks = match &siprec_recorder {
+            Some(recorder) => SbcEventHooks::with_recorder(
+                Arc::clone(&admission),
+                Arc::clone(&sbc_metrics),
+                Arc::clone(recorder),
+                Some(Arc::clone(&trunk_health)),
+                local_capture,
+            ),
+            None => SbcEventHooks::new(
+                Arc::clone(&admission),
+                Arc::clone(&sbc_metrics),
+                Some(Arc::clone(&trunk_health)),
+                local_capture,
+            ),
+        };
+        // Wire quality tracker into hooks if available
+        let hooks = if let Some(ref qt) = quality_tracker {
+            hooks.with_quality(Arc::clone(qt))
+        } else {
+            hooks
+        };
+        Arc::new(hooks)
     };
     // 12d. Initialize optional storage for CDR persistence
     let dyn_storage = if sbc_config.storage.enabled {
@@ -302,12 +322,36 @@ async fn main() -> Result<()> {
         sbc_hooks,
     ));
 
-    // 13. Create TrunkRouter (provides outbound routing when registrar lookup fails)
-    let trunk_router = Arc::new(TrunkRouter::new(
-        sbc_config.trunks.clone(),
-        Arc::clone(&trunk_health),
-        Arc::clone(&admission) as Arc<dyn CpsChecker>,
-    ));
+    // 13. Create TrunkRouter with LCR support (provides outbound routing when registrar lookup fails)
+    let trunk_router = if sbc_config.lcr.enabled {
+        if let Some(ref qt) = quality_tracker {
+            info!(
+                routes = sbc_config.lcr.routes.len(),
+                strategy = ?sbc_config.lcr.load_balance_strategy,
+                max_failover = sbc_config.lcr.max_failover_attempts,
+                "LCR routing enabled"
+            );
+            Arc::new(TrunkRouter::with_lcr(
+                sbc_config.trunks.clone(),
+                Arc::clone(&trunk_health),
+                Arc::clone(&admission) as Arc<dyn CpsChecker>,
+                sbc_config.lcr.clone(),
+                Arc::clone(qt),
+            ))
+        } else {
+            Arc::new(TrunkRouter::new(
+                sbc_config.trunks.clone(),
+                Arc::clone(&trunk_health),
+                Arc::clone(&admission) as Arc<dyn CpsChecker>,
+            ))
+        }
+    } else {
+        Arc::new(TrunkRouter::new(
+            sbc_config.trunks.clone(),
+            Arc::clone(&trunk_health),
+            Arc::clone(&admission) as Arc<dyn CpsChecker>,
+        ))
+    };
 
     // 14. Create RateLimiterSet from sip-ratelimit config
     let rate_limiter = Arc::new(build_rate_limiter_set(&sbc_config.rate_limit));
@@ -424,6 +468,8 @@ async fn main() -> Result<()> {
         uac: Some(Arc::clone(&uac)),
         dialog_manager: Arc::clone(&dialog_manager_ref),
         recording_store,
+        quality_tracker: quality_tracker.clone(),
+        lcr_routes: sbc_config.lcr.routes.clone(),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {

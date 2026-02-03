@@ -23,6 +23,8 @@ pub struct HealthState {
     pub uac: Option<Arc<fcp_sip::uac::SipUserAgentClient>>,
     pub dialog_manager: Arc<sip_dialog::DialogManager>,
     pub recording_store: Option<Arc<RecordingStore>>,
+    pub quality_tracker: Option<Arc<fcp_sbc_core::TrunkQualityTracker>>,
+    pub lcr_routes: Vec<fcp_sbc_core::LcrRouteEntry>,
 }
 
 /// Build the health/readiness/metrics router with admin API.
@@ -133,6 +135,27 @@ async fn metrics_snapshot(State(state): State<Arc<HealthState>>) -> impl IntoRes
         snap.total_security_rejections,
     );
 
+    // Per-trunk quality metrics (if quality tracker is available)
+    if let Some(ref tracker) = state.quality_tracker {
+        let _ = writeln!(buf);
+        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_asr Answer seizure ratio per trunk (0.0-1.0)");
+        let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_asr gauge");
+        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_acd_secs Average call duration per trunk");
+        let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_acd_secs gauge");
+        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_pdd_ms Average post-dial delay per trunk");
+        let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_pdd_ms gauge");
+        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_calls_total Total calls in quality window per trunk");
+        let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_calls_total gauge");
+
+        for snap_entry in tracker.all_snapshots() {
+            let (name, snap) = snap_entry;
+            let _ = writeln!(buf, "fcp_sbc_trunk_asr{{trunk=\"{name}\"}} {:.4}", snap.asr);
+            let _ = writeln!(buf, "fcp_sbc_trunk_acd_secs{{trunk=\"{name}\"}} {:.1}", snap.acd_secs);
+            let _ = writeln!(buf, "fcp_sbc_trunk_pdd_ms{{trunk=\"{name}\"}} {:.0}", snap.avg_pdd_ms);
+            let _ = writeln!(buf, "fcp_sbc_trunk_calls_total{{trunk=\"{name}\"}} {}", snap.total_calls);
+        }
+    }
+
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], buf)
 }
 
@@ -175,6 +198,8 @@ mod tests {
             uac: None,
             dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
             recording_store: None,
+            quality_tracker: None,
+            lcr_routes: vec![],
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();

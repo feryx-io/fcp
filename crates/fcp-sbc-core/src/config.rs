@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::admission::AdmissionConfig;
 use crate::hmr::HeaderManipulationConfig;
+use crate::lcr::LcrConfig;
 use crate::metrics::SbcMetricsConfig;
 use crate::nat::NatConfig;
 use crate::rate_limit::RateLimitPolicyConfig;
@@ -54,7 +55,7 @@ impl Default for SbcStorageConfig {
 /// Aggregates the B2BUA config (from `fcp-b2bua-core`) with all SBC-specific
 /// sub-configurations. The default uses SBC-tuned B2BUA settings (full
 /// topology hiding, always anchor media, single forking, SBC transfer defaults).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SbcConfig {
     /// B2BUA behavior configuration (topology hiding, media anchoring, etc.).
     pub b2bua: B2buaConfig,
@@ -85,6 +86,10 @@ pub struct SbcConfig {
 
     /// Enabled transport protocols.
     pub transports: Vec<TransportType>,
+
+    /// LCR (Least Cost Routing) configuration.
+    #[serde(default)]
+    pub lcr: LcrConfig,
 
     /// Header manipulation rules.
     #[serde(default)]
@@ -146,6 +151,7 @@ impl Default for SbcConfig {
             nat: NatConfig::default(),
             siprec: SiprecConfig::default(),
             metrics: SbcMetricsConfig::default(),
+            lcr: LcrConfig::default(),
             external_domain: String::new(),
             transports: vec![TransportType::Udp, TransportType::Tcp],
             header_manipulation: HeaderManipulationConfig::default(),
@@ -181,6 +187,11 @@ impl SbcConfig {
         self.metrics.validate()?;
 
         self.header_manipulation.validate()?;
+
+        self.lcr.validate()?;
+        // Validate LCR route trunk_name references
+        let trunk_names: Vec<String> = self.trunks.iter().map(|t| t.name.clone()).collect();
+        self.lcr.validate_trunk_refs(&trunk_names)?;
 
         for (i, trunk) in self.trunks.iter().enumerate() {
             trunk.validate().map_err(|e| format!("trunks[{i}]: {e}"))?;

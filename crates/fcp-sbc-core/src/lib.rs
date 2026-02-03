@@ -22,8 +22,10 @@ pub mod trunk;
 // Shared trunk runtime modules
 pub mod cps;
 pub mod health_probes;
+pub mod lcr;
 pub mod trunk_auth;
 pub mod trunk_health;
+pub mod trunk_quality;
 pub mod trunk_registration;
 pub mod trunk_router;
 
@@ -40,6 +42,10 @@ pub use hmr::{
     HmrMessageType, HmrRule,
 };
 pub use trunk::{SrtpMode, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
+
+// Re-export LCR and quality types
+pub use lcr::{LcrConfig, LcrRouteEntry, LoadBalanceStrategy};
+pub use trunk_quality::{TrunkQualitySnapshot, TrunkQualityTracker};
 
 // Re-export trunk runtime types for convenience
 pub use cps::{CpsChecker, NoCpsLimit};

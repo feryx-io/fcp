@@ -13,12 +13,22 @@ use crate::admission::AdmissionController;
 use crate::local_capture::LocalCaptureManager;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
+use dashmap::DashMap;
+use fcp_core::CallId;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
+use fcp_sbc_core::trunk_quality::TrunkQualityTracker;
 use anyhow::Result;
 use async_trait::async_trait;
 use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tracing::debug;
+
+/// Per-call tracking state for quality metrics (PDD computation).
+struct CallQualityState {
+    trunk_name: String,
+    initiated_at: SystemTime,
+}
 
 /// Bridges B2BUA + registrar events to SBC admission, metrics, and trunk health.
 pub struct SbcEventHooks {
@@ -27,6 +37,9 @@ pub struct SbcEventHooks {
     recorder: Option<Arc<SiprecRecorder>>,
     trunk_health: Option<Arc<TrunkHealthMonitor>>,
     local_capture: Option<Arc<LocalCaptureManager>>,
+    quality: Option<Arc<TrunkQualityTracker>>,
+    /// Tracks per-call (trunk_name, initiated_time) for PDD computation.
+    call_quality_state: DashMap<String, CallQualityState>,
 }
 
 impl SbcEventHooks {
@@ -42,6 +55,8 @@ impl SbcEventHooks {
             recorder: None,
             trunk_health,
             local_capture,
+            quality: None,
+            call_quality_state: DashMap::new(),
         }
     }
 
@@ -58,7 +73,15 @@ impl SbcEventHooks {
             recorder: Some(recorder),
             trunk_health,
             local_capture,
+            quality: None,
+            call_quality_state: DashMap::new(),
         }
+    }
+
+    /// Set an optional quality tracker for per-trunk metrics (ASR/ACD/PDD).
+    pub fn with_quality(mut self, quality: Arc<TrunkQualityTracker>) -> Self {
+        self.quality = Some(quality);
+        self
     }
 }
 
@@ -73,10 +96,25 @@ impl EventPublisher for SbcEventHooks {
                     to,
                     direction,
                     trunk_name,
+                    timestamp,
                     ..
                 } => {
                     self.admission.call_started();
                     debug!("SBC: call started, concurrent count incremented");
+
+                    if let Some(ref quality) = self.quality {
+                        if let Some(ref name) = trunk_name {
+                            quality.record_call_attempt(name);
+                            // Store per-call state for PDD computation at answer time
+                            self.call_quality_state.insert(
+                                call_id.to_string(),
+                                CallQualityState {
+                                    trunk_name: name.clone(),
+                                    initiated_at: *timestamp,
+                                },
+                            );
+                        }
+                    }
 
                     if let Some(ref recorder) = self.recorder {
                         recorder.on_call_initiated(
@@ -99,10 +137,22 @@ impl EventPublisher for SbcEventHooks {
                 }
                 CallEvent::Answered {
                     call_id,
+                    answer_time,
                     a_leg_sdp,
                     b_leg_sdp,
                     ..
                 } => {
+                    // Record quality: call answered with PDD
+                    if let Some(ref quality) = self.quality {
+                        if let Some(state) = self.call_quality_state.get(&call_id.to_string()) {
+                            let pdd_ms = answer_time
+                                .duration_since(state.initiated_at)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            quality.record_call_answered(&state.trunk_name, pdd_ms);
+                        }
+                    }
+
                     if let Some(ref recorder) = self.recorder {
                         let recorder = Arc::clone(recorder);
                         let call_id_clone = call_id.clone();
@@ -129,6 +179,7 @@ impl EventPublisher for SbcEventHooks {
                 CallEvent::Ended {
                     call_id,
                     trunk_name,
+                    duration_ms,
                     ..
                 } => {
                     self.admission.call_ended();
@@ -140,6 +191,15 @@ impl EventPublisher for SbcEventHooks {
                             health.record_success(name);
                         }
                     }
+
+                    // Record quality: call ended with duration
+                    if let Some(ref quality) = self.quality {
+                        if let Some(ref name) = trunk_name {
+                            quality.record_call_ended(name, *duration_ms as f64 / 1000.0, 200);
+                        }
+                    }
+                    // Clean up per-call quality state
+                    self.call_quality_state.remove(&call_id.to_string());
 
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);
@@ -179,6 +239,15 @@ impl EventPublisher for SbcEventHooks {
                             }
                         }
                     }
+
+                    // Record quality: call failed
+                    if let Some(ref quality) = self.quality {
+                        if let Some(ref name) = trunk_name {
+                            quality.record_call_failed(name, sip_code.unwrap_or(0));
+                        }
+                    }
+                    // Clean up per-call quality state
+                    self.call_quality_state.remove(&call_id.to_string());
 
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);

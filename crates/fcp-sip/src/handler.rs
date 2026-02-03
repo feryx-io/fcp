@@ -218,6 +218,14 @@ pub trait OutboundRouteProvider: Send + Sync {
     /// return an outbound route with target URI and optional trunk name,
     /// or None if no route available.
     async fn resolve_outbound(&self, destination_uri: &str) -> Option<OutboundRoute>;
+
+    /// Return an ordered list of routes for failover. Default wraps single route.
+    async fn resolve_outbound_ordered(&self, destination_uri: &str) -> Vec<OutboundRoute> {
+        self.resolve_outbound(destination_uri)
+            .await
+            .into_iter()
+            .collect()
+    }
 }
 use sip_transaction::ServerTransactionHandle;
 
@@ -1928,34 +1936,43 @@ impl SipMessageHandler {
                     match registrar.get_registrations(destination_aor).await {
                         Ok(bindings) if !bindings.is_empty() => bindings,
                         _ => {
-                            // Try outbound route provider before giving up
+                            // Try outbound route provider with failover before giving up
                             if let Some(provider) = &self.outbound_route_provider {
-                                if let Some(route) = provider.resolve_outbound(destination_aor).await {
-                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, "Routing via outbound trunk");
+                                let routes = provider.resolve_outbound_ordered(destination_aor).await;
+                                if let Some(route) = routes.first() {
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, routes = routes.len(), "Routing via outbound trunk (failover available)");
                                     // Store trunk name on call for lifecycle tracking
                                     if let Some(ref trunk_name) = route.trunk_name {
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = Some(trunk_name.clone());
                                         });
                                     }
-                                    match sip_registrar::Binding::new(
-                                        SmolStr::new(destination_aor),
-                                        SmolStr::new(&route.target_uri),
-                                        Duration::from_secs(3600),
-                                    ) {
-                                        Ok(binding) => vec![binding],
-                                        Err(e) => {
-                                            error!(call_id = %call_id, error = %e, "Failed to create trunk binding");
-                                            let response = self.create_simple_response(
-                                                request, 500, "Internal Server Error",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id, Some("Failed to create trunk binding".to_string()),
-                                            );
-                                            return Ok(());
+                                    // Build bindings for primary + failover routes
+                                    let mut failover_bindings = Vec::with_capacity(routes.len());
+                                    for r in &routes {
+                                        match sip_registrar::Binding::new(
+                                            SmolStr::new(destination_aor),
+                                            SmolStr::new(&r.target_uri),
+                                            Duration::from_secs(3600),
+                                        ) {
+                                            Ok(binding) => failover_bindings.push(binding),
+                                            Err(e) => {
+                                                warn!(call_id = %call_id, target = %r.target_uri, error = %e, "Skipping failover route: failed to create binding");
+                                            }
                                         }
                                     }
+                                    if failover_bindings.is_empty() {
+                                        error!(call_id = %call_id, "All failover route bindings failed");
+                                        let response = self.create_simple_response(
+                                            request, 500, "Internal Server Error",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id, Some("Failed to create trunk binding".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                    failover_bindings
                                 } else {
                                     info!(call_id = %call_id, destination = %destination_aor, "Destination not registered, no outbound route");
                                     let response = self.create_simple_response(
@@ -2425,34 +2442,43 @@ impl SipMessageHandler {
                             bindings
                         }
                         Ok(_) => {
-                            // Try outbound route provider before giving up
+                            // Try outbound route provider with failover before giving up
                             if let Some(provider) = &self.outbound_route_provider {
-                                if let Some(route) = provider.resolve_outbound(destination_aor).await {
-                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, "Routing via outbound trunk (extension path)");
+                                let routes = provider.resolve_outbound_ordered(destination_aor).await;
+                                if let Some(route) = routes.first() {
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, routes = routes.len(), "Routing via outbound trunk (extension path, failover available)");
                                     // Store trunk name on call for lifecycle tracking
                                     if let Some(ref trunk_name) = route.trunk_name {
                                         let _ = self.call_manager.update_call(&call_id, |call| {
                                             call.trunk_name = Some(trunk_name.clone());
                                         });
                                     }
-                                    match sip_registrar::Binding::new(
-                                        SmolStr::new(destination_aor),
-                                        SmolStr::new(&route.target_uri),
-                                        Duration::from_secs(3600),
-                                    ) {
-                                        Ok(binding) => vec![binding],
-                                        Err(e) => {
-                                            error!(call_id = %call_id, error = %e, "Failed to create trunk binding");
-                                            let response = self.create_simple_response(
-                                                request, 500, "Internal Server Error",
-                                            );
-                                            a_leg_handle.send_final(response).await;
-                                            let _ = self.call_manager.terminate_call(
-                                                &call_id, Some("Failed to create trunk binding".to_string()),
-                                            );
-                                            return Ok(());
+                                    // Build bindings for primary + failover routes
+                                    let mut failover_bindings = Vec::with_capacity(routes.len());
+                                    for r in &routes {
+                                        match sip_registrar::Binding::new(
+                                            SmolStr::new(destination_aor),
+                                            SmolStr::new(&r.target_uri),
+                                            Duration::from_secs(3600),
+                                        ) {
+                                            Ok(binding) => failover_bindings.push(binding),
+                                            Err(e) => {
+                                                warn!(call_id = %call_id, target = %r.target_uri, error = %e, "Skipping failover route: failed to create binding");
+                                            }
                                         }
                                     }
+                                    if failover_bindings.is_empty() {
+                                        error!(call_id = %call_id, "All failover route bindings failed");
+                                        let response = self.create_simple_response(
+                                            request, 500, "Internal Server Error",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id, Some("Failed to create trunk binding".to_string()),
+                                        );
+                                        return Ok(());
+                                    }
+                                    failover_bindings
                                 } else {
                                     info!(
                                         call_id = %call_id,

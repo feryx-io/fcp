@@ -193,6 +193,9 @@ pub fn admin_router() -> Router<Arc<HealthState>> {
         .route("/recordings", get(list_recordings))
         .route("/recordings/:call_id", get(get_recording))
         .route("/recordings/:call_id/file", get(download_recording))
+        .route("/quality", get(get_quality_metrics))
+        .route("/quality/:trunk_name", get(get_trunk_quality))
+        .route("/lcr/routes", get(list_lcr_routes))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -750,6 +753,59 @@ async fn download_recording(
         .into_response())
 }
 
+// ── Quality metrics handlers ─────────────────────────────────────────────────
+
+async fn get_quality_metrics(
+    State(state): State<Arc<HealthState>>,
+) -> Json<std::collections::HashMap<String, fcp_sbc_core::TrunkQualitySnapshot>> {
+    match &state.quality_tracker {
+        Some(tracker) => Json(tracker.all_snapshots()),
+        None => Json(std::collections::HashMap::new()),
+    }
+}
+
+async fn get_trunk_quality(
+    State(state): State<Arc<HealthState>>,
+    Path(trunk_name): Path<String>,
+) -> Result<Json<fcp_sbc_core::TrunkQualitySnapshot>, (StatusCode, Json<AdminError>)> {
+    let tracker = state
+        .quality_tracker
+        .as_ref()
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "quality tracking not enabled"))?;
+
+    let snapshot = tracker
+        .snapshot(&trunk_name)
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "trunk not found"))?;
+
+    Ok(Json(snapshot))
+}
+
+async fn list_lcr_routes(
+    State(state): State<Arc<HealthState>>,
+) -> Json<Vec<LcrRouteView>> {
+    let routes = state
+        .lcr_routes
+        .iter()
+        .map(|r| LcrRouteView {
+            prefix: r.prefix.clone(),
+            trunk_name: r.trunk_name.clone(),
+            cost_per_minute: r.cost_per_minute,
+            priority: r.priority,
+            enabled: r.enabled,
+        })
+        .collect();
+    Json(routes)
+}
+
+#[derive(Serialize)]
+pub struct LcrRouteView {
+    pub prefix: String,
+    pub trunk_name: String,
+    pub cost_per_minute: f64,
+    pub priority: u32,
+    pub enabled: bool,
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -779,6 +835,8 @@ mod tests {
             uac: None,
             dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
             recording_store: None,
+            quality_tracker: None,
+            lcr_routes: vec![],
         })
     }
 
