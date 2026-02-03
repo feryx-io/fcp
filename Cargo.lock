@@ -2038,6 +2038,7 @@ dependencies = [
  "sip-parse",
  "sip-registrar",
  "sip-sdp",
+ "sip-testkit",
  "sip-transaction",
  "sip-transport",
  "sip-uac",
@@ -5648,6 +5649,16 @@ name = "sip-sdp"
 version = "0.2.0"
 dependencies = [
  "nom",
+ "smol_str",
+]
+
+[[package]]
+name = "sip-testkit"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "sip-core",
+ "sip-parse",
  "smol_str",
 ]
 
