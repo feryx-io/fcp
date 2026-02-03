@@ -1,0 +1,107 @@
+# =============================================================================
+# fcp-ivr configuration
+# =============================================================================
+# Standalone IVR server for the Ferrous Communications Platform.
+# Accepts SIP INVITEs, matches DIDs to flows, and executes them.
+#
+# Priority: --config CLI > FCP_IVR_CONFIG env > ./fcp-ivr.toml > defaults
+
+# -----------------------------------------------------------------------------
+# Service identification
+# -----------------------------------------------------------------------------
+[service]
+service_type = "ivr"
+# node_id = "ivr-01"              # Auto-generated UUID if not set
+
+# -----------------------------------------------------------------------------
+# SIP transport
+# -----------------------------------------------------------------------------
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+# local_ip = "192.168.1.100"      # Auto-detected if not set
+# local_uri = "sip:ivr@192.168.1.100"  # Derived from local_ip if not set
+
+# -----------------------------------------------------------------------------
+# Storage backend
+# -----------------------------------------------------------------------------
+[storage]
+backend = "sqlite"                 # "sqlite", "postgres", "mysql", "mongodb"
+connection_string = "sqlite://data/fcp-ivr.db"
+# max_connections = 20             # For PG/MySQL/MongoDB
+
+# -----------------------------------------------------------------------------
+# HTTP health/status/flow-routes API
+# -----------------------------------------------------------------------------
+[http]
+bind_address = "0.0.0.0:8086"
+
+# Endpoints:
+#   GET  /health         → service health check
+#   GET  /status         → uptime, active calls, flow routes
+#   GET  /flows/routes   → list DID→flow_id mappings
+#   POST /flows/routes   → add route: { "did": "...", "flow_id": "..." }
+#   DELETE /flows/routes/:did → remove a route
+#   GET  /flows/active   → list executing flows
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+[logging]
+level = "info"                     # trace, debug, info, warn, error
+format = "json"                    # json, pretty, compact
+
+# -----------------------------------------------------------------------------
+# Media / RTP
+# -----------------------------------------------------------------------------
+[media]
+rtp_port_start = 10000
+rtp_port_end = 20000
+codecs = ["PCMU", "PCMA"]
+# public_ip = "203.0.113.10"      # Required behind NAT / in Docker
+
+# -----------------------------------------------------------------------------
+# Event forwarding (optional)
+# -----------------------------------------------------------------------------
+[events]
+# server_url = "http://fcp-events-server:8081/ingest"
+
+# -----------------------------------------------------------------------------
+# IVR flow configuration
+# -----------------------------------------------------------------------------
+[flows]
+# Default flow when no DID route matches
+# default_flow_id = "fallback-menu"
+
+# TTS settings (currently placeholder — future: Google, AWS Polly)
+tts_provider = "none"
+tts_language = "en-US"
+# tts_api_key = "..."
+# tts_voice = "en-US-Standard-C"
+
+# Search path for Play node audio files
+# audio_path = "/var/lib/fcp/audio"
+
+# Static DID → flow_id routing table
+# Flows are loaded into the InMemoryFlowStore via the REST API.
+# These routes tell the IVR which flow to execute for each inbound DID.
+
+[[flows.routes]]
+did = "+15551234567"
+flow_id = "main-menu"
+
+# [[flows.routes]]
+# did = "+15559876543"
+# flow_id = "support-queue"
+
+# -----------------------------------------------------------------------------
+# SIP trunks (optional — only needed if Dial nodes place outbound calls)
+# -----------------------------------------------------------------------------
+# [[trunks]]
+# name = "carrier-a"
+# host = "sip.carrier-a.example.com"
+# port = 5060
+# transport = "udp"
+# username = "ivr-user"
+# password = "secret"
+# register = false

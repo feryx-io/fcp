@@ -170,6 +170,16 @@ impl FlowCallHandler {
         routing.get(did).cloned()
     }
 
+    /// Get all DID-to-flow_id routes.
+    pub async fn get_all_routes(&self) -> HashMap<String, String> {
+        self.routing.read().await.clone()
+    }
+
+    /// Remove a DID route. Returns true if it existed.
+    pub async fn remove_route(&self, did: &str) -> bool {
+        self.routing.write().await.remove(did).is_some()
+    }
+
     /// Start flow execution for a call.
     ///
     /// Loads the flow definition and begins execution from the initial node.

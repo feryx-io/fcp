@@ -1710,6 +1710,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-ivr"
+version = "0.14.13"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "clap",
+ "dashmap 6.1.0",
+ "fcp-api-core",
+ "fcp-b2bua-core",
+ "fcp-core",
+ "fcp-events",
+ "fcp-flow",
+ "fcp-media",
+ "fcp-sbc-core",
+ "fcp-sip",
+ "fcp-storage-mongodb",
+ "fcp-storage-mysql",
+ "fcp-storage-postgres",
+ "fcp-storage-sqlite",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sip-core",
+ "sip-dialog",
+ "sip-dns",
+ "sip-observe",
+ "sip-sdp",
+ "sip-transaction",
+ "sip-transport",
+ "sip-uac",
+ "socket2 0.5.10",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-jobs"
 version = "0.14.13"
 dependencies = [

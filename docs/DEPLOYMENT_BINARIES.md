@@ -65,6 +65,11 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
   │ (2 nodes)   │         │               │     - Independently scalable
   └─────────────┘         └───────────────┘
        │                          │
+  ┌────▼────────┐                 │
+  │ fcp-ivr     │                 │           IVR
+  │ (DID→flow)  │                 │           - Flow execution
+  └─────────────┘                 │           - No registrar
+       │                          │
        └────────────┬─────────────┘
                     │
          ┌──────────▼──────────┐
@@ -445,7 +450,70 @@ enable_call_recording = true
 
 ---
 
-### 5. `fcp-voicemail` (Voicemail Server)
+### 5. `fcp-ivr` (IVR Server)
+
+**Purpose:** Standalone Interactive Voice Response — accepts SIP INVITEs, matches DIDs to programmed flows, and executes them
+
+**Includes:**
+- **Flow engine** (from `fcp-flow`)
+  - Play, Say, Gather, Dial, Answer, Hangup nodes
+  - DID-to-flow routing table (static config + REST API)
+  - Variable interpolation and conditional branching
+- **B2BUA core** (from `fcp-b2bua-core` library, for Dial node outbound calls)
+- **SIP transport** (UDP/TCP/TLS)
+- **Transaction layer**
+- **Media manager** (RTP, audio playback, DTMF collection)
+- **Event publishing** (flow started/completed/node-executed events)
+- **Trunk support** (optional, for Dial node outbound routing)
+- **REST API** for flow CRUD and DID route management
+- **Health/status endpoints** (active flows, DID routes)
+
+**Excludes:**
+- Registrar (no user registration)
+- LCR routing (DID-to-flow routing only)
+- Voicemail
+- Conference
+- Admin API (has its own flow route management API)
+
+**Key Difference from fcp-call-manager:**
+- `fcp-call-manager` passes `None` for `flow_handler` to `SipMessageHandler`
+- `fcp-ivr` passes `Some(flow_handler)` with a fully-wired `FlowCallHandler`
+
+**Configuration:**
+```toml
+[service]
+service_type = "ivr"
+node_id = "ivr-01"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+
+[http]
+bind_address = "0.0.0.0:8086"
+
+[flows]
+default_flow_id = "main-menu"
+tts_provider = "none"
+tts_language = "en-US"
+audio_path = "/var/lib/fcp/audio"
+
+[[flows.routes]]
+did = "+15551234567"
+flow_id = "main-menu"
+
+[[flows.routes]]
+did = "+15559876543"
+flow_id = "support-queue"
+
+[storage]
+backend = "sqlite"
+connection_string = "sqlite://data/fcp-ivr.db"
+```
+
+---
+
+### 6. `fcp-voicemail` (Voicemail Server)
 
 **Purpose:** Voicemail storage, retrieval, and MWI
 
@@ -477,7 +545,7 @@ transcription_api = "https://transcribe.api/"
 
 ---
 
-### 6. `fcp-conference` (Conference Bridge)
+### 7. `fcp-conference` (Conference Bridge)
 
 **Purpose:** Multi-party audio conferencing
 
@@ -509,7 +577,7 @@ recording_path = "s3://conference-recordings/"
 
 ---
 
-### 7. `fcp-media` (Media Server)
+### 8. `fcp-media` (Media Server)
 
 **Purpose:** Media processing (transcoding, recording, playback, DTMF detection)
 
@@ -538,7 +606,7 @@ recording_path = "s3://call-recordings/"
 
 ---
 
-### 8. `fcp-server` (All-in-One)
+### 9. `fcp-server` (All-in-One)
 
 **Purpose:** Small business, development, testing
 
@@ -554,7 +622,7 @@ recording_path = "s3://call-recordings/"
 
 ---
 
-### 9. `fcp-admin` (Admin API Server)
+### 10. `fcp-admin` (Admin API Server)
 
 **Purpose:** REST API for configuration and management
 
