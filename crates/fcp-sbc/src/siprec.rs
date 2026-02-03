@@ -469,6 +469,7 @@ mod tests {
             ],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         }
     }
 
@@ -512,6 +513,7 @@ mod tests {
             ],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         let server = select_server_from_config(&config).unwrap();
         assert_eq!(server.name, "enabled");
@@ -529,6 +531,7 @@ mod tests {
             }],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         assert!(!would_create_recorder(&config));
     }

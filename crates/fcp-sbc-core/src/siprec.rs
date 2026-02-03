@@ -87,6 +87,26 @@ pub struct SiprecConfig {
     /// Selective recording rules (used when policy is `Selective`).
     #[serde(default)]
     pub rules: Vec<SelectiveRecordingRule>,
+
+    /// Enable local call recording via forge-media (writes files to disk).
+    #[serde(default)]
+    pub local_capture_enabled: bool,
+
+    /// Directory for local recording files.
+    #[serde(default = "default_recording_dir")]
+    pub recording_dir: String,
+
+    /// Recording format: "wav" or "opus".
+    #[serde(default = "default_recording_format")]
+    pub recording_format: String,
+}
+
+fn default_recording_dir() -> String {
+    "./recordings".to_string()
+}
+
+fn default_recording_format() -> String {
+    "wav".to_string()
 }
 
 impl Default for SiprecConfig {
@@ -96,6 +116,9 @@ impl Default for SiprecConfig {
             servers: Vec::new(),
             include_metadata: true,
             rules: Vec::new(),
+            local_capture_enabled: false,
+            recording_dir: default_recording_dir(),
+            recording_format: default_recording_format(),
         }
     }
 }
@@ -111,12 +134,34 @@ impl SiprecConfig {
     /// - Any rule has an invalid `direction` value
     pub fn validate(&self) -> Result<(), String> {
         if self.policy != RecordingPolicy::None {
-            let has_enabled = self.servers.iter().any(|s| s.enabled);
-            if !has_enabled {
+            let has_enabled_server = self.servers.iter().any(|s| s.enabled);
+            if !has_enabled_server && !self.local_capture_enabled {
                 return Err(
-                    "at least one enabled recording server is required when policy is not None"
+                    "at least one enabled recording server or local_capture_enabled is required when policy is not None"
                         .into(),
                 );
+            }
+        }
+        // Validate local capture fields
+        if self.local_capture_enabled {
+            if self.recording_dir.is_empty() {
+                return Err("recording_dir must not be empty when local_capture_enabled".into());
+            }
+            if self.recording_dir.contains('\r') || self.recording_dir.contains('\n') {
+                return Err(
+                    "recording_dir must not contain CR/LF characters".into(),
+                );
+            }
+            if self.recording_format.contains('\r') || self.recording_format.contains('\n') {
+                return Err(
+                    "recording_format must not contain CR/LF characters".into(),
+                );
+            }
+            if self.recording_format != "wav" && self.recording_format != "opus" {
+                return Err(format!(
+                    "recording_format must be \"wav\" or \"opus\", got \"{}\"",
+                    self.recording_format
+                ));
             }
         }
         for (i, server) in self.servers.iter().enumerate() {
@@ -188,6 +233,9 @@ mod tests {
         assert!(cfg.servers.is_empty());
         assert!(cfg.include_metadata);
         assert!(cfg.rules.is_empty());
+        assert!(!cfg.local_capture_enabled);
+        assert_eq!(cfg.recording_dir, "./recordings");
+        assert_eq!(cfg.recording_format, "wav");
     }
 
     #[test]
@@ -202,6 +250,7 @@ mod tests {
             servers: one_server(),
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
     }
@@ -218,6 +267,7 @@ mod tests {
             }],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
     }
@@ -234,6 +284,7 @@ mod tests {
             }],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("enabled recording server"));
@@ -246,6 +297,7 @@ mod tests {
             servers: Vec::new(),
             include_metadata: true,
             rules: vec![one_rule()],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("enabled recording server"));
@@ -263,6 +315,7 @@ mod tests {
             }],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("sip:"));
@@ -280,6 +333,7 @@ mod tests {
             }],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("name"));
@@ -297,6 +351,7 @@ mod tests {
             }],
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("CR/LF"));
@@ -309,6 +364,7 @@ mod tests {
             servers: Vec::new(),
             include_metadata: true,
             rules: vec![],
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
     }
@@ -320,6 +376,7 @@ mod tests {
             servers: one_server(),
             include_metadata: false,
             rules: vec![],
+            ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: SiprecConfig = serde_json::from_str(&json).unwrap();
@@ -335,6 +392,7 @@ mod tests {
             servers: one_server(),
             include_metadata: true,
             rules: vec![], // no rules
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("enabled rule"));
@@ -347,6 +405,7 @@ mod tests {
             servers: one_server(),
             include_metadata: true,
             rules: vec![one_rule()],
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
     }
@@ -360,6 +419,7 @@ mod tests {
             servers: one_server(),
             include_metadata: true,
             rules: vec![rule],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("enabled rule"));
@@ -374,6 +434,7 @@ mod tests {
             servers: one_server(),
             include_metadata: true,
             rules: vec![rule],
+            ..Default::default()
         };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("direction"));
@@ -394,9 +455,126 @@ mod tests {
                 trunk_names: Some(vec!["carrier-a".into()]),
                 direction: Some("inbound".into()),
             }],
+            ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: SiprecConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, deserialized);
+    }
+
+    // --- Local capture config tests ---
+
+    #[test]
+    fn test_siprec_config_local_capture_default() {
+        let cfg = SiprecConfig::default();
+        assert!(!cfg.local_capture_enabled);
+        assert_eq!(cfg.recording_dir, "./recordings");
+        assert_eq!(cfg.recording_format, "wav");
+    }
+
+    #[test]
+    fn test_siprec_config_local_only_valid() {
+        // policy=All + local_capture_enabled + no servers should be valid
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::All,
+            servers: vec![],
+            include_metadata: true,
+            rules: vec![],
+            local_capture_enabled: true,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_siprec_config_local_and_server_valid() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::All,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![],
+            local_capture_enabled: true,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_siprec_config_no_server_no_local_invalid() {
+        // policy=All, no servers, local_capture_enabled=false → error
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::All,
+            servers: vec![],
+            include_metadata: true,
+            rules: vec![],
+            local_capture_enabled: false,
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("enabled recording server"));
+        assert!(err.contains("local_capture_enabled"));
+    }
+
+    #[test]
+    fn test_siprec_config_local_capture_invalid_format() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::None,
+            local_capture_enabled: true,
+            recording_format: "mp3".into(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("recording_format"));
+        assert!(err.contains("mp3"));
+    }
+
+    #[test]
+    fn test_siprec_config_local_capture_empty_dir() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::None,
+            local_capture_enabled: true,
+            recording_dir: "".into(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("recording_dir"));
+    }
+
+    #[test]
+    fn test_siprec_config_local_capture_crlf_dir() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::None,
+            local_capture_enabled: true,
+            recording_dir: "/tmp/bad\r\npath".into(),
+            ..Default::default()
+        };
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("CR/LF"));
+    }
+
+    #[test]
+    fn test_serde_roundtrip_with_local_capture() {
+        let cfg = SiprecConfig {
+            policy: RecordingPolicy::All,
+            servers: one_server(),
+            include_metadata: true,
+            rules: vec![],
+            local_capture_enabled: true,
+            recording_dir: "/var/recordings".into(),
+            recording_format: "opus".into(),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: SiprecConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+    }
+
+    #[test]
+    fn test_serde_local_capture_defaults_when_absent() {
+        // Deserialize JSON without local_capture fields — should get defaults
+        let json = r#"{"policy":"All","servers":[],"include_metadata":true,"rules":[]}"#;
+        let cfg: SiprecConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.local_capture_enabled);
+        assert_eq!(cfg.recording_dir, "./recordings");
+        assert_eq!(cfg.recording_format, "wav");
     }
 }

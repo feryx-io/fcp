@@ -4,6 +4,7 @@
 //! under the `/admin/` path prefix.
 
 use crate::health::HealthState;
+use crate::recording_store::LocalRecordingStatus;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -148,6 +149,31 @@ pub struct AdminError {
     pub details: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct RecordingSummary {
+    pub recording_id: String,
+    pub call_id: String,
+    pub caller: String,
+    pub callee: String,
+    pub format: String,
+    pub started_at: f64,
+    pub completed_at: Option<f64>,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct RecordingDetail {
+    pub recording_id: String,
+    pub call_id: String,
+    pub caller: String,
+    pub callee: String,
+    pub file_path: String,
+    pub format: String,
+    pub started_at: f64,
+    pub completed_at: Option<f64>,
+    pub status: String,
+}
+
 // ── Router ──────────────────────────────────────────────────────────────────
 
 pub fn admin_router() -> Router<Arc<HealthState>> {
@@ -164,6 +190,9 @@ pub fn admin_router() -> Router<Arc<HealthState>> {
         .route("/calls/stats", get(call_stats))
         .route("/calls/:id", get(get_call).delete(terminate_call))
         .route("/admission", get(get_admission).put(update_admission))
+        .route("/recordings", get(list_recordings))
+        .route("/recordings/:call_id", get(get_recording))
+        .route("/recordings/:call_id/file", get(download_recording))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -605,6 +634,122 @@ async fn update_admission(
     }))
 }
 
+// ── Recording handlers ─────────────────────────────────────────────────────
+
+fn recording_status_str(status: &LocalRecordingStatus) -> String {
+    match status {
+        LocalRecordingStatus::InProgress => "in_progress".to_string(),
+        LocalRecordingStatus::Completed => "completed".to_string(),
+        LocalRecordingStatus::Failed(reason) => format!("failed: {reason}"),
+    }
+}
+
+async fn list_recordings(
+    State(state): State<Arc<HealthState>>,
+) -> Json<Vec<RecordingSummary>> {
+    let recordings = match &state.recording_store {
+        Some(store) => store
+            .list()
+            .into_iter()
+            .map(|m| RecordingSummary {
+                recording_id: m.recording_id,
+                call_id: m.call_id,
+                caller: m.caller,
+                callee: m.callee,
+                format: m.format,
+                started_at: m.started_at,
+                completed_at: m.completed_at,
+                status: recording_status_str(&m.status),
+            })
+            .collect(),
+        None => vec![],
+    };
+    Json(recordings)
+}
+
+async fn get_recording(
+    State(state): State<Arc<HealthState>>,
+    Path(call_id): Path<String>,
+) -> Result<Json<RecordingDetail>, (StatusCode, Json<AdminError>)> {
+    let store = state
+        .recording_store
+        .as_ref()
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "recording store not configured"))?;
+
+    let meta = store
+        .get(&call_id)
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "recording not found"))?;
+
+    Ok(Json(RecordingDetail {
+        recording_id: meta.recording_id,
+        call_id: meta.call_id,
+        caller: meta.caller,
+        callee: meta.callee,
+        file_path: meta.file_path,
+        format: meta.format,
+        started_at: meta.started_at,
+        completed_at: meta.completed_at,
+        status: recording_status_str(&meta.status),
+    }))
+}
+
+async fn download_recording(
+    State(state): State<Arc<HealthState>>,
+    Path(call_id): Path<String>,
+) -> Result<axum::response::Response, (StatusCode, Json<AdminError>)> {
+    use axum::body::Body;
+    use axum::http::header;
+    use axum::response::IntoResponse;
+
+    let store = state
+        .recording_store
+        .as_ref()
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "recording store not configured"))?;
+
+    let meta = store
+        .get(&call_id)
+        .ok_or_else(|| admin_err(StatusCode::NOT_FOUND, "recording not found"))?;
+
+    // Reject download while recording is still in progress
+    if matches!(meta.status, LocalRecordingStatus::InProgress) {
+        return Err(admin_err(
+            StatusCode::CONFLICT,
+            "recording is still in progress",
+        ));
+    }
+
+    let data = tokio::fs::read(&meta.file_path).await.map_err(|e| {
+        warn!(
+            path = %meta.file_path,
+            error = %e,
+            "Failed to read recording file"
+        );
+        admin_err(StatusCode::NOT_FOUND, "recording file not found on disk")
+    })?;
+
+    let content_type = match meta.format.as_str() {
+        "opus" => "audio/opus",
+        _ => "audio/wav",
+    };
+
+    let filename = std::path::Path::new(&meta.file_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("recording");
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        Body::from(data),
+    )
+        .into_response())
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -633,6 +778,7 @@ mod tests {
             trunk_registrar: None,
             uac: None,
             dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
+            recording_store: None,
         })
     }
 
@@ -796,5 +942,63 @@ mod tests {
         let (status, json) = put_json(app(state), "/admission", update).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(json["error"].as_str().unwrap().contains("invalid config"));
+    }
+
+    // ── Recording endpoint tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_list_recordings_empty() {
+        let state = test_state();
+        let (status, json) = get_json(app(state), "/recordings").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_recordings_with_store() {
+        let store = Arc::new(crate::recording_store::RecordingStore::new());
+        store.insert(crate::recording_store::RecordingMetadata {
+            recording_id: "rec-1".into(),
+            call_id: "call-1".into(),
+            caller: "sip:alice@example.com".into(),
+            callee: "sip:bob@example.com".into(),
+            file_path: "/tmp/call-1.wav".into(),
+            format: "wav".into(),
+            started_at: 1700000000.0,
+            completed_at: None,
+            status: crate::recording_store::LocalRecordingStatus::InProgress,
+        });
+
+        let mut state = test_state_with_trunks(vec![]);
+        // Unwrap Arc to set recording_store, then re-wrap
+        let inner = Arc::get_mut(&mut state).unwrap();
+        inner.recording_store = Some(store);
+
+        let (status, json) = get_json(app(state), "/recordings").await;
+        assert_eq!(status, StatusCode::OK);
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["call_id"], "call-1");
+        assert_eq!(arr[0]["status"], "in_progress");
+    }
+
+    #[tokio::test]
+    async fn test_get_recording_not_found() {
+        let store = Arc::new(crate::recording_store::RecordingStore::new());
+        let mut state = test_state_with_trunks(vec![]);
+        let inner = Arc::get_mut(&mut state).unwrap();
+        inner.recording_store = Some(store);
+
+        let (status, json) = get_json(app(state), "/recordings/nonexistent").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(json["error"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_get_recording_no_store() {
+        let state = test_state();
+        let (status, json) = get_json(app(state), "/recordings/call-1").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(json["error"].as_str().unwrap().contains("not configured"));
     }
 }

@@ -24,8 +24,10 @@ mod health;
 mod hmr;
 mod hmr_dispatcher;
 mod hooks;
+mod local_capture;
 mod metrics;
 mod nat;
+mod recording_store;
 mod registration_store;
 mod topology;
 mod siprec;
@@ -199,28 +201,71 @@ async fn main() -> Result<()> {
     let trunk_registrar = Arc::new(TrunkRegistrar::new(&sbc_config.trunks));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // 12. Create SIPREC recorder (if configured)
+    // 12. Compute effective media IP and create media stack for NAT/SDP rewriting
+    //     (moved before hooks so LocalCaptureManager can use media_manager)
+    let local_ip = derive_local_ip(&cli.bind);
+    let effective_ip = nat::effective_media_ip(&sbc_config.nat, &local_ip);
+
+    let (media_manager, media_config) = if sbc_config.nat.enabled && sbc_config.nat.rewrite_sdp {
+        let fcp_media_cfg = nat::build_fcp_media_config(&sbc_config.nat, &effective_ip);
+        let mgr = fcp_media::MediaManager::new(fcp_media_cfg)
+            .await
+            .context("Failed to create media manager for NAT/SDP rewriting")?;
+        let core_cfg = nat::build_fcp_core_media_config(&sbc_config.nat, &effective_ip);
+        (Some(Arc::new(mgr)), Some(core_cfg))
+    } else {
+        (None, None)
+    };
+
+    // 12a. Create recording store and local capture manager
+    let (recording_store, local_capture) = if sbc_config.siprec.local_capture_enabled {
+        let store = Arc::new(recording_store::RecordingStore::new());
+        let capture = local_capture::LocalCaptureManager::new(
+            sbc_config.siprec.clone(),
+            Arc::clone(
+                media_manager
+                    .as_ref()
+                    .expect("media manager required for local capture (enable nat.rewrite_sdp)"),
+            ),
+            Arc::clone(&store),
+        );
+        (Some(store), capture.map(Arc::new))
+    } else {
+        (None, None)
+    };
+
+    if sbc_config.siprec.local_capture_enabled {
+        info!(
+            recording_dir = %sbc_config.siprec.recording_dir,
+            format = %sbc_config.siprec.recording_format,
+            "Local call recording enabled"
+        );
+    }
+
+    // 12b. Create SIPREC recorder (if configured)
     let siprec_recorder = siprec::SiprecRecorder::new(
         sbc_config.siprec.clone(),
         Arc::clone(&uac),
     );
     let siprec_recorder = siprec_recorder.map(Arc::new);
 
-    // 12a. Create event hooks so call/registration lifecycle updates admission/metrics/trunk health
+    // 12c. Create event hooks so call/registration lifecycle updates admission/metrics/trunk health
     let sbc_hooks: Arc<dyn fcp_events::EventPublisher> = match &siprec_recorder {
         Some(recorder) => Arc::new(SbcEventHooks::with_recorder(
             Arc::clone(&admission),
             Arc::clone(&sbc_metrics),
             Arc::clone(recorder),
             Some(Arc::clone(&trunk_health)),
+            local_capture,
         )),
         None => Arc::new(SbcEventHooks::new(
             Arc::clone(&admission),
             Arc::clone(&sbc_metrics),
             Some(Arc::clone(&trunk_health)),
+            local_capture,
         )),
     };
-    // 12a-1. Initialize optional storage for CDR persistence
+    // 12d. Initialize optional storage for CDR persistence
     let dyn_storage = if sbc_config.storage.enabled {
         use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
 
@@ -246,7 +291,7 @@ async fn main() -> Result<()> {
         None => Arc::new(fcp_sip::CallManager::with_events(Arc::clone(&sbc_hooks))),
     };
 
-    // 12b. Create registrar with event publishing so registration lifecycle
+    // 12e. Create registrar with event publishing so registration lifecycle
     //      updates admission counters (registration_added / registration_removed)
     let reg_store: Arc<dyn fcp_core::RegistrationStore> =
         Arc::new(InMemoryRegistrationStore::default());
@@ -267,22 +312,7 @@ async fn main() -> Result<()> {
     // 14. Create RateLimiterSet from sip-ratelimit config
     let rate_limiter = Arc::new(build_rate_limiter_set(&sbc_config.rate_limit));
 
-    // 15. Compute effective media IP and create media stack for NAT/SDP rewriting
-    let local_ip = derive_local_ip(&cli.bind);
-    let effective_ip = nat::effective_media_ip(&sbc_config.nat, &local_ip);
-
-    let (media_manager, media_config) = if sbc_config.nat.enabled && sbc_config.nat.rewrite_sdp {
-        let fcp_media_cfg = nat::build_fcp_media_config(&sbc_config.nat, &effective_ip);
-        let mgr = fcp_media::MediaManager::new(fcp_media_cfg)
-            .await
-            .context("Failed to create media manager for NAT/SDP rewriting")?;
-        let core_cfg = nat::build_fcp_core_media_config(&sbc_config.nat, &effective_ip);
-        (Some(Arc::new(mgr)), Some(core_cfg))
-    } else {
-        (None, None)
-    };
-
-    // 16. Create SipMessageHandler (with B2buaConfig from SbcConfig)
+    // 15. Create SipMessageHandler (with B2buaConfig from SbcConfig)
     let media_profile = Some(MediaProfileBuilder::audio_only());
     let handler = Arc::new(SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
@@ -393,6 +423,7 @@ async fn main() -> Result<()> {
         trunk_registrar: Some(Arc::clone(&trunk_registrar)),
         uac: Some(Arc::clone(&uac)),
         dialog_manager: Arc::clone(&dialog_manager_ref),
+        recording_store,
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {

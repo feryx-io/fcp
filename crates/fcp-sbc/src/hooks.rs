@@ -10,6 +10,7 @@
 //! call events trigger recording session start/stop.
 
 use crate::admission::AdmissionController;
+use crate::local_capture::LocalCaptureManager;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
@@ -25,6 +26,7 @@ pub struct SbcEventHooks {
     metrics: Arc<SbcRuntimeMetrics>,
     recorder: Option<Arc<SiprecRecorder>>,
     trunk_health: Option<Arc<TrunkHealthMonitor>>,
+    local_capture: Option<Arc<LocalCaptureManager>>,
 }
 
 impl SbcEventHooks {
@@ -32,12 +34,14 @@ impl SbcEventHooks {
         admission: Arc<AdmissionController>,
         metrics: Arc<SbcRuntimeMetrics>,
         trunk_health: Option<Arc<TrunkHealthMonitor>>,
+        local_capture: Option<Arc<LocalCaptureManager>>,
     ) -> Self {
         Self {
             admission,
             metrics,
             recorder: None,
             trunk_health,
+            local_capture,
         }
     }
 
@@ -46,12 +50,14 @@ impl SbcEventHooks {
         metrics: Arc<SbcRuntimeMetrics>,
         recorder: Arc<SiprecRecorder>,
         trunk_health: Option<Arc<TrunkHealthMonitor>>,
+        local_capture: Option<Arc<LocalCaptureManager>>,
     ) -> Self {
         Self {
             admission,
             metrics,
             recorder: Some(recorder),
             trunk_health,
+            local_capture,
         }
     }
 }
@@ -81,6 +87,15 @@ impl EventPublisher for SbcEventHooks {
                             trunk_name.as_deref(),
                         );
                     }
+                    if let Some(ref capture) = self.local_capture {
+                        capture.on_call_initiated(
+                            call_id,
+                            from,
+                            to,
+                            direction,
+                            trunk_name.as_deref(),
+                        );
+                    }
                 }
                 CallEvent::Answered {
                     call_id,
@@ -90,17 +105,24 @@ impl EventPublisher for SbcEventHooks {
                 } => {
                     if let Some(ref recorder) = self.recorder {
                         let recorder = Arc::clone(recorder);
-                        let call_id = call_id.clone();
+                        let call_id_clone = call_id.clone();
                         let a_sdp = a_leg_sdp.clone();
                         let b_sdp = b_leg_sdp.clone();
                         tokio::spawn(async move {
                             recorder
                                 .start_recording(
-                                    &call_id,
+                                    &call_id_clone,
                                     a_sdp.as_deref(),
                                     b_sdp.as_deref(),
                                 )
                                 .await;
+                        });
+                    }
+                    if let Some(ref capture) = self.local_capture {
+                        let capture = Arc::clone(capture);
+                        let call_id = call_id.clone();
+                        tokio::spawn(async move {
+                            capture.on_call_answered(&call_id).await;
                         });
                     }
                 }
@@ -122,9 +144,16 @@ impl EventPublisher for SbcEventHooks {
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);
                         let recorder = Arc::clone(recorder);
+                        let call_id_clone = call_id.clone();
+                        tokio::spawn(async move {
+                            recorder.stop_recording(&call_id_clone).await;
+                        });
+                    }
+                    if let Some(ref capture) = self.local_capture {
+                        let capture = Arc::clone(capture);
                         let call_id = call_id.clone();
                         tokio::spawn(async move {
-                            recorder.stop_recording(&call_id).await;
+                            capture.on_call_ended(&call_id).await;
                         });
                     }
                 }
@@ -154,10 +183,13 @@ impl EventPublisher for SbcEventHooks {
                     if let Some(ref recorder) = self.recorder {
                         recorder.cleanup_pending(call_id);
                         let recorder = Arc::clone(recorder);
-                        let call_id = call_id.clone();
+                        let call_id_clone = call_id.clone();
                         tokio::spawn(async move {
-                            recorder.stop_recording(&call_id).await;
+                            recorder.stop_recording(&call_id_clone).await;
                         });
+                    }
+                    if let Some(ref capture) = self.local_capture {
+                        capture.on_call_failed(call_id);
                     }
                 }
                 _ => {}

@@ -2,6 +2,7 @@
 
 use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
+use crate::recording_store::RecordingStore;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_registration::TrunkRegistrar;
 use axum::http::header;
@@ -21,6 +22,7 @@ pub struct HealthState {
     pub trunk_registrar: Option<Arc<TrunkRegistrar>>,
     pub uac: Option<Arc<fcp_sip::uac::SipUserAgentClient>>,
     pub dialog_manager: Arc<sip_dialog::DialogManager>,
+    pub recording_store: Option<Arc<RecordingStore>>,
 }
 
 /// Build the health/readiness/metrics router with admin API.
@@ -172,6 +174,7 @@ mod tests {
             trunk_registrar: None,
             uac: None,
             dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
+            recording_store: None,
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();
