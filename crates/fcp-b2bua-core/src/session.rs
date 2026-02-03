@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::call::CallId;
 use crate::forking::ForkingConfig;
 use crate::media_anchoring::MediaAnchoringConfig;
+
+fn default_max_extension_digits() -> u8 {
+    6
+}
 use crate::topology::TopologyHidingConfig;
 use crate::transfer::TransferConfig;
 
@@ -118,6 +122,14 @@ pub struct B2buaConfig {
     /// RFC 4028 session timer enforcement.
     #[serde(default)]
     pub session_timer: SessionTimerConfig,
+
+    /// Maximum number of digits treated as a short extension rather than a
+    /// phone number.  Dialed strings with this many digits or fewer are
+    /// routed as extensions; longer all-digit strings are normalized to
+    /// E.164.  Default is 6 (i.e. up to 6-digit extensions; 7+ digits
+    /// trigger phone-number normalization).
+    #[serde(default = "default_max_extension_digits")]
+    pub max_extension_digits: u8,
 }
 
 impl Default for B2buaConfig {
@@ -131,6 +143,7 @@ impl Default for B2buaConfig {
             relay_provisional_responses: true,
             insert_record_route: true,
             session_timer: SessionTimerConfig::default(),
+            max_extension_digits: default_max_extension_digits(),
         }
     }
 }
@@ -218,6 +231,7 @@ mod tests {
             forking: ForkingConfig::sbc_defaults(),
             transfer: TransferConfig::sbc_defaults(),
             session_timer: SessionTimerConfig::default(),
+            max_extension_digits: 6,
         };
         let session = B2buaSession::with_config(call_id, config.clone());
         assert_eq!(session.call_id, call_id);
@@ -262,6 +276,7 @@ mod tests {
                 session_expires_secs: 900,
                 min_se_secs: 120,
             },
+            max_extension_digits: 6,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();

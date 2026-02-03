@@ -95,6 +95,16 @@ flow_id = "main-menu"
 # flow_id = "support-queue"
 
 # -----------------------------------------------------------------------------
+# B2BUA behavior
+# -----------------------------------------------------------------------------
+# [b2bua]
+# Maximum digits treated as a short extension (not normalized to E.164).
+# Default is 6 — digit strings up to 6 chars are routed as extensions;
+# 7+ digits trigger phone-number normalization.  Set higher if you use
+# 7-digit or longer extensions.
+# max_extension_digits = 6
+
+# -----------------------------------------------------------------------------
 # SIP trunks (optional — only needed if Dial nodes place outbound calls)
 # -----------------------------------------------------------------------------
 # [[trunks]]

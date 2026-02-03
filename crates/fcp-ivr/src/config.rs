@@ -42,6 +42,10 @@ pub struct IvrConfig {
     #[serde(default)]
     pub flows: FlowsSection,
 
+    /// B2BUA behavior configuration (extension threshold, topology hiding, etc.)
+    #[serde(default)]
+    pub b2bua: fcp_b2bua_core::B2buaConfig,
+
     /// SIP trunk configurations (for Dial node outbound calls).
     #[serde(default)]
     pub trunks: Vec<fcp_sbc_core::TrunkConfig>,

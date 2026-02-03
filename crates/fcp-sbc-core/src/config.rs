@@ -148,6 +148,7 @@ impl Default for SbcConfig {
                     session_expires_secs: 1800,
                     min_se_secs: 90,
                 },
+                max_extension_digits: 6,
             },
             admission: AdmissionConfig::default(),
             rate_limit: RateLimitPolicyConfig::default(),

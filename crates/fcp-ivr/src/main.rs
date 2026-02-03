@@ -269,7 +269,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         }),
         Some(Arc::clone(&flow_handler)), // ← THE KEY DIFFERENCE
-        fcp_b2bua_core::B2buaConfig::default(),
+        config.b2bua.clone(),
         outbound_route_provider,
     ));
 

@@ -273,7 +273,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         }),
         None, // flow_handler — add when flow config is present
-        fcp_b2bua_core::B2buaConfig::default(),
+        config.b2bua.clone(),
         outbound_route_provider,
     ));
 

@@ -1632,7 +1632,8 @@ impl SipMessageHandler {
             .trim();
 
         // Normalize the dialed number (e.g., 15185556789 -> +15185556789)
-        let normalized_aor = normalize_dialed_number(destination_aor);
+        let normalized_aor =
+            normalize_dialed_number(destination_aor, self.b2bua_config.max_extension_digits);
 
         debug!(
             call_id = %call_id,
@@ -6529,7 +6530,11 @@ fn extract_domain_from_uri(uri: &sip_core::Uri) -> Option<String> {
 /// - "+15185556789" (already E.164) -> "+15185556789"
 /// - "5000" (short extension) -> "5000" (unchanged)
 /// - "sip:15185556789@host" -> "sip:+15185556789@host"
-fn normalize_dialed_number(uri: &str) -> String {
+///
+/// `max_extension_digits` controls the boundary between extensions and phone
+/// numbers.  Digit strings with this many digits or fewer are left as-is
+/// (treated as extensions); longer strings trigger E.164 normalization.
+fn normalize_dialed_number(uri: &str, max_extension_digits: u8) -> String {
     // Check if this is a SIP URI
     let (prefix, user_and_host) = if let Some(stripped) = uri.strip_prefix("sip:") {
         ("sip:", stripped)
@@ -6558,9 +6563,9 @@ fn normalize_dialed_number(uri: &str) -> String {
         return uri.to_string();
     }
 
-    // Skip normalization for short extensions (< 7 digits)
+    // Skip normalization for short extensions (up to max_extension_digits).
     // This preserves extensions like 5000, 1001, etc.
-    if user_part.len() < 7 {
+    if user_part.len() <= max_extension_digits as usize {
         return uri.to_string();
     }
 

@@ -50,6 +50,10 @@ pub struct CallManagerConfig {
     #[serde(default)]
     pub events: EventsSection,
 
+    /// B2BUA behavior configuration (extension threshold, topology hiding, etc.)
+    #[serde(default)]
+    pub b2bua: fcp_b2bua_core::B2buaConfig,
+
     /// SIP trunk configurations (session-manager mode).
     /// When non-empty and registrar.enabled=false, operates as session manager.
     #[serde(default)]
