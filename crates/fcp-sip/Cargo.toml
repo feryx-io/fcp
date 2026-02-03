@@ -19,6 +19,7 @@ fcp-routing = { path = "../fcp-routing" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
 fcp-flow = { path = "../fcp-flow" }
+fcp-voicemail = { path = "../fcp-voicemail" }
 
 # SIP stack from siphon-rs (as path dependencies from submodule)
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

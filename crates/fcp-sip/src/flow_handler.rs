@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use fcp_b2bua_core::{Call, CallId, CallManager};
-use fcp_events::{EventPublisher, FlowEvent, PlatformEvent};
+use fcp_events::{EventPublisher, FlowEvent, PlatformEvent, VoicemailEvent};
+use fcp_voicemail::VoicemailService;
 use fcp_flow::{FlowContext, FlowEngine, FlowExecutionResult, FlowStore};
 use fcp_media::{AudioTarget, MediaManager};
 use sip_core::{Request, Response};
@@ -74,6 +75,9 @@ pub struct FlowCallHandler {
 
     /// RTP port for SDP media lines
     rtp_port: u16,
+
+    /// Voicemail service for recording voicemail messages
+    voicemail_service: Option<Arc<VoicemailService>>,
 }
 
 impl FlowCallHandler {
@@ -98,6 +102,7 @@ impl FlowCallHandler {
             media_profile: None,
             local_addr: None,
             rtp_port: 8000,
+            voicemail_service: None,
         }
     }
 
@@ -139,6 +144,12 @@ impl FlowCallHandler {
         self.media_profile = Some(profile);
         self.local_addr = Some(local_addr);
         self.rtp_port = rtp_port;
+        self
+    }
+
+    /// Set the voicemail service (for Voicemail flow nodes).
+    pub fn with_voicemail_service(mut self, voicemail_service: Arc<VoicemailService>) -> Self {
+        self.voicemail_service = Some(voicemail_service);
         self
     }
 
@@ -941,6 +952,133 @@ impl FlowCallHandler {
         Box::pin(self.execute_next_node(call_id)).await
     }
 
+    /// Handle voicemail recording for the Voicemail flow node.
+    ///
+    /// Calls VoicemailService::record_message(), sets context variables with
+    /// the result, publishes a VoicemailEvent::MessageRecorded event, then
+    /// continues to next_on_success or next_on_error.
+    async fn handle_voicemail(
+        &self,
+        call_id: CallId,
+        mailbox: String,
+        is_busy: bool,
+        max_duration: u32,
+        play_beep: bool,
+        next_on_success: String,
+        next_on_error: Option<String>,
+    ) -> Result<()> {
+        info!(
+            call_id = %call_id,
+            mailbox = %mailbox,
+            is_busy = is_busy,
+            max_duration = max_duration,
+            "Starting voicemail recording"
+        );
+
+        let voicemail_service = match &self.voicemail_service {
+            Some(vs) => Arc::clone(vs),
+            None => {
+                warn!(call_id = %call_id, "VoicemailService not configured - skipping voicemail node");
+
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable("voicemail_status".to_string(), "error".to_string());
+                context_guard.set_variable(
+                    "voicemail_error".to_string(),
+                    "VoicemailService not configured".to_string(),
+                );
+                context_guard.current_node = next_on_error.unwrap_or(next_on_success);
+                drop(context_guard);
+
+                return Box::pin(self.execute_next_node(call_id)).await;
+            }
+        };
+
+        // Get caller info from flow context
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found for call {}", call_id))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+
+        let context_guard = context.read().await;
+        let caller = context_guard
+            .get_variable("caller")
+            .unwrap_or_else(|_| "unknown".to_string());
+        let caller_name = context_guard.get_variable("caller_name").ok();
+        let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+        drop(context_guard);
+
+        // Call VoicemailService::record_message
+        match voicemail_service
+            .record_message(&core_call_id, &mailbox, caller.clone(), caller_name, is_busy)
+            .await
+        {
+            Ok(message) => {
+                info!(
+                    call_id = %call_id,
+                    message_id = %message.id,
+                    duration = message.duration,
+                    "Voicemail recorded successfully"
+                );
+
+                // Set context variables
+                let mut context_guard = context.write().await;
+                context_guard.set_variable("voicemail_status".to_string(), "success".to_string());
+                context_guard
+                    .set_variable("voicemail_message_id".to_string(), message.id.clone());
+                context_guard.set_variable(
+                    "voicemail_duration".to_string(),
+                    message.duration.to_string(),
+                );
+                context_guard.current_node = next_on_success;
+                drop(context_guard);
+
+                // Publish event
+                if let Some(events) = &self.events {
+                    let event = PlatformEvent::Voicemail(VoicemailEvent::MessageRecorded {
+                        call_id: core_call_id,
+                        mailbox_id: mailbox,
+                        message_id: message.id,
+                        caller,
+                        duration_secs: message.duration,
+                        timestamp: std::time::SystemTime::now(),
+                    });
+
+                    let events = Arc::clone(events);
+                    tokio::spawn(async move {
+                        if let Err(e) = events.publish(event).await {
+                            error!(error = %e, "Failed to publish VoicemailEvent::MessageRecorded");
+                        }
+                    });
+                }
+            }
+            Err(e) => {
+                error!(
+                    call_id = %call_id,
+                    mailbox = %mailbox,
+                    error = %e,
+                    "Voicemail recording failed"
+                );
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable("voicemail_status".to_string(), "error".to_string());
+                context_guard.set_variable("voicemail_error".to_string(), e.to_string());
+                context_guard.current_node = next_on_error.unwrap_or(next_on_success);
+                drop(context_guard);
+            }
+        }
+
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
     pub async fn execute_next_node(&self, call_id: CallId) -> Result<()> {
         let context_entry = self
             .contexts
@@ -1579,6 +1717,36 @@ impl FlowCallHandler {
                         Box::pin(self.execute_next_node(call_id)).await?;
                     }
                 }
+            }
+
+            FlowExecutionResult::WaitingForVoicemail {
+                mailbox,
+                is_busy,
+                max_duration,
+                play_beep,
+                next_on_success,
+                next_on_error,
+            } => {
+                info!(
+                    call_id = %call_id,
+                    mailbox = %mailbox,
+                    is_busy = is_busy,
+                    max_duration = max_duration,
+                    "Starting voicemail recording (Voicemail node)"
+                );
+
+                drop(context_guard);
+
+                self.handle_voicemail(
+                    call_id,
+                    mailbox,
+                    is_busy,
+                    max_duration,
+                    play_beep,
+                    next_on_success,
+                    next_on_error,
+                )
+                .await?;
             }
         }
 

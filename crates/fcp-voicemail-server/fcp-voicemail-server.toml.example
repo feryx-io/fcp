@@ -1,0 +1,82 @@
+# =============================================================================
+# fcp-voicemail-server configuration
+# =============================================================================
+# Standalone voicemail server for the Ferrous Communications Platform.
+# Accepts SIP INVITEs for configured DIDs/extensions, plays greetings,
+# records messages, and manages MWI notifications.
+#
+# Priority: --config CLI > FCP_VOICEMAIL_CONFIG env > ./fcp-voicemail-server.toml > defaults
+
+# Service identification
+[service]
+service_type = "voicemail"
+# node_id = "voicemail-01"          # Auto-generated UUID if not set
+
+# SIP transport
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+# local_ip = "192.168.1.100"        # Auto-detected if not set
+# local_uri = "sip:voicemail@192.168.1.100"  # Derived from local_ip if not set
+
+# Storage backend
+[storage]
+backend = "sqlite"                   # "sqlite", "postgres", "mysql", "mongodb"
+connection_string = "sqlite://data/fcp-voicemail.db"
+# max_connections = 20               # For PG/MySQL/MongoDB
+
+# HTTP health/status/voicemail API
+[http]
+bind_address = "0.0.0.0:8087"
+
+# Logging
+[logging]
+level = "info"                       # trace, debug, info, warn, error
+format = "json"                      # json, pretty, compact
+
+# Media / RTP
+[media]
+rtp_port_start = 10000
+rtp_port_end = 20000
+codecs = ["PCMU", "PCMA"]
+# public_ip = "203.0.113.10"        # Required behind NAT / in Docker
+
+# Event forwarding (optional)
+[events]
+# server_url = "http://fcp-events-server:8081/ingest"
+
+# Voicemail-specific configuration
+[voicemail]
+recordings_dir = "/var/fcp/voicemail/recordings"
+greetings_dir = "/var/fcp/voicemail/greetings"
+max_message_duration = 300           # 5 minutes
+max_messages_per_mailbox = 100
+play_beep = true
+# default_greeting_path = "/var/fcp/audio/default-greeting.wav"
+# beep_audio_path = "/var/fcp/audio/beep.wav"
+
+# Default mailbox when no DID route matches
+# default_mailbox_id = "general"
+
+# Static DID/extension → mailbox_id routing table
+[[voicemail.routes]]
+did = "+15551234567"
+mailbox_id = "sales"
+
+[[voicemail.routes]]
+did = "5000"
+mailbox_id = "support"
+
+# B2BUA behavior (optional)
+# [b2bua]
+# max_extension_digits = 6
+
+# SIP trunks (optional — for outbound MWI NOTIFY or call transfers)
+# [[trunks]]
+# name = "carrier-a"
+# host = "sip.carrier-a.example.com"
+# port = 5060
+# transport = "udp"
+# username = "vm-user"
+# password = "secret"
+# register = false

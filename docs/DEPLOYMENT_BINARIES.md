@@ -515,32 +515,64 @@ connection_string = "sqlite://data/fcp-ivr.db"
 
 ### 6. `fcp-voicemail` (Voicemail Server)
 
-**Purpose:** Voicemail storage, retrieval, and MWI
+**Purpose:** Standalone voicemail — accepts SIP INVITEs for configured DIDs/extensions, plays greetings, records messages, and manages MWI
 
 **Includes:**
-- Voicemail mailbox management
-- Message storage (filesystem or S3)
-- MWI (Message Waiting Indicator) via NOTIFY
-- Voicemail playback (SIP INVITE)
-- Greeting management
-- Message transcription (optional)
-- Database access for mailbox config
+- **Flow engine** (from `fcp-flow`) with programmatic Answer → Voicemail → Hangup flows
+- **VoicemailService** (from `fcp-voicemail`) for greeting playback, recording, and MWI
+- **B2BUA core** (from `fcp-b2bua-core` library)
+- **SIP transport** (UDP/TCP/TLS)
+- **Transaction layer**
+- **Media manager** (RTP, audio playback, recording)
+- **Event publishing** (VoicemailEvent::MessageRecorded, MwiUpdated, etc.)
+- **Trunk support** (optional, for outbound MWI NOTIFY or transfers)
+- **REST API** for voicemail route management, mailbox/message CRUD, MWI status
+- **Health/status endpoints** (active calls, voicemail routes, mailbox listing)
 
 **Excludes:**
-- Call routing
-- SBC
+- Registrar (no user registration)
+- LCR routing (DID-to-mailbox routing only)
+- IVR (no Gather/Branch nodes — voicemail-only flows)
 - Conference
-- Admin API (except voicemail-specific endpoints)
+- Admin API (has its own voicemail-specific endpoints)
+
+**Key Difference from fcp-ivr:**
+- Uses same `FlowCallHandler` pattern but wires in `VoicemailService`
+- Programmatically generates Answer → Voicemail → Hangup flows per route (no JSON)
+- DID routes map to `mailbox_id` instead of `flow_id`
 
 **Configuration:**
 ```toml
+[service]
+service_type = "voicemail"
+node_id = "voicemail-01"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+
+[http]
+bind_address = "0.0.0.0:8087"
+
+[storage]
+backend = "sqlite"
+connection_string = "sqlite://data/fcp-voicemail.db"
+
 [voicemail]
-bind_address = "0.0.0.0:5060"
-database_url = "postgres://..."
-storage_backend = "s3" # or "local"
-storage_path = "s3://voicemail-bucket/"
-enable_transcription = true
-transcription_api = "https://transcribe.api/"
+recordings_dir = "/var/fcp/voicemail/recordings"
+greetings_dir = "/var/fcp/voicemail/greetings"
+max_message_duration = 300
+max_messages_per_mailbox = 100
+play_beep = true
+default_mailbox_id = "general"
+
+[[voicemail.routes]]
+did = "+15551234567"
+mailbox_id = "sales"
+
+[[voicemail.routes]]
+did = "5000"
+mailbox_id = "support"
 ```
 
 ---

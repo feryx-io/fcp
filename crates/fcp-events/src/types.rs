@@ -32,6 +32,9 @@ pub enum PlatformEvent {
 
     /// Registration event
     Registration(RegistrationEvent),
+
+    /// Voicemail event
+    Voicemail(VoicemailEvent),
 }
 
 /// Call lifecycle events.
@@ -378,6 +381,48 @@ pub enum RegistrationEvent {
     },
 }
 
+/// Voicemail-related events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VoicemailEvent {
+    /// Voicemail message recorded
+    MessageRecorded {
+        call_id: CallId,
+        mailbox_id: String,
+        message_id: String,
+        caller: String,
+        duration_secs: u32,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Voicemail message deleted
+    MessageDeleted {
+        mailbox_id: String,
+        message_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Voicemail message played back
+    MessagePlayed {
+        call_id: CallId,
+        mailbox_id: String,
+        message_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// MWI (Message Waiting Indicator) updated
+    MwiUpdated {
+        mailbox_id: String,
+        new_messages: u32,
+        old_messages: u32,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
 /// Call direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -433,6 +478,7 @@ impl PlatformEvent {
             PlatformEvent::System(_) => None,
             PlatformEvent::User(_) => None,
             PlatformEvent::Registration(_) => None,
+            PlatformEvent::Voicemail(event) => event.call_id(),
         }
     }
 
@@ -447,6 +493,7 @@ impl PlatformEvent {
             PlatformEvent::System(event) => event.timestamp(),
             PlatformEvent::User(event) => event.timestamp(),
             PlatformEvent::Registration(event) => event.timestamp(),
+            PlatformEvent::Voicemail(event) => event.timestamp(),
         }
     }
 }
@@ -583,6 +630,25 @@ impl SystemEvent {
             SystemEvent::Started { timestamp, .. }
             | SystemEvent::Stopping { timestamp, .. }
             | SystemEvent::HealthCheck { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl VoicemailEvent {
+    pub fn call_id(&self) -> Option<&CallId> {
+        match self {
+            VoicemailEvent::MessageRecorded { call_id, .. }
+            | VoicemailEvent::MessagePlayed { call_id, .. } => Some(call_id),
+            VoicemailEvent::MessageDeleted { .. } | VoicemailEvent::MwiUpdated { .. } => None,
+        }
+    }
+
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            VoicemailEvent::MessageRecorded { timestamp, .. }
+            | VoicemailEvent::MessageDeleted { timestamp, .. }
+            | VoicemailEvent::MessagePlayed { timestamp, .. }
+            | VoicemailEvent::MwiUpdated { timestamp, .. } => *timestamp,
         }
     }
 }

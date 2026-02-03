@@ -531,16 +531,14 @@ impl FlowEngine {
                 }
 
                 // Return WaitingForVoicemail to let flow handler invoke voicemail service
-                // The flow handler will need to integrate with VoicemailService
-                info!(
-                    call_id = %context.call_id,
-                    "Voicemail node configured, waiting for voicemail recording to complete"
-                );
-
-                // For now, we'll just continue to next_on_success
-                // In full implementation, this would return a new FlowExecutionResult variant
-                // like WaitingForVoicemail
-                Ok(FlowExecutionResult::Continue(next_on_success.clone()))
+                Ok(FlowExecutionResult::WaitingForVoicemail {
+                    mailbox: interpolated_mailbox,
+                    is_busy: *is_busy,
+                    max_duration: *max_duration,
+                    play_beep: *play_beep,
+                    next_on_success: next_on_success.clone(),
+                    next_on_error: next_on_error.clone(),
+                })
             }
         };
 
@@ -577,6 +575,13 @@ impl FlowEngine {
                     call_id = %context.call_id,
                     destination = %destination,
                     "Flow execution paused, waiting for outbound call"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForVoicemail { mailbox, .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    mailbox = %mailbox,
+                    "Flow execution paused, waiting for voicemail recording"
                 );
             }
             Err(e) => {
@@ -818,6 +823,16 @@ pub enum FlowExecutionResult {
         on_no_answer: Option<String>,
         on_error: Option<String>,
         next: String,
+    },
+
+    /// Waiting for voicemail recording to complete (Voicemail node)
+    WaitingForVoicemail {
+        mailbox: String,
+        is_busy: bool,
+        max_duration: u32,
+        play_beep: bool,
+        next_on_success: String,
+        next_on_error: Option<String>,
     },
 }
 
