@@ -19,9 +19,13 @@ use sip_transaction::{
 use sip_uac::UserAgentClient;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
+
+/// Pre-compiled regex for interpolating `{{variable}}` placeholders.
+static INTERPOLATION_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\{\{([^}]+)\}\}").expect("invalid interpolation regex"));
 
 /// Flow call handler.
 ///
@@ -155,9 +159,8 @@ impl FlowCallHandler {
 
     /// Interpolate `{{variable}}` placeholders in a template string using flow context variables.
     fn interpolate(template: &str, context: &FlowContext) -> String {
-        let re = regex::Regex::new(r"\{\{([^}]+)\}\}").unwrap();
         let mut result = template.to_string();
-        for cap in re.captures_iter(template) {
+        for cap in INTERPOLATION_RE.captures_iter(template) {
             let var_name = cap[1].trim();
             if let Ok(value) = context.get_variable(var_name) {
                 result = result.replace(&cap[0], &value);
@@ -906,7 +909,7 @@ impl FlowCallHandler {
             // Fallback: hardcoded minimal SDP
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             format!(

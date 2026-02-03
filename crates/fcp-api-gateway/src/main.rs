@@ -91,18 +91,90 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
+/// Check health of a single backend service.
+async fn check_backend_health(
+    client: &reqwest::Client,
+    backend: &config::BackendService,
+) -> serde_json::Value {
+    let url = format!("{}{}", backend.url, backend.health_check_path);
+    let start = std::time::Instant::now();
+
+    match client
+        .get(&url)
+        .timeout(backend.connection_timeout)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let response_time_ms = start.elapsed().as_millis() as u64;
+            let status = if resp.status().is_success() {
+                "healthy"
+            } else {
+                "unhealthy"
+            };
+            json!({
+                "url": backend.url,
+                "status": status,
+                "response_time_ms": response_time_ms
+            })
+        }
+        Err(e) => {
+            let response_time_ms = start.elapsed().as_millis() as u64;
+            let status = if e.is_timeout() {
+                "unreachable"
+            } else {
+                "unhealthy"
+            };
+            json!({
+                "url": backend.url,
+                "status": status,
+                "response_time_ms": response_time_ms
+            })
+        }
+    }
+}
+
 /// Gateway status handler with backend health
 async fn gateway_status(State(proxy_state): State<proxy::ProxyState>) -> impl IntoResponse {
-    // TODO: Check backend health
+    let client = &proxy_state.client;
+    let backends_config = &proxy_state.config.backends;
+
+    // Check admin backend health
+    let admin_health = check_backend_health(client, &backends_config.admin).await;
+
+    // Check optional backends
+    let events_health = match &backends_config.events {
+        Some(backend) => serde_json::Value::from(check_backend_health(client, backend).await),
+        None => serde_json::Value::Null,
+    };
+    let jobs_health = match &backends_config.jobs {
+        Some(backend) => serde_json::Value::from(check_backend_health(client, backend).await),
+        None => serde_json::Value::Null,
+    };
+
+    // Determine overall status: degraded if any configured backend is not healthy
+    let mut degraded = admin_health.get("status").and_then(|s| s.as_str()) != Some("healthy");
+    if let Some(s) = events_health.get("status").and_then(|s| s.as_str()) {
+        if s != "healthy" {
+            degraded = true;
+        }
+    }
+    if let Some(s) = jobs_health.get("status").and_then(|s| s.as_str()) {
+        if s != "healthy" {
+            degraded = true;
+        }
+    }
+
+    let overall_status = if degraded { "degraded" } else { "operational" };
+
     Json(json!({
-        "status": "operational",
+        "status": overall_status,
         "service": "fcp-api-gateway",
         "version": env!("CARGO_PKG_VERSION"),
         "backends": {
-            "admin": {
-                "url": proxy_state.config.backends.admin.url,
-                "status": "unknown"  // TODO: Implement health checks
-            }
+            "admin": admin_health,
+            "events": events_health,
+            "jobs": jobs_health
         }
     }))
 }

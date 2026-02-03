@@ -412,7 +412,7 @@ async fn main() -> Result<()> {
         sbc_config.b2bua.clone(),
         Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
         None, // No PBX handler
-    ));
+    )?);
 
     // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared
     //     implementation that also resolves FQDN hosts via DNS)

@@ -437,7 +437,7 @@ impl SipMessageHandler {
         b2bua_config: B2buaConfig,
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
             transaction_manager,
@@ -480,11 +480,9 @@ impl SipMessageHandler {
         b2bua_config: B2buaConfig,
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         // Validate settings early to catch configuration errors at startup
-        if let Err(e) = settings.validate() {
-            panic!("Invalid ServerSettings: {}", e);
-        }
+        settings.validate().map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
 
         // Create User Agent Server helper with shared dialog manager
         let mut uas = sip_uas::UserAgentServer::new(local_uri.clone(), local_uri);
@@ -626,7 +624,7 @@ impl SipMessageHandler {
         // Start subscription expiry monitor
         this.spawn_subscription_expiry_monitor();
 
-        this
+        Ok(this)
     }
 
     /// Get a reference to the B2BUA policy configuration.
@@ -6399,7 +6397,14 @@ impl SipMessageHandler {
         handle: &ServerTransactionHandle,
         call_id: &fcp_b2bua_core::CallId,
     ) -> Result<()> {
-        let pbx = self.pbx_handler.as_ref().unwrap();
+        let pbx = match self.pbx_handler.as_ref() {
+            Some(p) => p,
+            None => {
+                let response = self.create_simple_response(request, 500, "PBX Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
 
         // Determine the caller's extension from From header
         let caller_ext = sip_parse::header(request.headers(), "From")
@@ -6437,7 +6442,14 @@ impl SipMessageHandler {
         call_id: &fcp_b2bua_core::CallId,
         target_extension: &str,
     ) -> Result<()> {
-        let pbx = self.pbx_handler.as_ref().unwrap();
+        let pbx = match self.pbx_handler.as_ref() {
+            Some(p) => p,
+            None => {
+                let response = self.create_simple_response(request, 500, "PBX Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
 
         match pbx.find_ringing_for_extension(target_extension, &self.call_manager) {
             Some(ringing_call_id) => {
@@ -6469,7 +6481,14 @@ impl SipMessageHandler {
         handle: &ServerTransactionHandle,
         call_id: &fcp_b2bua_core::CallId,
     ) -> Result<()> {
-        let pbx = self.pbx_handler.as_ref().unwrap();
+        let pbx = match self.pbx_handler.as_ref() {
+            Some(p) => p,
+            None => {
+                let response = self.create_simple_response(request, 500, "PBX Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
 
         let caller_ext = sip_parse::header(request.headers(), "From")
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
@@ -6512,7 +6531,14 @@ impl SipMessageHandler {
         call_id: &fcp_b2bua_core::CallId,
         orbit: u16,
     ) -> Result<()> {
-        let pbx = self.pbx_handler.as_ref().unwrap();
+        let pbx = match self.pbx_handler.as_ref() {
+            Some(p) => p,
+            None => {
+                let response = self.create_simple_response(request, 500, "PBX Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
 
         match pbx.retrieve_parked_call(orbit) {
             Ok(parked) => {
@@ -6546,7 +6572,14 @@ impl SipMessageHandler {
         target_extension: &str,
         mode: fcp_pbx::IntercomMode,
     ) -> Result<()> {
-        let pbx = self.pbx_handler.as_ref().unwrap();
+        let pbx = match self.pbx_handler.as_ref() {
+            Some(p) => p,
+            None => {
+                let response = self.create_simple_response(request, 500, "PBX Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
         let params = pbx.build_intercom_params(target_extension, mode);
 
         info!(
@@ -7646,7 +7679,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
-        );
+        ).unwrap();
 
         // Create a REGISTER request
         let mut headers = Headers::new();
@@ -7712,7 +7745,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
-        );
+        ).unwrap();
 
         let mut headers = Headers::new();
         headers.push(
@@ -7778,7 +7811,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
-        );
+        ).unwrap();
 
         let mut headers = Headers::new();
         headers.push(
@@ -7947,7 +7980,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
-        );
+        ).unwrap();
 
         // Create a REGISTER request
         let mut headers = Headers::new();

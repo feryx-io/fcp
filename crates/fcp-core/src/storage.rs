@@ -707,6 +707,11 @@ pub trait RegistrationStore: Send + Sync {
 
     /// Remove expired registrations.
     async fn cleanup_expired(&self) -> Result<usize>;
+
+    /// Count total active registrations across all AORs.
+    async fn registration_count(&self) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 /// Call disposition (answered, busy, failed, etc.)
@@ -1302,6 +1307,11 @@ impl RegistrationStore for FileBackedStorage {
 
         Ok(removed)
     }
+
+    async fn registration_count(&self) -> Result<usize> {
+        let regs = self.registrations.read().await;
+        Ok(regs.values().map(|v| v.len()).sum())
+    }
 }
 
 #[async_trait]
@@ -1478,6 +1488,10 @@ impl RegistrationStore for DynStorage {
 
     async fn cleanup_expired(&self) -> Result<usize> {
         self.registration_store.cleanup_expired().await
+    }
+
+    async fn registration_count(&self) -> Result<usize> {
+        self.registration_store.registration_count().await
     }
 }
 

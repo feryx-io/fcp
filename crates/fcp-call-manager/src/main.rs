@@ -282,6 +282,7 @@ async fn main() -> Result<()> {
         Some(Arc::clone(&dyn_storage)),
         Some(Arc::clone(&media_manager)),
         Some(fcp_core::config::MediaConfig {
+
             enabled: true,
             rtp_port_start: config.media.rtp_port_start,
             rtp_port_end: config.media.rtp_port_end,
@@ -292,7 +293,7 @@ async fn main() -> Result<()> {
         config.b2bua.clone(),
         outbound_route_provider,
         pbx_handler.clone(),
-    ));
+    )?);
 
     // 16. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config

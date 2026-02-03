@@ -272,7 +272,7 @@ async fn main() -> Result<()> {
         config.b2bua.clone(),
         outbound_route_provider,
         None, // No PBX handler
-    ));
+    )?);
 
     // 19. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config

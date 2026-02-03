@@ -617,7 +617,7 @@ fn create_transport_listener(
         fcp_sip::B2buaConfig::default(),
         None, // No outbound route provider
         None, // No PBX handler
-    ));
+    )?);
 
     // Create listener (cast handler to trait object)
     let handler_dyn: Arc<dyn InboundMessageHandler> =
