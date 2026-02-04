@@ -113,13 +113,10 @@ pub struct CreateMailboxRequest {
     pub extension: String,
     pub pin: String,
     #[serde(default = "default_true")]
-    #[allow(dead_code)] // TODO: Implement mailbox enable/disable
     pub enabled: bool,
     #[serde(default = "default_max_duration")]
-    #[allow(dead_code)] // TODO: Implement message duration limits
     pub max_message_duration: u32,
     #[serde(default = "default_max_messages")]
-    #[allow(dead_code)] // TODO: Implement message count limits
     pub max_messages: u32,
 }
 
@@ -164,16 +161,14 @@ pub async fn list_mailboxes(
 
     let tenant_id = tenant.0;
 
-    let _mailboxes = storage
-        .get_mailbox_by_extension(&tenant_id, "")
+    let mailboxes = storage
+        .list_mailboxes(&tenant_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    // This is a workaround - ideally we'd have a list_mailboxes method that works properly
-    // For now, return empty array since get_mailbox_by_extension won't work without extension
-    let mailboxes: Vec<MailboxResponse> = vec![];
+    let responses: Vec<MailboxResponse> = mailboxes.into_iter().map(MailboxResponse::from).collect();
 
-    Ok(Json(mailboxes))
+    Ok(Json(responses))
 }
 
 /// Get a specific mailbox by ID.
@@ -192,12 +187,32 @@ pub async fn get_mailbox(
     Ok(Json(MailboxResponse::from(mailbox)))
 }
 
+/// Validate mailbox control fields.
+fn validate_mailbox_controls(
+    max_message_duration: u32,
+    max_messages: u32,
+) -> Result<(), ApiError> {
+    if max_message_duration == 0 || max_message_duration > 3600 {
+        return Err(ApiError::BadRequest(
+            "max_message_duration must be between 1 and 3600 seconds".to_string(),
+        ));
+    }
+    if max_messages == 0 || max_messages > 10000 {
+        return Err(ApiError::BadRequest(
+            "max_messages must be between 1 and 10000".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a new voicemail mailbox.
 pub async fn create_mailbox(
     State(state): State<ApiState>,
     Json(req): Json<CreateMailboxRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+
+    validate_mailbox_controls(req.max_message_duration, req.max_messages)?;
 
     let tenant_id = TenantId::from_str(&req.tenant_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?;
@@ -206,7 +221,7 @@ pub async fn create_mailbox(
     let line_binding_id = LineBindingId::from_str(&req.line_binding_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid line_binding_id: {}", e)))?;
 
-    let mailbox = VoicemailMailbox::new(
+    let mut mailbox = VoicemailMailbox::new(
         tenant_id,
         user_id,
         line_binding_id,
@@ -214,12 +229,23 @@ pub async fn create_mailbox(
         req.pin,
     );
 
+    mailbox.enabled = req.enabled;
+    mailbox.max_message_duration = req.max_message_duration;
+    mailbox.max_messages = req.max_messages;
+
     storage
         .put_mailbox(mailbox.clone())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    info!(mailbox_id = %mailbox.id, extension = %req.extension, "Created voicemail mailbox");
+    info!(
+        mailbox_id = %mailbox.id,
+        extension = %req.extension,
+        enabled = %mailbox.enabled,
+        max_message_duration = %mailbox.max_message_duration,
+        max_messages = %mailbox.max_messages,
+        "Created voicemail mailbox"
+    );
 
     Ok((StatusCode::CREATED, Json(MailboxResponse::from(mailbox))))
 }
@@ -237,6 +263,22 @@ pub async fn update_mailbox(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    // Validate limits if provided
+    if let Some(max_duration) = req.max_message_duration {
+        if max_duration == 0 || max_duration > 3600 {
+            return Err(ApiError::BadRequest(
+                "max_message_duration must be between 1 and 3600 seconds".to_string(),
+            ));
+        }
+    }
+    if let Some(max_msgs) = req.max_messages {
+        if max_msgs == 0 || max_msgs > 10000 {
+            return Err(ApiError::BadRequest(
+                "max_messages must be between 1 and 10000".to_string(),
+            ));
+        }
+    }
 
     // Update fields if provided
     if let Some(pin) = req.pin {
@@ -385,4 +427,98 @@ pub async fn delete_message(
     info!(message_id = %id, "Deleted voicemail message");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Enable a mailbox.
+pub async fn enable_mailbox(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let mut mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    mailbox.enabled = true;
+    mailbox.updated_at = SystemTime::now();
+
+    storage
+        .put_mailbox(mailbox.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(mailbox_id = %id, "Enabled voicemail mailbox");
+
+    Ok(Json(MailboxResponse::from(mailbox)))
+}
+
+/// Disable a mailbox.
+pub async fn disable_mailbox(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let mut mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    mailbox.enabled = false;
+    mailbox.updated_at = SystemTime::now();
+
+    storage
+        .put_mailbox(mailbox.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(mailbox_id = %id, "Disabled voicemail mailbox");
+
+    Ok(Json(MailboxResponse::from(mailbox)))
+}
+
+/// Mailbox statistics response.
+#[derive(Debug, Serialize)]
+pub struct MailboxStatsResponse {
+    pub mailbox_id: String,
+    pub total_messages: u32,
+    pub new_messages: u32,
+    pub heard_messages: u32,
+    pub saved_messages: u32,
+    pub storage_used: u64,
+    pub avg_duration: u32,
+}
+
+/// Get mailbox statistics.
+pub async fn get_mailbox_stats(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    // Verify mailbox exists
+    let _mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    let stats = storage
+        .get_mailbox_stats(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(MailboxStatsResponse {
+        mailbox_id: id,
+        total_messages: stats.total_messages,
+        new_messages: stats.new_messages,
+        heard_messages: stats.heard_messages,
+        saved_messages: stats.saved_messages,
+        storage_used: stats.storage_used,
+        avg_duration: stats.avg_duration,
+    }))
 }

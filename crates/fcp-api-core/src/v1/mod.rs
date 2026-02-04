@@ -156,6 +156,18 @@ pub fn router() -> Router<ApiState> {
                 .delete(voicemail::delete_mailbox),
         )
         .route(
+            "/voicemail/mailboxes/:id/enable",
+            post(voicemail::enable_mailbox),
+        )
+        .route(
+            "/voicemail/mailboxes/:id/disable",
+            post(voicemail::disable_mailbox),
+        )
+        .route(
+            "/voicemail/mailboxes/:id/stats",
+            get(voicemail::get_mailbox_stats),
+        )
+        .route(
             "/voicemail/mailboxes/:mailbox_id/messages",
             get(voicemail::list_messages),
         )
