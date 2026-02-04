@@ -348,6 +348,19 @@ impl MwiStatus {
     }
 }
 
+/// Trait for sending MWI (Message Waiting Indicator) notifications.
+///
+/// Implementations typically send a SIP NOTIFY with an
+/// `application/simple-message-summary` body per RFC 3842.
+#[async_trait::async_trait]
+pub trait MwiNotifier: Send + Sync {
+    /// Send an MWI notification for the given status.
+    ///
+    /// The implementation is responsible for resolving the target
+    /// endpoint(s) and delivering the notification.
+    async fn notify_mwi(&self, mwi_status: &MwiStatus) -> anyhow::Result<()>;
+}
+
 /// Voicemail statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoicemailStats {

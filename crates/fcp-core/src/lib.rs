@@ -79,6 +79,6 @@ pub use crate::transport::{
     TransportReceiver, TransportType,
 };
 pub use crate::voicemail::{
-    GreetingType, MessagePriority, MessageStatus, MwiStatus, VoicemailGreeting, VoicemailMailbox,
-    VoicemailMessage, VoicemailStats,
+    GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
+    VoicemailMailbox, VoicemailMessage, VoicemailStats,
 };

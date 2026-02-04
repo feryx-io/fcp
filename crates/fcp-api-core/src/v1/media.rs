@@ -224,14 +224,11 @@ pub async fn hangup_call(
     let call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
 
-    // Terminate the call
+    // Send BYE on both legs and terminate the call
     state
-        .call_manager
-        .terminate_call(&call_id, Some("Hungup via API".to_string()))
+        .handler
+        .hangup_call_by_id(&call_id, Some("Hungup via API".to_string()))
         .map_err(|e| ApiError::NotFound(format!("Failed to hangup call: {}", e)))?;
-
-    // TODO: Send BYE requests on both legs
-    // This requires access to the SIP handler to send BYE
 
     Ok((
         StatusCode::OK,

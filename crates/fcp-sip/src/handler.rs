@@ -7303,6 +7303,96 @@ impl SipMessageHandler {
 
         Ok(call_id)
     }
+
+    /// Hangs up an active call by sending BYE on both legs and terminating the call.
+    ///
+    /// This method retrieves the call from CallManager, sends BYE on each leg that
+    /// has an active dialog, and then terminates the call (CDR, events, removal).
+    pub fn hangup_call_by_id(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        reason: Option<String>,
+    ) -> Result<()> {
+        let call = self
+            .call_manager
+            .get_call(call_id)
+            .ok_or_else(|| anyhow::anyhow!("Call not found: {}", call_id))?;
+
+        if let Some(uac) = &self.uac {
+            if let Some(dialog) = &call.a_leg.dialog {
+                self.spawn_bye_with_retry(
+                    Arc::clone(uac),
+                    dialog.clone(),
+                    *call_id,
+                    true,
+                );
+            }
+            if let Some(b_leg) = &call.b_leg {
+                if let Some(dialog) = &b_leg.dialog {
+                    self.spawn_bye_with_retry(
+                        Arc::clone(uac),
+                        dialog.clone(),
+                        *call_id,
+                        false,
+                    );
+                }
+            }
+        }
+
+        self.call_manager.terminate_call(call_id, reason)?;
+        Ok(())
+    }
+
+    /// Sends an MWI (Message Waiting Indicator) NOTIFY to a SIP endpoint.
+    ///
+    /// Formats an RFC 3842 `application/simple-message-summary` body and sends
+    /// an unsolicited NOTIFY to the given target URI.
+    pub async fn send_mwi_notify(
+        &self,
+        target_uri: &sip_core::SipUri,
+        mwi_status: &fcp_core::MwiStatus,
+    ) -> Result<()> {
+        let uac = self
+            .uac
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("UAC not configured — cannot send MWI NOTIFY"))?;
+
+        let messages_waiting = if mwi_status.has_messages() {
+            "yes"
+        } else {
+            "no"
+        };
+
+        let body = format!(
+            "Messages-Waiting: {}\r\nVoice-Message: {}/{} ({}/{})\r\n",
+            messages_waiting,
+            mwi_status.new_messages,
+            mwi_status.old_messages,
+            mwi_status.urgent_new_messages,
+            mwi_status.urgent_old_messages,
+        );
+
+        let response = uac
+            .send_unsolicited_notify(
+                target_uri,
+                "message-summary",
+                "application/simple-message-summary",
+                &body,
+            )
+            .await?;
+
+        if response.code() >= 200 && response.code() < 300 {
+            info!(target = %target_uri.as_str(), "MWI NOTIFY accepted");
+        } else {
+            warn!(
+                target = %target_uri.as_str(),
+                code = response.code(),
+                "MWI NOTIFY rejected"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Background task that drives a click-to-call origination to completion.

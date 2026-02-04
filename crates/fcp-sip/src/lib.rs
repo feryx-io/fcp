@@ -15,6 +15,7 @@ pub mod flow_handler;
 pub mod handler;
 pub mod listener;
 pub mod metrics;
+pub mod mwi;
 pub mod registrar;
 pub mod service;
 pub mod settings;

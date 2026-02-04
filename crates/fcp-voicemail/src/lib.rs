@@ -12,13 +12,11 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use fcp_core::storage::VoicemailStore;
 use fcp_core::{
-    CallId, GreetingType, LineBindingId, MessagePriority, MessageStatus, MwiStatus, TenantId,
-    VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
+    CallId, MessagePriority, MessageStatus, MwiNotifier, VoicemailMailbox, VoicemailMessage,
 };
 use fcp_media::MediaManager;
 
@@ -69,6 +67,9 @@ pub struct VoicemailService {
     /// Media manager for playing audio and recording
     media_manager: Arc<MediaManager>,
 
+    /// Optional MWI notifier for sending SIP NOTIFY messages
+    mwi_notifier: Option<Arc<dyn MwiNotifier>>,
+
     /// Configuration
     config: VoicemailConfig,
 }
@@ -83,6 +84,22 @@ impl VoicemailService {
         Self {
             storage,
             media_manager,
+            mwi_notifier: None,
+            config,
+        }
+    }
+
+    /// Creates a new voicemail service with an MWI notifier.
+    pub fn with_mwi_notifier(
+        storage: Arc<dyn VoicemailStore>,
+        media_manager: Arc<MediaManager>,
+        mwi_notifier: Arc<dyn MwiNotifier>,
+        config: VoicemailConfig,
+    ) -> Self {
+        Self {
+            storage,
+            media_manager,
+            mwi_notifier: Some(mwi_notifier),
             config,
         }
     }
@@ -372,9 +389,14 @@ impl VoicemailService {
             "MWI status retrieved"
         );
 
-        // TODO: Send SIP NOTIFY via SIP handler
-        // This will be implemented when we add MWI support to fcp-sip
-        warn!("MWI notification not yet implemented - requires SIP NOTIFY support");
+        match &self.mwi_notifier {
+            Some(notifier) => {
+                notifier.notify_mwi(&mwi_status).await?;
+            }
+            None => {
+                warn!("MWI notifier not configured — skipping SIP NOTIFY");
+            }
+        }
 
         Ok(())
     }
@@ -408,21 +430,27 @@ impl VoicemailService {
     }
 
     /// Plays an audio file to the caller.
-    async fn play_audio(&self, _call_id: &CallId, audio_path: &PathBuf) -> Result<()> {
+    async fn play_audio(&self, call_id: &CallId, audio_path: &PathBuf) -> Result<()> {
         debug!("Playing audio file: {:?}", audio_path);
 
         if !audio_path.exists() {
             anyhow::bail!("Audio file not found: {:?}", audio_path);
         }
 
-        // TODO: Implement audio playback via MediaManager
-        // For now, this is a placeholder
-        warn!("Audio playback not yet fully implemented in MediaManager");
+        let playback_id = self
+            .media_manager
+            .play_file(
+                call_id,
+                audio_path.to_string_lossy().to_string(),
+                fcp_media::AudioTarget::ParticipantA,
+            )
+            .await
+            .context("Failed to start audio playback")?;
 
-        // self.media_manager
-        //     .play_audio(call_id, audio_path)
-        //     .await
-        //     .context("Failed to play audio")?;
+        self.media_manager
+            .wait_playback_completion(playback_id)
+            .await
+            .context("Audio playback failed")?;
 
         Ok(())
     }
