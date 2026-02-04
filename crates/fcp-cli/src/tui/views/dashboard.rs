@@ -1,12 +1,33 @@
 //! Dashboard view showing system overview
 
 use crate::tui::app::App;
+use crate::tui::event::{Event, EventResult, ViewContext};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use std::time::Duration;
+
+/// Handle events for the dashboard view - dashboard has no actions
+pub async fn handle_event(
+    _api_client: &crate::api::ApiClient,
+    _event: &Event,
+    _ctx: &ViewContext,
+) -> EventResult {
+    EventResult::NotConsumed
+}
+
+/// Check if the dashboard needs data loading
+pub fn needs_data() -> bool {
+    false
+}
+
+/// Refresh interval for the dashboard
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(5)
+}
 
 /// Render the dashboard view
 pub fn render(f: &mut Frame, app: &App, area: Rect) {

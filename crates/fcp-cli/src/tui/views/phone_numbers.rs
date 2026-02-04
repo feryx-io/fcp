@@ -1,12 +1,15 @@
 //! Phone numbers view showing phone numbers and details
 
 use crate::api::PhoneNumberResponse;
+use crate::tui::event::{Event, EventResult, ViewContext};
+use fcp_core::Permission;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
+use std::time::Duration;
 use tui_input::Input;
 
 /// Modal type for phone number operations
@@ -765,8 +768,105 @@ fn render_delete_modal(
     f.render_widget(paragraph, popup_area);
 }
 
+/// Handle all events for the phone numbers view
+pub async fn handle_event(
+    state: &mut PhoneNumbersViewState,
+    api_client: &crate::api::ApiClient,
+    event: &Event,
+    ctx: &ViewContext,
+) -> EventResult {
+    // Modal events take priority
+    if state.modal != PhoneNumberModal::None {
+        let handled = handle_phone_number_action(state, api_client, event).await;
+        if handled {
+            return EventResult::Consumed;
+        }
+    }
+
+    // Navigation (only when no modal is open)
+    if event.is_up() {
+        state.select_previous();
+        return EventResult::Consumed;
+    }
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
+
+    // Refresh
+    if event.is_refresh() {
+        fetch_data(api_client, state).await;
+        return EventResult::Consumed;
+    }
+
+    // Action keys (only when no modal is open)
+    if state.modal == PhoneNumberModal::None {
+        if let Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char(c),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            ..
+        }) = event
+        {
+            match c {
+                'a' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::PhoneNumberCreate, ctx.deployment_mode)
+                    {
+                        state.open_add_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot create phone numbers".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'e' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::PhoneNumberUpdate, ctx.deployment_mode)
+                    {
+                        state.open_edit_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot edit phone numbers".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'd' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::PhoneNumberDelete, ctx.deployment_mode)
+                    {
+                        state.open_delete_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot delete phone numbers".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    EventResult::NotConsumed
+}
+
+/// Check if the phone numbers view needs initial data loading
+pub fn needs_data(state: &PhoneNumbersViewState) -> bool {
+    state.phone_numbers.is_empty() && !state.loading
+}
+
+/// Refresh interval for phone numbers
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(5)
+}
+
 /// Fetch phone numbers from the API
-pub async fn fetch_phone_numbers(
+pub async fn fetch_data(
     api_client: &crate::api::ApiClient,
     state: &mut PhoneNumbersViewState,
 ) {
@@ -785,29 +885,6 @@ pub async fn fetch_phone_numbers(
     }
 }
 
-/// Handle navigation events
-pub fn handle_navigation(state: &mut PhoneNumbersViewState, event: &crate::tui::event::Event) {
-    use crate::tui::event::Event;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    match event {
-        Event::Key(KeyEvent {
-            code: KeyCode::Up,
-            modifiers: KeyModifiers::NONE,
-            ..
-        }) => {
-            state.select_previous();
-        }
-        Event::Key(KeyEvent {
-            code: KeyCode::Down,
-            modifiers: KeyModifiers::NONE,
-            ..
-        }) => {
-            state.select_next();
-        }
-        _ => {}
-    }
-}
 
 /// Handle keyboard events for phone number modal
 pub async fn handle_phone_number_action(
@@ -958,7 +1035,7 @@ pub async fn create_phone_number(
         Ok(_) => {
             state.close_modal();
             // Refresh phone number list
-            fetch_phone_numbers(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to create phone number: {}", e));
@@ -1053,7 +1130,7 @@ pub async fn update_phone_number(
         Ok(_) => {
             state.close_modal();
             // Refresh phone number list
-            fetch_phone_numbers(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to update phone number: {}", e));
@@ -1077,7 +1154,7 @@ pub async fn delete_phone_number(
         Ok(_) => {
             state.close_modal();
             // Refresh phone number list
-            fetch_phone_numbers(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to delete phone number: {}", e));

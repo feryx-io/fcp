@@ -1,12 +1,14 @@
 //! Registrations view showing SIP registrations and details
 
 use crate::api::RegistrationResponse;
+use crate::tui::event::{Event, EventResult, ViewContext};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
+use std::time::Duration;
 
 /// State for the registrations view
 pub struct RegistrationsViewState {
@@ -376,17 +378,45 @@ fn format_duration(seconds: u64) -> String {
     }
 }
 
-/// Handle navigation events for registrations view
-pub fn handle_navigation(state: &mut RegistrationsViewState, event: &crate::tui::event::Event) {
+/// Handle all events for the registrations view
+pub async fn handle_event(
+    state: &mut RegistrationsViewState,
+    api_client: &crate::api::ApiClient,
+    event: &Event,
+    _ctx: &ViewContext,
+) -> EventResult {
+    // Navigation
     if event.is_up() {
         state.select_previous();
-    } else if event.is_down() {
-        state.select_next();
+        return EventResult::Consumed;
     }
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
+
+    // Refresh
+    if event.is_refresh() {
+        fetch_data(api_client, state).await;
+        return EventResult::Consumed;
+    }
+
+    EventResult::NotConsumed
 }
 
+/// Check if the registrations view needs initial data loading
+pub fn needs_data(state: &RegistrationsViewState) -> bool {
+    state.registrations.is_empty() && !state.loading
+}
+
+/// Refresh interval for registrations (medium refresh for expiration countdown)
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(3)
+}
+
+
 /// Fetch registrations data for all users
-pub async fn fetch_registrations(
+pub async fn fetch_data(
     api_client: &crate::api::ApiClient,
     state: &mut RegistrationsViewState,
 ) {
@@ -486,6 +516,7 @@ pub async fn fetch_registrations(
     state.set_registrations(all_registrations);
     state.loading = false;
 }
+
 
 /// Extract hostname from URL (e.g., "http://192.168.1.225:8081" -> "192.168.1.225")
 fn extract_host_from_url(url: &str) -> String {

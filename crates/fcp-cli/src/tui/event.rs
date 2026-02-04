@@ -4,6 +4,25 @@ use anyhow::Result;
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
+use super::app::CurrentUser;
+use fcp_core::DeploymentMode;
+
+/// Result of a view handling an event
+pub enum EventResult {
+    /// The event was consumed by the view
+    Consumed,
+    /// The event was not consumed (should be handled globally)
+    NotConsumed,
+    /// The event was consumed but produced an error
+    Error(String),
+}
+
+/// Context passed to views for permission checks
+pub struct ViewContext {
+    pub current_user: CurrentUser,
+    pub deployment_mode: DeploymentMode,
+}
+
 /// Events that can occur in the TUI
 #[derive(Debug, Clone)]
 pub enum Event {

@@ -1,6 +1,7 @@
 //! Tenants view showing tenant list and details
 
 use crate::api::{ApiClient, CreateTenantRequest, TenantResponse, UpdateTenantRequest};
+use crate::tui::event::{Event, EventResult, ViewContext};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -8,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
+use std::time::Duration;
 use tui_input::Input;
 
 /// Modal type for tenant operations
@@ -733,8 +735,46 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// Handle all events for the tenants view
+pub async fn handle_event(
+    state: &mut TenantsState,
+    api_client: &ApiClient,
+    event: &Event,
+    _ctx: &ViewContext,
+) -> EventResult {
+    // Delegate to the existing action handler (handles modals, action keys, and refresh)
+    let handled = handle_tenant_action(state, api_client, event).await;
+    if handled {
+        return EventResult::Consumed;
+    }
+
+    // Navigation when no modal is open
+    if state.modal == TenantModal::None {
+        if event.is_up() {
+            state.previous_tenant();
+            return EventResult::Consumed;
+        }
+        if event.is_down() {
+            state.next_tenant();
+            return EventResult::Consumed;
+        }
+    }
+
+    EventResult::NotConsumed
+}
+
+/// Check if the tenants view needs initial data loading
+pub fn needs_data(state: &TenantsState) -> bool {
+    state.tenants.is_empty()
+}
+
+/// Refresh interval for tenants
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(5)
+}
+
 /// Fetch tenants from the API
-pub async fn fetch_tenants(client: &ApiClient, state: &mut TenantsState) {
+pub async fn fetch_data(client: &ApiClient, state: &mut TenantsState) {
     state.error = None;
     state.message = None;
 
@@ -797,7 +837,7 @@ pub async fn handle_tenant_action(
                                 state.message =
                                     Some(format!("Tenant '{}' created successfully", tenant.name));
                                 state.close_modal();
-                                fetch_tenants(client, state).await;
+                                fetch_data(client, state).await;
                             }
                             Err(e) => {
                                 state.error = Some(format!("Failed to create tenant: {}", e));
@@ -814,7 +854,7 @@ pub async fn handle_tenant_action(
                                         tenant.name
                                     ));
                                     state.close_modal();
-                                    fetch_tenants(client, state).await;
+                                    fetch_data(client, state).await;
                                 }
                                 Err(e) => {
                                     state.error = Some(format!("Failed to update tenant: {}", e));
@@ -905,7 +945,7 @@ pub async fn handle_tenant_action(
                                 state.message =
                                     Some(format!("Tenant '{}' deleted successfully", tenant_name));
                                 state.close_modal();
-                                fetch_tenants(client, state).await;
+                                fetch_data(client, state).await;
                             }
                             Err(e) => {
                                 state.error = Some(format!("Failed to delete tenant: {}", e));
@@ -951,7 +991,7 @@ pub async fn handle_tenant_action(
                     ..
                 }) => {
                     // Refresh the list
-                    fetch_tenants(client, state).await;
+                    fetch_data(client, state).await;
                     true
                 }
                 _ => false,

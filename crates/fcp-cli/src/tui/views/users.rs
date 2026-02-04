@@ -1,6 +1,8 @@
 //! Users view showing user list and details
 
 use crate::api::{CreateUserRequest, UpdateUserRequest, UserResponse};
+use crate::tui::event::{Event, EventResult, ViewContext};
+use fcp_core::Permission;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
@@ -9,6 +11,7 @@ use ratatui::{
     },
     Frame,
 };
+use std::time::Duration;
 use tui_input::Input;
 
 /// Common language codes (BCP 47 format)
@@ -837,17 +840,131 @@ fn render_details_panel(
     f.render_widget(details, area);
 }
 
-/// Handle navigation events for users view
-pub fn handle_navigation(state: &mut UsersViewState, event: &crate::tui::event::Event) {
+/// Handle all events for the users view
+pub async fn handle_event(
+    state: &mut UsersViewState,
+    api_client: &crate::api::ApiClient,
+    event: &Event,
+    ctx: &ViewContext,
+) -> EventResult {
+    // Modal events take priority
+    if state.modal != UserModal::None || state.in_selection_mode {
+        let handled = handle_user_action(state, api_client, event).await;
+        if handled {
+            return EventResult::Consumed;
+        }
+    }
+
+    // Navigation (only when no modal is open)
     if event.is_up() {
         state.select_previous();
-    } else if event.is_down() {
-        state.select_next();
+        return EventResult::Consumed;
     }
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
+
+    // Refresh
+    if event.is_refresh() {
+        fetch_data(api_client, state).await;
+        return EventResult::Consumed;
+    }
+
+    // Action keys (only when no modal is open)
+    if state.modal == UserModal::None {
+        if let Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char(c),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            ..
+        }) = event
+        {
+            match c {
+                'a' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::UserCreate, ctx.deployment_mode)
+                    {
+                        state.open_add_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot create users".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'e' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::UserUpdate, ctx.deployment_mode)
+                    {
+                        state.open_edit_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot edit users".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'd' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::UserDelete, ctx.deployment_mode)
+                    {
+                        state.open_delete_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot delete users".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                's' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::UserSetPassword, ctx.deployment_mode)
+                    {
+                        state.open_set_digest_password_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot set passwords".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'c' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::UserSetPassword, ctx.deployment_mode)
+                    {
+                        state.open_remove_digest_password_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot clear passwords".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    EventResult::NotConsumed
+}
+
+/// Check if the users view needs initial data loading
+pub fn needs_data(state: &UsersViewState) -> bool {
+    state.users.is_empty() && !state.loading
+}
+
+/// Refresh interval for users
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(5)
 }
 
 /// Fetch users data
-pub async fn fetch_users(api_client: &crate::api::ApiClient, state: &mut UsersViewState) {
+pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut UsersViewState) {
     state.loading = true;
     state.error = None;
 
@@ -862,6 +979,7 @@ pub async fn fetch_users(api_client: &crate::api::ApiClient, state: &mut UsersVi
 
     state.loading = false;
 }
+
 
 /// Render add user modal
 fn render_add_modal(
@@ -1612,7 +1730,7 @@ async fn create_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
         Ok(_) => {
             state.close_modal();
             // Refresh user list
-            fetch_users(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to create user: {}", e));
@@ -1670,7 +1788,7 @@ async fn update_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
 
             state.close_modal();
             // Refresh user list
-            fetch_users(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to update user: {}", e));
@@ -1687,7 +1805,7 @@ async fn delete_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
             Ok(_) => {
                 state.close_modal();
                 // Refresh user list
-                fetch_users(api_client, state).await;
+                fetch_data(api_client, state).await;
             }
             Err(e) => {
                 state.error = Some(format!("Failed to delete user: {}", e));
@@ -1714,7 +1832,7 @@ async fn set_digest_password(api_client: &crate::api::ApiClient, state: &mut Use
             Ok(_) => {
                 state.close_modal();
                 // Refresh user list
-                fetch_users(api_client, state).await;
+                fetch_data(api_client, state).await;
             }
             Err(e) => {
                 state.error = Some(format!("Failed to set digest password: {}", e));
@@ -1732,7 +1850,7 @@ async fn remove_digest_password(api_client: &crate::api::ApiClient, state: &mut 
             Ok(_) => {
                 state.close_modal();
                 // Refresh user list
-                fetch_users(api_client, state).await;
+                fetch_data(api_client, state).await;
             }
             Err(e) => {
                 state.error = Some(format!("Failed to remove digest password: {}", e));

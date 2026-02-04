@@ -1,16 +1,17 @@
 //! Line bindings view for managing phone number to device mappings
 
 use crate::api::{ApiClient, DeviceResponse, LineBindingResponse, PhoneNumberResponse};
+use crate::tui::event::{Event, EventResult, ViewContext};
 use crate::tui::theme::Theme;
 use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// State for the line bindings view
 pub struct LineBindingsViewState {
@@ -349,6 +350,66 @@ fn render_binding_details(
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
+}
+
+/// Handle all events for the line bindings view
+pub async fn handle_event(
+    state: &mut LineBindingsViewState,
+    api_client: &ApiClient,
+    event: &Event,
+    _ctx: &ViewContext,
+) -> EventResult {
+    // Navigation
+    if event.is_up() {
+        state.select_previous();
+        return EventResult::Consumed;
+    }
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
+
+    // Refresh ('r' key) - this fixes the bug where global is_refresh() consumed 'r' before
+    // line_bindings could handle it
+    if event.is_refresh() {
+        if let Err(e) = state.refresh(api_client).await {
+            return EventResult::Error(format!("Failed to refresh line bindings: {}", e));
+        }
+        return EventResult::Consumed;
+    }
+
+    // Delete ('d' key)
+    if let Event::Key(KeyEvent {
+        code: KeyCode::Char('d'),
+        modifiers: KeyModifiers::NONE,
+        ..
+    }) = event
+    {
+        if let Err(e) = state.delete_selected(api_client).await {
+            return EventResult::Error(format!("Failed to delete line binding: {}", e));
+        }
+        return EventResult::Consumed;
+    }
+
+    EventResult::NotConsumed
+}
+
+/// Check if the line bindings view needs initial data loading
+pub fn needs_data(state: &LineBindingsViewState) -> bool {
+    state.bindings.is_empty()
+}
+
+/// Refresh interval for line bindings
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(5)
+}
+
+/// Fetch line bindings data
+pub async fn fetch_data(
+    api_client: &ApiClient,
+    state: &mut LineBindingsViewState,
+) -> std::result::Result<(), anyhow::Error> {
+    state.refresh(api_client).await
 }
 
 /// Format SystemTime for display

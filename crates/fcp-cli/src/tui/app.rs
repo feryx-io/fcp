@@ -1,5 +1,6 @@
 //! Main TUI application state
 
+use super::event::ViewContext;
 use super::theme::Theme;
 use super::views::calls::CallsViewState;
 use super::views::debug::DebugViewState;
@@ -252,96 +253,12 @@ impl App {
         self.should_quit = true;
     }
 
-    /// Check if user can view carrier data
-    pub fn can_view_carrier_data(&self) -> bool {
-        self.deployment_mode.has_carrier_features()
-            && self
-                .current_user
-                .has_permission(Permission::PhoneNumberViewCarrierData, self.deployment_mode)
-    }
-
-    /// Check if user can edit phone numbers
-    pub fn can_edit_phone_numbers(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::PhoneNumberUpdate, self.deployment_mode)
-    }
-
-    /// Check if user can delete phone numbers
-    pub fn can_delete_phone_numbers(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::PhoneNumberDelete, self.deployment_mode)
-    }
-
-    /// Check if user can edit devices
-    pub fn can_edit_devices(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::DeviceUpdate, self.deployment_mode)
-    }
-
-    /// Check if user can delete devices
-    pub fn can_delete_devices(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::DeviceDelete, self.deployment_mode)
-    }
-
-    /// Check if user can create phone numbers
-    pub fn can_create_phone_numbers(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::PhoneNumberCreate, self.deployment_mode)
-    }
-
-    /// Check if user can create devices
-    pub fn can_create_devices(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::DeviceCreate, self.deployment_mode)
-    }
-
-    /// Check if user can create users
-    pub fn can_create_users(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::UserCreate, self.deployment_mode)
-    }
-
-    /// Check if user can edit users
-    pub fn can_edit_users(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::UserUpdate, self.deployment_mode)
-    }
-
-    /// Check if user can delete users
-    pub fn can_delete_users(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::UserDelete, self.deployment_mode)
-    }
-
-    /// Check if user can set passwords
-    pub fn can_set_passwords(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::UserSetPassword, self.deployment_mode)
-    }
-
-    /// Check if user can view debug information
-    pub fn can_view_debug(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::DebugView, self.deployment_mode)
-    }
-
-    /// Check if user can view system logs
-    pub fn can_view_logs(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::SystemViewLogs, self.deployment_mode)
-    }
-
-    /// Check if user can view calls
-    pub fn can_view_calls(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::CallView, self.deployment_mode)
-    }
-
-    /// Check if user can view registrations
-    pub fn can_view_registrations(&self) -> bool {
-        self.current_user
-            .has_permission(Permission::RegistrationView, self.deployment_mode)
+    /// Create a ViewContext for passing to view event handlers
+    pub fn view_context(&self) -> ViewContext {
+        ViewContext {
+            current_user: self.current_user.clone(),
+            deployment_mode: self.deployment_mode,
+        }
     }
 
     /// Get list of tabs accessible to current user

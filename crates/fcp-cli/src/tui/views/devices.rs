@@ -1,12 +1,15 @@
 //! Devices view showing devices and details
 
 use crate::api::DeviceResponse;
+use crate::tui::event::{Event, EventResult, ViewContext};
+use fcp_core::Permission;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
+use std::time::Duration;
 use tui_input::Input;
 
 /// Modal type for device operations
@@ -892,8 +895,105 @@ fn render_select_owner_modal(
     f.render_widget(instructions, instructions_area);
 }
 
+/// Handle all events for the devices view
+pub async fn handle_event(
+    state: &mut DevicesViewState,
+    api_client: &crate::api::ApiClient,
+    event: &Event,
+    ctx: &ViewContext,
+) -> EventResult {
+    // Modal events take priority
+    if state.modal != DeviceModal::None {
+        let handled = handle_device_action(state, api_client, event).await;
+        if handled {
+            return EventResult::Consumed;
+        }
+    }
+
+    // Navigation (only when no modal is open)
+    if event.is_up() {
+        state.select_previous();
+        return EventResult::Consumed;
+    }
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
+
+    // Refresh
+    if event.is_refresh() {
+        fetch_data(api_client, state).await;
+        return EventResult::Consumed;
+    }
+
+    // Action keys (only when no modal is open)
+    if state.modal == DeviceModal::None {
+        if let Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char(c),
+            modifiers: crossterm::event::KeyModifiers::NONE,
+            ..
+        }) = event
+        {
+            match c {
+                'a' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::DeviceCreate, ctx.deployment_mode)
+                    {
+                        state.open_add_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot create devices".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'e' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::DeviceUpdate, ctx.deployment_mode)
+                    {
+                        state.open_edit_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot edit devices".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                'd' => {
+                    if ctx
+                        .current_user
+                        .has_permission(Permission::DeviceDelete, ctx.deployment_mode)
+                    {
+                        state.open_delete_modal();
+                    } else {
+                        return EventResult::Error(
+                            "Permission denied: Cannot delete devices".to_string(),
+                        );
+                    }
+                    return EventResult::Consumed;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    EventResult::NotConsumed
+}
+
+/// Check if the devices view needs initial data loading
+pub fn needs_data(state: &DevicesViewState) -> bool {
+    state.devices.is_empty() && !state.loading
+}
+
+/// Refresh interval for devices
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(5)
+}
+
 /// Fetch devices from the API
-pub async fn fetch_devices(api_client: &crate::api::ApiClient, state: &mut DevicesViewState) {
+pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut DevicesViewState) {
     state.loading = true;
     state.error = None;
 
@@ -914,29 +1014,6 @@ pub async fn fetch_devices(api_client: &crate::api::ApiClient, state: &mut Devic
     }
 }
 
-/// Handle navigation events
-pub fn handle_navigation(state: &mut DevicesViewState, event: &crate::tui::event::Event) {
-    use crate::tui::event::Event;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    match event {
-        Event::Key(KeyEvent {
-            code: KeyCode::Up,
-            modifiers: KeyModifiers::NONE,
-            ..
-        }) => {
-            state.select_previous();
-        }
-        Event::Key(KeyEvent {
-            code: KeyCode::Down,
-            modifiers: KeyModifiers::NONE,
-            ..
-        }) => {
-            state.select_next();
-        }
-        _ => {}
-    }
-}
 
 /// Handle keyboard events for device modal
 pub async fn handle_device_action(
@@ -1132,7 +1209,7 @@ pub async fn create_device(api_client: &crate::api::ApiClient, state: &mut Devic
         Ok(_) => {
             state.close_modal();
             // Refresh device list
-            fetch_devices(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to create device: {}", e));
@@ -1212,7 +1289,7 @@ pub async fn update_device(api_client: &crate::api::ApiClient, state: &mut Devic
         Ok(_) => {
             state.close_modal();
             // Refresh device list
-            fetch_devices(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to update device: {}", e));
@@ -1233,7 +1310,7 @@ pub async fn delete_device(api_client: &crate::api::ApiClient, state: &mut Devic
         Ok(_) => {
             state.close_modal();
             // Refresh device list
-            fetch_devices(api_client, state).await;
+            fetch_data(api_client, state).await;
         }
         Err(e) => {
             state.error = Some(format!("Failed to delete device: {}", e));

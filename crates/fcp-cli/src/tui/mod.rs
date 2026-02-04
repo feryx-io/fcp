@@ -153,56 +153,73 @@ fn render_placeholder(f: &mut ratatui::Frame, app: &App, area: ratatui::layout::
 
 /// Handle an event
 async fn handle_event(app: &mut App, event: Event) -> Result<()> {
-    // Handle user modal events first - if a modal is open, it gets ALL keyboard events
-    if app.active_tab == Tab::Users
-        && app.users_view.modal != crate::tui::views::users::UserModal::None
-    {
-        let handled =
-            views::users::handle_user_action(&mut app.users_view, &app.api_client, &event).await;
-        if handled {
+    use event::EventResult;
+
+    // Step 1: Delegate to the active view's handle_event() first
+    let ctx = app.view_context();
+    let result = match app.active_tab {
+        Tab::Dashboard => views::dashboard::handle_event(&app.api_client, &event, &ctx).await,
+        Tab::Tenants => {
+            views::tenants::handle_event(&mut app.tenants_view, &app.api_client, &event, &ctx)
+                .await
+        }
+        Tab::Users => {
+            views::users::handle_event(&mut app.users_view, &app.api_client, &event, &ctx).await
+        }
+        Tab::PhoneNumbers => {
+            views::phone_numbers::handle_event(
+                &mut app.phone_numbers_view,
+                &app.api_client,
+                &event,
+                &ctx,
+            )
+            .await
+        }
+        Tab::Devices => {
+            views::devices::handle_event(&mut app.devices_view, &app.api_client, &event, &ctx)
+                .await
+        }
+        Tab::LineBindings => {
+            views::line_bindings::handle_event(
+                &mut app.line_bindings_view,
+                &app.api_client,
+                &event,
+                &ctx,
+            )
+            .await
+        }
+        Tab::Calls => {
+            views::calls::handle_event(&mut app.calls_view, &app.api_client, &event, &ctx).await
+        }
+        Tab::Registrations => {
+            views::registrations::handle_event(
+                &mut app.registrations_view,
+                &app.api_client,
+                &event,
+                &ctx,
+            )
+            .await
+        }
+        Tab::Debug => {
+            views::debug::handle_event(&mut app.debug_view, &app.api_client, &event, &ctx).await
+        }
+    };
+
+    // Step 2: Handle result
+    match result {
+        EventResult::Error(msg) => {
+            app.set_error(msg);
             return Ok(());
+        }
+        EventResult::Consumed => {
+            return Ok(());
+        }
+        EventResult::NotConsumed => {
+            // Fall through to global event handling
         }
     }
 
-    // Handle phone number modal events
-    if app.active_tab == Tab::PhoneNumbers
-        && app.phone_numbers_view.modal != crate::tui::views::phone_numbers::PhoneNumberModal::None
-    {
-        let handled = views::phone_numbers::handle_phone_number_action(
-            &mut app.phone_numbers_view,
-            &app.api_client,
-            &event,
-        )
-        .await;
-        if handled {
-            return Ok(());
-        }
-    }
-
-    // Handle device modal events
-    if app.active_tab == Tab::Devices
-        && app.devices_view.modal != crate::tui::views::devices::DeviceModal::None
-    {
-        let handled =
-            views::devices::handle_device_action(&mut app.devices_view, &app.api_client, &event)
-                .await;
-        if handled {
-            return Ok(());
-        }
-    }
-
-    // Handle tenant modal events
-    if app.active_tab == Tab::Tenants
-        && app.tenants_view.modal != crate::tui::views::tenants::TenantModal::None
-    {
-        let handled =
-            views::tenants::handle_tenant_action(&mut app.tenants_view, &app.api_client, &event)
-                .await;
-        if handled {
-            return Ok(());
-        }
-    }
-
+    // Step 3: Handle global events (not consumed by the view)
     match event {
         Event::Key(_) if event.is_quit() => {
             app.quit();
@@ -210,7 +227,6 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
         Event::Key(KeyEvent {
             code: KeyCode::Esc, ..
         }) => {
-            // Escape dismisses errors
             if app.error.is_some() {
                 app.clear_error();
             }
@@ -220,438 +236,109 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             modifiers: KeyModifiers::NONE,
             ..
         }) if matches!(c, '1'..='9') => {
-            // Number keys 1-9 jump directly to main tabs
             if let Some(tab) = Tab::from_index((c as usize) - ('1' as usize)) {
                 app.set_tab(tab);
                 check_and_load_tab_data(app).await;
             }
         }
         Event::Key(_) if event.is_shift_left() => {
-            // Shift+Left always navigates main tabs
             app.prev_tab();
             check_and_load_tab_data(app).await;
         }
         Event::Key(_) if event.is_shift_right() => {
-            // Shift+Right always navigates main tabs
             app.next_tab();
             check_and_load_tab_data(app).await;
         }
         Event::Key(_) if event.is_left() => {
-            // Special handling for Debug tab - navigate between sub-views
-            if app.active_tab == Tab::Debug {
-                views::debug::handle_tab_navigation(&mut app.debug_view, &event);
-            } else {
-                app.prev_tab();
-                // Load data when switching to a new tab
-                check_and_load_tab_data(app).await;
-            }
+            app.prev_tab();
+            check_and_load_tab_data(app).await;
         }
         Event::Key(_) if event.is_right() => {
-            // Special handling for Debug tab - navigate between sub-views
-            if app.active_tab == Tab::Debug {
-                views::debug::handle_tab_navigation(&mut app.debug_view, &event);
-            } else {
-                app.next_tab();
-                // Load data when switching to a new tab
-                check_and_load_tab_data(app).await;
-            }
-        }
-        Event::Key(_) if event.is_refresh() => {
-            app.mark_update();
-            // Trigger data refresh for current view
-            match app.active_tab {
-                Tab::Users => {
-                    views::users::fetch_users(&app.api_client, &mut app.users_view).await;
-                }
-                Tab::Calls => {
-                    views::calls::fetch_calls(&app.api_client, &mut app.calls_view).await;
-                }
-                Tab::Registrations => {
-                    views::registrations::fetch_registrations(
-                        &app.api_client,
-                        &mut app.registrations_view,
-                    )
-                    .await;
-                }
-                Tab::Debug => {
-                    views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view).await;
-                }
-                _ => {}
-            }
+            app.next_tab();
+            check_and_load_tab_data(app).await;
         }
         Event::Key(_) if event.is_help() => {
             // TODO: Show help overlay
         }
-        Event::Key(_) if event.is_up() || event.is_down() => {
-            // Delegate navigation to view-specific handlers
-            match app.active_tab {
-                Tab::Users => {
-                    views::users::handle_navigation(&mut app.users_view, &event);
-                }
-                Tab::PhoneNumbers => {
-                    views::phone_numbers::handle_navigation(&mut app.phone_numbers_view, &event);
-                }
-                Tab::Devices => {
-                    views::devices::handle_navigation(&mut app.devices_view, &event);
-                }
-                Tab::Tenants => {
-                    // Only handle navigation when no modal is open
-                    if app.tenants_view.modal == crate::tui::views::tenants::TenantModal::None {
-                        if event.is_up() {
-                            app.tenants_view.previous_tenant();
-                        } else if event.is_down() {
-                            app.tenants_view.next_tenant();
-                        }
-                    }
-                }
-                Tab::LineBindings => {
-                    if event.is_up() {
-                        app.line_bindings_view.select_previous();
-                    } else if event.is_down() {
-                        app.line_bindings_view.select_next();
-                    }
-                }
-                Tab::Calls => {
-                    views::calls::handle_navigation(&mut app.calls_view, &event);
-                }
-                Tab::Registrations => {
-                    views::registrations::handle_navigation(&mut app.registrations_view, &event);
-                }
-                Tab::Debug => {
-                    views::debug::handle_navigation(&mut app.debug_view, &event);
-                }
-                _ => {}
-            }
-        }
-        Event::Key(_) if event.is_tab() => {
-            // Handle tab within Debug view for sub-view navigation
-            if app.active_tab == Tab::Debug {
-                views::debug::handle_tab_navigation(&mut app.debug_view, &event);
-            }
-        }
-        Event::Key(_) => {
-            // Only handle these keys if no modal is open (modal events handled at top of function)
-            if app.active_tab == Tab::Users
-                && app.users_view.modal == crate::tui::views::users::UserModal::None
-            {
-                match event {
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('a'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_create_users() {
-                            app.users_view.open_add_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot create users".to_string());
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('e'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_edit_users() {
-                            app.users_view.open_edit_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot edit users".to_string());
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('d'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_delete_users() {
-                            app.users_view.open_delete_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot delete users".to_string());
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('s'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_set_passwords() {
-                            app.users_view.open_set_digest_password_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot set passwords".to_string());
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('c'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_set_passwords() {
-                            app.users_view.open_remove_digest_password_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot clear passwords".to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Handle phone numbers actions
-            if app.active_tab == Tab::PhoneNumbers
-                && app.phone_numbers_view.modal
-                    == crate::tui::views::phone_numbers::PhoneNumberModal::None
-            {
-                match event {
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('a'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_create_phone_numbers() {
-                            app.phone_numbers_view.open_add_modal();
-                        } else {
-                            app.set_error(
-                                "Permission denied: Cannot create phone numbers".to_string(),
-                            );
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('e'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_edit_phone_numbers() {
-                            app.phone_numbers_view.open_edit_modal();
-                        } else {
-                            app.set_error(
-                                "Permission denied: Cannot edit phone numbers".to_string(),
-                            );
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('d'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_delete_phone_numbers() {
-                            app.phone_numbers_view.open_delete_modal();
-                        } else {
-                            app.set_error(
-                                "Permission denied: Cannot delete phone numbers".to_string(),
-                            );
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Handle line bindings actions
-            if app.active_tab == Tab::LineBindings {
-                match event {
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('r'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
-                            app.error = Some(format!("Failed to refresh line bindings: {}", e));
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('d'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if let Err(e) = app
-                            .line_bindings_view
-                            .delete_selected(&app.api_client)
-                            .await
-                        {
-                            app.error = Some(format!("Failed to delete line binding: {}", e));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Handle tenant actions
-            if app.active_tab == Tab::Tenants
-                && app.tenants_view.modal == crate::tui::views::tenants::TenantModal::None
-            {
-                // Handle action keys (a, e, d, r) - navigation is handled earlier in the event loop
-                views::tenants::handle_tenant_action(
-                    &mut app.tenants_view,
-                    &app.api_client,
-                    &event,
-                )
-                .await;
-            }
-
-            // Handle devices actions
-            if app.active_tab == Tab::Devices
-                && app.devices_view.modal == crate::tui::views::devices::DeviceModal::None
-            {
-                match event {
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('a'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_create_devices() {
-                            app.devices_view.open_add_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot create devices".to_string());
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('e'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_edit_devices() {
-                            app.devices_view.open_edit_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot edit devices".to_string());
-                        }
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('d'),
-                        modifiers: KeyModifiers::NONE,
-                        ..
-                    }) => {
-                        if app.can_delete_devices() {
-                            app.devices_view.open_delete_modal();
-                        } else {
-                            app.set_error("Permission denied: Cannot delete devices".to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
         Event::Tick => {
-            // Periodic update - auto-refresh data based on view requirements
+            // Periodic update - use view-specific refresh intervals
             let time_since = app.time_since_update();
-            let should_refresh = match app.active_tab {
-                Tab::Calls => time_since > std::time::Duration::from_secs(2), // Fast refresh for live durations
-                Tab::Registrations => time_since > std::time::Duration::from_secs(3), // Medium refresh for expiration countdown
-                Tab::Debug => time_since > std::time::Duration::from_secs(4), // Debug refresh
-                Tab::Users
-                | Tab::Tenants
-                | Tab::PhoneNumbers
-                | Tab::Devices
-                | Tab::LineBindings
-                | Tab::Dashboard => time_since > std::time::Duration::from_secs(5), // Slower refresh
+            let interval = match app.active_tab {
+                Tab::Dashboard => views::dashboard::refresh_interval(),
+                Tab::Calls => views::calls::refresh_interval(),
+                Tab::Registrations => views::registrations::refresh_interval(),
+                Tab::Debug => views::debug::refresh_interval(),
+                Tab::Users => views::users::refresh_interval(),
+                Tab::Tenants => views::tenants::refresh_interval(),
+                Tab::PhoneNumbers => views::phone_numbers::refresh_interval(),
+                Tab::Devices => views::devices::refresh_interval(),
+                Tab::LineBindings => views::line_bindings::refresh_interval(),
             };
 
-            if should_refresh {
+            if time_since > interval {
                 app.mark_update();
-                match app.active_tab {
-                    Tab::Tenants => {
-                        views::tenants::fetch_tenants(&app.api_client, &mut app.tenants_view).await;
-                    }
-                    Tab::Users => {
-                        views::users::fetch_users(&app.api_client, &mut app.users_view).await;
-                    }
-                    Tab::Calls => {
-                        views::calls::fetch_calls(&app.api_client, &mut app.calls_view).await;
-                    }
-                    Tab::Registrations => {
-                        views::registrations::fetch_registrations(
-                            &app.api_client,
-                            &mut app.registrations_view,
-                        )
-                        .await;
-                    }
-                    Tab::Debug => {
-                        views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view).await;
-                    }
-                    Tab::PhoneNumbers => {
-                        views::phone_numbers::fetch_phone_numbers(
-                            &app.api_client,
-                            &mut app.phone_numbers_view,
-                        )
-                        .await;
-                    }
-                    Tab::Devices => {
-                        views::devices::fetch_devices(&app.api_client, &mut app.devices_view).await;
-                    }
-                    Tab::LineBindings => {
-                        if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
-                            app.error = Some(format!("Failed to fetch line bindings: {}", e));
-                        }
-                    }
-                    _ => {}
-                }
+                refresh_active_tab(app).await;
             }
         }
         Event::Resize(_, _) => {
             // Terminal was resized, will redraw automatically
         }
+        _ => {}
     }
 
     Ok(())
 }
 
-/// Check if the current tab needs data loading and load it
-async fn check_and_load_tab_data(app: &mut App) {
+/// Refresh data for the active tab
+async fn refresh_active_tab(app: &mut App) {
     match app.active_tab {
+        Tab::Dashboard => {}
         Tab::Tenants => {
-            // Load tenants if list is empty
-            if app.tenants_view.tenants.is_empty() {
-                views::tenants::fetch_tenants(&app.api_client, &mut app.tenants_view).await;
-            }
+            views::tenants::fetch_data(&app.api_client, &mut app.tenants_view).await;
         }
         Tab::Users => {
-            // Load users if list is empty or not loading
-            if app.users_view.users.is_empty() && !app.users_view.loading {
-                views::users::fetch_users(&app.api_client, &mut app.users_view).await;
-            }
+            views::users::fetch_data(&app.api_client, &mut app.users_view).await;
         }
         Tab::Calls => {
-            // Load calls if list is empty or not loading
-            if app.calls_view.calls.is_empty() && !app.calls_view.loading {
-                views::calls::fetch_calls(&app.api_client, &mut app.calls_view).await;
-            }
+            views::calls::fetch_data(&app.api_client, &mut app.calls_view).await;
         }
         Tab::Registrations => {
-            // Load registrations if list is empty or not loading
-            if app.registrations_view.registrations.is_empty() && !app.registrations_view.loading {
-                views::registrations::fetch_registrations(
-                    &app.api_client,
-                    &mut app.registrations_view,
-                )
-                .await;
-            }
+            views::registrations::fetch_data(&app.api_client, &mut app.registrations_view).await;
         }
         Tab::Debug => {
-            // Load debug data if summary is not available or not loading
-            if app.debug_view.summary.is_none() && !app.debug_view.loading {
-                views::debug::fetch_debug_data(&app.api_client, &mut app.debug_view).await;
-            }
+            views::debug::fetch_data(&app.api_client, &mut app.debug_view).await;
         }
         Tab::PhoneNumbers => {
-            // Load phone numbers if list is empty or not loading
-            if app.phone_numbers_view.phone_numbers.is_empty() && !app.phone_numbers_view.loading {
-                views::phone_numbers::fetch_phone_numbers(
-                    &app.api_client,
-                    &mut app.phone_numbers_view,
-                )
-                .await;
-            }
+            views::phone_numbers::fetch_data(&app.api_client, &mut app.phone_numbers_view).await;
         }
         Tab::Devices => {
-            // Load devices if list is empty or not loading
-            if app.devices_view.devices.is_empty() && !app.devices_view.loading {
-                views::devices::fetch_devices(&app.api_client, &mut app.devices_view).await;
-            }
+            views::devices::fetch_data(&app.api_client, &mut app.devices_view).await;
         }
         Tab::LineBindings => {
-            // Load line bindings if list is empty
-            if app.line_bindings_view.bindings.is_empty() {
-                if let Err(e) = app.line_bindings_view.refresh(&app.api_client).await {
-                    app.error = Some(format!("Failed to fetch line bindings: {}", e));
-                }
+            if let Err(e) =
+                views::line_bindings::fetch_data(&app.api_client, &mut app.line_bindings_view).await
+            {
+                app.error = Some(format!("Failed to fetch line bindings: {}", e));
             }
         }
-        _ => {}
+    }
+}
+
+/// Check if the current tab needs data loading and load it
+async fn check_and_load_tab_data(app: &mut App) {
+    let needs_load = match app.active_tab {
+        Tab::Dashboard => views::dashboard::needs_data(),
+        Tab::Tenants => views::tenants::needs_data(&app.tenants_view),
+        Tab::Users => views::users::needs_data(&app.users_view),
+        Tab::Calls => views::calls::needs_data(&app.calls_view),
+        Tab::Registrations => views::registrations::needs_data(&app.registrations_view),
+        Tab::Debug => views::debug::needs_data(&app.debug_view),
+        Tab::PhoneNumbers => views::phone_numbers::needs_data(&app.phone_numbers_view),
+        Tab::Devices => views::devices::needs_data(&app.devices_view),
+        Tab::LineBindings => views::line_bindings::needs_data(&app.line_bindings_view),
+    };
+
+    if needs_load {
+        refresh_active_tab(app).await;
     }
 }

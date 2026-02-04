@@ -1,12 +1,14 @@
 //! Calls view showing active calls and details
 
 use crate::api::CallResponse;
+use crate::tui::event::{Event, EventResult, ViewContext};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Frame,
 };
+use std::time::Duration;
 
 /// State for the calls view
 pub struct CallsViewState {
@@ -351,17 +353,44 @@ fn format_duration(seconds: u64) -> String {
     }
 }
 
-/// Handle navigation events for calls view
-pub fn handle_navigation(state: &mut CallsViewState, event: &crate::tui::event::Event) {
+/// Handle all events for the calls view
+pub async fn handle_event(
+    state: &mut CallsViewState,
+    api_client: &crate::api::ApiClient,
+    event: &Event,
+    _ctx: &ViewContext,
+) -> EventResult {
+    // Navigation
     if event.is_up() {
         state.select_previous();
-    } else if event.is_down() {
-        state.select_next();
+        return EventResult::Consumed;
     }
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
+
+    // Refresh
+    if event.is_refresh() {
+        fetch_data(api_client, state).await;
+        return EventResult::Consumed;
+    }
+
+    EventResult::NotConsumed
+}
+
+/// Check if the calls view needs initial data loading
+pub fn needs_data(state: &CallsViewState) -> bool {
+    state.calls.is_empty() && !state.loading
+}
+
+/// Refresh interval for calls (fast refresh for live durations)
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(2)
 }
 
 /// Fetch calls data
-pub async fn fetch_calls(api_client: &crate::api::ApiClient, state: &mut CallsViewState) {
+pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut CallsViewState) {
     state.loading = true;
     state.error = None;
 
@@ -376,3 +405,4 @@ pub async fn fetch_calls(api_client: &crate::api::ApiClient, state: &mut CallsVi
 
     state.loading = false;
 }
+

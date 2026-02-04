@@ -4,12 +4,14 @@ use crate::api::{
     DebugCallResponse, DebugSummaryResponse, DialogResponse, RateLimitResponse,
     SubscriptionResponse,
 };
+use crate::tui::event::{Event, EventResult, ViewContext};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs},
     Frame,
 };
+use std::time::Duration;
 
 /// Debug sub-view categories
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,29 +632,59 @@ fn format_counts(counts: &std::collections::HashMap<String, u32>) -> String {
         .join(", ")
 }
 
-/// Handle navigation events for debug view
-pub fn handle_navigation(state: &mut DebugViewState, event: &crate::tui::event::Event) {
+/// Handle all events for the debug view
+pub async fn handle_event(
+    state: &mut DebugViewState,
+    api_client: &crate::api::ApiClient,
+    event: &Event,
+    _ctx: &ViewContext,
+) -> EventResult {
+    // Navigation (up/down)
     if event.is_up() {
         state.select_previous();
-    } else if event.is_down() {
-        state.select_next();
+        return EventResult::Consumed;
     }
-}
+    if event.is_down() {
+        state.select_next();
+        return EventResult::Consumed;
+    }
 
-/// Handle tab navigation for debug sub-views
-pub fn handle_tab_navigation(state: &mut DebugViewState, event: &crate::tui::event::Event) {
+    // Sub-view navigation (left/right/tab)
     if event.is_left() {
         state.prev_subview();
-    } else if event.is_right() {
-        state.next_subview();
-    } else if event.is_tab() {
-        // Tab key also moves to next sub-view
-        state.next_subview();
+        return EventResult::Consumed;
     }
+    if event.is_right() {
+        state.next_subview();
+        return EventResult::Consumed;
+    }
+    if event.is_tab() {
+        state.next_subview();
+        return EventResult::Consumed;
+    }
+
+    // Refresh
+    if event.is_refresh() {
+        fetch_data(api_client, state).await;
+        return EventResult::Consumed;
+    }
+
+    EventResult::NotConsumed
 }
 
+/// Check if the debug view needs initial data loading
+pub fn needs_data(state: &DebugViewState) -> bool {
+    state.summary.is_none() && !state.loading
+}
+
+/// Refresh interval for debug
+pub fn refresh_interval() -> Duration {
+    Duration::from_secs(4)
+}
+
+
 /// Fetch all debug data
-pub async fn fetch_debug_data(api_client: &crate::api::ApiClient, state: &mut DebugViewState) {
+pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut DebugViewState) {
     state.loading = true;
     state.error = None;
 
@@ -708,3 +740,4 @@ pub async fn fetch_debug_data(api_client: &crate::api::ApiClient, state: &mut De
 
     state.loading = false;
 }
+
