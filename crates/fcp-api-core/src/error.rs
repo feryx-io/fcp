@@ -20,6 +20,8 @@ pub struct ErrorResponse {
 pub enum ApiError {
     NotFound(String),
     BadRequest(String),
+    Unauthorized(String),
+    Forbidden(String),
     Internal(String),
     Conflict(String),
 }
@@ -31,6 +33,16 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 "Bad Request".to_string(),
+                Some(msg),
+            ),
+            ApiError::Unauthorized(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized".to_string(),
+                Some(msg),
+            ),
+            ApiError::Forbidden(msg) => (
+                StatusCode::FORBIDDEN,
+                "Forbidden".to_string(),
                 Some(msg),
             ),
             ApiError::Internal(msg) => (

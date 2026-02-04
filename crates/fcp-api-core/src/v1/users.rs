@@ -158,6 +158,8 @@ fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
 pub struct UpdateUserRequest {
     pub display_name: Option<String>,
     pub enabled: Option<bool>,
+    pub role: Option<String>,
+    pub department_id: Option<String>,
 
     // Enterprise fields
     pub email: Option<String>,
@@ -358,6 +360,29 @@ pub async fn update_user(
     }
     if let Some(enabled) = req.enabled {
         user.enabled = enabled;
+    }
+    if let Some(role_str) = &req.role {
+        let new_role = parse_user_role(Some(role_str.as_str()))?;
+        let old_role = user.role;
+        user.role = new_role;
+
+        // Security audit log for role changes
+        if old_role != new_role {
+            warn!(
+                event = "role_changed",
+                username = %username,
+                old_role = ?old_role,
+                new_role = ?new_role,
+                "User role changed"
+            );
+        }
+    }
+    if let Some(department_id) = req.department_id {
+        user.department_id = if department_id.is_empty() {
+            None
+        } else {
+            Some(department_id)
+        };
     }
 
     // Update enterprise fields

@@ -148,10 +148,13 @@ pub struct UsersViewState {
     /// Input field: emergency contact phone
     pub input_emergency_contact_phone: Input,
 
+    /// Input field: role (super_admin, telecom_admin, etc.)
+    pub input_role: Input,
+
     /// Input field: digest password (for Cisco-style separate SIP credentials)
     pub input_digest_password: Input,
 
-    /// Which input field is focused (0-15)
+    /// Which input field is focused (0-16)
     pub focused_field: usize,
     /// Total number of input fields
     pub total_fields: usize,
@@ -195,9 +198,10 @@ impl Default for UsersViewState {
             input_account_status: Input::new("active".to_string()),
             input_emergency_contact_name: Input::default(),
             input_emergency_contact_phone: Input::default(),
+            input_role: Input::new("end_user".to_string()),
             input_digest_password: Input::default(),
             focused_field: 0,
-            total_fields: 16, // 0-15: username, display_name, password, email, phone, mobile, pin, ext, dept, title, loc, lang, tz, status, emerg_name, emerg_phone
+            total_fields: 17, // 0-16: username, display_name, password, role, email, phone, mobile, pin, ext, dept, title, loc, lang, tz, status, emerg_name, emerg_phone
             scroll_offset: 0,
             in_selection_mode: false,
             language_list_state: ListState::default(),
@@ -265,6 +269,7 @@ impl UsersViewState {
             self.input_username = Input::new(user.username);
             self.input_display_name = Input::new(user.display_name.unwrap_or_default());
             self.input_password = Input::default(); // Don't show existing password
+            self.input_role = Input::new(user.role.clone());
             self.input_enabled = user.enabled;
 
             // Enterprise fields
@@ -327,6 +332,7 @@ impl UsersViewState {
         self.input_username = Input::default();
         self.input_display_name = Input::default();
         self.input_password = Input::default();
+        self.input_role = Input::new("end_user".to_string());
         self.input_enabled = true;
         // Enterprise fields
         self.input_email = Input::default();
@@ -378,26 +384,27 @@ impl UsersViewState {
             0 => &mut self.input_username,
             1 => &mut self.input_display_name,
             2 => &mut self.input_password,
-            3 => &mut self.input_email,
-            4 => &mut self.input_phone_number,
-            5 => &mut self.input_mobile_number,
-            6 => &mut self.input_pin,
-            7 => &mut self.input_extension,
-            8 => &mut self.input_department,
-            9 => &mut self.input_job_title,
-            10 => &mut self.input_location,
-            11 => &mut self.input_language,
-            12 => &mut self.input_timezone,
-            13 => &mut self.input_account_status,
-            14 => &mut self.input_emergency_contact_name,
-            15 => &mut self.input_emergency_contact_phone,
+            3 => &mut self.input_role,
+            4 => &mut self.input_email,
+            5 => &mut self.input_phone_number,
+            6 => &mut self.input_mobile_number,
+            7 => &mut self.input_pin,
+            8 => &mut self.input_extension,
+            9 => &mut self.input_department,
+            10 => &mut self.input_job_title,
+            11 => &mut self.input_location,
+            12 => &mut self.input_language,
+            13 => &mut self.input_timezone,
+            14 => &mut self.input_account_status,
+            15 => &mut self.input_emergency_contact_name,
+            16 => &mut self.input_emergency_contact_phone,
             _ => &mut self.input_username,
         }
     }
 
     /// Check if the currently focused field is a selection field (language or timezone)
     pub fn is_selection_field(&self) -> bool {
-        self.focused_field == 11 || self.focused_field == 12
+        self.focused_field == 12 || self.focused_field == 13
     }
 
     /// Open selection mode for the currently focused field
@@ -409,7 +416,7 @@ impl UsersViewState {
         self.in_selection_mode = true;
 
         // Initialize selection state based on current value
-        if self.focused_field == 11 {
+        if self.focused_field == 12 {
             // Language field
             let current_lang = self.input_language.value();
             let index = LANGUAGES
@@ -417,7 +424,7 @@ impl UsersViewState {
                 .position(|(code, _)| *code == current_lang)
                 .unwrap_or(0);
             self.language_list_state.select(Some(index));
-        } else if self.focused_field == 12 {
+        } else if self.focused_field == 13 {
             // Timezone field
             let current_tz = self.input_timezone.value();
             let index = TIMEZONES
@@ -439,14 +446,14 @@ impl UsersViewState {
             return;
         }
 
-        if self.focused_field == 11 {
+        if self.focused_field == 12 {
             // Language field
             if let Some(selected) = self.language_list_state.selected() {
                 if let Some((code, _)) = LANGUAGES.get(selected) {
                     self.input_language = Input::new(code.to_string());
                 }
             }
-        } else if self.focused_field == 12 {
+        } else if self.focused_field == 13 {
             // Timezone field
             if let Some(selected) = self.timezone_list_state.selected() {
                 if let Some(tz) = TIMEZONES.get(selected) {
@@ -464,13 +471,13 @@ impl UsersViewState {
             return;
         }
 
-        if self.focused_field == 11 {
+        if self.focused_field == 12 {
             // Language field
             let selected = self.language_list_state.selected().unwrap_or(0);
             if selected > 0 {
                 self.language_list_state.select(Some(selected - 1));
             }
-        } else if self.focused_field == 12 {
+        } else if self.focused_field == 13 {
             // Timezone field
             let selected = self.timezone_list_state.selected().unwrap_or(0);
             if selected > 0 {
@@ -485,13 +492,13 @@ impl UsersViewState {
             return;
         }
 
-        if self.focused_field == 11 {
+        if self.focused_field == 12 {
             // Language field
             let selected = self.language_list_state.selected().unwrap_or(0);
             if selected < LANGUAGES.len() - 1 {
                 self.language_list_state.select(Some(selected + 1));
             }
-        } else if self.focused_field == 12 {
+        } else if self.focused_field == 13 {
             // Timezone field
             let selected = self.timezone_list_state.selected().unwrap_or(0);
             if selected < TIMEZONES.len() - 1 {
@@ -545,7 +552,7 @@ fn render_users_table(
     state: &mut UsersViewState,
     area: Rect,
 ) {
-    let header = Row::new(vec!["Username", "Display Name", "Tenant", "Enabled"])
+    let header = Row::new(vec!["Username", "Display Name", "Role", "Tenant", "Enabled"])
         .style(theme.title())
         .bottom_margin(1);
 
@@ -556,6 +563,7 @@ fn render_users_table(
             Row::new(vec![
                 Cell::from(user.username.clone()),
                 Cell::from(user.display_name.clone().unwrap_or_else(|| "-".to_string())),
+                Cell::from(user.role.clone()),
                 Cell::from(user.tenant_id.clone()),
                 Cell::from(if user.enabled { "✓" } else { "✗" }),
             ])
@@ -563,10 +571,11 @@ fn render_users_table(
         .collect();
 
     let widths = [
-        Constraint::Percentage(30),
-        Constraint::Percentage(30),
-        Constraint::Percentage(30),
-        Constraint::Percentage(10),
+        Constraint::Percentage(25),
+        Constraint::Percentage(25),
+        Constraint::Percentage(18),
+        Constraint::Percentage(24),
+        Constraint::Percentage(8),
     ];
 
     let title = if state.loading {
@@ -652,6 +661,11 @@ fn render_details_panel(
                         theme.error()
                     },
                 ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Role: ", theme.muted()),
+                Span::styled(&user.role, theme.info()),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -879,71 +893,76 @@ fn render_add_modal(
             password_masked.as_str(),
             state.focused_field == 2,
         ),
+        (
+            "Role (end_user, read_only, user_admin, telecom_admin, super_admin):",
+            state.input_role.value(),
+            state.focused_field == 3,
+        ),
         // Enterprise fields
         (
             "Email:",
             state.input_email.value(),
-            state.focused_field == 3,
+            state.focused_field == 4,
         ),
         (
             "Phone Number:",
             state.input_phone_number.value(),
-            state.focused_field == 4,
+            state.focused_field == 5,
         ),
         (
             "Mobile Number:",
             state.input_mobile_number.value(),
-            state.focused_field == 5,
+            state.focused_field == 6,
         ),
         (
             "PIN (Voicemail):",
             pin_masked.as_str(),
-            state.focused_field == 6,
+            state.focused_field == 7,
         ),
         (
             "Extension:",
             state.input_extension.value(),
-            state.focused_field == 7,
+            state.focused_field == 8,
         ),
         (
             "Department:",
             state.input_department.value(),
-            state.focused_field == 8,
+            state.focused_field == 9,
         ),
         (
             "Job Title:",
             state.input_job_title.value(),
-            state.focused_field == 9,
+            state.focused_field == 10,
         ),
         (
             "Location:",
             state.input_location.value(),
-            state.focused_field == 10,
+            state.focused_field == 11,
         ),
         (
             "Language (Space to select):",
             state.input_language.value(),
-            state.focused_field == 11,
+            state.focused_field == 12,
         ),
         (
             "Timezone (Space to select):",
             state.input_timezone.value(),
-            state.focused_field == 12,
+            state.focused_field == 13,
         ),
         (
             "Account Status:",
             state.input_account_status.value(),
-            state.focused_field == 13,
+            state.focused_field == 14,
         ),
         (
             "Emergency Name:",
             state.input_emergency_contact_name.value(),
-            state.focused_field == 14,
+            state.focused_field == 15,
         ),
         (
             "Emergency Phone:",
             state.input_emergency_contact_phone.value(),
-            state.focused_field == 15,
+            state.focused_field == 16,
         ),
     ];
 
@@ -984,67 +1003,72 @@ fn render_edit_modal(
             password_masked.as_str(),
             state.focused_field == 2,
         ),
+        (
+            "Role:",
+            state.input_role.value(),
+            state.focused_field == 3,
+        ),
         // Enterprise fields
         (
             "Email:",
             state.input_email.value(),
-            state.focused_field == 3,
+            state.focused_field == 4,
         ),
         (
             "Phone Number:",
             state.input_phone_number.value(),
-            state.focused_field == 4,
+            state.focused_field == 5,
         ),
         (
             "Mobile Number:",
             state.input_mobile_number.value(),
-            state.focused_field == 5,
+            state.focused_field == 6,
         ),
-        ("New PIN:", pin_masked.as_str(), state.focused_field == 6),
+        ("New PIN:", pin_masked.as_str(), state.focused_field == 7),
         (
             "Extension:",
             state.input_extension.value(),
-            state.focused_field == 7,
+            state.focused_field == 8,
         ),
         (
             "Department:",
             state.input_department.value(),
-            state.focused_field == 8,
+            state.focused_field == 9,
         ),
         (
             "Job Title:",
             state.input_job_title.value(),
-            state.focused_field == 9,
+            state.focused_field == 10,
         ),
         (
             "Location:",
             state.input_location.value(),
-            state.focused_field == 10,
+            state.focused_field == 11,
         ),
         (
             "Language (Space to select):",
             state.input_language.value(),
-            state.focused_field == 11,
+            state.focused_field == 12,
         ),
         (
             "Timezone (Space to select):",
             state.input_timezone.value(),
-            state.focused_field == 12,
+            state.focused_field == 13,
         ),
         (
             "Account Status:",
             state.input_account_status.value(),
-            state.focused_field == 13,
+            state.focused_field == 14,
         ),
         (
             "Emergency Name:",
             state.input_emergency_contact_name.value(),
-            state.focused_field == 14,
+            state.focused_field == 15,
         ),
         (
             "Emergency Phone:",
             state.input_emergency_contact_phone.value(),
-            state.focused_field == 15,
+            state.focused_field == 16,
         ),
     ];
 
@@ -1341,7 +1365,7 @@ fn render_selection_modal(
 
     f.render_widget(Clear, popup_area);
 
-    let title = if state.focused_field == 11 {
+    let title = if state.focused_field == 12 {
         " Select Language (↑↓: navigate, Enter: select, Esc: cancel) "
     } else {
         " Select Timezone (↑↓: navigate, Enter: select, Esc: cancel) "
@@ -1356,7 +1380,7 @@ fn render_selection_modal(
     f.render_widget(block, popup_area);
 
     // Render the list
-    if state.focused_field == 11 {
+    if state.focused_field == 12 {
         // Language selection
         let items: Vec<ListItem> = LANGUAGES
             .iter()
@@ -1368,7 +1392,7 @@ fn render_selection_modal(
             .highlight_symbol(">> ");
 
         f.render_stateful_widget(list, inner, &mut state.language_list_state);
-    } else if state.focused_field == 12 {
+    } else if state.focused_field == 13 {
         // Timezone selection
         let items: Vec<ListItem> = TIMEZONES.iter().map(|tz| ListItem::new(*tz)).collect();
 
@@ -1558,14 +1582,16 @@ async fn create_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
         }
     };
 
+    let role_value = state.input_role.value().to_string();
+
     let request = CreateUserRequest {
         username,
         password,
         display_name: optional(&display_name),
         tenant_id: None,
         enabled: Some(state.input_enabled),
-        role: None,          // TODO: Add role input field to TUI
-        department_id: None, // TODO: Add department_id input field to TUI
+        role: optional(&role_value),
+        department_id: None,
         // Enterprise fields
         email: optional(state.input_email.value()),
         phone_number: optional(state.input_phone_number.value()),
@@ -1610,9 +1636,13 @@ async fn update_user(api_client: &crate::api::ApiClient, state: &mut UsersViewSt
         }
     };
 
+    let role_value = state.input_role.value().to_string();
+
     let request = UpdateUserRequest {
         display_name: optional(&display_name),
         enabled: Some(state.input_enabled),
+        role: optional(&role_value),
+        department_id: None,
         // Enterprise fields
         email: optional(state.input_email.value()),
         phone_number: optional(state.input_phone_number.value()),

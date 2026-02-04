@@ -163,6 +163,10 @@ pub struct UpdateUserRequest {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department_id: Option<String>,
 
     // Enterprise fields
     #[serde(skip_serializing_if = "Option::is_none")]

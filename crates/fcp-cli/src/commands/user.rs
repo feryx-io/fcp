@@ -26,12 +26,13 @@ pub async fn handle(
                     table
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
-                        .set_header(vec!["Username", "Display Name", "Tenant", "Enabled"]);
+                        .set_header(vec!["Username", "Display Name", "Role", "Tenant", "Enabled"]);
 
                     for user in &users {
                         table.add_row(vec![
                             user.username.clone(),
                             user.display_name.clone().unwrap_or_else(|| "-".to_string()),
+                            user.role.clone(),
                             user.tenant_id.clone(),
                             if user.enabled {
                                 "yes".to_string()
@@ -64,8 +65,12 @@ pub async fn handle(
                     println!("User: {}", user.username);
                     println!(
                         "  Display Name: {}",
-                        user.display_name.unwrap_or_else(|| "-".to_string())
+                        user.display_name.as_deref().unwrap_or("-")
                     );
+                    println!("  Role: {}", user.role);
+                    if let Some(dept_id) = &user.department_id {
+                        println!("  Department ID: {}", dept_id);
+                    }
                     println!("  Tenant ID: {}", user.tenant_id);
                     println!("  Enabled: {}", if user.enabled { "yes" } else { "no" });
                     println!("  Created: {:?}", user.created_at);
@@ -84,6 +89,8 @@ pub async fn handle(
             username,
             password,
             display_name,
+            role,
+            department_id,
             tenant_id,
             enabled,
             email,
@@ -100,6 +107,14 @@ pub async fn handle(
             emergency_contact_name,
             emergency_contact_phone,
         } => {
+            // Validate role if provided
+            let role_str = if let Some(ref r) = role {
+                let user_role = parse_role(r)?;
+                Some(role_to_api_string(&user_role))
+            } else {
+                None
+            };
+
             // Get password (prompt if not provided)
             let password = if let Some(pwd) = password {
                 pwd
@@ -113,8 +128,8 @@ pub async fn handle(
                 display_name,
                 tenant_id,
                 enabled: Some(enabled),
-                role: None,          // TODO: Add role parameter to Add command
-                department_id: None, // TODO: Add department_id parameter to Add command
+                role: role_str,
+                department_id,
                 // Enterprise fields - now supported via CLI
                 email,
                 phone_number,
@@ -153,6 +168,8 @@ pub async fn handle(
             username,
             display_name,
             enabled,
+            role,
+            department_id,
             email,
             phone_number,
             mobile_number,
@@ -170,6 +187,8 @@ pub async fn handle(
             // Check if any fields are being updated
             if display_name.is_none()
                 && enabled.is_none()
+                && role.is_none()
+                && department_id.is_none()
                 && email.is_none()
                 && phone_number.is_none()
                 && mobile_number.is_none()
@@ -189,9 +208,19 @@ pub async fn handle(
                 ));
             }
 
+            // Validate role if provided
+            let role_str = if let Some(ref r) = role {
+                let user_role = parse_role(r)?;
+                Some(role_to_api_string(&user_role))
+            } else {
+                None
+            };
+
             let req = UpdateUserRequest {
                 display_name,
                 enabled,
+                role: role_str,
+                department_id,
                 // Enterprise fields - now supported via CLI
                 email,
                 phone_number,
@@ -296,8 +325,8 @@ pub async fn handle(
                 display_name: display_name.clone(),
                 tenant_id,
                 enabled: Some(true),
-                role: Some(format!("{:?}", user_role).to_lowercase()), // Convert role enum to string
-                department_id: None, // TODO: Add department_id support
+                role: Some(role_to_api_string(&user_role)),
+                department_id: None,
                 // Set email and department
                 email,
                 department,
@@ -340,43 +369,54 @@ pub async fn handle(
                 anyhow::bail!("At least one of --role or --department must be provided");
             }
 
-            if let Some(role_str) = &role {
-                let user_role = parse_role(role_str)?;
-                // TODO: Need API endpoint to update user role
-                println!(
-                    "Would update user '{}' to role: {}",
-                    username,
-                    user_role.name()
-                );
-                println!("Note: Role update API not yet implemented");
-            }
+            // Validate role if provided
+            let role_str = if let Some(ref r) = role {
+                let user_role = parse_role(r)?;
+                Some(role_to_api_string(&user_role))
+            } else {
+                None
+            };
 
-            if let Some(dept) = &department {
-                // Update via modify command
-                let update_request = UpdateUserRequest {
-                    display_name: None,
-                    enabled: None,
-                    email: None,
-                    phone_number: None,
-                    mobile_number: None,
-                    pin: None,
-                    extension: None,
-                    department: Some(dept.clone()),
-                    job_title: None,
-                    location: None,
-                    language: None,
-                    timezone: None,
-                    account_status: None,
-                    emergency_contact_name: None,
-                    emergency_contact_phone: None,
-                };
+            let update_request = UpdateUserRequest {
+                display_name: None,
+                enabled: None,
+                role: role_str,
+                department_id: department.clone(),
+                email: None,
+                phone_number: None,
+                mobile_number: None,
+                pin: None,
+                extension: None,
+                department: None,
+                job_title: None,
+                location: None,
+                language: None,
+                timezone: None,
+                account_status: None,
+                emergency_contact_name: None,
+                emergency_contact_phone: None,
+            };
 
-                client
-                    .update_user(&username, &update_request)
-                    .await
-                    .context("Failed to update user")?;
+            let user = client
+                .update_user(&username, &update_request)
+                .await
+                .context("Failed to update user")?;
 
-                println!("User '{}' department updated to: {}", username, dept);
+            match output_format {
+                OutputFormat::Table => {
+                    if role.is_some() {
+                        println!("User '{}' role updated to: {}", username, user.role);
+                    }
+                    if let Some(dept) = &department {
+                        println!("User '{}' department updated to: {}", username, dept);
+                    }
+                }
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&user)?);
+                }
+                OutputFormat::Yaml => {
+                    println!("{}", serde_yaml::to_string(&user)?);
+                }
             }
         }
 
@@ -413,50 +453,40 @@ pub async fn handle(
         }
 
         UserCommands::ListPermissions { username } => {
-            // Get user to determine role
-            let _user = client
+            let user = client
                 .get_user(&username)
                 .await
                 .context(format!("Failed to get user '{}'", username))?;
 
-            // TODO: UserResponse needs role field
-            println!("Note: User role/permissions listing requires role field in UserResponse");
-            println!("      This will be available once storage backend stores user roles");
-            println!();
-            println!("For now, showing all possible roles and their permissions:");
-            println!();
+            let user_role = parse_role(&user.role).unwrap_or(UserRole::EndUser);
 
             // Default to Enterprise mode for now
             let deployment_mode = DeploymentMode::Enterprise;
 
-            for role in &[
-                UserRole::SuperAdmin,
-                UserRole::TelecomAdmin,
-                UserRole::UserAdmin,
-                UserRole::DepartmentAdmin,
-                UserRole::ReadOnly,
-                UserRole::EndUser,
-            ] {
-                println!("\n{} ({}):", role.name(), format!("{:?}", role));
-                println!("{}", "-".repeat(60));
+            let permissions = user_role.permissions(deployment_mode);
 
-                let permissions = role.permissions(deployment_mode);
+            println!("User: {}", username);
+            println!("Role: {} ({})", user_role.name(), user.role);
+            println!("Deployment mode: {}", deployment_mode.name());
+            println!();
+            println!("Permissions ({}):", permissions.len());
+            println!("{}", "-".repeat(60));
 
-                for perm in &permissions {
-                    println!("  - {} ({})", format!("{:?}", perm), perm.name());
-                }
-
-                println!("  Total: {} permissions", permissions.len());
+            for perm in &permissions {
+                println!("  - {} ({})", format!("{:?}", perm), perm.name());
             }
-
-            println!(
-                "\n\nDeployment mode: {} (affects available permissions)",
-                deployment_mode.name()
-            );
         }
     }
 
     Ok(())
+}
+
+/// Convert a UserRole to its API-compatible snake_case string
+fn role_to_api_string(role: &UserRole) -> String {
+    serde_json::to_string(role)
+        .unwrap_or_else(|_| "\"end_user\"".to_string())
+        .trim_matches('"')
+        .to_string()
 }
 
 /// Parse a role string to UserRole enum

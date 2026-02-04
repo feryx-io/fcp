@@ -177,6 +177,14 @@ enum UserCommands {
         #[arg(short, long)]
         display_name: Option<String>,
 
+        /// User role (super_admin, telecom_admin, user_admin, department_admin, read_only, end_user)
+        #[arg(short, long)]
+        role: Option<String>,
+
+        /// Department ID (for department_admin role scoping)
+        #[arg(long)]
+        department_id: Option<String>,
+
         /// Tenant ID (defaults to nil tenant)
         #[arg(long)]
         tenant_id: Option<String>,
@@ -251,6 +259,14 @@ enum UserCommands {
         /// Enable or disable the user
         #[arg(long)]
         enabled: Option<bool>,
+
+        /// User role (super_admin, telecom_admin, user_admin, department_admin, read_only, end_user)
+        #[arg(short, long)]
+        role: Option<String>,
+
+        /// Department ID (for department_admin role scoping)
+        #[arg(long)]
+        department_id: Option<String>,
 
         // ===== Enterprise fields =====
         /// Email address
