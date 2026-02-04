@@ -2,6 +2,7 @@
 
 use anyhow::{Context as AnyhowContext, Result};
 use directories::ProjectDirs;
+use fcp_core::DeploymentMode;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -17,6 +18,144 @@ pub struct Context {
     pub token: Option<String>,
 }
 
+/// Application-level settings persisted alongside contexts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppSettings {
+    /// Deployment mode (carrier, service_provider, enterprise)
+    #[serde(default)]
+    pub deployment_mode: DeploymentMode,
+    /// Default output format (table, json, yaml)
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+    /// Disable colored output
+    #[serde(default)]
+    pub no_color: bool,
+    /// API request timeout in seconds
+    #[serde(default = "default_api_timeout")]
+    pub api_timeout_secs: u64,
+    /// Require confirmation for destructive operations
+    #[serde(default = "default_true")]
+    pub confirm_destructive: bool,
+    /// Default page size for list commands
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+}
+
+fn default_output_format() -> String {
+    "table".to_string()
+}
+fn default_api_timeout() -> u64 {
+    30
+}
+fn default_true() -> bool {
+    true
+}
+fn default_page_size() -> usize {
+    50
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            deployment_mode: DeploymentMode::default(),
+            output_format: default_output_format(),
+            no_color: false,
+            api_timeout_secs: default_api_timeout(),
+            confirm_destructive: true,
+            page_size: default_page_size(),
+        }
+    }
+}
+
+impl AppSettings {
+    /// Get a setting value by dotted key
+    pub fn get(&self, key: &str) -> Option<String> {
+        match key {
+            "deployment.mode" | "deployment_mode" => {
+                Some(format!("{}", serde_json::to_string(&self.deployment_mode)
+                    .unwrap_or_default().trim_matches('"')))
+            }
+            "output.format" | "output_format" => Some(self.output_format.clone()),
+            "output.no_color" | "no_color" => Some(self.no_color.to_string()),
+            "api.timeout" | "api_timeout_secs" => Some(self.api_timeout_secs.to_string()),
+            "api.confirm_destructive" | "confirm_destructive" => {
+                Some(self.confirm_destructive.to_string())
+            }
+            "api.page_size" | "page_size" => Some(self.page_size.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Set a setting value by dotted key. Returns error if key unknown or value invalid.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
+        match key {
+            "deployment.mode" | "deployment_mode" => {
+                self.deployment_mode = match value.to_lowercase().as_str() {
+                    "carrier" => DeploymentMode::Carrier,
+                    "service_provider" | "serviceprovider" => DeploymentMode::ServiceProvider,
+                    "enterprise" => DeploymentMode::Enterprise,
+                    _ => anyhow::bail!(
+                        "Invalid deployment mode '{}'. Valid: carrier, service_provider, enterprise",
+                        value
+                    ),
+                };
+            }
+            "output.format" | "output_format" => {
+                match value.to_lowercase().as_str() {
+                    "table" | "json" | "yaml" => self.output_format = value.to_lowercase(),
+                    _ => anyhow::bail!(
+                        "Invalid output format '{}'. Valid: table, json, yaml",
+                        value
+                    ),
+                }
+            }
+            "output.no_color" | "no_color" => {
+                self.no_color = value.parse::<bool>()
+                    .map_err(|_| anyhow::anyhow!("Invalid boolean '{}'. Use true or false", value))?;
+            }
+            "api.timeout" | "api_timeout_secs" => {
+                let secs = value.parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("Invalid timeout '{}'. Must be a positive integer", value))?;
+                if secs == 0 || secs > 300 {
+                    anyhow::bail!("Timeout must be between 1 and 300 seconds");
+                }
+                self.api_timeout_secs = secs;
+            }
+            "api.confirm_destructive" | "confirm_destructive" => {
+                self.confirm_destructive = value.parse::<bool>()
+                    .map_err(|_| anyhow::anyhow!("Invalid boolean '{}'. Use true or false", value))?;
+            }
+            "api.page_size" | "page_size" => {
+                let size = value.parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("Invalid page size '{}'. Must be a positive integer", value))?;
+                if size == 0 || size > 1000 {
+                    anyhow::bail!("Page size must be between 1 and 1000");
+                }
+                self.page_size = size;
+            }
+            _ => anyhow::bail!(
+                "Unknown configuration key '{}'. Valid keys:\n  \
+                 deployment.mode, output.format, output.no_color,\n  \
+                 api.timeout, api.confirm_destructive, api.page_size",
+                key
+            ),
+        }
+        Ok(())
+    }
+
+    /// List all valid setting keys
+    pub fn keys() -> &'static [&'static str] {
+        &[
+            "deployment.mode",
+            "output.format",
+            "output.no_color",
+            "api.timeout",
+            "api.confirm_destructive",
+            "api.page_size",
+        ]
+    }
+}
+
 /// Configuration file structure
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -24,6 +163,9 @@ pub struct Config {
     pub current_context: String,
     /// List of configured contexts
     pub contexts: Vec<Context>,
+    /// Application settings
+    #[serde(default)]
+    pub settings: AppSettings,
 }
 
 /// A resolved context with all values determined
@@ -138,6 +280,7 @@ impl Default for Config {
                 url: "http://localhost:8081".to_string(),
                 token: None,
             }],
+            settings: AppSettings::default(),
         }
     }
 }

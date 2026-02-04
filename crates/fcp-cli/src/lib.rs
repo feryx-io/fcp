@@ -6,4 +6,4 @@ pub mod output;
 
 // Re-export commonly used types
 pub use api::ApiClient;
-pub use config::{Config, Context, ResolvedContext};
+pub use config::{AppSettings, Config, Context, ResolvedContext};
