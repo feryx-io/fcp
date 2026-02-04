@@ -32,7 +32,7 @@ use fcp_core::storage::{
 use fcp_core::{
     AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
     ExtensionTarget, LineBinding, LineBindingId, PhoneNumber, PhoneNumberId, RegistrationState,
-    RingStrategy, ServiceId, Tenant, TenantId, UserId,
+    RingStrategy, ServiceId, Tenant, TenantId, UserId, VoicemailBoxId,
 };
 use fcp_core::{BindingType, NumberState};
 use mongodb::{
@@ -465,7 +465,9 @@ impl CredentialStore for MongodbStorage {
             .map(|s| s.trim_matches('"').to_string())
             .unwrap_or_else(|_| "end_user".to_string());
 
-        let doc = doc! {
+        let account_status = user.account_status.to_string();
+
+        let mut doc = doc! {
             "id": user.id.to_string(),
             "username": &user.username,
             "password_hash": &user.password,
@@ -473,11 +475,38 @@ impl CredentialStore for MongodbStorage {
             "tenant_id": &tenant_id,
             "enabled": user.enabled,
             "role": &role_str,
-            "department_id": user.department_id.as_ref(),
             "created_at": system_time_to_bson_datetime(user.created_at),
             "updated_at": system_time_to_bson_datetime(user.updated_at),
             "media_preferences": media_prefs,
+            "language": &user.language,
+            "timezone": &user.timezone,
+            "account_status": &account_status,
         };
+
+        // Optional string fields
+        if let Some(ref v) = user.digest_password { doc.insert("digest_password", v); }
+        if let Some(ref v) = user.sip_ha1_hash { doc.insert("sip_ha1_hash", v); }
+        if let Some(ref v) = user.department_id { doc.insert("department_id", v); }
+        if let Some(ref v) = user.email { doc.insert("email", v); }
+        if let Some(ref v) = user.phone_number { doc.insert("phone_number", v); }
+        if let Some(ref v) = user.mobile_number { doc.insert("mobile_number", v); }
+        if let Some(ref v) = user.pin { doc.insert("pin", v); }
+        if let Some(ref v) = user.extension { doc.insert("extension", v); }
+        if let Some(ref v) = user.department { doc.insert("department", v); }
+        if let Some(ref v) = user.job_title { doc.insert("job_title", v); }
+        if let Some(ref v) = user.location { doc.insert("location", v); }
+        if let Some(ref v) = user.emergency_contact.name { doc.insert("emergency_contact_name", v); }
+        if let Some(ref v) = user.emergency_contact.phone { doc.insert("emergency_contact_phone", v); }
+        if let Some(ref v) = user.primary_phone_number_id { doc.insert("primary_phone_number_id", v.to_string()); }
+        if let Some(ref v) = user.voicemail_box_id { doc.insert("voicemail_box_id", v.to_string()); }
+
+        // Optional timestamp fields
+        if let Some(t) = user.password_last_reset {
+            doc.insert("password_last_reset", system_time_to_bson_datetime(t));
+        }
+        if let Some(t) = user.last_login {
+            doc.insert("last_login", system_time_to_bson_datetime(t));
+        }
 
         let filter = doc! {
             "username": &user.username,
@@ -1117,8 +1146,14 @@ fn document_to_user(doc: Document) -> Result<User> {
         account_status,
         last_login,
         emergency_contact,
-        primary_phone_number_id: None, // TODO: Add to MongoDB schema
-        voicemail_box_id: None,        // TODO: Add to MongoDB schema
+        primary_phone_number_id: doc
+            .get_str("primary_phone_number_id")
+            .ok()
+            .and_then(|s| PhoneNumberId::from_str(s).ok()),
+        voicemail_box_id: doc
+            .get_str("voicemail_box_id")
+            .ok()
+            .and_then(|s| VoicemailBoxId::from_str(s).ok()),
     })
 }
 

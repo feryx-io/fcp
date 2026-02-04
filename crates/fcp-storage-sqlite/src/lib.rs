@@ -36,7 +36,7 @@ use fcp_core::{
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
     LineBinding, LineBindingId, MediaPreferences, NumberState, PhoneNumber, PhoneNumberId,
-    Registration, RegistrationState, RingStrategy, TenantId, User, UserId,
+    Registration, RegistrationState, RingStrategy, TenantId, User, UserId, VoicemailBoxId,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
@@ -299,7 +299,7 @@ impl CredentialStore for SqliteStorage {
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
                     account_status, last_login, emergency_contact_name, emergency_contact_phone,
-                    role, department_id
+                    role, department_id, primary_phone_number_id, voicemail_box_id
              FROM users
              WHERE username = ?",
         )
@@ -347,9 +347,9 @@ impl CredentialStore for SqliteStorage {
                 email, password_last_reset, phone_number, mobile_number, pin,
                 extension, department, job_title, location, language, timezone,
                 account_status, last_login, emergency_contact_name, emergency_contact_phone,
-                role, department_id
+                role, department_id, primary_phone_number_id, voicemail_box_id
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(tenant_id, username) DO UPDATE SET
                  id = excluded.id,
                  password_hash = excluded.password_hash,
@@ -375,7 +375,9 @@ impl CredentialStore for SqliteStorage {
                  emergency_contact_name = excluded.emergency_contact_name,
                  emergency_contact_phone = excluded.emergency_contact_phone,
                  role = excluded.role,
-                 department_id = excluded.department_id",
+                 department_id = excluded.department_id,
+                 primary_phone_number_id = excluded.primary_phone_number_id,
+                 voicemail_box_id = excluded.voicemail_box_id",
         )
         .bind(&id)
         .bind(&user.username)
@@ -405,6 +407,8 @@ impl CredentialStore for SqliteStorage {
         .bind(&user.emergency_contact.phone)
         .bind(&role)
         .bind(&user.department_id)
+        .bind(user.primary_phone_number_id.map(|id| id.to_string()))
+        .bind(user.voicemail_box_id.map(|id| id.to_string()))
         .execute(&self.pool)
         .await?;
 
@@ -429,7 +433,7 @@ impl CredentialStore for SqliteStorage {
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
                     account_status, last_login, emergency_contact_name, emergency_contact_phone,
-                    role, department_id
+                    role, department_id, primary_phone_number_id, voicemail_box_id
              FROM users
              ORDER BY username",
         )
@@ -880,8 +884,14 @@ fn row_to_user(row: sqlx::sqlite::SqliteRow) -> Result<User> {
         account_status,
         last_login,
         emergency_contact,
-        primary_phone_number_id: None, // TODO: Add to database schema
-        voicemail_box_id: None,        // TODO: Add to database schema
+        primary_phone_number_id: row
+            .try_get::<String, _>("primary_phone_number_id")
+            .ok()
+            .and_then(|s| PhoneNumberId::from_str(&s).ok()),
+        voicemail_box_id: row
+            .try_get::<String, _>("voicemail_box_id")
+            .ok()
+            .and_then(|s| VoicemailBoxId::from_str(&s).ok()),
     })
 }
 

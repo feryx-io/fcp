@@ -39,7 +39,7 @@ use fcp_core::{
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
     HangupCause, HangupParty, LineBinding, LineBindingId, MediaPreferences, NumberState,
     PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, Tenant, TenantId,
-    User, UserId,
+    User, UserId, VoicemailBoxId,
 };
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{MySql, Pool, Row};
@@ -239,8 +239,12 @@ impl MysqlStorage {
 impl CredentialStore for MysqlStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let row = sqlx::query(
-            "SELECT username, password_hash, display_name, tenant_id, enabled,
-                    role, department_id, created_at, updated_at, media_preferences
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
+                    created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, language, timezone,
+                    account_status, last_login, emergency_contact_name, emergency_contact_phone,
+                    role, department_id, primary_phone_number_id, voicemail_box_id
              FROM users
              WHERE username = ?",
         )
@@ -259,6 +263,11 @@ impl CredentialStore for MysqlStorage {
         let media_prefs = serde_json::to_value(&user.media_preferences)?;
         let created_at = system_time_to_datetime(user.created_at);
         let updated_at = system_time_to_datetime(user.updated_at);
+        let password_last_reset = user.password_last_reset.map(system_time_to_datetime);
+        let last_login = user.last_login.map(system_time_to_datetime);
+        let account_status = user.account_status.to_string();
+        let primary_phone_number_id = user.primary_phone_number_id.map(|id| id.to_string());
+        let voicemail_box_id = user.voicemail_box_id.map(|id| id.to_string());
 
         // Serialize role to snake_case string for storage
         let role_str = serde_json::to_string(&user.role)
@@ -266,30 +275,72 @@ impl CredentialStore for MysqlStorage {
             .unwrap_or_else(|_| "end_user".to_string());
 
         sqlx::query(
-            "INSERT INTO users (id, username, password_hash, display_name, tenant_id, enabled,
-                               role, department_id, created_at, updated_at, media_preferences)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO users (id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
+                               created_at, updated_at, media_preferences,
+                               email, password_last_reset, phone_number, mobile_number, pin,
+                               extension, department, job_title, location, language, timezone,
+                               account_status, last_login, emergency_contact_name, emergency_contact_phone,
+                               role, department_id, primary_phone_number_id, voicemail_box_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                  id = VALUES(id),
                  password_hash = VALUES(password_hash),
+                 digest_password = VALUES(digest_password),
+                 sip_ha1_hash = VALUES(sip_ha1_hash),
                  display_name = VALUES(display_name),
                  enabled = VALUES(enabled),
                  role = VALUES(role),
                  department_id = VALUES(department_id),
                  updated_at = VALUES(updated_at),
-                 media_preferences = VALUES(media_preferences)",
+                 media_preferences = VALUES(media_preferences),
+                 email = VALUES(email),
+                 password_last_reset = VALUES(password_last_reset),
+                 phone_number = VALUES(phone_number),
+                 mobile_number = VALUES(mobile_number),
+                 pin = VALUES(pin),
+                 extension = VALUES(extension),
+                 department = VALUES(department),
+                 job_title = VALUES(job_title),
+                 location = VALUES(location),
+                 language = VALUES(language),
+                 timezone = VALUES(timezone),
+                 account_status = VALUES(account_status),
+                 last_login = VALUES(last_login),
+                 emergency_contact_name = VALUES(emergency_contact_name),
+                 emergency_contact_phone = VALUES(emergency_contact_phone),
+                 primary_phone_number_id = VALUES(primary_phone_number_id),
+                 voicemail_box_id = VALUES(voicemail_box_id)",
         )
         .bind(user.id.to_string())
         .bind(&user.username)
         .bind(&user.password)
+        .bind(&user.digest_password)
+        .bind(&user.sip_ha1_hash)
         .bind(&user.display_name)
         .bind(&tenant_id)
         .bind(user.enabled)
-        .bind(&role_str)
-        .bind(&user.department_id)
         .bind(created_at)
         .bind(updated_at)
         .bind(&media_prefs)
+        .bind(&user.email)
+        .bind(password_last_reset)
+        .bind(&user.phone_number)
+        .bind(&user.mobile_number)
+        .bind(&user.pin)
+        .bind(&user.extension)
+        .bind(&user.department)
+        .bind(&user.job_title)
+        .bind(&user.location)
+        .bind(&user.language)
+        .bind(&user.timezone)
+        .bind(&account_status)
+        .bind(last_login)
+        .bind(&user.emergency_contact.name)
+        .bind(&user.emergency_contact.phone)
+        .bind(&role_str)
+        .bind(&user.department_id)
+        .bind(&primary_phone_number_id)
+        .bind(&voicemail_box_id)
         .execute(&self.pool)
         .await?;
 
@@ -309,8 +360,12 @@ impl CredentialStore for MysqlStorage {
 
     async fn list_users(&self) -> Result<Vec<User>> {
         let rows = sqlx::query(
-            "SELECT username, password_hash, display_name, tenant_id, enabled,
-                    role, department_id, created_at, updated_at, media_preferences
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id, enabled,
+                    created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, language, timezone,
+                    account_status, last_login, emergency_contact_name, emergency_contact_phone,
+                    role, department_id, primary_phone_number_id, voicemail_box_id
              FROM users
              ORDER BY username",
         )
@@ -843,8 +898,14 @@ fn row_to_user(row: sqlx::mysql::MySqlRow) -> Result<User> {
         account_status,
         last_login,
         emergency_contact,
-        primary_phone_number_id: None, // TODO: Add to MySQL schema
-        voicemail_box_id: None,        // TODO: Add to MySQL schema
+        primary_phone_number_id: row
+            .try_get::<String, _>("primary_phone_number_id")
+            .ok()
+            .and_then(|s| PhoneNumberId::from_str(&s).ok()),
+        voicemail_box_id: row
+            .try_get::<String, _>("voicemail_box_id")
+            .ok()
+            .and_then(|s| VoicemailBoxId::from_str(&s).ok()),
     })
 }
 
