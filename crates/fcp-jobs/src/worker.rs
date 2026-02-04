@@ -4,6 +4,7 @@ use crate::config::{RetryConfig, WorkerConfig};
 use crate::job::{Job, JobResult, JobType};
 use crate::queue::JobQueue;
 use anyhow::Result;
+use fcp_core::storage::{CallDetailRecord, CdrStore};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +18,7 @@ pub struct WorkerPool {
     retry_config: RetryConfig,
     active_workers: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
+    storage: Option<Arc<fcp_core::DynStorage>>,
 }
 
 impl WorkerPool {
@@ -28,7 +30,14 @@ impl WorkerPool {
             retry_config,
             active_workers: Arc::new(AtomicUsize::new(0)),
             shutdown: Arc::new(AtomicBool::new(false)),
+            storage: None,
         }
+    }
+
+    /// Set storage backend for CDR processing
+    pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// Start the worker pool
@@ -43,6 +52,7 @@ impl WorkerPool {
             let retry_config = self.retry_config.clone();
             let active_workers = self.active_workers.clone();
             let shutdown = self.shutdown.clone();
+            let storage = self.storage.clone();
 
             let handle = tokio::spawn(async move {
                 let worker = Worker {
@@ -52,6 +62,7 @@ impl WorkerPool {
                     retry_config,
                     active_workers,
                     shutdown,
+                    storage,
                 };
 
                 worker.run().await;
@@ -96,6 +107,7 @@ struct Worker {
     retry_config: RetryConfig,
     active_workers: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
+    storage: Option<Arc<fcp_core::DynStorage>>,
 }
 
 impl Worker {
@@ -234,21 +246,70 @@ impl Worker {
     }
 
     /// Process CDR job
+    ///
+    /// Deserializes a `CallDetailRecord` from the job payload and stores it
+    /// in the configured storage backend.
     async fn process_cdr(&self, job: &Job) -> Result<JobResult> {
         info!(job_id = %job.id, "Processing CDR");
 
-        // TODO: Implement CDR processing logic
-        // - Extract CDR data from payload
-        // - Store in database
-        // - Generate billing records
-        // - Send to analytics
+        let storage = match &self.storage {
+            Some(s) => s,
+            None => {
+                warn!(job_id = %job.id, "No storage backend configured for CDR processing");
+                return Ok(JobResult::retry("Storage backend not available"));
+            }
+        };
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Deserialize the CDR from the job payload
+        let cdr: CallDetailRecord = match serde_json::from_value(job.payload.clone()) {
+            Ok(cdr) => cdr,
+            Err(e) => {
+                error!(
+                    job_id = %job.id,
+                    error = %e,
+                    "Failed to deserialize CDR from job payload"
+                );
+                return Ok(JobResult::failure(format!(
+                    "Invalid CDR payload: {}",
+                    e
+                )));
+            }
+        };
 
-        Ok(JobResult::success_with_data(serde_json::json!({
-            "cdr_processed": true,
-            "call_id": job.payload.get("call_id")
-        })))
+        // Validate required fields
+        if cdr.from_uri.is_empty() {
+            return Ok(JobResult::failure("CDR missing from_uri"));
+        }
+        if cdr.to_uri.is_empty() {
+            return Ok(JobResult::failure("CDR missing to_uri"));
+        }
+
+        let call_id_str = cdr.call_id.to_string();
+
+        // Store the CDR
+        match storage.insert_cdr(cdr).await {
+            Ok(()) => {
+                info!(
+                    job_id = %job.id,
+                    call_id = %call_id_str,
+                    "CDR stored successfully"
+                );
+                Ok(JobResult::success_with_data(serde_json::json!({
+                    "cdr_processed": true,
+                    "call_id": call_id_str
+                })))
+            }
+            Err(e) => {
+                error!(
+                    job_id = %job.id,
+                    call_id = %call_id_str,
+                    error = %e,
+                    "Failed to store CDR"
+                );
+                // Retry on storage errors (transient)
+                Ok(JobResult::retry(format!("Storage error: {}", e)))
+            }
+        }
     }
 
     /// Process recording job
