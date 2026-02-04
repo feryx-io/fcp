@@ -404,6 +404,22 @@ impl CallManager {
         result
     }
 
+    /// Find an established call where the A-leg remote_uri user-part matches the given extension.
+    ///
+    /// This is used by call parking to find the active call for a user who dials *70.
+    pub fn find_established_by_caller(&self, extension: &str) -> Option<Call> {
+        self.calls
+            .iter()
+            .find(|entry| {
+                let call = entry.value();
+                call.state == CallState::Established
+                    && extract_user_from_uri(&call.a_leg.remote_uri)
+                        .map(|user| user == extension)
+                        .unwrap_or(false)
+            })
+            .map(|entry| entry.value().clone())
+    }
+
     /// Clean up terminated calls older than the specified duration.
     ///
     /// This should be called periodically to prevent memory leaks.
@@ -446,7 +462,7 @@ impl CallManager {
         for entry in all_calls {
             let state = entry.value().state;
             match state {
-                CallState::Established => {
+                CallState::Established | CallState::Parked => {
                     active += 1;
                     established += 1;
                 }
@@ -470,6 +486,30 @@ impl Default for CallManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Extract user-part from a SIP URI (e.g., "sip:alice@example.com" → "alice").
+fn extract_user_from_uri(uri: &str) -> Option<&str> {
+    // Strip angle brackets if present
+    let uri = uri.trim();
+    let uri = if let Some(start) = uri.find('<') {
+        if let Some(end) = uri.find('>') {
+            &uri[start + 1..end]
+        } else {
+            uri
+        }
+    } else {
+        uri
+    };
+
+    // Strip sip: or sips: prefix
+    let after_scheme = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+        .unwrap_or(uri);
+
+    // Take everything before @
+    after_scheme.split('@').next()
 }
 
 /// Create a CDR from a terminated call and insert it into storage.
@@ -579,8 +619,8 @@ fn map_call_state_to_disposition(
     use fcp_core::storage::{CallDisposition, HangupCause};
 
     match call.state {
-        CallState::Established | CallState::Terminated => {
-            // Call was answered
+        CallState::Established | CallState::Parked | CallState::Terminated => {
+            // Call was answered (Parked calls were answered before being parked)
             (CallDisposition::Answered, HangupCause::NormalClearing)
         }
         CallState::Failed => {
@@ -832,6 +872,58 @@ mod tests {
         assert_eq!(stats.total, 2);
         assert_eq!(stats.established, 1);
         assert_eq!(stats.terminated, 1);
+    }
+
+    // ============================================================================
+    // find_established_by_caller Tests
+    // ============================================================================
+
+    #[test]
+    fn test_find_established_by_caller() {
+        let manager = CallManager::new();
+
+        let mut call = create_test_call();
+        call.establish();
+        let call_id = call.id;
+        manager.create_call(call);
+
+        // "alice" is the From user in the test call
+        let found = manager.find_established_by_caller("alice");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, call_id);
+
+        // Non-existent extension
+        let not_found = manager.find_established_by_caller("bob");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_find_established_by_caller_ignores_non_established() {
+        let manager = CallManager::new();
+
+        // Initiated call (not established)
+        let call = create_test_call();
+        manager.create_call(call);
+
+        let found = manager.find_established_by_caller("alice");
+        assert!(found.is_none());
+    }
+
+    // ============================================================================
+    // CDR State Mapping Tests (Parked)
+    // ============================================================================
+
+    #[test]
+    fn test_cdr_state_mapping_parked() {
+        use fcp_core::storage::{CallDisposition, HangupCause};
+
+        let mut call = create_test_call();
+        call.establish();
+        call.park(701, "100".to_string());
+
+        let (disposition, cause) = map_call_state_to_disposition(&call);
+        assert_eq!(disposition, CallDisposition::Answered);
+        assert_eq!(cause, HangupCause::NormalClearing);
     }
 
     // ============================================================================

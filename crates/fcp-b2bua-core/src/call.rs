@@ -73,6 +73,9 @@ pub enum CallState {
     /// Call established (200 OK received/sent, ACK sent/received)
     Established,
 
+    /// Call parked in a parking orbit (A-leg on hold, B-leg terminated)
+    Parked,
+
     /// Call termination in progress (BYE sent/received)
     Terminating,
 
@@ -91,7 +94,7 @@ impl CallState {
 
     /// Check if the call is active (can carry media).
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Established)
+        matches!(self, Self::Established | Self::Parked)
     }
 }
 
@@ -245,6 +248,12 @@ pub struct Call {
     /// Arbitrary custom data attached to this call (flows through to CDR).
     /// Used by PBX features such as CMC/FAC billing codes.
     pub custom_data: Option<serde_json::Value>,
+
+    /// Parking orbit number (set when call is in Parked state).
+    pub parked_orbit: Option<u16>,
+
+    /// Extension of the user who parked this call.
+    pub parker_extension: Option<String>,
 }
 
 impl fmt::Debug for CallLeg {
@@ -281,6 +290,8 @@ impl fmt::Debug for Call {
             .field("failure_reason", &self.failure_reason)
             .field("trunk_name", &self.trunk_name)
             .field("custom_data", &self.custom_data)
+            .field("parked_orbit", &self.parked_orbit)
+            .field("parker_extension", &self.parker_extension)
             .finish()
     }
 }
@@ -315,6 +326,8 @@ impl Call {
             trunk_name: None,
             cancel_notify: None,
             custom_data: None,
+            parked_orbit: None,
+            parker_extension: None,
         }
     }
 
@@ -341,6 +354,20 @@ impl Call {
     pub fn terminate(&mut self) {
         self.state = CallState::Terminated;
         self.ended_at = Some(SystemTime::now());
+    }
+
+    /// Park the call in a parking orbit.
+    pub fn park(&mut self, orbit: u16, parker_ext: String) {
+        self.state = CallState::Parked;
+        self.parked_orbit = Some(orbit);
+        self.parker_extension = Some(parker_ext);
+    }
+
+    /// Unpark the call (return to Established state).
+    pub fn unpark(&mut self) {
+        self.state = CallState::Established;
+        self.parked_orbit = None;
+        self.parker_extension = None;
     }
 
     /// Mark the call as failed with a reason.
@@ -410,6 +437,52 @@ mod tests {
         assert!(CallState::Terminated.is_terminal());
         assert!(CallState::Failed.is_terminal());
         assert!(!CallState::Established.is_terminal());
+        assert!(!CallState::Parked.is_terminal());
+    }
+
+    #[test]
+    fn test_call_state_active() {
+        assert!(CallState::Established.is_active());
+        assert!(CallState::Parked.is_active());
+        assert!(!CallState::Terminated.is_active());
+        assert!(!CallState::Initiated.is_active());
+    }
+
+    #[test]
+    fn test_park_and_unpark() {
+        use bytes::Bytes;
+        use sip_core::{Headers, Method, RequestLine, SipVersion};
+        use smol_str::SmolStr;
+
+        let peer: std::net::SocketAddr = "127.0.0.1:5060".parse().unwrap();
+        let mut headers = Headers::new();
+        headers.push(SmolStr::new("From"), SmolStr::new("Alice <sip:alice@example.com>"));
+        headers.push(SmolStr::new("To"), SmolStr::new("Bob <sip:bob@example.com>"));
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-park"));
+
+        let request = sip_core::Request::new(
+            RequestLine::new(Method::Invite, sip_core::SipUri::parse("sip:bob@example.com").unwrap()),
+            headers,
+            Bytes::new(),
+        ).unwrap();
+
+        let mut call = Call::from_invite(request, peer, fcp_core::TenantId::nil());
+        call.establish();
+        assert_eq!(call.state, CallState::Established);
+        assert!(call.parked_orbit.is_none());
+        assert!(call.parker_extension.is_none());
+
+        // Park
+        call.park(701, "100".to_string());
+        assert_eq!(call.state, CallState::Parked);
+        assert_eq!(call.parked_orbit, Some(701));
+        assert_eq!(call.parker_extension.as_deref(), Some("100"));
+
+        // Unpark
+        call.unpark();
+        assert_eq!(call.state, CallState::Established);
+        assert!(call.parked_orbit.is_none());
+        assert!(call.parker_extension.is_none());
     }
 
     #[test]

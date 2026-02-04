@@ -6475,6 +6475,12 @@ impl SipMessageHandler {
     }
 
     /// Handle park call (*70): park the current call in the next available orbit.
+    ///
+    /// 1. Find the caller's active (Established) call via `find_established_by_caller`
+    /// 2. Park that call in the PBX parking manager
+    /// 3. BYE the B-leg dialog
+    /// 4. Put the A-leg on hold via re-INVITE with a=sendonly SDP
+    /// 5. Respond 200 OK to the feature-code call, then terminate it
     async fn handle_park_call(
         &self,
         request: &sip_core::Request,
@@ -6494,36 +6500,107 @@ impl SipMessageHandler {
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
             .unwrap_or_default();
 
-        let tenant_id = self
-            .call_manager
-            .get_call(call_id)
-            .map(|c| c.tenant_id)
-            .unwrap_or_else(fcp_core::TenantId::nil);
-
-        match pbx.park_call(*call_id, caller_ext.clone(), tenant_id) {
-            Ok(orbit) => {
-                info!(
-                    call_id = %call_id,
-                    orbit = orbit,
-                    parker = %caller_ext,
-                    "Call parked successfully"
-                );
-                // TODO: Phase 2 — put A-leg on hold (re-INVITE with sendonly), respond to parker
-                let response = self.create_simple_response(request, 501, "Park Not Yet Implemented");
+        // Find the caller's active (Established) call
+        let active_call = match self.call_manager.find_established_by_caller(&caller_ext) {
+            Some(c) => c,
+            None => {
+                info!(call_id = %call_id, caller = %caller_ext, "Park: no active call found for caller");
+                let response = self.create_simple_response(request, 480, "No Active Call");
                 handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(call_id, Some(format!("Call parked in orbit {} (hold not yet implemented)", orbit)));
+                let _ = self.call_manager.terminate_call(call_id, Some("Park: no active call".to_string()));
+                return Ok(());
             }
+        };
+
+        let active_call_id = active_call.id;
+        let tenant_id = active_call.tenant_id;
+
+        // Park the active call in the PBX parking manager
+        let orbit = match pbx.park_call(active_call_id, caller_ext.clone(), tenant_id) {
+            Ok(o) => o,
             Err(e) => {
-                warn!(call_id = %call_id, error = %e, "Failed to park call");
+                warn!(call_id = %active_call_id, error = %e, "Failed to park call");
                 let response = self.create_simple_response(request, 503, "No Parking Orbits Available");
                 handle.send_final(response).await;
                 let _ = self.call_manager.terminate_call(call_id, Some(format!("Park failed: {}", e)));
+                return Ok(());
+            }
+        };
+
+        info!(
+            call_id = %active_call_id,
+            orbit = orbit,
+            parker = %caller_ext,
+            "Call parked in orbit"
+        );
+
+        // BYE the B-leg (if present)
+        if let Some(uac) = &self.uac {
+            if let Some(b_leg) = &active_call.b_leg {
+                if let Some(b_dialog) = &b_leg.dialog {
+                    self.spawn_bye_with_retry(
+                        Arc::clone(uac),
+                        b_dialog.clone(),
+                        active_call_id,
+                        false,
+                    );
+                }
             }
         }
+
+        // Clear B-leg and mark call as Parked
+        let _ = self.call_manager.update_call(&active_call_id, |c| {
+            c.b_leg = None;
+            c.park(orbit, caller_ext.clone());
+        });
+
+        // Put A-leg on hold via re-INVITE with a=sendonly SDP
+        if let Some(uac) = &self.uac {
+            if let Some(a_dialog) = &active_call.a_leg.dialog {
+                let hold_sdp = generate_hold_sdp(
+                    active_call.a_leg.sdp.as_deref(),
+                    &self.local_addr,
+                    self.rtp_port,
+                );
+                let mut a_dialog_clone = a_dialog.clone();
+                match uac.send_reinvite(&mut a_dialog_clone, Some(&hold_sdp)).await {
+                    Ok(resp) => {
+                        debug!(
+                            call_id = %active_call_id,
+                            status = resp.start_line().code(),
+                            "Hold re-INVITE sent to A-leg"
+                        );
+                        // Persist updated dialog
+                        let _ = self.dialog_manager.insert(a_dialog_clone.clone());
+                        let _ = self.call_manager.update_call(&active_call_id, |c| {
+                            c.a_leg.dialog = Some(a_dialog_clone);
+                        });
+                    }
+                    Err(e) => {
+                        warn!(call_id = %active_call_id, error = %e, "Failed to send hold re-INVITE to A-leg");
+                    }
+                }
+            }
+        }
+
+        // Respond 200 OK to the feature-code INVITE with orbit info
+        let response = self.create_simple_response(request, 200, &format!("Parked Orbit {}", orbit));
+        handle.send_final(response).await;
+
+        // Terminate the feature-code call
+        let _ = self.call_manager.terminate_call(call_id, None);
+
         Ok(())
     }
 
     /// Handle retrieve parked call (*71orbit): retrieve a call from a parking orbit.
+    ///
+    /// 1. Retrieve the ParkedCall from PBX parking manager
+    /// 2. Verify the call is still in Parked state
+    /// 3. Take the A-leg off hold via re-INVITE with a=sendrecv SDP
+    /// 4. Look up the retriever's contact via registrar
+    /// 5. Send outbound INVITE to retriever (new B-leg)
+    /// 6. On success, unpark the call; on failure, re-park or terminate
     async fn handle_retrieve_parked(
         &self,
         request: &sip_core::Request,
@@ -6540,26 +6617,373 @@ impl SipMessageHandler {
             }
         };
 
-        match pbx.retrieve_parked_call(orbit) {
-            Ok(parked) => {
-                info!(
-                    call_id = %call_id,
-                    orbit = orbit,
-                    parked_call = %parked.call_id,
-                    "Retrieved parked call"
-                );
-                // TODO: Phase 2 — take parked A-leg off hold, bridge to retriever
-                let response = self.create_simple_response(request, 501, "Retrieve Not Yet Implemented");
-                handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(call_id, Some(format!("Retrieved orbit {} (bridge not yet implemented)", orbit)));
-            }
+        // Retrieve from parking manager (removes from orbit)
+        let parked = match pbx.retrieve_parked_call(orbit) {
+            Ok(p) => p,
             Err(e) => {
                 info!(call_id = %call_id, orbit = orbit, error = %e, "Failed to retrieve parked call");
                 let response = self.create_simple_response(request, 480, "Orbit Not Occupied");
                 handle.send_final(response).await;
                 let _ = self.call_manager.terminate_call(call_id, Some(format!("Retrieve failed: {}", e)));
+                return Ok(());
+            }
+        };
+
+        let parked_call_id = parked.call_id;
+
+        // Verify the call is still in Parked state
+        let parked_call = match self.call_manager.get_call(&parked_call_id) {
+            Some(c) if c.state == fcp_b2bua_core::CallState::Parked => c,
+            Some(c) => {
+                warn!(
+                    call_id = %parked_call_id,
+                    state = ?c.state,
+                    "Parked call is no longer in Parked state"
+                );
+                let response = self.create_simple_response(request, 480, "Call No Longer Parked");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("Parked call state mismatch".to_string()));
+                return Ok(());
+            }
+            None => {
+                warn!(call_id = %parked_call_id, "Parked call not found in call manager");
+                let response = self.create_simple_response(request, 480, "Parked Call Not Found");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("Parked call not found".to_string()));
+                return Ok(());
+            }
+        };
+
+        info!(
+            call_id = %parked_call_id,
+            orbit = orbit,
+            "Retrieved parked call, bridging to retriever"
+        );
+
+        let retriever_ext = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+
+        // Take A-leg off hold via re-INVITE with a=sendrecv SDP
+        if let Some(uac) = &self.uac {
+            if let Some(a_dialog) = &parked_call.a_leg.dialog {
+                let unhold_sdp = generate_unhold_sdp(
+                    parked_call.a_leg.sdp.as_deref(),
+                    &self.local_addr,
+                    self.rtp_port,
+                );
+                let mut a_dialog_clone = a_dialog.clone();
+                match uac.send_reinvite(&mut a_dialog_clone, Some(&unhold_sdp)).await {
+                    Ok(resp) => {
+                        debug!(
+                            call_id = %parked_call_id,
+                            status = resp.start_line().code(),
+                            "Unhold re-INVITE sent to A-leg"
+                        );
+                        let _ = self.dialog_manager.insert(a_dialog_clone.clone());
+                        let _ = self.call_manager.update_call(&parked_call_id, |c| {
+                            c.a_leg.dialog = Some(a_dialog_clone);
+                        });
+                    }
+                    Err(e) => {
+                        warn!(call_id = %parked_call_id, error = %e, "Failed to send unhold re-INVITE");
+                    }
+                }
             }
         }
+
+        // Resolve retriever's contact via registrar and create new B-leg
+        let uac = match &self.uac {
+            Some(u) => Arc::clone(u),
+            None => {
+                warn!(call_id = %parked_call_id, "No UAC configured, cannot bridge to retriever");
+                let response = self.create_simple_response(request, 500, "No UAC Configured");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("No UAC".to_string()));
+                return Ok(());
+            }
+        };
+
+        // Build the retriever's AOR from their extension and our domain
+        let host = self.uas.local_uri.host().to_string();
+        let retriever_aor = format!("sip:{}@{}", retriever_ext, host);
+
+        // Look up retriever's contact in registrar
+        let target_uri = if let Some(registrar) = &self.registrar {
+            match registrar.get_registrations(&retriever_aor).await {
+                Ok(bindings) if !bindings.is_empty() => {
+                    bindings[0].contact().to_string()
+                }
+                _ => {
+                    // Fallback: use the retriever's AOR directly
+                    retriever_aor.clone()
+                }
+            }
+        } else {
+            retriever_aor.clone()
+        };
+
+        // Get the A-leg SDP to use as the offer for the new B-leg
+        let a_sdp = self.call_manager.get_call(&parked_call_id)
+            .and_then(|c| c.a_leg.sdp.clone());
+
+        // Send outbound INVITE to retriever (new B-leg)
+        match uac.invite(&target_uri, a_sdp.as_deref()).await {
+            Ok(b_leg_handle) => {
+                let b_leg_handle = Arc::new(b_leg_handle);
+                // Wait for the final response
+                match b_leg_handle.await_final().await {
+                    Ok(resp) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => {
+                        // Success - bridge the call
+                        let b_dialog = b_leg_handle.dialog.read().await.clone();
+                        let b_sdp = if !resp.body().is_empty() {
+                            Some(String::from_utf8_lossy(resp.body()).to_string())
+                        } else {
+                            None
+                        };
+
+                        let _ = self.call_manager.update_call(&parked_call_id, |c| {
+                            let mut new_b_leg = fcp_b2bua_core::CallLeg::new_outbound(
+                                target_uri.clone(),
+                                None,
+                            );
+                            new_b_leg.dialog = Some(b_dialog);
+                            new_b_leg.sdp = b_sdp;
+                            new_b_leg.outbound_handle = Some(Arc::clone(&b_leg_handle));
+                            c.b_leg = Some(new_b_leg);
+                            c.unpark();
+                        });
+
+                        info!(
+                            call_id = %parked_call_id,
+                            orbit = orbit,
+                            retriever = %retriever_ext,
+                            "Parked call retrieved and bridged to retriever"
+                        );
+
+                        // Respond 200 OK to the feature-code INVITE
+                        let response = self.create_simple_response(request, 200, "OK");
+                        handle.send_final(response).await;
+                    }
+                    Ok(resp) => {
+                        // Non-2xx response — retriever unreachable
+                        let code = resp.start_line().code();
+                        warn!(
+                            call_id = %parked_call_id,
+                            orbit = orbit,
+                            retriever = %retriever_ext,
+                            status = code,
+                            "Retriever returned error, terminating parked call"
+                        );
+                        // BYE the A-leg since we already removed from parking
+                        self.terminate_parked_a_leg(&parked_call_id).await;
+                        let response = self.create_simple_response(request, 480, "Retriever Unavailable");
+                        handle.send_final(response).await;
+                    }
+                    Err(e) => {
+                        warn!(
+                            call_id = %parked_call_id,
+                            orbit = orbit,
+                            error = %e,
+                            "Failed to reach retriever"
+                        );
+                        self.terminate_parked_a_leg(&parked_call_id).await;
+                        let response = self.create_simple_response(request, 480, "Retriever Unavailable");
+                        handle.send_final(response).await;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    call_id = %parked_call_id,
+                    error = %e,
+                    "Failed to create B-leg INVITE to retriever"
+                );
+                self.terminate_parked_a_leg(&parked_call_id).await;
+                let response = self.create_simple_response(request, 500, "Internal Error");
+                handle.send_final(response).await;
+            }
+        }
+
+        // Terminate the feature-code call
+        let _ = self.call_manager.terminate_call(call_id, None);
+
+        Ok(())
+    }
+
+    /// Terminate the A-leg of a parked call (BYE + cleanup).
+    async fn terminate_parked_a_leg(&self, call_id: &fcp_b2bua_core::CallId) {
+        if let Some(call) = self.call_manager.get_call(call_id) {
+            if let Some(uac) = &self.uac {
+                if let Some(a_dialog) = &call.a_leg.dialog {
+                    self.spawn_bye_with_retry(
+                        Arc::clone(uac),
+                        a_dialog.clone(),
+                        *call_id,
+                        true,
+                    );
+                }
+            }
+            let _ = self.call_manager.terminate_call(call_id, Some("Parked call terminated".to_string()));
+        }
+    }
+
+    /// Route an expired parked call back to the parker's extension.
+    ///
+    /// Called by the parking timeout monitor when a parked call expires.
+    /// Looks up the parker's registered contact and routes the call back to them.
+    /// If the parker is not registered, the call is terminated.
+    pub async fn route_expired_parked_call(
+        &self,
+        parked: &fcp_pbx::ParkedCall,
+        call_manager: &fcp_b2bua_core::CallManager,
+    ) -> Result<()> {
+        let parked_call_id = parked.call_id;
+        let parker_ext = &parked.parker_extension;
+
+        // Verify the call is still in Parked state
+        let parked_call = match call_manager.get_call(&parked_call_id) {
+            Some(c) if c.state == fcp_b2bua_core::CallState::Parked => c,
+            Some(c) => {
+                debug!(
+                    call_id = %parked_call_id,
+                    state = ?c.state,
+                    "Expired parked call is no longer in Parked state, skipping"
+                );
+                return Ok(());
+            }
+            None => {
+                debug!(call_id = %parked_call_id, "Expired parked call not found, skipping");
+                return Ok(());
+            }
+        };
+
+        info!(
+            call_id = %parked_call_id,
+            orbit = parked.orbit,
+            parker = %parker_ext,
+            "Parked call expired, routing back to parker"
+        );
+
+        // Build parker's AOR
+        let host = self.uas.local_uri.host().to_string();
+        let parker_aor = format!("sip:{}@{}", parker_ext, host);
+
+        // Look up parker's contact in registrar
+        let target_uri = if let Some(registrar) = &self.registrar {
+            match registrar.get_registrations(&parker_aor).await {
+                Ok(bindings) if !bindings.is_empty() => {
+                    bindings[0].contact().to_string()
+                }
+                _ => {
+                    warn!(
+                        call_id = %parked_call_id,
+                        parker = %parker_ext,
+                        "Parker not registered, terminating parked call"
+                    );
+                    self.terminate_parked_a_leg(&parked_call_id).await;
+                    return Ok(());
+                }
+            }
+        } else {
+            warn!(call_id = %parked_call_id, "No registrar configured, terminating parked call");
+            self.terminate_parked_a_leg(&parked_call_id).await;
+            return Ok(());
+        };
+
+        // Get UAC
+        let uac = match &self.uac {
+            Some(u) => Arc::clone(u),
+            None => {
+                warn!(call_id = %parked_call_id, "No UAC configured, terminating parked call");
+                self.terminate_parked_a_leg(&parked_call_id).await;
+                return Ok(());
+            }
+        };
+
+        // Take A-leg off hold
+        if let Some(a_dialog) = &parked_call.a_leg.dialog {
+            let unhold_sdp = generate_unhold_sdp(
+                parked_call.a_leg.sdp.as_deref(),
+                &self.local_addr,
+                self.rtp_port,
+            );
+            let mut a_dialog_clone = a_dialog.clone();
+            match uac.send_reinvite(&mut a_dialog_clone, Some(&unhold_sdp)).await {
+                Ok(resp) => {
+                    debug!(
+                        call_id = %parked_call_id,
+                        status = resp.start_line().code(),
+                        "Unhold re-INVITE sent to A-leg for expired park"
+                    );
+                    let _ = self.dialog_manager.insert(a_dialog_clone.clone());
+                    let _ = call_manager.update_call(&parked_call_id, |c| {
+                        c.a_leg.dialog = Some(a_dialog_clone);
+                    });
+                }
+                Err(e) => {
+                    warn!(call_id = %parked_call_id, error = %e, "Failed to unhold A-leg, terminating");
+                    self.terminate_parked_a_leg(&parked_call_id).await;
+                    return Ok(());
+                }
+            }
+        }
+
+        // Get updated A-leg SDP for the outbound INVITE
+        let a_sdp = call_manager.get_call(&parked_call_id)
+            .and_then(|c| c.a_leg.sdp.clone());
+
+        // Send INVITE to parker's contact (new B-leg)
+        match uac.invite(&target_uri, a_sdp.as_deref()).await {
+            Ok(b_leg_handle) => {
+                let b_leg_handle = Arc::new(b_leg_handle);
+                match b_leg_handle.await_final().await {
+                    Ok(resp) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => {
+                        let b_dialog = b_leg_handle.dialog.read().await.clone();
+                        let b_sdp = if !resp.body().is_empty() {
+                            Some(String::from_utf8_lossy(resp.body()).to_string())
+                        } else {
+                            None
+                        };
+
+                        let _ = call_manager.update_call(&parked_call_id, |c| {
+                            let mut new_b_leg = fcp_b2bua_core::CallLeg::new_outbound(
+                                target_uri.clone(),
+                                None,
+                            );
+                            new_b_leg.dialog = Some(b_dialog);
+                            new_b_leg.sdp = b_sdp;
+                            new_b_leg.outbound_handle = Some(Arc::clone(&b_leg_handle));
+                            c.b_leg = Some(new_b_leg);
+                            c.unpark();
+                        });
+
+                        info!(
+                            call_id = %parked_call_id,
+                            parker = %parker_ext,
+                            "Expired parked call routed back to parker"
+                        );
+                    }
+                    Ok(resp) => {
+                        warn!(
+                            call_id = %parked_call_id,
+                            status = resp.start_line().code(),
+                            "Parker rejected expired parked call, terminating"
+                        );
+                        self.terminate_parked_a_leg(&parked_call_id).await;
+                    }
+                    Err(e) => {
+                        warn!(call_id = %parked_call_id, error = %e, "Failed to reach parker, terminating");
+                        self.terminate_parked_a_leg(&parked_call_id).await;
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(call_id = %parked_call_id, error = %e, "Failed to create INVITE to parker, terminating");
+                self.terminate_parked_a_leg(&parked_call_id).await;
+            }
+        }
+
         Ok(())
     }
 
@@ -7633,6 +8057,74 @@ fn ensure_supported_timer(response: &mut sip_core::Response) {
     }
 }
 
+// ============================================================================
+// SDP Hold/Unhold Helpers
+// ============================================================================
+
+/// Generate an SDP body that puts the call on hold (a=sendonly).
+///
+/// If an existing SDP is provided, replaces `a=sendrecv` with `a=sendonly`.
+/// Otherwise generates a minimal SDP with `a=sendonly`.
+fn generate_hold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> String {
+    if let Some(existing) = sdp {
+        // Replace sendrecv with sendonly
+        let held = existing
+            .replace("a=sendrecv", "a=sendonly");
+        // If there was no explicit sendrecv attribute, append sendonly
+        if !held.contains("a=sendonly") {
+            format!("{}a=sendonly\r\n", held)
+        } else {
+            held
+        }
+    } else {
+        // Generate minimal sendonly SDP
+        format!(
+            "v=0\r\n\
+             o=- 0 0 IN IP4 {addr}\r\n\
+             s=-\r\n\
+             c=IN IP4 {addr}\r\n\
+             t=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\n\
+             a=rtpmap:0 PCMU/8000\r\n\
+             a=sendonly\r\n",
+            addr = local_addr,
+            port = rtp_port,
+        )
+    }
+}
+
+/// Generate an SDP body that takes the call off hold (a=sendrecv).
+///
+/// If an existing SDP is provided, replaces `a=sendonly` with `a=sendrecv`.
+/// Otherwise generates a minimal SDP with `a=sendrecv`.
+fn generate_unhold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> String {
+    if let Some(existing) = sdp {
+        // Replace sendonly with sendrecv
+        let unheld = existing
+            .replace("a=sendonly", "a=sendrecv");
+        // If there was no explicit sendonly attribute, append sendrecv
+        if !unheld.contains("a=sendrecv") {
+            format!("{}a=sendrecv\r\n", unheld)
+        } else {
+            unheld
+        }
+    } else {
+        // Generate minimal sendrecv SDP
+        format!(
+            "v=0\r\n\
+             o=- 0 0 IN IP4 {addr}\r\n\
+             s=-\r\n\
+             c=IN IP4 {addr}\r\n\
+             t=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\n\
+             a=rtpmap:0 PCMU/8000\r\n\
+             a=sendrecv\r\n",
+            addr = local_addr,
+            port = rtp_port,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8127,5 +8619,87 @@ mod tests {
             .expect("Failed to create request");
         let result = validate_sdp_body_static(&req, Some("v=0\r\ns=-\r\n"));
         assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // SDP Hold/Unhold Tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_hold_sdp_from_existing() {
+        let sdp = "v=0\r\n\
+                    o=- 0 0 IN IP4 192.168.1.1\r\n\
+                    s=-\r\n\
+                    c=IN IP4 192.168.1.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 4000 RTP/AVP 0\r\n\
+                    a=sendrecv\r\n";
+
+        let held = generate_hold_sdp(Some(sdp), "10.0.0.1", 5000);
+        assert!(held.contains("a=sendonly"));
+        assert!(!held.contains("a=sendrecv"));
+    }
+
+    #[test]
+    fn test_generate_hold_sdp_without_existing() {
+        let held = generate_hold_sdp(None, "10.0.0.1", 5000);
+        assert!(held.contains("a=sendonly"));
+        assert!(held.contains("10.0.0.1"));
+        assert!(held.contains("5000"));
+    }
+
+    #[test]
+    fn test_generate_hold_sdp_no_sendrecv_attribute() {
+        // SDP without any directional attribute — should get sendonly appended
+        let sdp = "v=0\r\n\
+                    o=- 0 0 IN IP4 192.168.1.1\r\n\
+                    s=-\r\n\
+                    c=IN IP4 192.168.1.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 4000 RTP/AVP 0\r\n";
+
+        let held = generate_hold_sdp(Some(sdp), "10.0.0.1", 5000);
+        assert!(held.contains("a=sendonly"));
+    }
+
+    #[test]
+    fn test_generate_unhold_sdp_from_existing() {
+        let sdp = "v=0\r\n\
+                    o=- 0 0 IN IP4 192.168.1.1\r\n\
+                    s=-\r\n\
+                    c=IN IP4 192.168.1.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 4000 RTP/AVP 0\r\n\
+                    a=sendonly\r\n";
+
+        let unheld = generate_unhold_sdp(Some(sdp), "10.0.0.1", 5000);
+        assert!(unheld.contains("a=sendrecv"));
+        assert!(!unheld.contains("a=sendonly"));
+    }
+
+    #[test]
+    fn test_generate_unhold_sdp_without_existing() {
+        let unheld = generate_unhold_sdp(None, "10.0.0.1", 5000);
+        assert!(unheld.contains("a=sendrecv"));
+        assert!(unheld.contains("10.0.0.1"));
+        assert!(unheld.contains("5000"));
+    }
+
+    #[test]
+    fn test_hold_unhold_roundtrip() {
+        let sdp = "v=0\r\n\
+                    o=- 0 0 IN IP4 192.168.1.1\r\n\
+                    s=-\r\n\
+                    c=IN IP4 192.168.1.1\r\n\
+                    t=0 0\r\n\
+                    m=audio 4000 RTP/AVP 0\r\n\
+                    a=sendrecv\r\n";
+
+        let held = generate_hold_sdp(Some(sdp), "10.0.0.1", 5000);
+        assert!(held.contains("a=sendonly"));
+
+        let unheld = generate_unhold_sdp(Some(&held), "10.0.0.1", 5000);
+        assert!(unheld.contains("a=sendrecv"));
+        assert!(!unheld.contains("a=sendonly"));
     }
 }

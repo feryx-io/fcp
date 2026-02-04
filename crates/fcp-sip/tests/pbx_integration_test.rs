@@ -102,11 +102,11 @@ async fn test_feature_code_park_call() {
         final_resp.is_some(),
         "Expected a final response for park call"
     );
-    // Park with no active call should return an error (480 or 501)
+    // Park with no active call should return 480 "No Active Call"
     let code = final_resp.unwrap().start_line().code();
-    assert!(
-        code >= 400,
-        "Expected error response for park with no active call, got {}",
+    assert_eq!(
+        code, 480,
+        "Expected 480 for park with no active call, got {}",
         code
     );
 }
@@ -129,11 +129,11 @@ async fn test_feature_code_retrieve_parked() {
         final_resp.is_some(),
         "Expected a final response for retrieve parked"
     );
-    // No parked call at orbit 701
+    // No parked call at orbit 701 → 480 "Orbit Not Occupied"
     let code = final_resp.unwrap().start_line().code();
-    assert!(
-        code >= 400,
-        "Expected error for retrieve from empty orbit, got {}",
+    assert_eq!(
+        code, 480,
+        "Expected 480 for retrieve from empty orbit, got {}",
         code
     );
 }

@@ -220,6 +220,7 @@ fn call_state_str(state: fcp_b2bua_core::CallState) -> &'static str {
         CallState::Inviting => "inviting",
         CallState::Proceeding => "proceeding",
         CallState::Established => "established",
+        CallState::Parked => "parked",
         CallState::Terminating => "terminating",
         CallState::Terminated => "terminated",
         CallState::Failed => "failed",

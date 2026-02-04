@@ -393,20 +393,35 @@ async fn main() -> Result<()> {
     if let Some(ref pbx) = pbx_handler {
         if pbx.parking_manager().is_enabled() {
             let pbx_clone = Arc::clone(pbx);
+            let handler_clone_park = Arc::clone(&handler);
+            let call_manager_clone_park = Arc::clone(&call_manager);
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
                 loop {
                     interval.tick().await;
                     let expired = pbx_clone.parking_manager().expired_calls();
                     for parked in expired {
-                        warn!(
+                        info!(
                             orbit = parked.orbit,
                             call_id = %parked.call_id,
                             parker = %parked.parker_extension,
-                            "Parked call expired — caller should be notified"
+                            "Parked call expired, routing back to parker"
                         );
-                        // TODO: Phase 2 — route expired parked calls back to the parker
-                        // or to a configured timeout destination
+                        if let Err(e) = handler_clone_park
+                            .route_expired_parked_call(&parked, &call_manager_clone_park)
+                            .await
+                        {
+                            tracing::error!(
+                                call_id = %parked.call_id,
+                                error = %e,
+                                "Failed to route expired parked call"
+                            );
+                            // Terminate the call on failure
+                            let _ = call_manager_clone_park.terminate_call(
+                                &parked.call_id,
+                                Some(format!("Park expiry routing failed: {}", e)),
+                            );
+                        }
                     }
                 }
             });

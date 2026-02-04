@@ -102,6 +102,24 @@ pub enum CallEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
     },
+
+    /// Call parked in a parking orbit
+    Parked {
+        call_id: CallId,
+        orbit: u16,
+        parker_extension: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Parked call retrieved (unparked)
+    Unparked {
+        call_id: CallId,
+        orbit: u16,
+        retriever_extension: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Media-related events.
@@ -550,7 +568,9 @@ impl CallEvent {
             | CallEvent::Progress { call_id, .. }
             | CallEvent::Answered { call_id, .. }
             | CallEvent::Ended { call_id, .. }
-            | CallEvent::Failed { call_id, .. } => Some(call_id),
+            | CallEvent::Failed { call_id, .. }
+            | CallEvent::Parked { call_id, .. }
+            | CallEvent::Unparked { call_id, .. } => Some(call_id),
         }
     }
 
@@ -559,7 +579,9 @@ impl CallEvent {
             CallEvent::Initiated { timestamp, .. }
             | CallEvent::Ringing { timestamp, .. }
             | CallEvent::Progress { timestamp, .. }
-            | CallEvent::Failed { timestamp, .. } => *timestamp,
+            | CallEvent::Failed { timestamp, .. }
+            | CallEvent::Parked { timestamp, .. }
+            | CallEvent::Unparked { timestamp, .. } => *timestamp,
             CallEvent::Answered { answer_time, .. } => *answer_time,
             CallEvent::Ended { end_time, .. } => *end_time,
         }
