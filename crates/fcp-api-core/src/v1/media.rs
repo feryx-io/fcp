@@ -163,11 +163,15 @@ pub async fn get_call(
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // TODO: Implement call origination endpoint
 pub struct OriginateCallRequest {
+    /// Extension or SIP URI of the party to ring first (caller).
     pub from: String,
+    /// Extension or SIP URI of the destination party (callee).
     pub to: String,
+    /// Optional display name for the caller.
     pub from_display_name: Option<String>,
+    /// Optional tenant ID (uses server default if omitted).
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,17 +181,38 @@ pub struct OriginateCallResponse {
 }
 
 /// POST /v1/calls
-/// Originate a new call
+/// Originate a new call (click-to-call).
+///
+/// Rings the `from` party first; when they answer, rings the `to` party.
+/// Returns immediately with a call ID — poll GET /v1/calls/:id for status.
 pub async fn originate_call(
-    State(_state): State<ApiState>,
-    Json(_req): Json<OriginateCallRequest>,
+    State(state): State<ApiState>,
+    Json(req): Json<OriginateCallRequest>,
 ) -> Result<Json<OriginateCallResponse>, ApiError> {
-    // TODO: Implement call origination
-    // This requires the SIP handler to expose a method to initiate outbound calls
-    // For now, return "not implemented"
-    Err(ApiError::NotFound(
-        "Call origination not yet implemented - requires handler enhancement".into(),
-    ))
+    if req.from.is_empty() {
+        return Err(ApiError::BadRequest("'from' is required".into()));
+    }
+    if req.to.is_empty() {
+        return Err(ApiError::BadRequest("'to' is required".into()));
+    }
+
+    let tenant_id = if let Some(tid) = &req.tenant_id {
+        fcp_core::TenantId::from_str(tid)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?
+    } else {
+        state.default_tenant_id.clone()
+    };
+
+    let call_id = state
+        .handler
+        .originate_call(&req.from, &req.to, tenant_id, req.from_display_name)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to originate call: {}", e)))?;
+
+    Ok(Json(OriginateCallResponse {
+        call_id: call_id.to_string(),
+        status: "initiated".to_string(),
+    }))
 }
 
 /// DELETE /v1/calls/:call_id

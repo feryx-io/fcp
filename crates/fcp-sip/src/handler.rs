@@ -7200,6 +7200,272 @@ impl SipMessageHandler {
         let call = uac.invite(target_uri, a_leg_sdp.as_deref()).await?;
         Ok(Arc::new(call))
     }
+
+    // =========================================================================
+    // Call Origination (Click-to-Call)
+    // =========================================================================
+
+    /// Resolve an extension or SIP URI to a registered contact URI.
+    ///
+    /// If the input is already a SIP URI (starts with `sip:` / `sips:`), it is
+    /// looked up in the registrar directly. Plain extensions are converted to
+    /// `sip:{ext}@{local_host}` first.
+    async fn resolve_contact(&self, uri_or_ext: &str) -> Result<String> {
+        let aor = if uri_or_ext.starts_with("sip:") || uri_or_ext.starts_with("sips:") {
+            uri_or_ext.to_string()
+        } else {
+            let host = self.uas.local_uri.host().to_string();
+            format!("sip:{}@{}", uri_or_ext, host)
+        };
+
+        if let Some(registrar) = &self.registrar {
+            match registrar.get_registrations(&aor).await {
+                Ok(bindings) if !bindings.is_empty() => {
+                    Ok(bindings[0].contact().to_string())
+                }
+                Ok(_) => Err(anyhow::anyhow!("No registration found for {}", aor)),
+                Err(e) => Err(anyhow::anyhow!("Registrar lookup failed for {}: {}", aor, e)),
+            }
+        } else {
+            // No registrar — use the AOR directly as the target
+            Ok(aor)
+        }
+    }
+
+    /// Originate a call via REST API (click-to-call).
+    ///
+    /// The A-leg INVITE is sent to the `from` party first. When the `from`
+    /// party answers, the B-leg INVITE is sent to the `to` party. When both
+    /// legs are established the call is bridged.
+    ///
+    /// Returns the call ID immediately; the call progresses asynchronously.
+    pub async fn originate_call(
+        &self,
+        from: &str,
+        to: &str,
+        tenant_id: fcp_core::TenantId,
+        from_display_name: Option<String>,
+    ) -> Result<fcp_b2bua_core::CallId> {
+        let uac = self
+            .uac
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("UAC not configured — cannot originate calls"))?;
+
+        // Resolve contacts
+        let from_contact = self.resolve_contact(from).await?;
+        let to_contact = self.resolve_contact(to).await?;
+
+        info!(
+            from = %from,
+            from_contact = %from_contact,
+            to = %to,
+            to_contact = %to_contact,
+            "Originating click-to-call"
+        );
+
+        // Create the call in CallManager
+        let call = fcp_b2bua_core::Call::new_originated(
+            from_contact.clone(),
+            from_display_name,
+            to_contact.clone(),
+            tenant_id,
+        );
+        let call_id = call.id;
+        self.call_manager.create_call(call);
+
+        // Prepare dependencies for the background task
+        let uac = Arc::clone(uac);
+        let call_manager = self.call_manager.clone();
+        let dialog_manager = Arc::clone(&self.dialog_manager);
+        let local_addr = self.local_addr.clone();
+        let rtp_port = self.rtp_port;
+
+        tokio::spawn(async move {
+            if let Err(e) = run_origination(
+                uac,
+                call_manager,
+                dialog_manager,
+                call_id,
+                from_contact,
+                to_contact,
+                local_addr,
+                rtp_port,
+            )
+            .await
+            {
+                tracing::error!(
+                    call_id = %call_id,
+                    error = %e,
+                    "Call origination failed"
+                );
+            }
+        });
+
+        Ok(call_id)
+    }
+}
+
+/// Background task that drives a click-to-call origination to completion.
+///
+/// 1. INVITE the `from` party (A-leg).
+/// 2. When A-leg answers, INVITE the `to` party (B-leg).
+/// 3. When B-leg answers, bridge both legs.
+/// 4. On failure at any step, clean up (BYE answered legs, mark call failed).
+async fn run_origination(
+    uac: Arc<SipUserAgentClient>,
+    call_manager: Arc<fcp_b2bua_core::CallManager>,
+    dialog_manager: Arc<DialogManager>,
+    call_id: fcp_b2bua_core::CallId,
+    from_contact: String,
+    to_contact: String,
+    local_addr: String,
+    rtp_port: u16,
+) -> Result<()> {
+    use std::time::Duration;
+
+    let leg_timeout = Duration::from_secs(30);
+
+    // Generate SDP offer for the A-leg
+    let a_sdp = generate_basic_sdp(&local_addr, rtp_port);
+
+    // --- A-leg: INVITE the "from" party ---
+    let _ = call_manager.update_call(&call_id, |c| {
+        c.state = fcp_b2bua_core::CallState::Inviting;
+    });
+
+    let a_handle = match uac.invite(&from_contact, Some(&a_sdp)).await {
+        Ok(h) => Arc::new(h),
+        Err(e) => {
+            let _ = call_manager.update_call(&call_id, |c| {
+                c.fail(format!("A-leg INVITE failed: {}", e));
+            });
+            return Err(anyhow::anyhow!("A-leg INVITE to {} failed: {}", from_contact, e));
+        }
+    };
+
+    info!(call_id = %call_id, target = %from_contact, "A-leg INVITE sent");
+
+    // Wait for A-leg final response
+    let a_response = match tokio::time::timeout(leg_timeout, a_handle.await_final()).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            let _ = call_manager.update_call(&call_id, |c| {
+                c.fail(format!("A-leg failed: {}", e));
+            });
+            return Err(anyhow::anyhow!("A-leg failed: {}", e));
+        }
+        Err(_) => {
+            // Timeout — cancel the A-leg
+            let _ = a_handle.cancel().await;
+            let _ = call_manager.update_call(&call_id, |c| {
+                c.fail("A-leg timeout".to_string());
+            });
+            return Err(anyhow::anyhow!("A-leg timeout"));
+        }
+    };
+
+    let a_status = a_response.start_line().code();
+    if a_status < 200 || a_status >= 300 {
+        let _ = call_manager.update_call(&call_id, |c| {
+            c.fail(format!(
+                "A-leg rejected: {} {}",
+                a_status,
+                a_response.start_line().reason()
+            ));
+        });
+        return Err(anyhow::anyhow!(
+            "A-leg rejected: {} {}",
+            a_status,
+            a_response.start_line().reason()
+        ));
+    }
+
+    info!(call_id = %call_id, "A-leg answered");
+
+    // Store A-leg dialog
+    let a_dialog = a_handle.dialog.read().await.clone();
+    let _ = dialog_manager.insert(a_dialog.clone());
+    let _ = call_manager.update_call(&call_id, |c| {
+        c.a_leg.dialog = Some(a_dialog.clone());
+        c.a_leg.outbound_handle = Some(Arc::clone(&a_handle));
+        c.state = fcp_b2bua_core::CallState::Proceeding;
+    });
+
+    // --- B-leg: INVITE the "to" party ---
+    let b_sdp = generate_basic_sdp(&local_addr, rtp_port);
+
+    let b_handle = match uac.invite(&to_contact, Some(&b_sdp)).await {
+        Ok(h) => Arc::new(h),
+        Err(e) => {
+            // BYE the A-leg
+            let _ = uac.bye(&a_dialog).await;
+            dialog_manager.remove(a_dialog.id());
+            let _ = call_manager.update_call(&call_id, |c| {
+                c.fail(format!("B-leg INVITE failed: {}", e));
+            });
+            return Err(anyhow::anyhow!("B-leg INVITE to {} failed: {}", to_contact, e));
+        }
+    };
+
+    info!(call_id = %call_id, target = %to_contact, "B-leg INVITE sent");
+
+    // Wait for B-leg final response
+    let b_response = match tokio::time::timeout(leg_timeout, b_handle.await_final()).await {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => {
+            // BYE the A-leg
+            let _ = uac.bye(&a_dialog).await;
+            dialog_manager.remove(a_dialog.id());
+            let _ = call_manager.update_call(&call_id, |c| {
+                c.fail(format!("B-leg failed: {}", e));
+            });
+            return Err(anyhow::anyhow!("B-leg failed: {}", e));
+        }
+        Err(_) => {
+            // Timeout — cancel B-leg, BYE A-leg
+            let _ = b_handle.cancel().await;
+            let _ = uac.bye(&a_dialog).await;
+            dialog_manager.remove(a_dialog.id());
+            let _ = call_manager.update_call(&call_id, |c| {
+                c.fail("B-leg timeout".to_string());
+            });
+            return Err(anyhow::anyhow!("B-leg timeout"));
+        }
+    };
+
+    let b_status = b_response.start_line().code();
+    if b_status < 200 || b_status >= 300 {
+        // BYE the A-leg
+        let _ = uac.bye(&a_dialog).await;
+        dialog_manager.remove(a_dialog.id());
+        let _ = call_manager.update_call(&call_id, |c| {
+            c.fail(format!(
+                "B-leg rejected: {} {}",
+                b_status,
+                b_response.start_line().reason()
+            ));
+        });
+        return Err(anyhow::anyhow!(
+            "B-leg rejected: {} {}",
+            b_status,
+            b_response.start_line().reason()
+        ));
+    }
+
+    info!(call_id = %call_id, "B-leg answered — call established");
+
+    // Store B-leg dialog and establish the call
+    let b_dialog = b_handle.dialog.read().await.clone();
+    let _ = dialog_manager.insert(b_dialog.clone());
+    let _ = call_manager.update_call(&call_id, |c| {
+        if let Some(b_leg) = &mut c.b_leg {
+            b_leg.dialog = Some(b_dialog.clone());
+            b_leg.outbound_handle = Some(Arc::clone(&b_handle));
+        }
+        c.establish();
+    });
+
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -8058,8 +8324,27 @@ fn ensure_supported_timer(response: &mut sip_core::Response) {
 }
 
 // ============================================================================
-// SDP Hold/Unhold Helpers
+// SDP Helpers
 // ============================================================================
+
+/// Generate a basic SDP offer with `a=sendrecv` for call origination.
+///
+/// Offers PCMU and PCMA (G.711) codecs which are universally supported.
+fn generate_basic_sdp(local_addr: &str, rtp_port: u16) -> String {
+    format!(
+        "v=0\r\n\
+         o=- 0 0 IN IP4 {addr}\r\n\
+         s=-\r\n\
+         c=IN IP4 {addr}\r\n\
+         t=0 0\r\n\
+         m=audio {port} RTP/AVP 0 8\r\n\
+         a=rtpmap:0 PCMU/8000\r\n\
+         a=rtpmap:8 PCMA/8000\r\n\
+         a=sendrecv\r\n",
+        addr = local_addr,
+        port = rtp_port,
+    )
+}
 
 /// Generate an SDP body that puts the call on hold (a=sendonly).
 ///

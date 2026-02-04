@@ -377,6 +377,44 @@ impl Call {
         self.failure_reason = Some(reason);
     }
 
+    /// Create a new call originated via API (click-to-call).
+    ///
+    /// Both legs are outbound. The A-leg targets the `from` party (whose phone
+    /// rings first) and the B-leg targets the `to` party.
+    pub fn new_originated(
+        from_uri: String,
+        from_display_name: Option<String>,
+        to_uri: String,
+        tenant_id: fcp_core::TenantId,
+    ) -> Self {
+        let a_leg = CallLeg::new_outbound(from_uri, from_display_name);
+        let b_leg = CallLeg::new_outbound(to_uri, None);
+
+        Self {
+            id: CallId::new(),
+            tenant_id,
+            state: CallState::Initiated,
+            a_leg,
+            a_leg_invite_tx: None,
+            a_leg_to_tag: None,
+            b_leg: Some(b_leg),
+            original_invite: None,
+            media_session_id: None,
+            media_anchored: false,
+            created_at: SystemTime::now(),
+            established_at: None,
+            ended_at: None,
+            failure_reason: None,
+            flow_id: None,
+            flow_current_node: None,
+            trunk_name: None,
+            cancel_notify: None,
+            custom_data: None,
+            parked_orbit: None,
+            parker_extension: None,
+        }
+    }
+
     /// Get the remote party identifier (from A-leg).
     pub fn caller(&self) -> &str {
         &self.a_leg.remote_uri
