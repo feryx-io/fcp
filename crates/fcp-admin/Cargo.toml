@@ -23,8 +23,14 @@ path = "src/main.rs"
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-api-core = { path = "../fcp-api-core" }
-fcp-runtime = { path = "../fcp-runtime" }
+fcp-sip = { path = "../fcp-sip" }
+fcp-media = { path = "../fcp-media" }
+fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-events = { path = "../fcp-events" }
+
+# For NoopDispatcher
+async-trait = "0.1"
+bytes = { workspace = true }
 
 # Storage backends (optional)
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }

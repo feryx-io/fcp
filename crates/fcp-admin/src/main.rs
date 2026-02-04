@@ -13,10 +13,34 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use fcp_events::{EventFilter, EventSubscriber};
+use fcp_events::{EventBus, EventFilter, InMemoryEventBus};
+use fcp_sip::exports::{
+    DialogManager, SubscriptionManager, TransactionManager, TransportContext,
+    TransportDispatcher,
+};
+use fcp_sip::handler::SipMessageHandler;
+use fcp_sip::{B2buaConfig, CallManager};
 use std::sync::Arc;
 use tokio::signal;
 use tracing::{info, warn};
+
+/// No-op transport dispatcher for admin API.
+///
+/// The admin API doesn't do real SIP transport — it only needs the handler
+/// for API operations (e.g. hangup calls via BYE). The handler requires a
+/// `TransactionManager`, which requires a dispatcher.
+struct NoopDispatcher;
+
+#[async_trait::async_trait]
+impl TransportDispatcher for NoopDispatcher {
+    async fn dispatch(
+        &self,
+        _ctx: &TransportContext,
+        _payload: bytes::Bytes,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 
 mod cli;
 mod config;
@@ -107,13 +131,44 @@ async fn main() -> Result<()> {
 
     info!("Storage backend initialized successfully");
 
-    // Create minimal FCP config for runtime
-    // Admin API doesn't start SIP transport, but uses runtime to create proper components
-    let mut fcp_config = fcp_core::FcpConfig::default();
-    fcp_config.node.name = config.service.node_id.clone();
-    fcp_config.registrar.enabled = false; // Admin doesn't need registrar
-    fcp_config.routing.enabled = false; // Admin doesn't need routing
-    fcp_config.api = fcp_core::ApiConfig {
+    // Build lightweight SIP components (no real transport).
+    // The admin API only needs the component graph for REST API operations
+    // (e.g. hangup calls via BYE), not actual SIP traffic.
+    let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
+
+    let dispatcher = Arc::new(NoopDispatcher);
+    let transaction_manager = Arc::new(TransactionManager::new(
+        dispatcher as Arc<dyn TransportDispatcher>,
+    ));
+    let dialog_manager = Arc::new(DialogManager::new());
+    let subscription_manager = Arc::new(SubscriptionManager::new());
+    let call_manager = Arc::new(CallManager::with_storage_and_events(
+        storage.clone(),
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+    ));
+
+    let local_uri = fcp_sip::exports::SipUri::parse("sip:admin@127.0.0.1").unwrap();
+    let handler = Arc::new(SipMessageHandler::new(
+        transaction_manager,
+        dialog_manager.clone(),
+        local_uri,
+        None,                    // media_profile
+        "127.0.0.1".to_string(), // local_addr
+        10000,                   // rtp_port
+        None,                    // registrar
+        None,                    // routing_service
+        call_manager.clone(),
+        None,                    // uac (no outbound SIP needed)
+        Some(storage.clone()),
+        None,                    // media_manager
+        None,                    // media_config
+        None,                    // flow_handler
+        B2buaConfig::default(),
+        None,                    // outbound_route_provider
+        None,                    // pbx_handler
+    )?);
+
+    let api_config = fcp_core::ApiConfig {
         enabled: true,
         bind: config.api.bind_address,
         auth_enabled: config.api.auth_enabled,
@@ -121,26 +176,9 @@ async fn main() -> Result<()> {
         metrics_enabled: false,
         metrics_path: "/metrics".to_string(),
     };
+    let realm = "fcp.local".to_string();
 
-    // Build runtime with storage (but don't start SIP transport)
-    let runtime = fcp_runtime::Runtime::builder()
-        .with_config(fcp_config)
-        .with_storage(storage.clone())
-        .build()
-        .await
-        .context("Failed to build runtime")?;
-
-    info!(node_id = %runtime.node_id(), "Runtime components initialized");
-
-    // Extract components from runtime for API
-    let api_config = runtime.config().api.clone();
-    let realm = runtime.config().registrar.realm.clone();
-    let dialog_manager = Arc::clone(runtime.dialog_manager());
-    let subscription_manager = Arc::clone(runtime.subscription_manager());
-    let call_manager = Arc::clone(runtime.call_manager());
-    let handler = Arc::clone(runtime.handler());
-    let media_manager = Some(Arc::clone(runtime.media_manager()));
-    let event_bus = Arc::clone(runtime.event_bus());
+    info!(node_id = %config.service.node_id, "SIP components initialized (lightweight, no transport)");
 
     // Clone event_bus for event forwarding before moving into api_state
     let event_bus_for_forward = Arc::clone(&event_bus);
@@ -153,7 +191,7 @@ async fn main() -> Result<()> {
         subscription_manager,
         call_manager,
         handler,
-        media_manager,
+        None, // media_manager (admin doesn't need media)
         event_bus,
         realm,
         fcp_core::TenantId::nil(),
