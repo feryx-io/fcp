@@ -396,6 +396,67 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
     result
 }
 
+/// Construct an SDP answer for A-leg using A-leg's preferred codec.
+///
+/// When B-leg answers with a different codec than A-leg's preference,
+/// we construct a new SDP answer for A-leg using A-leg's preferred codec.
+/// The transcoder handles the conversion between A-leg and B-leg codecs.
+///
+/// # Arguments
+/// * `a_leg_offer` - A-leg's original SDP offer
+/// * `server_ip` - Server's IP address for media anchoring
+/// * `rtp_port` - Server's RTP port for media anchoring
+///
+/// # Returns
+/// Constructed SDP answer with A-leg's preferred codec and server's RTP endpoint.
+pub fn construct_answer_for_a_leg(a_leg_offer: &str, server_ip: &str, rtp_port: u16) -> String {
+    let codecs = parse_sdp_codecs(a_leg_offer);
+    let te_pt = extract_telephone_event_pt(a_leg_offer);
+
+    // Get the preferred codec (first in list)
+    let preferred = codecs.first();
+
+    // Build SDP answer
+    let mut sdp = String::new();
+    sdp.push_str("v=0\r\n");
+    sdp.push_str("o=fcp 0 0 IN IP4 ");
+    sdp.push_str(server_ip);
+    sdp.push_str("\r\n");
+    sdp.push_str("s=FCP Media Server\r\n");
+    sdp.push_str("c=IN IP4 ");
+    sdp.push_str(server_ip);
+    sdp.push_str("\r\n");
+    sdp.push_str("t=0 0\r\n");
+
+    // Build m= line with preferred codec and telephone-event
+    sdp.push_str(&format!("m=audio {} RTP/AVP", rtp_port));
+    if let Some(codec) = preferred {
+        sdp.push_str(&format!(" {}", codec.payload_type));
+    }
+    if let Some(te) = te_pt {
+        sdp.push_str(&format!(" {}", te));
+    }
+    sdp.push_str("\r\n");
+
+    // Add rtpmap for preferred codec
+    if let Some(codec) = preferred {
+        sdp.push_str(&format!(
+            "a=rtpmap:{} {}/{}\r\n",
+            codec.payload_type, codec.encoding_name, codec.clock_rate
+        ));
+    }
+
+    // Add telephone-event rtpmap
+    if let Some(te) = te_pt {
+        sdp.push_str(&format!("a=rtpmap:{} telephone-event/8000\r\n", te));
+        sdp.push_str(&format!("a=fmtp:{} 0-16\r\n", te));
+    }
+
+    sdp.push_str("a=sendrecv\r\n");
+
+    sdp
+}
+
 /// Filter SDP to only include specified codecs.
 ///
 /// Used by B2BUA to constrain B-leg offer to codecs A-leg supports,

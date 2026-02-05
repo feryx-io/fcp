@@ -3107,17 +3107,11 @@ impl SipMessageHandler {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
 
-                            // Rewrite SDP to point to server's RTP endpoint
-                            let mut rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
-                                original_sdp,
-                                &self.local_addr,
-                                rtp_port,
-                            );
-
-                            // Filter B-leg's codec to match A-leg's preferred codec
-                            // This is critical for transcoding: A-leg sees its codec, B-leg sees its codec,
-                            // and the transcoder handles conversion in the middle transparently
-                            if let Some(original_invite) = self
+                            // Construct answer for A-leg using A-leg's preferred codec
+                            // This is critical for transcoding: A-leg sees its preferred codec,
+                            // B-leg uses whatever it answered with, and the transcoder handles
+                            // conversion in the middle transparently
+                            let rewritten_sdp = if let Some(original_invite) = self
                                 .call_manager
                                 .get_call(&call_id)
                                 .and_then(|c| c.original_invite.clone())
@@ -3128,24 +3122,47 @@ impl SipMessageHandler {
                                     let a_leg_codecs =
                                         fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
                                     if let Some(preferred) = a_leg_codecs.first() {
-                                        // Filter to A-leg's preferred codec only
-                                        let filtered_sdp = fcp_media::filter_sdp_codecs(
-                                            &rewritten_sdp,
-                                            &[&preferred.encoding_name],
-                                        );
+                                        // Construct answer using A-leg's preferred codec
+                                        let constructed_sdp =
+                                            fcp_media::construct_answer_for_a_leg(
+                                                &a_leg_offer,
+                                                &self.local_addr,
+                                                rtp_port,
+                                            );
                                         info!(
                                             call_id = %call_id,
                                             a_leg_codec = %preferred.encoding_name,
-                                            "Filtered B-leg answer SDP to match A-leg preferred codec"
+                                            b_leg_codec = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
+                                            "Constructed A-leg answer with preferred codec (transcoding enabled)"
                                         );
-                                        rewritten_sdp = filtered_sdp;
+                                        constructed_sdp
+                                    } else {
+                                        // Fallback: just rewrite the SDP
+                                        fcp_media::rewrite_sdp_for_anchoring(
+                                            original_sdp,
+                                            &self.local_addr,
+                                            rtp_port,
+                                        )
                                     }
+                                } else {
+                                    // Fallback: just rewrite the SDP
+                                    fcp_media::rewrite_sdp_for_anchoring(
+                                        original_sdp,
+                                        &self.local_addr,
+                                        rtp_port,
+                                    )
                                 }
-                            }
+                            } else {
+                                // Fallback: just rewrite the SDP
+                                fcp_media::rewrite_sdp_for_anchoring(
+                                    original_sdp,
+                                    &self.local_addr,
+                                    rtp_port,
+                                )
+                            };
 
                             info!(
                                 call_id = %call_id,
-                                original_port = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
                                 server_ip = %self.local_addr,
                                 rtp_port = rtp_port,
                                 "Rewrote B-leg SDP for media anchoring"
@@ -3669,17 +3686,11 @@ impl SipMessageHandler {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
 
-                            // Rewrite SDP to point to server's A-leg RTP endpoint
-                            let mut rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
-                                original_sdp,
-                                &self.local_addr,
-                                rtp_port,
-                            );
-
-                            // Also filter B-leg's codec to match A-leg's preferred codec
-                            // This is critical for transcoding: A-leg sees its codec, B-leg sees its codec,
-                            // and the transcoder handles conversion in the middle transparently
-                            if let Some(original_invite) = self
+                            // Construct answer for A-leg using A-leg's preferred codec
+                            // This is critical for transcoding: A-leg sees its preferred codec,
+                            // B-leg uses whatever it answered with, and the transcoder handles
+                            // conversion in the middle transparently
+                            let rewritten_sdp = if let Some(original_invite) = self
                                 .call_manager
                                 .get_call(&call_id)
                                 .and_then(|c| c.original_invite.clone())
@@ -3690,24 +3701,47 @@ impl SipMessageHandler {
                                     let a_leg_codecs =
                                         fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
                                     if let Some(preferred) = a_leg_codecs.first() {
-                                        // Filter to A-leg's preferred codec only
-                                        let filtered_sdp = fcp_media::filter_sdp_codecs(
-                                            &rewritten_sdp,
-                                            &[&preferred.encoding_name],
-                                        );
+                                        // Construct answer using A-leg's preferred codec
+                                        let constructed_sdp =
+                                            fcp_media::construct_answer_for_a_leg(
+                                                &a_leg_offer,
+                                                &self.local_addr,
+                                                rtp_port,
+                                            );
                                         info!(
                                             call_id = %call_id,
                                             a_leg_codec = %preferred.encoding_name,
-                                            "Filtered B-leg answer SDP to match A-leg preferred codec"
+                                            b_leg_codec = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
+                                            "Constructed A-leg answer with preferred codec (transcoding enabled)"
                                         );
-                                        rewritten_sdp = filtered_sdp;
+                                        constructed_sdp
+                                    } else {
+                                        // Fallback: just rewrite the SDP
+                                        fcp_media::rewrite_sdp_for_anchoring(
+                                            original_sdp,
+                                            &self.local_addr,
+                                            rtp_port,
+                                        )
                                     }
+                                } else {
+                                    // Fallback: just rewrite the SDP
+                                    fcp_media::rewrite_sdp_for_anchoring(
+                                        original_sdp,
+                                        &self.local_addr,
+                                        rtp_port,
+                                    )
                                 }
-                            }
+                            } else {
+                                // Fallback: just rewrite the SDP
+                                fcp_media::rewrite_sdp_for_anchoring(
+                                    original_sdp,
+                                    &self.local_addr,
+                                    rtp_port,
+                                )
+                            };
 
                             info!(
                                 call_id = %call_id,
-                                original_port = ?original_sdp.lines().find(|l| l.starts_with("m=audio")),
                                 server_ip = %self.local_addr,
                                 rtp_port = rtp_port,
                                 "Rewrote winning B-leg SDP for media anchoring on A-leg"
@@ -4471,36 +4505,57 @@ impl SipMessageHandler {
                     match media_manager.get_session(media_session_id).await {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
-                            let mut rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
-                                &response_sdp,
-                                &self.local_addr,
-                                rtp_port,
-                            );
 
-                            // Filter peer's codec to match originator's preferred codec
-                            // This is critical for transcoding: each side sees its preferred codec,
-                            // and the transcoder handles conversion in the middle transparently
-                            if let Some(original_invite) = call.original_invite.as_ref() {
+                            // Construct answer for A-leg using A-leg's preferred codec
+                            // This is critical for transcoding: A-leg sees its preferred codec,
+                            // B-leg uses whatever it answered with, and the transcoder handles
+                            // conversion in the middle transparently
+                            let rewritten_sdp = if let Some(original_invite) =
+                                call.original_invite.as_ref()
+                            {
                                 if !original_invite.body().is_empty() {
                                     let a_leg_offer =
                                         String::from_utf8_lossy(original_invite.body());
                                     let a_leg_codecs =
                                         fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
                                     if let Some(preferred) = a_leg_codecs.first() {
-                                        // Filter to A-leg's preferred codec only
-                                        let filtered_sdp = fcp_media::filter_sdp_codecs(
-                                            &rewritten_sdp,
-                                            &[&preferred.encoding_name],
-                                        );
+                                        // Construct answer using A-leg's preferred codec
+                                        let constructed_sdp =
+                                            fcp_media::construct_answer_for_a_leg(
+                                                &a_leg_offer,
+                                                &self.local_addr,
+                                                rtp_port,
+                                            );
                                         info!(
                                             call_id = %call.id,
                                             a_leg_codec = %preferred.encoding_name,
-                                            "Filtered re-INVITE response SDP to match A-leg preferred codec"
+                                            "Constructed A-leg re-INVITE answer with preferred codec"
                                         );
-                                        rewritten_sdp = filtered_sdp;
+                                        constructed_sdp
+                                    } else {
+                                        // Fallback: just rewrite the SDP
+                                        fcp_media::rewrite_sdp_for_anchoring(
+                                            &response_sdp,
+                                            &self.local_addr,
+                                            rtp_port,
+                                        )
                                     }
+                                } else {
+                                    // Fallback: just rewrite the SDP
+                                    fcp_media::rewrite_sdp_for_anchoring(
+                                        &response_sdp,
+                                        &self.local_addr,
+                                        rtp_port,
+                                    )
                                 }
-                            }
+                            } else {
+                                // Fallback: just rewrite the SDP
+                                fcp_media::rewrite_sdp_for_anchoring(
+                                    &response_sdp,
+                                    &self.local_addr,
+                                    rtp_port,
+                                )
+                            };
 
                             info!(
                                 call_id = %call.id,
