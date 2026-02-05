@@ -3108,11 +3108,40 @@ impl SipMessageHandler {
                             let (rtp_port, _rtcp_port) = session.ports();
 
                             // Rewrite SDP to point to server's RTP endpoint
-                            let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                            let mut rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
                                 original_sdp,
                                 &self.local_addr,
                                 rtp_port,
                             );
+
+                            // Filter B-leg's codec to match A-leg's preferred codec
+                            // This is critical for transcoding: A-leg sees its codec, B-leg sees its codec,
+                            // and the transcoder handles conversion in the middle transparently
+                            if let Some(original_invite) = self
+                                .call_manager
+                                .get_call(&call_id)
+                                .and_then(|c| c.original_invite.clone())
+                            {
+                                if !original_invite.body().is_empty() {
+                                    let a_leg_offer =
+                                        String::from_utf8_lossy(original_invite.body());
+                                    let a_leg_codecs =
+                                        fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
+                                    if let Some(preferred) = a_leg_codecs.first() {
+                                        // Filter to A-leg's preferred codec only
+                                        let filtered_sdp = fcp_media::filter_sdp_codecs(
+                                            &rewritten_sdp,
+                                            &[&preferred.encoding_name],
+                                        );
+                                        info!(
+                                            call_id = %call_id,
+                                            a_leg_codec = %preferred.encoding_name,
+                                            "Filtered B-leg answer SDP to match A-leg preferred codec"
+                                        );
+                                        rewritten_sdp = filtered_sdp;
+                                    }
+                                }
+                            }
 
                             info!(
                                 call_id = %call_id,
@@ -3641,11 +3670,40 @@ impl SipMessageHandler {
                             let (rtp_port, _rtcp_port) = session.ports();
 
                             // Rewrite SDP to point to server's A-leg RTP endpoint
-                            let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                            let mut rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
                                 original_sdp,
                                 &self.local_addr,
                                 rtp_port,
                             );
+
+                            // Also filter B-leg's codec to match A-leg's preferred codec
+                            // This is critical for transcoding: A-leg sees its codec, B-leg sees its codec,
+                            // and the transcoder handles conversion in the middle transparently
+                            if let Some(original_invite) = self
+                                .call_manager
+                                .get_call(&call_id)
+                                .and_then(|c| c.original_invite.clone())
+                            {
+                                if !original_invite.body().is_empty() {
+                                    let a_leg_offer =
+                                        String::from_utf8_lossy(original_invite.body());
+                                    let a_leg_codecs =
+                                        fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
+                                    if let Some(preferred) = a_leg_codecs.first() {
+                                        // Filter to A-leg's preferred codec only
+                                        let filtered_sdp = fcp_media::filter_sdp_codecs(
+                                            &rewritten_sdp,
+                                            &[&preferred.encoding_name],
+                                        );
+                                        info!(
+                                            call_id = %call_id,
+                                            a_leg_codec = %preferred.encoding_name,
+                                            "Filtered B-leg answer SDP to match A-leg preferred codec"
+                                        );
+                                        rewritten_sdp = filtered_sdp;
+                                    }
+                                }
+                            }
 
                             info!(
                                 call_id = %call_id,
@@ -4413,11 +4471,36 @@ impl SipMessageHandler {
                     match media_manager.get_session(media_session_id).await {
                         Ok(session) => {
                             let (rtp_port, _rtcp_port) = session.ports();
-                            let rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
+                            let mut rewritten_sdp = fcp_media::rewrite_sdp_for_anchoring(
                                 &response_sdp,
                                 &self.local_addr,
                                 rtp_port,
                             );
+
+                            // Filter peer's codec to match originator's preferred codec
+                            // This is critical for transcoding: each side sees its preferred codec,
+                            // and the transcoder handles conversion in the middle transparently
+                            if let Some(original_invite) = call.original_invite.as_ref() {
+                                if !original_invite.body().is_empty() {
+                                    let a_leg_offer =
+                                        String::from_utf8_lossy(original_invite.body());
+                                    let a_leg_codecs =
+                                        fcp_media::sdp::parse_sdp_codecs(&a_leg_offer);
+                                    if let Some(preferred) = a_leg_codecs.first() {
+                                        // Filter to A-leg's preferred codec only
+                                        let filtered_sdp = fcp_media::filter_sdp_codecs(
+                                            &rewritten_sdp,
+                                            &[&preferred.encoding_name],
+                                        );
+                                        info!(
+                                            call_id = %call.id,
+                                            a_leg_codec = %preferred.encoding_name,
+                                            "Filtered re-INVITE response SDP to match A-leg preferred codec"
+                                        );
+                                        rewritten_sdp = filtered_sdp;
+                                    }
+                                }
+                            }
 
                             info!(
                                 call_id = %call.id,
