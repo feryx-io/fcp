@@ -52,6 +52,8 @@ pub enum CallEvent {
         timestamp: SystemTime,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
     },
 
     /// Call is ringing (180/183 received)
@@ -59,6 +61,8 @@ pub enum CallEvent {
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
     },
 
     /// Call progress (183 Session Progress)
@@ -66,6 +70,8 @@ pub enum CallEvent {
         call_id: CallId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
     },
 
     /// Call answered (200 OK)
@@ -78,6 +84,8 @@ pub enum CallEvent {
         a_leg_sdp: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         b_leg_sdp: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
     },
 
     /// Call ended (BYE/timeout/error)
@@ -90,6 +98,8 @@ pub enum CallEvent {
         hangup_party: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
     },
 
     /// Call failed (4xx/5xx/6xx)
@@ -101,6 +111,8 @@ pub enum CallEvent {
         sip_code: Option<u16>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trunk_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
     },
 
     /// Call parked in a parking orbit

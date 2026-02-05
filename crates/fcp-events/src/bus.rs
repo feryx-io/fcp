@@ -206,6 +206,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         bus.publish(event.clone()).await.unwrap();
@@ -246,6 +247,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         // Publish event for call_id_2 (should be filtered out)
@@ -257,6 +259,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         bus.publish(event2).await.unwrap();
@@ -295,6 +298,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         bus.publish(event).await.unwrap();

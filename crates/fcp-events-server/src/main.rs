@@ -3,14 +3,19 @@
 //! This service provides real-time event streaming to clients via WebSocket connections.
 //! It subscribes to the FCP event bus and broadcasts events to connected clients based on
 //! their subscriptions and tenant isolation.
+//!
+//! Additionally, it aggregates call state from multiple fcp-call-manager nodes and provides
+//! REST endpoints for querying active calls and node status.
 
 mod cli;
 mod config;
 mod connection;
+mod nodes;
+mod state;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{ws::WebSocketUpgrade, Path, State},
+    extract::{ws::WebSocketUpgrade, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -18,17 +23,21 @@ use axum::{
 };
 use clap::Parser;
 use fcp_core::TenantId;
-use fcp_events::{EventPublisher, InMemoryEventBus, PlatformEvent};
+use fcp_events::{CallEvent, EventPublisher, InMemoryEventBus, PlatformEvent, SystemEvent};
+use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::cli::Cli;
 use crate::config::{load_config, EventsConfig};
 use crate::connection::{cleanup_task, handle_websocket, ConnectionManager};
+use crate::nodes::{NodeRegistry, NodeType};
+use crate::state::CallStateStore;
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -36,6 +45,8 @@ struct AppState {
     config: EventsConfig,
     manager: Arc<ConnectionManager>,
     event_bus: Arc<InMemoryEventBus>,
+    call_store: Arc<CallStateStore>,
+    node_registry: Arc<NodeRegistry>,
 }
 
 #[tokio::main]
@@ -79,20 +90,36 @@ async fn main() -> Result<()> {
         config.limits.max_connections_per_tenant,
     ));
 
+    // Create call state store and node registry
+    let call_store = Arc::new(CallStateStore::new());
+    let node_registry = Arc::new(NodeRegistry::new());
+
     // Create application state
     let state = AppState {
         config: config.clone(),
         manager: manager.clone(),
         event_bus: event_bus.clone(),
+        call_store: call_store.clone(),
+        node_registry: node_registry.clone(),
     };
 
-    // Build router
+    // Build router with new endpoints
     let app = Router::new()
+        // Health and status
         .route("/health", get(health_handler))
-        .route("/ws/:tenant_id", get(websocket_handler))
         .route("/status", get(status_handler))
+        // WebSocket
+        .route("/ws/:tenant_id", get(websocket_handler))
+        // Event ingestion
         .route("/ingest", post(ingest_handler))
         .route("/ingest/batch", post(ingest_batch_handler))
+        // Call aggregation API
+        .route("/calls", get(list_calls_handler))
+        .route("/calls/:call_id", get(get_call_handler))
+        // Node registry API
+        .route("/nodes", get(list_nodes_handler))
+        // Aggregated statistics
+        .route("/stats", get(stats_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -105,8 +132,23 @@ async fn main() -> Result<()> {
 
     let event_bus_clone = event_bus.clone();
     let manager_clone = manager.clone();
+    let call_store_clone = call_store.clone();
+    let node_registry_clone = node_registry.clone();
     tokio::spawn(async move {
-        event_broadcast_task(event_bus_clone, manager_clone).await;
+        event_broadcast_task(
+            event_bus_clone,
+            manager_clone,
+            call_store_clone,
+            node_registry_clone,
+        )
+        .await;
+    });
+
+    // Spawn stale cleanup task
+    let call_store_cleanup = call_store.clone();
+    let node_registry_cleanup = node_registry.clone();
+    tokio::spawn(async move {
+        stale_cleanup_task(call_store_cleanup, node_registry_cleanup).await;
     });
 
     // Start server
@@ -171,6 +213,9 @@ async fn health_handler() -> impl IntoResponse {
 
 /// Status endpoint with connection statistics
 async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let call_stats = state.call_store.get_stats();
+    let node_stats = state.node_registry.get_stats();
+
     let status = serde_json::json!({
         "status": "operational",
         "service": "fcp-events-server",
@@ -179,6 +224,14 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
         "connections": {
             "total": state.manager.connection_count(),
             "max": state.config.limits.max_connections,
+        },
+        "calls": {
+            "active": call_stats.initiated + call_stats.ringing + call_stats.answered,
+            "total_tracked": call_stats.total,
+        },
+        "nodes": {
+            "total": node_stats.total,
+            "healthy": node_stats.healthy,
         },
         "config": {
             "heartbeat_interval_secs": state.config.websocket.heartbeat_interval.as_secs(),
@@ -239,6 +292,10 @@ async fn ingest_handler(
     State(state): State<AppState>,
     Json(event): Json<PlatformEvent>,
 ) -> impl IntoResponse {
+    // Process event for state tracking
+    process_event_for_state(&event, &state.call_store, &state.node_registry);
+
+    // Publish to event bus for WebSocket broadcast
     let _ = state.event_bus.publish(event).await;
     StatusCode::ACCEPTED
 }
@@ -249,13 +306,166 @@ async fn ingest_batch_handler(
     Json(events): Json<Vec<PlatformEvent>>,
 ) -> impl IntoResponse {
     for event in events {
+        // Process event for state tracking
+        process_event_for_state(&event, &state.call_store, &state.node_registry);
+
+        // Publish to event bus for WebSocket broadcast
         let _ = state.event_bus.publish(event).await;
     }
     StatusCode::ACCEPTED
 }
 
+/// Query parameters for listing calls
+#[derive(Debug, Deserialize)]
+struct ListCallsQuery {
+    /// Filter by node ID
+    node_id: Option<String>,
+    /// Include ended calls (default: false)
+    #[serde(default)]
+    include_ended: bool,
+}
+
+/// List active calls endpoint
+async fn list_calls_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ListCallsQuery>,
+) -> impl IntoResponse {
+    let calls = if let Some(ref node_id) = query.node_id {
+        state.call_store.get_active_calls_by_node(node_id)
+    } else {
+        state.call_store.get_active_calls()
+    };
+
+    Json(serde_json::json!({
+        "calls": calls,
+        "count": calls.len(),
+    }))
+}
+
+/// Get a specific call by ID
+async fn get_call_handler(
+    State(state): State<AppState>,
+    Path(call_id): Path<String>,
+) -> impl IntoResponse {
+    match state.call_store.get_call(&call_id) {
+        Some(call) => Json(serde_json::json!({"call": call})).into_response(),
+        None => (StatusCode::NOT_FOUND, "Call not found").into_response(),
+    }
+}
+
+/// List registered nodes endpoint
+async fn list_nodes_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let nodes = state.node_registry.get_all_nodes();
+    Json(serde_json::json!({
+        "nodes": nodes,
+        "count": nodes.len(),
+    }))
+}
+
+/// Aggregated statistics endpoint
+async fn stats_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let call_stats = state.call_store.get_stats();
+    let node_stats = state.node_registry.get_stats();
+
+    Json(serde_json::json!({
+        "calls": {
+            "total": call_stats.total,
+            "active": call_stats.initiated + call_stats.ringing + call_stats.answered,
+            "by_state": {
+                "initiated": call_stats.initiated,
+                "ringing": call_stats.ringing,
+                "answered": call_stats.answered,
+                "ended": call_stats.ended,
+                "failed": call_stats.failed,
+            }
+        },
+        "nodes": {
+            "total": node_stats.total,
+            "healthy": node_stats.healthy,
+            "degraded": node_stats.degraded,
+            "offline": node_stats.offline,
+            "total_calls": node_stats.total_calls,
+        },
+        "websocket_connections": state.manager.connection_count(),
+    }))
+}
+
+/// Process an event for state tracking (call store and node registry).
+fn process_event_for_state(
+    event: &PlatformEvent,
+    call_store: &CallStateStore,
+    node_registry: &NodeRegistry,
+) {
+    match event {
+        PlatformEvent::Call(call_event) => {
+            // Extract node_id and update node registry
+            let node_id = extract_node_id_from_call_event(call_event);
+            if let Some(ref node_id) = node_id {
+                node_registry.register_or_update(node_id, Some(NodeType::CallManager));
+            }
+
+            // Update call counts based on event type
+            match call_event {
+                CallEvent::Initiated { node_id, .. } => {
+                    if let Some(ref nid) = node_id {
+                        node_registry.increment_calls(nid);
+                    }
+                }
+                CallEvent::Ended { node_id, .. } | CallEvent::Failed { node_id, .. } => {
+                    if let Some(ref nid) = node_id {
+                        node_registry.decrement_calls(nid);
+                    }
+                }
+                _ => {}
+            }
+
+            // Process event in call store
+            call_store.process_event(call_event);
+        }
+        PlatformEvent::System(system_event) => {
+            match system_event {
+                SystemEvent::Started { node_id, .. } => {
+                    info!(node_id = %node_id, "Node registered via SystemEvent::Started");
+                    node_registry.register_or_update(node_id, Some(NodeType::CallManager));
+                }
+                SystemEvent::Stopping { node_id, .. } => {
+                    info!(node_id = %node_id, "Node stopping");
+                    // Node will be marked offline via stale check
+                }
+                SystemEvent::HealthCheck { node_id, healthy, .. } => {
+                    debug!(node_id = %node_id, healthy = %healthy, "Health check received");
+                    if *healthy {
+                        node_registry.register_or_update(node_id, Some(NodeType::CallManager));
+                    }
+                }
+            }
+        }
+        _ => {
+            // Other events don't affect call/node state tracking
+        }
+    }
+}
+
+/// Extract node_id from a CallEvent (if present).
+fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
+    match event {
+        CallEvent::Initiated { node_id, .. }
+        | CallEvent::Ringing { node_id, .. }
+        | CallEvent::Progress { node_id, .. }
+        | CallEvent::Answered { node_id, .. }
+        | CallEvent::Ended { node_id, .. }
+        | CallEvent::Failed { node_id, .. } => node_id.clone(),
+        CallEvent::Parked { .. } | CallEvent::Unparked { .. } => None,
+    }
+}
+
 /// Background task to broadcast events from event bus to connections
-async fn event_broadcast_task(event_bus: Arc<InMemoryEventBus>, manager: Arc<ConnectionManager>) {
+async fn event_broadcast_task(
+    event_bus: Arc<InMemoryEventBus>,
+    manager: Arc<ConnectionManager>,
+    call_store: Arc<CallStateStore>,
+    node_registry: Arc<NodeRegistry>,
+) {
     use fcp_events::{EventFilter, EventSubscriber};
 
     // Subscribe to all events
@@ -272,12 +482,45 @@ async fn event_broadcast_task(event_bus: Arc<InMemoryEventBus>, manager: Arc<Con
     loop {
         match stream.next().await {
             Some(event) => {
+                // Process for state tracking
+                process_event_for_state(&event, &call_store, &node_registry);
+
+                // Broadcast to WebSocket connections
                 manager.publish(event);
             }
             None => {
                 error!("Event stream ended unexpectedly");
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
+        }
+    }
+}
+
+/// Background task to clean up stale calls and check node health.
+async fn stale_cleanup_task(call_store: Arc<CallStateStore>, node_registry: Arc<NodeRegistry>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+
+    info!("Stale cleanup task started (30s interval)");
+
+    loop {
+        interval.tick().await;
+
+        // Check for stale nodes
+        let offline_nodes = node_registry.check_stale_nodes();
+        if offline_nodes > 0 {
+            warn!(count = offline_nodes, "Nodes marked offline");
+        }
+
+        // Clean up ended calls older than 5 minutes
+        let removed_calls = call_store.cleanup_stale(Duration::from_secs(300));
+        if removed_calls > 0 {
+            debug!(count = removed_calls, "Cleaned up stale ended calls");
+        }
+
+        // Optionally remove nodes that have been offline for more than 10 minutes
+        let removed_nodes = node_registry.remove_stale_nodes(Duration::from_secs(600));
+        if removed_nodes > 0 {
+            info!(count = removed_nodes, "Removed stale offline nodes");
         }
     }
 }

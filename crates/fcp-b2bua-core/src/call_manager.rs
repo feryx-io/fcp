@@ -23,6 +23,9 @@ pub struct CallManager {
 
     /// Optional event publisher for real-time events
     events: Option<Arc<dyn EventPublisher>>,
+
+    /// Node ID for event publishing (identifies which call-manager node owns the call)
+    node_id: Option<String>,
 }
 
 impl CallManager {
@@ -32,6 +35,7 @@ impl CallManager {
             calls: Arc::new(DashMap::new()),
             storage: None,
             events: None,
+            node_id: None,
         }
     }
 
@@ -41,6 +45,7 @@ impl CallManager {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
             events: None,
+            node_id: None,
         }
     }
 
@@ -53,6 +58,7 @@ impl CallManager {
             calls: Arc::new(DashMap::new()),
             storage: Some(storage),
             events: Some(events),
+            node_id: None,
         }
     }
 
@@ -62,7 +68,21 @@ impl CallManager {
             calls: Arc::new(DashMap::new()),
             storage: None,
             events: Some(events),
+            node_id: None,
         }
+    }
+
+    /// Set the node ID for event publishing.
+    ///
+    /// This identifies which call-manager node owns the calls and is included
+    /// in all published events for multi-node aggregation.
+    pub fn set_node_id(&mut self, node_id: impl Into<String>) {
+        self.node_id = Some(node_id.into());
+    }
+
+    /// Get the configured node ID.
+    pub fn node_id(&self) -> Option<&str> {
+        self.node_id.as_deref()
     }
 
     /// Create a new call and store it.
@@ -90,6 +110,7 @@ impl CallManager {
                 },
                 timestamp: call.created_at,
                 trunk_name: call.trunk_name.clone(),
+                node_id: self.node_id.clone(),
             });
 
             let events = Arc::clone(events);
@@ -138,12 +159,14 @@ impl CallManager {
 
         // Publish state change events
         if let Some(events) = &self.events {
+            let node_id = self.node_id.clone();
             let should_publish = match (old_state, new_state) {
                 // Ringing: transition to Proceeding
                 (_, CallState::Proceeding) if old_state != CallState::Proceeding => {
                     Some(PlatformEvent::Call(CallEvent::Ringing {
                         call_id: fcp_core::CallId::from_uuid(*call_id.as_uuid()),
                         timestamp: std::time::SystemTime::now(),
+                        node_id: node_id.clone(),
                     }))
                 }
                 // Answered: transition to Established
@@ -160,6 +183,7 @@ impl CallManager {
                         codec,
                         a_leg_sdp: updated_call.a_leg.sdp.clone(),
                         b_leg_sdp: updated_call.b_leg.as_ref().and_then(|b| b.sdp.clone()),
+                        node_id: node_id.clone(),
                     }))
                 }
                 _ => None,
@@ -201,6 +225,7 @@ impl CallManager {
 
         // Publish termination event
         if let Some(events) = &self.events {
+            let node_id = self.node_id.clone();
             let event = match call.state {
                 CallState::Terminated => {
                     // Normal termination
@@ -211,6 +236,7 @@ impl CallManager {
                         hangup_cause: "Normal Clearing".to_string(),
                         hangup_party: None, // TODO: Phase 2 - track BYE direction
                         trunk_name: call.trunk_name.clone(),
+                        node_id: node_id.clone(),
                     })
                 }
                 CallState::Failed => {
@@ -230,6 +256,7 @@ impl CallManager {
                         reason,
                         sip_code,
                         trunk_name: call.trunk_name.clone(),
+                        node_id: node_id.clone(),
                     })
                 }
                 _ => {
@@ -246,6 +273,7 @@ impl CallManager {
                         reason: format!("Terminated in unexpected state: {:?}", call.state),
                         sip_code: None,
                         trunk_name: call.trunk_name.clone(),
+                        node_id: node_id.clone(),
                     })
                 }
             };

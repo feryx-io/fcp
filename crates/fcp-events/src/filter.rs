@@ -111,6 +111,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         assert!(filter.matches(&event));
@@ -129,6 +130,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         let non_matching_event = PlatformEvent::Call(CallEvent::Initiated {
@@ -139,6 +141,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         assert!(filter.matches(&matching_event));
@@ -157,6 +160,7 @@ mod tests {
             direction: CallDirection::Inbound,
             timestamp: SystemTime::now(),
             trunk_name: None,
+            node_id: None,
         });
 
         let system_event = PlatformEvent::System(crate::SystemEvent::Started {

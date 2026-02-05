@@ -12,7 +12,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
+use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
 use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
@@ -233,10 +233,12 @@ async fn main() -> Result<()> {
     let media_manager = create_media_manager(&config).await?;
 
     // 15. Create CallManager for B2BUA functionality (with event publishing)
-    let call_manager = Arc::new(fcp_sip::CallManager::with_storage_and_events(
+    let mut call_manager_inner = fcp_sip::CallManager::with_storage_and_events(
         Arc::clone(&dyn_storage),
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
-    ));
+    );
+    call_manager_inner.set_node_id(&config.service.node_id);
+    let call_manager = Arc::new(call_manager_inner);
 
     // 16. Create PBX handler (if enabled)
     let pbx_handler: Option<Arc<fcp_pbx::PbxHandler>> = if config.pbx.enabled {
@@ -440,6 +442,19 @@ async fn main() -> Result<()> {
             }
         });
         info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
+    }
+
+    // 22. Publish SystemEvent::Started to announce this node
+    {
+        let started_event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::Started {
+            node_id: config.service.node_id.clone(),
+            timestamp: std::time::SystemTime::now(),
+        });
+        if let Err(e) = event_bus.publish(started_event).await {
+            warn!(%e, "Failed to publish SystemEvent::Started");
+        } else {
+            info!(node_id = %config.service.node_id, "Published SystemEvent::Started");
+        }
     }
 
     // Log operating mode
