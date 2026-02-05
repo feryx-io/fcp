@@ -462,6 +462,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - `fcp-policy-engine`: Rate limiting, fraud detection
 - `fcp-transcoder`: Audio transcoding
 - `fcp-cdr-processor`: Dedicated CDR pipeline
+- `fcp-provisioning`: Device provisioning server (Polycom, Yealink, Cisco, Grandstream) — HTTP-based config file serving with per-vendor templates, auto-populated from device/user records
 - Encryption at rest (KMS integration)
 
 ### Phase 5 (Planned - Carrier Grade)

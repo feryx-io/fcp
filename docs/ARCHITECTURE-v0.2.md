@@ -1985,6 +1985,7 @@ chaos_tests:
 - [ ] WASM plugin runtime
 - [ ] Multi-tenant isolation hardening
 - [ ] Encryption at rest (KMS integration)
+- [ ] `fcp-provisioning`: Device provisioning server (Polycom, Yealink, Cisco, Grandstream) — serves per-device config files over HTTP, templated from device/user records via DHCP option 66 discovery
 - [ ] Advanced admin UI (call ladder, quality dashboards)
 - [ ] Comprehensive documentation
 
