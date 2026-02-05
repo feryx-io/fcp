@@ -88,17 +88,13 @@ async fn registrations_handler(
 ) -> Json<serde_json::Value> {
     use fcp_core::RegistrationStore;
 
-    let aor = match query.aor {
-        Some(aor) => aor,
-        None => {
-            return Json(serde_json::json!({
-                "registrations": [],
-                "hint": "Pass ?aor=user@domain to query registrations for a specific AOR"
-            }));
-        }
+    // If AOR is provided, filter by that AOR; otherwise return all registrations
+    let registrations_result = match query.aor {
+        Some(ref aor) => state.storage.get_registrations(aor).await,
+        None => state.storage.get_all_registrations().await,
     };
 
-    match state.storage.get_registrations(&aor).await {
+    match registrations_result {
         Ok(registrations) => {
             let reg_list: Vec<serde_json::Value> = registrations
                 .iter()
@@ -117,7 +113,10 @@ async fn registrations_handler(
                 })
                 .collect();
 
-            Json(serde_json::json!({ "registrations": reg_list }))
+            Json(serde_json::json!({
+                "registrations": reg_list,
+                "count": reg_list.len()
+            }))
         }
         Err(e) => Json(serde_json::json!({
             "error": format!("Failed to get registrations: {}", e),

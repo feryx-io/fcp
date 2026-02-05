@@ -551,6 +551,30 @@ impl RegistrationStore for SqliteStorage {
 
         Ok(count)
     }
+
+    async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let rows = sqlx::query(
+            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at
+             FROM registrations
+             WHERE expires_at > ?
+             ORDER BY aor, q DESC",
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let registrations = rows
+            .into_iter()
+            .filter_map(|row| row_to_registration(row).ok())
+            .collect();
+
+        Ok(registrations)
+    }
 }
 
 // ============================================================================

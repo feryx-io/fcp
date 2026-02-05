@@ -712,6 +712,11 @@ pub trait RegistrationStore: Send + Sync {
     async fn registration_count(&self) -> Result<usize> {
         Ok(0)
     }
+
+    /// Get all active registrations across all AORs.
+    async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Call disposition (answered, busy, failed, etc.)
@@ -1312,6 +1317,17 @@ impl RegistrationStore for FileBackedStorage {
         let regs = self.registrations.read().await;
         Ok(regs.values().map(|v| v.len()).sum())
     }
+
+    async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
+        let regs = self.registrations.read().await;
+        let now = SystemTime::now();
+        Ok(regs
+            .values()
+            .flatten()
+            .filter(|r| r.expires_at > now)
+            .cloned()
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -1492,6 +1508,10 @@ impl RegistrationStore for DynStorage {
 
     async fn registration_count(&self) -> Result<usize> {
         self.registration_store.registration_count().await
+    }
+
+    async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
+        self.registration_store.get_all_registrations().await
     }
 }
 

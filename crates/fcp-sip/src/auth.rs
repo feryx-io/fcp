@@ -133,9 +133,11 @@ impl<S: AsyncCredentialStore> Ha1Authenticator<S> {
             .ok_or_else(|| anyhow!("Failed to parse authorization header"))?;
 
         // Extract required fields
+        // Normalize username by trimming trailing @ (some buggy clients like sipsak add it)
         let username = auth
             .param("username")
             .ok_or_else(|| anyhow!("Missing username"))?;
+        let username_str = username.as_str().trim_end_matches('@');
         let realm = auth
             .param("realm")
             .ok_or_else(|| anyhow!("Missing realm"))?;
@@ -155,9 +157,9 @@ impl<S: AsyncCredentialStore> Ha1Authenticator<S> {
         // Fetch pre-computed HA1 from store
         let creds = self
             .store
-            .fetch(username.as_str(), realm.as_str())
+            .fetch(username_str, realm.as_str())
             .await
-            .ok_or_else(|| anyhow!("User not found"))?;
+            .ok_or_else(|| anyhow!("User not found: {}", username_str))?;
 
         // The "password" in credentials is actually the pre-computed HA1 hash
         let ha1 = creds.password();
