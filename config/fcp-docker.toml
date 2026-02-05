@@ -1,82 +1,42 @@
-# FCP Production Configuration for Docker Deployment
-# This configuration is optimized for containerized deployment
+# FCP Call Manager Configuration for Docker
+# This configuration uses the correct section names for fcp-call-manager
 
-[node]
-# Node configuration
-name = "fcp-docker"
-local_domain = "fcp.local"
+[service]
+service_type = "call-manager"
+node_id = "cm-docker-01"
 
-[transport]
-# SIP transport settings
+[sip]
 udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
-max_message_size = 65535
-connection_pool_size = 1000
-connection_timeout = { secs = 300, nanos = 0 }
-rtp_port = 10000
-enable_sdp = true
-
-# TLS settings (optional)
-# tls_bind = "0.0.0.0:5061"
-# tls_cert = "/etc/fcp/certs/fcp.crt"
-# tls_key = "/etc/fcp/certs/fcp.key"
 
 [registrar]
-# Registration settings
-enabled = true
-auth_enabled = true
+auth_enabled = false
 realm = "fcp.local"
-data_dir = "/var/lib/fcp/registrar"
 default_expires = 3600
 min_expires = 60
 max_expires = 7200
 
 [storage]
-# Database configuration - SQLite (fully implemented)
 backend = "sqlite"
-connection_string = "sqlite:///var/lib/fcp/fcp.db"
-max_connections = 10
-connection_timeout = { secs = 30, nanos = 0 }
-
-# PostgreSQL (not yet fully implemented)
-# backend = "postgres"
-# connection_string = "postgresql://fcp:fcp_password@postgres:5432/fcp"
-# max_connections = 100
+connection_string = "sqlite://data/fcp.db"
 
 [media]
-# RTP media settings
-enabled = true
 rtp_port_start = 10000
-rtp_port_end = 20000
-enable_srtp = false
-enable_transcoding = true
-enable_recording = false
-enable_dtmf = true
+rtp_port_end = 11000
+codecs = ["PCMU", "PCMA", "G722"]
 public_ip = "192.168.1.225"
-# stun_server = "stun:stun.l.google.com:19302"
 
-[api]
-# REST API settings
-enabled = true
-bind = "0.0.0.0:8084"
-metrics_enabled = true
-metrics_path = "/metrics"
-auth_enabled = false
+[http]
+bind_address = "0.0.0.0:8084"
 
-[observability]
-# Logging and monitoring
-log_level = "info"
-log_format = "json"
-tracing_enabled = false
-service_name = "fcp"
-# tracing_endpoint = "http://jaeger:14268/api/traces"
+[logging]
+level = "info"
+format = "json"
 
-[routing]
-# Routing settings
-enabled = false
-default_tenant_id = "default"
-
-[routing.backend]
-type = "yaml"
-path = "routing.yaml"
-watch = true
+[calls]
+max_concurrent_calls = 100
+call_timeout_seconds = 60
+enable_sdp = true
+enable_refer = true
+enable_dtmf = true
+enable_transcoding = true

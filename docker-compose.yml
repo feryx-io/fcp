@@ -14,17 +14,18 @@ services:
       - "5060:5060/tcp"  # SIP TCP
       - "5061:5061/tcp"  # SIP TLS
       - "8084:8084"      # REST API
-      - "10000-10100:10000-10100/udp"  # RTP media (limited range for compose)
+      - "10000-11000:10000-11000/udp"  # RTP media ports (1000 ports = 500 calls)
     environment:
       - RUST_LOG=info
-      - FCP_LOG_FORMAT=json
-      - FCP_CONFIG=/etc/fcp/fcp.toml
-      - DATABASE_URL=postgresql://fcp:fcp_password@postgres:5432/fcp
+      - FCP_CALL_MANAGER_LOG_FORMAT=json
+      - FCP_CALL_MANAGER_CONFIG=/etc/fcp/fcp.toml
+      - FCP_CALL_MANAGER_PUBLIC_IP=192.168.1.225
     volumes:
       - fcp-data:/var/lib/fcp
       - fcp-config:/etc/fcp
       - fcp-logs:/var/log/fcp
       - ./config/fcp-docker.toml:/etc/fcp/fcp.toml:ro
+      - shared-data:/home/fcp/data  # Shared database
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,6 +130,8 @@ volumes:
   prometheus-data:
     driver: local
   grafana-data:
+    driver: local
+  shared-data:
     driver: local
   # redis-data:
   #   driver: local

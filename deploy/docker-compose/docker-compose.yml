@@ -27,7 +27,7 @@ services:
       - "8080:8080"
     volumes:
       - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
-      - admin-data:/app/data
+      - fcp_shared-data:/app/data  # Shared with fcp-call-manager
     environment:
       - RUST_LOG=info
       - FCP_ADMIN_LOG_FORMAT=pretty
@@ -96,7 +96,7 @@ services:
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
       - ./configs/routing.yaml:/app/routing.yaml:ro
-      - admin-data:/app/data
+      - fcp_shared-data:/app/data  # Shared with main docker-compose
     environment:
       - RUST_LOG=info
       - FCP_CALL_MANAGER_LOG_FORMAT=pretty
@@ -141,8 +141,8 @@ services:
 volumes:
   redis-data:
     driver: local
-  admin-data:
-    driver: local
+  fcp_shared-data:
+    external: true  # Created by main docker-compose.yml
 
 networks:
   default:
