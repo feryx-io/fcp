@@ -866,6 +866,37 @@ impl SipMessageHandler {
                     self.transaction_manager.send_final(tx_key, response).await;
                 }
 
+                // Terminate media session if anchored
+                if call.media_anchored {
+                    if let (Some(media_session_id), Some(media_manager)) =
+                        (&call.media_session_id, &self.media_manager)
+                    {
+                        let media_session_id = media_session_id.clone();
+                        let media_manager = Arc::clone(media_manager);
+                        let call_id = call.id;
+
+                        tokio::spawn(async move {
+                            match media_manager.terminate_session(&media_session_id).await {
+                                Ok(()) => {
+                                    info!(
+                                        call_id = %call_id,
+                                        media_session_id = %media_session_id,
+                                        "Terminated media session (CANCEL)"
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        call_id = %call_id,
+                                        media_session_id = %media_session_id,
+                                        error = %e,
+                                        "Failed to terminate media session (CANCEL)"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+
                 stop_timers_for_call(&self.session_timer_manager, &call);
                 let _ = self
                     .call_manager
@@ -1199,16 +1230,44 @@ impl SipMessageHandler {
                         let hangup_call_manager = Arc::clone(&self.call_manager);
                         let hangup_uac = self.uac.clone();
                         let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+                        let hangup_media_manager = self.media_manager.clone();
                         let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
                             let call_id = hangup_call_id;
                             let call_manager = Arc::clone(&hangup_call_manager);
                             let uac_opt = hangup_uac.clone();
                             let dialog_manager = Arc::clone(&hangup_dialog_manager);
+                            let media_manager = hangup_media_manager.clone();
                             Box::pin(async move {
                                 info!(call_id = %call_id, "Hangup callback executing");
                                 // Get the dialog for this call
                                 if let Some(call_entry) = call_manager.get_call(&call_id) {
                                     info!(call_id = %call_id, "Found call entry, checking for dialog");
+
+                                    // Terminate media session if anchored
+                                    if call_entry.media_anchored {
+                                        if let (Some(ref media_session_id), Some(ref media_mgr)) =
+                                            (&call_entry.media_session_id, &media_manager)
+                                        {
+                                            match media_mgr.terminate_session(media_session_id).await {
+                                                Ok(()) => {
+                                                    info!(
+                                                        call_id = %call_id,
+                                                        media_session_id = %media_session_id,
+                                                        "Terminated media session (hangup callback)"
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        call_id = %call_id,
+                                                        media_session_id = %media_session_id,
+                                                        error = %e,
+                                                        "Failed to terminate media session (hangup callback)"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     if let Some(dialog) = call_entry.a_leg.dialog.clone() {
                                         let dialog_id_str = format!("{:?}", dialog.id());
                                         info!(call_id = %call_id, dialog_id = %dialog_id_str, "Found A-leg dialog, sending BYE");

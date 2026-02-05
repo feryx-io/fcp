@@ -13,7 +13,7 @@ services:
       - "5060:5060/udp"  # SIP UDP
       - "5060:5060/tcp"  # SIP TCP
       - "5061:5061/tcp"  # SIP TLS
-      - "8080:8080"      # REST API
+      - "8084:8084"      # REST API
       - "10000-10100:10000-10100/udp"  # RTP media (limited range for compose)
     environment:
       - RUST_LOG=info
@@ -31,7 +31,7 @@ services:
     networks:
       - fcp-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
       interval: 30s
       timeout: 10s
       retries: 3
