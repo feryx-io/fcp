@@ -20,7 +20,7 @@ COPY crates/ ./crates/
 COPY external/ ./external/
 
 # Build the application (default features include SQLite)
-RUN cargo build --release --bin fcp-server --bin fcp-cli
+RUN cargo build --release --bin fcp-call-manager --bin fcp-cli
 
 # Stage 2: Runtime stage
 FROM debian:trixie-slim
@@ -45,7 +45,7 @@ RUN mkdir -p /var/lib/fcp/recordings \
     chown -R fcp:fcp /var/lib/fcp /etc/fcp /var/log/fcp
 
 # Copy binaries from builder
-COPY --from=builder /app/target/release/fcp-server /usr/local/bin/
+COPY --from=builder /app/target/release/fcp-call-manager /usr/local/bin/
 COPY --from=builder /app/target/release/fcp-cli /usr/local/bin/
 
 # Copy default configuration
@@ -78,4 +78,4 @@ ENV RUST_LOG=info \
 VOLUME ["/var/lib/fcp", "/etc/fcp", "/var/log/fcp"]
 
 # Default command
-CMD ["fcp-server"]
+CMD ["fcp-call-manager"]

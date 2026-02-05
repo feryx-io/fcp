@@ -569,6 +569,28 @@ pub mod embedded {
                         codec = %first.encoding_name,
                         "Set B-leg endpoint and codec from SDP"
                     );
+
+                    // Detect codec mismatch and log transcoding activation
+                    drop(pb); // Release write lock before acquiring read lock on A
+                    let pa = session_info.forge_session.participant_a().read().await;
+                    let a_leg_codec = format!("{:?}", pa.codec_config.codec);
+                    drop(pa);
+
+                    let b_leg_codec = first.encoding_name.as_str();
+                    if !a_leg_codec.eq_ignore_ascii_case(b_leg_codec) {
+                        info!(
+                            ?call_id,
+                            a_leg_codec = %a_leg_codec,
+                            b_leg_codec = %b_leg_codec,
+                            "Codec mismatch detected - transcoding enabled"
+                        );
+                    } else {
+                        debug!(
+                            ?call_id,
+                            codec = %a_leg_codec,
+                            "Codecs match - direct RTP forwarding"
+                        );
+                    }
                 } else {
                     info!(
                         ?call_id,

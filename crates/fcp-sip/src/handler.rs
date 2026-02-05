@@ -2727,6 +2727,35 @@ impl SipMessageHandler {
             }
         }
 
+        // Filter B-leg SDP to match A-leg's preferred codec
+        // This prevents codec mismatch (e.g., A-leg G722, B-leg picks PCMU)
+        if let Some(ref sdp) = a_leg_sdp {
+            let a_leg_codecs = fcp_media::sdp::parse_sdp_codecs(sdp);
+            if let Some(preferred) = a_leg_codecs.first() {
+                // Include preferred codec + G711 variants as fallback
+                let mut allowed: Vec<&str> = vec![preferred.encoding_name.as_str()];
+
+                // Add G711 fallback if A-leg supports it
+                for codec in &a_leg_codecs {
+                    let name = codec.encoding_name.as_str();
+                    if (name.eq_ignore_ascii_case("PCMU") || name.eq_ignore_ascii_case("PCMA"))
+                        && !allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
+                    {
+                        allowed.push(name);
+                    }
+                }
+
+                let filtered = fcp_media::sdp::filter_sdp_codecs(sdp, &allowed);
+                info!(
+                    call_id = %call_id,
+                    preferred_codec = %preferred.encoding_name,
+                    allowed_codecs = ?allowed,
+                    "Filtered B-leg SDP to match A-leg codecs"
+                );
+                a_leg_sdp = Some(filtered);
+            }
+        }
+
         // Extract caller's identity from A-leg for B2BUA caller ID preservation
         let caller_display_name = extract_from_display_name(request);
         let caller_from_uri = extract_from_uri(request).ok().map(normalize_from_uri);

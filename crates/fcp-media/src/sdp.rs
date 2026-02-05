@@ -396,6 +396,90 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
     result
 }
 
+/// Filter SDP to only include specified codecs.
+///
+/// Used by B2BUA to constrain B-leg offer to codecs A-leg supports,
+/// ensuring codec alignment or controlled transcoding.
+///
+/// # Arguments
+/// * `original_sdp` - The original SDP body
+/// * `allowed_codecs` - List of allowed codec names (e.g., ["G722", "PCMU"])
+///
+/// # Returns
+/// Filtered SDP string with only allowed codecs in m= and a=rtpmap lines.
+/// Always preserves telephone-event for DTMF.
+pub fn filter_sdp_codecs(original_sdp: &str, allowed_codecs: &[&str]) -> String {
+    // Use existing parse_sdp_codecs() to get codec info
+    let codecs = parse_sdp_codecs(original_sdp);
+
+    // Build list of allowed payload types
+    let mut allowed_pts: Vec<u8> = codecs
+        .iter()
+        .filter(|c| {
+            allowed_codecs
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&c.encoding_name))
+        })
+        .map(|c| c.payload_type)
+        .collect();
+
+    // Always include telephone-event if present
+    if let Some(te_pt) = extract_telephone_event_pt(original_sdp) {
+        if !allowed_pts.contains(&te_pt) {
+            allowed_pts.push(te_pt);
+        }
+    }
+
+    // Rebuild SDP line by line
+    let mut result = String::new();
+    for line in original_sdp.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("m=audio ") {
+            // Filter m=audio payload types
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 4 {
+                result.push_str(&format!("m=audio {} {}", parts[1], parts[2]));
+                for pt in parts[3..].iter() {
+                    if let Ok(pt_num) = pt.parse::<u8>() {
+                        if allowed_pts.contains(&pt_num) {
+                            result.push(' ');
+                            result.push_str(pt);
+                        }
+                    }
+                }
+                result.push_str("\r\n");
+                continue;
+            }
+        }
+
+        // Filter a=rtpmap and a=fmtp lines
+        if trimmed.starts_with("a=rtpmap:") || trimmed.starts_with("a=fmtp:") {
+            let attr_data = if trimmed.starts_with("a=rtpmap:") {
+                &trimmed[9..]
+            } else {
+                &trimmed[7..]
+            };
+            if let Some(pt_str) = attr_data
+                .split_whitespace()
+                .next()
+                .or_else(|| attr_data.split(':').next())
+            {
+                if let Ok(pt) = pt_str.parse::<u8>() {
+                    if !allowed_pts.contains(&pt) {
+                        continue; // Skip this line
+                    }
+                }
+            }
+        }
+
+        result.push_str(line);
+        result.push_str("\r\n");
+    }
+
+    result
+}
+
 /// Extract audio codecs from SDP body
 ///
 /// Parses SDP to extract codec names from rtpmap attributes.
@@ -826,5 +910,99 @@ a=rtpmap:0 PCMU/8000
         assert_eq!(decoded.len(), 30);
         assert_eq!(&decoded[..16], &material.master_key[..]);
         assert_eq!(&decoded[16..], &material.master_salt[..]);
+    }
+
+    #[test]
+    fn test_filter_sdp_codecs_basic() {
+        let sdp = "v=0\r\n\
+                   o=- 123 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 9 0 8 101\r\n\
+                   a=rtpmap:9 G722/8000\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n\
+                   a=rtpmap:101 telephone-event/8000\r\n\
+                   a=fmtp:101 0-15\r\n";
+
+        // Filter to only G722
+        let filtered = filter_sdp_codecs(sdp, &["G722"]);
+
+        // Should have G722 and telephone-event only
+        assert!(filtered.contains("m=audio 10000 RTP/AVP 9 101"));
+        assert!(filtered.contains("a=rtpmap:9 G722/8000"));
+        assert!(filtered.contains("a=rtpmap:101 telephone-event/8000"));
+        assert!(filtered.contains("a=fmtp:101 0-15"));
+        // Should NOT have PCMU or PCMA
+        assert!(!filtered.contains("a=rtpmap:0 PCMU"));
+        assert!(!filtered.contains("a=rtpmap:8 PCMA"));
+    }
+
+    #[test]
+    fn test_filter_sdp_codecs_with_fallback() {
+        let sdp = "v=0\r\n\
+                   o=- 123 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 9 0 8 101\r\n\
+                   a=rtpmap:9 G722/8000\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n\
+                   a=rtpmap:101 telephone-event/8000\r\n";
+
+        // Filter to G722 + PCMU fallback
+        let filtered = filter_sdp_codecs(sdp, &["G722", "PCMU"]);
+
+        // Should have G722, PCMU, and telephone-event
+        assert!(filtered.contains("m=audio 10000 RTP/AVP 9 0 101"));
+        assert!(filtered.contains("a=rtpmap:9 G722/8000"));
+        assert!(filtered.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(filtered.contains("a=rtpmap:101 telephone-event/8000"));
+        // Should NOT have PCMA
+        assert!(!filtered.contains("a=rtpmap:8 PCMA"));
+    }
+
+    #[test]
+    fn test_filter_sdp_codecs_case_insensitive() {
+        let sdp = "v=0\r\n\
+                   o=- 123 1 IN IP4 192.168.1.100\r\n\
+                   s=Test\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0 8\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n";
+
+        // Filter with lowercase
+        let filtered = filter_sdp_codecs(sdp, &["pcmu"]);
+
+        assert!(filtered.contains("m=audio 10000 RTP/AVP 0"));
+        assert!(filtered.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(!filtered.contains("a=rtpmap:8 PCMA"));
+    }
+
+    #[test]
+    fn test_filter_sdp_codecs_preserves_other_lines() {
+        let sdp = "v=0\r\n\
+                   o=- 123 1 IN IP4 192.168.1.100\r\n\
+                   s=Test Call\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=ptime:20\r\n\
+                   a=sendrecv\r\n";
+
+        let filtered = filter_sdp_codecs(sdp, &["PCMU"]);
+
+        // All non-codec lines should be preserved
+        assert!(filtered.contains("v=0"));
+        assert!(filtered.contains("o=- 123 1 IN IP4 192.168.1.100"));
+        assert!(filtered.contains("s=Test Call"));
+        assert!(filtered.contains("c=IN IP4 192.168.1.100"));
+        assert!(filtered.contains("a=ptime:20"));
+        assert!(filtered.contains("a=sendrecv"));
     }
 }
