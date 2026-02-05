@@ -23,6 +23,9 @@ enable_refer = true
 rtp_port_start = 10000
 rtp_port_end = 10100
 codecs = ["PCMU", "PCMA", "G722"]
+public_ip = "192.168.1.225"
+enable_transcoding = true
+enable_dtmf = true
 
 [storage]
 backend = "sqlite"
@@ -54,4 +57,5 @@ rules_file = "/app/routing.yaml"
 hot_reload = true
 
 [events]
-server_url = "http://fcp-events-server:8081/ingest"
+# Using localhost since call-manager uses host networking
+server_url = "http://localhost:8081/ingest"

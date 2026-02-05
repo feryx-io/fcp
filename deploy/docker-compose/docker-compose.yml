@@ -90,11 +90,9 @@ services:
       context: ../..
       dockerfile: deploy/docker-compose/Dockerfile.call-manager
     container_name: fcp-call-manager
-    ports:
-      - "5060:5060/udp"
-      - "5060:5060/tcp"
-      - "8084:8084"
-      - "10000-10100:10000-10100/udp"
+    # Use host networking for proper UDP/RTP handling
+    # Docker bridge networking has issues with UDP port ranges used by RTP
+    network_mode: host
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
       - ./configs/routing.yaml:/app/routing.yaml:ro

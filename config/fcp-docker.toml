@@ -45,20 +45,20 @@ connection_timeout = { secs = 30, nanos = 0 }
 
 [media]
 # RTP media settings
-enabled = false  # Disabled by default - use pass-through mode
+enabled = true
 rtp_port_start = 10000
 rtp_port_end = 20000
 enable_srtp = false
-enable_transcoding = false
+enable_transcoding = true
 enable_recording = false
 enable_dtmf = true
-# public_ip = "your.public.ip"
+public_ip = "192.168.1.225"
 # stun_server = "stun:stun.l.google.com:19302"
 
 [api]
 # REST API settings
 enabled = true
-bind = "0.0.0.0:8080"
+bind = "0.0.0.0:8084"
 metrics_enabled = true
 metrics_path = "/metrics"
 auth_enabled = false
