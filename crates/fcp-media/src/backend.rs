@@ -5,7 +5,51 @@
 use crate::{adapters, Error, MediaSession, MediaSessionConfig, Result};
 use async_trait::async_trait;
 use fcp_core::{CallId, DialogId};
+use serde::Serialize;
+use std::net::SocketAddr;
 use std::sync::Arc;
+
+/// Information about an active RTP session (for REST API)
+#[derive(Debug, Clone, Serialize)]
+pub struct RtpSessionInfo {
+    /// FCP Call ID
+    pub call_id: String,
+    /// Dialog ID
+    pub dialog_id: String,
+    /// Session state
+    pub state: String,
+    /// A-leg (caller) information
+    pub a_leg: RtpLegInfo,
+    /// B-leg (callee) information
+    pub b_leg: RtpLegInfo,
+    /// Whether transcoding is active
+    pub transcoding_active: bool,
+    /// Local RTP port
+    pub local_rtp_port: u16,
+    /// Session duration in seconds
+    pub duration_secs: u64,
+}
+
+/// Information about one leg of an RTP session
+#[derive(Debug, Clone, Serialize)]
+pub struct RtpLegInfo {
+    /// Remote endpoint (IP:port)
+    pub remote_addr: Option<String>,
+    /// Codec name (e.g., "G722", "PCMU")
+    pub codec: String,
+    /// Codec clock rate (Hz)
+    pub clock_rate: u32,
+    /// RTP payload type
+    pub payload_type: u8,
+    /// Packets received
+    pub packets_received: u64,
+    /// Packets sent
+    pub packets_sent: u64,
+    /// Bytes received
+    pub bytes_received: u64,
+    /// Bytes sent
+    pub bytes_sent: u64,
+}
 
 /// Media backend trait
 ///
@@ -151,6 +195,9 @@ pub trait MediaBackend: Send + Sync {
 
     /// Health check
     async fn health_check(&self) -> Result<bool>;
+
+    /// List all active RTP sessions with their details
+    async fn list_sessions(&self) -> Vec<RtpSessionInfo>;
 }
 
 /// Audio injection target
@@ -1099,6 +1146,65 @@ pub mod embedded {
             // For now, just check if we can access it
             Ok(true)
         }
+
+        async fn list_sessions(&self) -> Vec<RtpSessionInfo> {
+            let mut sessions = Vec::new();
+
+            for entry in self.sessions.iter() {
+                let call_id = entry.key();
+                let info = entry.value();
+
+                // Get participant info from forge session
+                let pa = info.forge_session.participant_a().read().await;
+                let pb = info.forge_session.participant_b().read().await;
+
+                // Determine if transcoding is active (different codecs)
+                let a_codec = format!("{:?}", pa.codec_config.codec);
+                let b_codec = format!("{:?}", pb.codec_config.codec);
+                let transcoding_active = pa.codec_config.codec != pb.codec_config.codec
+                    || pa.codec_config.clock_rate != pb.codec_config.clock_rate;
+
+                // Get session state
+                let state = info.forge_session.state().await;
+
+                // Get port info
+                let ports = info.forge_session.ports();
+
+                // Calculate duration from uptime
+                let duration_secs = info.forge_session.uptime().as_secs();
+
+                sessions.push(RtpSessionInfo {
+                    call_id: call_id.to_string(),
+                    dialog_id: info.dialog_id.to_string(),
+                    state: format!("{:?}", state),
+                    a_leg: RtpLegInfo {
+                        remote_addr: pa.remote_addr.map(|a| a.to_string()),
+                        codec: a_codec,
+                        clock_rate: pa.codec_config.clock_rate,
+                        payload_type: pa.codec_config.payload_type,
+                        packets_received: pa.stats.packets_received,
+                        packets_sent: pa.stats.packets_sent,
+                        bytes_received: pa.stats.bytes_received,
+                        bytes_sent: pa.stats.bytes_sent,
+                    },
+                    b_leg: RtpLegInfo {
+                        remote_addr: pb.remote_addr.map(|a| a.to_string()),
+                        codec: b_codec,
+                        clock_rate: pb.codec_config.clock_rate,
+                        payload_type: pb.codec_config.payload_type,
+                        packets_received: pb.stats.packets_received,
+                        packets_sent: pb.stats.packets_sent,
+                        bytes_received: pb.stats.bytes_received,
+                        bytes_sent: pb.stats.bytes_sent,
+                    },
+                    transcoding_active,
+                    local_rtp_port: ports.rtp_port,
+                    duration_secs,
+                });
+            }
+
+            sessions
+        }
     }
 
     #[cfg(test)]
@@ -1810,6 +1916,11 @@ pub mod remote {
             let url = format!("{}/health", self.base_url);
             let resp = self.client.get(&url).send().await?;
             Ok(resp.status().is_success())
+        }
+
+        async fn list_sessions(&self) -> Vec<RtpSessionInfo> {
+            // TODO: Implement remote session listing via HTTP API
+            Vec::new()
         }
     }
 }

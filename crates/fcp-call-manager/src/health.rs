@@ -4,6 +4,7 @@ use axum::{extract::Query, extract::State, routing::get, Json, Router};
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
 use fcp_core::{CallId, DynStorage};
+use fcp_media::MediaManager;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use tracing::info;
 pub struct AppState {
     pub call_manager: Arc<CallManager>,
     pub storage: Arc<DynStorage>,
+    pub media_manager: Arc<MediaManager>,
     pub start_time: Instant,
 }
 
@@ -25,6 +27,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/calls", get(calls_handler))
         .route("/registrations", get(registrations_handler))
         .route("/cdrs", get(cdrs_handler))
+        .route("/media-sessions", get(media_sessions_handler))
+        .route("/transcoding", get(transcoding_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -285,4 +289,96 @@ async fn cdrs_handler(
             "cdrs": []
         })),
     }
+}
+
+/// List all active RTP/media sessions with details
+async fn media_sessions_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let sessions = state.media_manager.list_sessions().await;
+
+    // Convert to JSON-friendly format
+    let session_list: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|session| {
+            serde_json::json!({
+                "call_id": session.call_id,
+                "dialog_id": session.dialog_id,
+                "state": session.state,
+                "local_rtp_port": session.local_rtp_port,
+                "duration_secs": session.duration_secs,
+                "transcoding_active": session.transcoding_active,
+                "a_leg": {
+                    "remote_addr": session.a_leg.remote_addr,
+                    "codec": session.a_leg.codec,
+                    "clock_rate": session.a_leg.clock_rate,
+                    "payload_type": session.a_leg.payload_type,
+                    "packets_received": session.a_leg.packets_received,
+                    "packets_sent": session.a_leg.packets_sent,
+                    "bytes_received": session.a_leg.bytes_received,
+                    "bytes_sent": session.a_leg.bytes_sent,
+                },
+                "b_leg": {
+                    "remote_addr": session.b_leg.remote_addr,
+                    "codec": session.b_leg.codec,
+                    "clock_rate": session.b_leg.clock_rate,
+                    "payload_type": session.b_leg.payload_type,
+                    "packets_received": session.b_leg.packets_received,
+                    "packets_sent": session.b_leg.packets_sent,
+                    "bytes_received": session.b_leg.bytes_received,
+                    "bytes_sent": session.b_leg.bytes_sent,
+                },
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "sessions": session_list,
+        "count": session_list.len()
+    }))
+}
+
+/// Get transcoding statistics summary
+async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let sessions = state.media_manager.list_sessions().await;
+
+    // Count sessions with transcoding active
+    let transcoding_sessions: Vec<&fcp_media::RtpSessionInfo> = sessions
+        .iter()
+        .filter(|s| s.transcoding_active)
+        .collect();
+
+    // Build codec pairs summary
+    let mut codec_pairs: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for session in &transcoding_sessions {
+        let pair = format!("{} <-> {}", session.a_leg.codec, session.b_leg.codec);
+        *codec_pairs.entry(pair).or_insert(0) += 1;
+    }
+
+    // Detailed transcoding sessions
+    let transcoding_details: Vec<serde_json::Value> = transcoding_sessions
+        .iter()
+        .map(|session| {
+            serde_json::json!({
+                "call_id": session.call_id,
+                "a_leg": {
+                    "remote_addr": session.a_leg.remote_addr,
+                    "codec": session.a_leg.codec,
+                    "clock_rate": session.a_leg.clock_rate,
+                },
+                "b_leg": {
+                    "remote_addr": session.b_leg.remote_addr,
+                    "codec": session.b_leg.codec,
+                    "clock_rate": session.b_leg.clock_rate,
+                },
+                "duration_secs": session.duration_secs,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "total_sessions": sessions.len(),
+        "transcoding_sessions": transcoding_sessions.len(),
+        "direct_forward_sessions": sessions.len() - transcoding_sessions.len(),
+        "codec_pairs": codec_pairs,
+        "sessions": transcoding_details,
+    }))
 }

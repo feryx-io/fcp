@@ -60,7 +60,7 @@ pub mod session;
 pub mod tts;
 
 // Re-exports
-pub use backend::{AudioTarget, EmbeddedBackend, MediaBackend};
+pub use backend::{AudioTarget, EmbeddedBackend, MediaBackend, RtpLegInfo, RtpSessionInfo};
 pub use config::{BackendType, MediaConfig};
 pub use decision::{should_anchor_media, MediaAnchoringDecision, MediaDecisionContext};
 pub use dtmf_collector::{CollectionResult, DtmfCollector};

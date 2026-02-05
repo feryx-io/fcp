@@ -359,6 +359,7 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(health::AppState {
         call_manager: Arc::clone(&call_manager),
         storage: Arc::clone(&dyn_storage),
+        media_manager: Arc::clone(&media_manager),
         start_time: Instant::now(),
     });
     let http_bind = config.http.bind_address;

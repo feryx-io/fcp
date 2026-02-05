@@ -128,6 +128,18 @@ impl MediaManager {
         self.backend.get_stats(call_id).await
     }
 
+    /// List all active RTP sessions with their details
+    ///
+    /// Returns information about each active media session including:
+    /// - Call and dialog IDs
+    /// - Codec information for each leg
+    /// - Remote endpoints (IP:port)
+    /// - Whether transcoding is active
+    /// - Packet/byte statistics
+    pub async fn list_sessions(&self) -> Vec<crate::backend::RtpSessionInfo> {
+        self.backend.list_sessions().await
+    }
+
     /// Send DTMF digit on a call
     pub async fn send_dtmf(&self, call_id: &CallId, digit: char, duration_ms: u32) -> Result<()> {
         if !digit.is_ascii_digit() && digit != '*' && digit != '#' {
