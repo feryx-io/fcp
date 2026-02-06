@@ -810,8 +810,15 @@ impl SipMessageHandler {
                 // This wakes up the select! in handle_parallel_forking which then
                 // CANCELs every B-leg it owns.
                 if let Some(notify) = &call.cancel_notify {
-                    info!(call_id = %call.id, "Signaling forking task to CANCEL all B-legs");
+                    info!(call_id = %call.id, "Signaling forking task to CANCEL all B-legs via cancel_notify");
                     notify.notify_one();
+                    info!(call_id = %call.id, "cancel_notify.notify_one() called successfully");
+                } else {
+                    warn!(
+                        call_id = %call.id,
+                        call_state = ?call.state,
+                        "CANCEL received but cancel_notify is None - B-legs may not be cancelled immediately"
+                    );
                 }
 
                 // Also try the direct outbound handle path (for established calls
@@ -2844,35 +2851,86 @@ impl SipMessageHandler {
             target_uris.truncate(max_legs);
         }
 
-        // Create outbound INVITEs to all target URIs (parallel forking)
-        let mut b_leg_calls = Vec::new();
-        for target_uri in &target_uris {
-            debug!(
-                call_id = %call_id,
-                target = %target_uri,
-                has_sdp = a_leg_sdp.is_some(),
-                "Creating B-leg INVITE"
-            );
-
-            match uac.invite(target_uri, a_leg_sdp.as_deref()).await {
-                Ok(call) => {
-                    info!(
-                        call_id = %call_id,
-                        target = %target_uri,
-                        "B-leg INVITE sent"
-                    );
-                    b_leg_calls.push((target_uri.clone(), Arc::new(call)));
-                }
-                Err(e) => {
-                    warn!(
-                        call_id = %call_id,
-                        target = %target_uri,
-                        error = %e,
-                        "Failed to create B-leg INVITE for one target, continuing with others"
-                    );
-                }
+        // Create cancel_notify BEFORE sending B-leg INVITEs so CANCEL handler can
+        // signal the forking task even if CANCEL arrives while INVITEs are being sent.
+        // This fixes a race condition where CANCEL could arrive during the INVITE loop.
+        let cancel_notify = Arc::new(tokio::sync::Notify::new());
+        let cancel_notify_clone = Arc::clone(&cancel_notify);
+        match self.call_manager.update_call(&call_id, |call| {
+            call.cancel_notify = Some(cancel_notify_clone);
+        }) {
+            Ok(_) => {
+                debug!(
+                    call_id = %call_id,
+                    "Stored cancel_notify in call before B-leg INVITEs"
+                );
+            }
+            Err(e) => {
+                error!(
+                    call_id = %call_id,
+                    error = %e,
+                    "Failed to store cancel_notify - CANCELs may not be delivered"
+                );
             }
         }
+
+        // Create outbound INVITEs to all target URIs in PARALLEL
+        // This prevents TLS connection timeouts from blocking other B-legs
+        let mut invite_futures = Vec::new();
+        for target_uri in &target_uris {
+            let uac_clone = Arc::clone(&uac);
+            let target_uri_clone = target_uri.clone();
+            let a_leg_sdp_clone = a_leg_sdp.clone();
+            let call_id_clone = call_id.clone();
+
+            let future = async move {
+                debug!(
+                    call_id = %call_id_clone,
+                    target = %target_uri_clone,
+                    has_sdp = a_leg_sdp_clone.is_some(),
+                    "Creating B-leg INVITE"
+                );
+
+                // Add 5-second timeout for each INVITE to prevent TLS hangs
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    uac_clone.invite(&target_uri_clone, a_leg_sdp_clone.as_deref()),
+                )
+                .await
+                {
+                    Ok(Ok(call)) => {
+                        info!(
+                            call_id = %call_id_clone,
+                            target = %target_uri_clone,
+                            "B-leg INVITE sent"
+                        );
+                        Some((target_uri_clone, Arc::new(call)))
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            call_id = %call_id_clone,
+                            target = %target_uri_clone,
+                            error = %e,
+                            "Failed to create B-leg INVITE"
+                        );
+                        None
+                    }
+                    Err(_) => {
+                        warn!(
+                            call_id = %call_id_clone,
+                            target = %target_uri_clone,
+                            "B-leg INVITE timed out (5s)"
+                        );
+                        None
+                    }
+                }
+            };
+            invite_futures.push(future);
+        }
+
+        // Wait for all INVITEs to complete (concurrently)
+        let results = futures::future::join_all(invite_futures).await;
+        let b_leg_calls: Vec<_> = results.into_iter().flatten().collect();
 
         // Clear caller identity overrides after INVITEs sent
         uac.inner().set_display_name(None).await;
@@ -2896,14 +2954,9 @@ impl SipMessageHandler {
             "All B-leg INVITEs sent, racing for first answer"
         );
 
-        // Create cancel_notify so CANCEL handler can signal the forking task
-        let cancel_notify = Arc::new(tokio::sync::Notify::new());
-
-        // Update call state to Proceeding and store cancel_notify
-        let cancel_notify_clone = Arc::clone(&cancel_notify);
+        // Update call state to Proceeding (cancel_notify was already stored before the INVITE loop)
         let _ = self.call_manager.update_call(&call_id, |call| {
             call.state = fcp_b2bua_core::CallState::Proceeding;
-            call.cancel_notify = Some(cancel_notify_clone);
         });
 
         // Spawn background task to race all B-legs
@@ -3622,6 +3675,13 @@ impl SipMessageHandler {
         tokio::pin!(race_future);
 
         let fork_timeout = self.b2bua_config.forking.timeout;
+        info!(
+            call_id = %call_id,
+            timeout_secs = fork_timeout.as_secs(),
+            b_leg_count = b_leg_calls.len(),
+            "Starting B-leg race select! - listening for winner, cancel, or timeout"
+        );
+
         tokio::select! {
             winner = &mut race_future => {
                 if let Some((i, target, response, handle)) = winner {
@@ -3634,7 +3694,7 @@ impl SipMessageHandler {
             _ = cancel_notify.notified() => {
                 info!(
                     call_id = %call_id,
-                    "Caller cancelled — aborting B-leg race to CANCEL all B-legs"
+                    "cancel_notify.notified() triggered - caller cancelled, aborting B-leg race"
                 );
                 cancelled_by_caller = true;
             }
