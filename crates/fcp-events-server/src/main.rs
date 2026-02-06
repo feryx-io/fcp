@@ -132,16 +132,8 @@ async fn main() -> Result<()> {
 
     let event_bus_clone = event_bus.clone();
     let manager_clone = manager.clone();
-    let call_store_clone = call_store.clone();
-    let node_registry_clone = node_registry.clone();
     tokio::spawn(async move {
-        event_broadcast_task(
-            event_bus_clone,
-            manager_clone,
-            call_store_clone,
-            node_registry_clone,
-        )
-        .await;
+        event_broadcast_task(event_bus_clone, manager_clone).await;
     });
 
     // Spawn stale cleanup task
@@ -463,8 +455,6 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
 async fn event_broadcast_task(
     event_bus: Arc<InMemoryEventBus>,
     manager: Arc<ConnectionManager>,
-    call_store: Arc<CallStateStore>,
-    node_registry: Arc<NodeRegistry>,
 ) {
     use fcp_events::{EventFilter, EventSubscriber};
 
@@ -482,10 +472,8 @@ async fn event_broadcast_task(
     loop {
         match stream.next().await {
             Some(event) => {
-                // Process for state tracking
-                process_event_for_state(&event, &call_store, &node_registry);
-
                 // Broadcast to WebSocket connections
+                // (State tracking is done in ingest_handler to avoid double-processing)
                 manager.publish(event);
             }
             None => {
