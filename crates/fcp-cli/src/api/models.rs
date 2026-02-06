@@ -238,6 +238,112 @@ pub struct CallResponse {
     pub duration_seconds: Option<u64>,
     pub media_anchored: bool,
     pub failure_reason: Option<String>,
+    /// Node ID (only present for aggregated calls from events server)
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+/// Aggregated call response from events server (/calls)
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AggregatedCallResponse {
+    pub call_id: String,
+    pub node_id: Option<String>,
+    pub tenant_id: String,
+    pub from: String,
+    pub to: String,
+    pub direction: String,
+    pub state: String,
+    pub initiated_at: u64,
+    pub ringing_at: Option<u64>,
+    pub answered_at: Option<u64>,
+    pub ended_at: Option<u64>,
+    pub codec: Option<String>,
+    pub trunk_name: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub hangup_cause: Option<String>,
+    pub failure_reason: Option<String>,
+    pub last_updated: u64,
+}
+
+impl AggregatedCallResponse {
+    /// Convert to CallResponse for TUI compatibility
+    pub fn to_call_response(&self) -> CallResponse {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        // Convert Unix timestamp to ISO 8601 string
+        let created_at = UNIX_EPOCH + Duration::from_secs(self.initiated_at);
+        let created_at_str = chrono::DateTime::<chrono::Utc>::from(created_at)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+
+        let established_at_str = self.answered_at.map(|ts| {
+            let t = UNIX_EPOCH + Duration::from_secs(ts);
+            chrono::DateTime::<chrono::Utc>::from(t)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        });
+
+        let ended_at_str = self.ended_at.map(|ts| {
+            let t = UNIX_EPOCH + Duration::from_secs(ts);
+            chrono::DateTime::<chrono::Utc>::from(t)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        });
+
+        CallResponse {
+            id: self.call_id.clone(),
+            state: self.state.clone(),
+            from_uri: self.from.clone(),
+            to_uri: self.to.clone(),
+            from_display_name: None,
+            to_display_name: None,
+            created_at: created_at_str,
+            established_at: established_at_str,
+            ended_at: ended_at_str,
+            duration_seconds: self.duration_ms.map(|ms| ms / 1000),
+            media_anchored: self.codec.is_some(),
+            failure_reason: self.failure_reason.clone(),
+            node_id: self.node_id.clone(),
+        }
+    }
+}
+
+/// Events server statistics response
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EventsStatsResponse {
+    pub calls: CallStatsResponse,
+    pub nodes: NodesStatsResponse,
+}
+
+/// Call statistics from events server
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CallStatsResponse {
+    pub total: usize,
+    pub initiated: usize,
+    pub ringing: usize,
+    pub answered: usize,
+    pub ended: usize,
+    pub failed: usize,
+}
+
+/// Node statistics from events server
+#[derive(Debug, Deserialize, Serialize)]
+pub struct NodesStatsResponse {
+    pub total: usize,
+    pub healthy: usize,
+    pub degraded: usize,
+    pub offline: usize,
+}
+
+/// Node information from events server
+#[derive(Debug, Deserialize, Serialize)]
+pub struct NodeInfoResponse {
+    pub node_id: String,
+    pub node_type: String,
+    pub first_seen: u64,
+    pub last_seen: u64,
+    pub active_calls: usize,
+    pub status: String,
 }
 
 /// Hangup response

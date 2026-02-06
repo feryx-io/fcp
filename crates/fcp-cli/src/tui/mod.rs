@@ -189,7 +189,14 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             .await
         }
         Tab::Calls => {
-            views::calls::handle_event(&mut app.calls_view, &app.api_client, &event, &ctx).await
+            views::calls::handle_event(
+                &mut app.calls_view,
+                &app.api_client,
+                &event,
+                &ctx,
+                app.events_url.as_deref(),
+            )
+            .await
         }
         Tab::Registrations => {
             views::registrations::handle_event(
@@ -300,7 +307,7 @@ async fn refresh_active_tab(app: &mut App) {
             views::users::fetch_data(&app.api_client, &mut app.users_view).await;
         }
         Tab::Calls => {
-            views::calls::fetch_data(&app.api_client, &mut app.calls_view).await;
+            views::calls::fetch_data(&app.api_client, &mut app.calls_view, app.events_url.as_deref()).await;
         }
         Tab::Registrations => {
             views::registrations::fetch_data(&app.api_client, &mut app.registrations_view).await;

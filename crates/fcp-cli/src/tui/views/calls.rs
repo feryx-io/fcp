@@ -106,9 +106,18 @@ fn render_calls_table(
     state: &mut CallsViewState,
     area: Rect,
 ) {
-    let header = Row::new(vec!["Call ID", "From → To", "State", "Duration", "Media"])
-        .style(theme.title())
-        .bottom_margin(1);
+    // Check if any calls have node_id (aggregated view)
+    let has_node_info = state.calls.iter().any(|c| c.node_id.is_some());
+
+    let header = if has_node_info {
+        Row::new(vec!["Call ID", "Node", "From → To", "State", "Duration"])
+            .style(theme.title())
+            .bottom_margin(1)
+    } else {
+        Row::new(vec!["Call ID", "From → To", "State", "Duration", "Media"])
+            .style(theme.title())
+            .bottom_margin(1)
+    };
 
     let rows: Vec<Row> = state
         .calls
@@ -141,26 +150,49 @@ fn render_calls_table(
                 "-".to_string()
             };
 
-            // Media status
-            let media = if call.media_anchored { "✓" } else { "✗" };
-
-            Row::new(vec![
-                Cell::from(short_id),
-                Cell::from(direction),
-                Cell::from(call.state.clone()),
-                Cell::from(duration),
-                Cell::from(media),
-            ])
+            if has_node_info {
+                // Show node ID (short form)
+                let node = call.node_id.as_ref()
+                    .map(|n| if n.len() > 12 { format!("{}...", &n[..12]) } else { n.clone() })
+                    .unwrap_or_else(|| "-".to_string());
+                Row::new(vec![
+                    Cell::from(short_id),
+                    Cell::from(node),
+                    Cell::from(direction),
+                    Cell::from(call.state.clone()),
+                    Cell::from(duration),
+                ])
+            } else {
+                // Media status
+                let media = if call.media_anchored { "✓" } else { "✗" };
+                Row::new(vec![
+                    Cell::from(short_id),
+                    Cell::from(direction),
+                    Cell::from(call.state.clone()),
+                    Cell::from(duration),
+                    Cell::from(media),
+                ])
+            }
         })
         .collect();
 
-    let widths = [
-        Constraint::Percentage(15), // Call ID
-        Constraint::Percentage(45), // From → To
-        Constraint::Percentage(15), // State
-        Constraint::Percentage(15), // Duration
-        Constraint::Percentage(10), // Media
-    ];
+    let widths = if has_node_info {
+        [
+            Constraint::Percentage(12), // Call ID
+            Constraint::Percentage(15), // Node
+            Constraint::Percentage(43), // From → To
+            Constraint::Percentage(15), // State
+            Constraint::Percentage(15), // Duration
+        ]
+    } else {
+        [
+            Constraint::Percentage(15), // Call ID
+            Constraint::Percentage(45), // From → To
+            Constraint::Percentage(15), // State
+            Constraint::Percentage(15), // Duration
+            Constraint::Percentage(10), // Media
+        ]
+    };
 
     let title = if state.loading {
         " Active Calls (Loading...) "
@@ -215,21 +247,35 @@ fn render_details_panel(
     area: Rect,
 ) {
     let details_text = if let Some(call) = state.selected_call() {
-        vec![
+        let mut lines = vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled("Call ID: ", theme.muted()),
                 Span::styled(&call.id, theme.normal()),
             ]),
+        ];
+
+        // Show node ID if present (aggregated view)
+        if let Some(ref node_id) = call.node_id {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Node: ", theme.muted()),
+                Span::styled(node_id, theme.info()),
+            ]));
+        }
+
+        lines.extend(vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled("State: ", theme.muted()),
                 Span::styled(
                     &call.state,
                     match call.state.as_str() {
-                        "established" => theme.success(),
-                        "terminated" => theme.muted(),
-                        _ => theme.info(),
+                        "answered" | "established" => theme.success(),
+                        "ended" | "terminated" => theme.muted(),
+                        "failed" => theme.error(),
+                        "ringing" => theme.info(),
+                        _ => theme.normal(),
                     },
                 ),
             ]),
@@ -299,7 +345,8 @@ fn render_details_panel(
                 Span::styled("Ended: ", theme.muted()),
                 Span::styled(call.ended_at.as_deref().unwrap_or("-"), theme.normal()),
             ]),
-        ]
+        ]);
+        lines
     } else if state.calls.is_empty() {
         vec![
             Line::from(""),
@@ -359,6 +406,7 @@ pub async fn handle_event(
     api_client: &crate::api::ApiClient,
     event: &Event,
     _ctx: &ViewContext,
+    events_url: Option<&str>,
 ) -> EventResult {
     // Navigation
     if event.is_up() {
@@ -372,7 +420,7 @@ pub async fn handle_event(
 
     // Refresh
     if event.is_refresh() {
-        fetch_data(api_client, state).await;
+        fetch_data(api_client, state, events_url).await;
         return EventResult::Consumed;
     }
 
@@ -390,10 +438,37 @@ pub fn refresh_interval() -> Duration {
 }
 
 /// Fetch calls data
-pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut CallsViewState) {
+/// If events_url is provided, fetches aggregated calls from the events server.
+/// Otherwise, falls back to the local call-manager API.
+pub async fn fetch_data(
+    api_client: &crate::api::ApiClient,
+    state: &mut CallsViewState,
+    events_url: Option<&str>,
+) {
     state.loading = true;
     state.error = None;
 
+    // Try events server first if URL is configured
+    if let Some(url) = events_url {
+        match api_client.list_aggregated_calls(url, None).await {
+            Ok(aggregated_calls) => {
+                // Convert aggregated calls to CallResponse format
+                let calls: Vec<CallResponse> = aggregated_calls
+                    .into_iter()
+                    .map(|c| c.to_call_response())
+                    .collect();
+                state.set_calls(calls);
+                state.loading = false;
+                return;
+            }
+            Err(e) => {
+                // Log warning but fall back to regular API
+                tracing::warn!("Failed to fetch from events server, falling back: {}", e);
+            }
+        }
+    }
+
+    // Fall back to local call-manager API
     match api_client.list_calls().await {
         Ok(calls) => {
             state.set_calls(calls);

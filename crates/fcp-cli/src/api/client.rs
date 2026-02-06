@@ -510,6 +510,78 @@ impl ApiClient {
         self.request_no_content(Method::DELETE, &format!("/line-bindings/{}", id))
             .await
     }
+
+    // ==================== Events Server Endpoints ====================
+    // These endpoints are for the fcp-events-server which provides aggregated
+    // call state across multiple nodes. The events server uses raw paths
+    // (not /api/v1 prefix).
+
+    /// Make an HTTP request to the events server (raw path, no /api/v1 prefix)
+    async fn events_request<T>(&self, events_url: &str, method: Method, path: &str) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let base_url = events_url.trim_end_matches('/');
+        let url = format!("{}{}", base_url, path);
+        let mut req = self.client.request(method, &url);
+
+        if let Some(token) = &self.token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Http(status, body).into());
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| ApiError::Deserialization(e.to_string()).into())
+    }
+
+    /// List aggregated calls from events server
+    /// If node_id is provided, filters to calls on that node
+    pub async fn list_aggregated_calls(
+        &self,
+        events_url: &str,
+        node_id: Option<&str>,
+    ) -> Result<Vec<AggregatedCallResponse>> {
+        let path = match node_id {
+            Some(id) => format!("/calls?node_id={}", urlencoding::encode(id)),
+            None => "/calls".to_string(),
+        };
+        self.events_request(events_url, Method::GET, &path).await
+    }
+
+    /// Get a specific call from events server
+    pub async fn get_aggregated_call(
+        &self,
+        events_url: &str,
+        call_id: &str,
+    ) -> Result<AggregatedCallResponse> {
+        self.events_request(
+            events_url,
+            Method::GET,
+            &format!("/calls/{}", urlencoding::encode(call_id)),
+        )
+        .await
+    }
+
+    /// List registered nodes from events server
+    pub async fn list_nodes(&self, events_url: &str) -> Result<Vec<NodeInfoResponse>> {
+        self.events_request(events_url, Method::GET, "/nodes").await
+    }
+
+    /// Get statistics from events server
+    pub async fn get_events_stats(&self, events_url: &str) -> Result<EventsStatsResponse> {
+        self.events_request(events_url, Method::GET, "/stats").await
+    }
 }
 
 #[cfg(test)]

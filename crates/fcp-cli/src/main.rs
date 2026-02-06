@@ -420,6 +420,10 @@ enum ContextCommands {
         /// Authentication token
         #[arg(long)]
         token: Option<String>,
+
+        /// Events server URL (for aggregated call views)
+        #[arg(long)]
+        events_url: Option<String>,
     },
 
     /// Switch to a different context
@@ -730,6 +734,7 @@ fn resolve_context(cli: &Cli, config: &config::Config) -> Result<config::Resolve
             name: "cli-override".to_string(),
             url: url.clone(),
             token: cli.token.clone(),
+            events_url: None,
         });
     }
 
@@ -743,6 +748,7 @@ fn resolve_context(cli: &Cli, config: &config::Config) -> Result<config::Resolve
             name: context.name.clone(),
             url: context.url.clone(),
             token: cli.token.clone().or_else(|| context.token.clone()),
+            events_url: context.events_url.clone(),
         });
     }
 
@@ -755,6 +761,7 @@ fn resolve_context(cli: &Cli, config: &config::Config) -> Result<config::Resolve
         name: context.name.clone(),
         url: context.url.clone(),
         token: cli.token.clone().or_else(|| context.token.clone()),
+        events_url: context.events_url.clone(),
     })
 }
 

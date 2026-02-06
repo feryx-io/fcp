@@ -31,6 +31,9 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
                     OutputFormat::Table => {
                         println!("Current context: {}", ctx.name);
                         println!("  URL: {}", ctx.url);
+                        if let Some(ref events_url) = ctx.events_url {
+                            println!("  Events URL: {}", events_url);
+                        }
                         if ctx.token.is_some() {
                             println!("  Token: configured");
                         }
@@ -40,11 +43,12 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
                 println!("No current context");
             }
         }
-        crate::ContextCommands::Add { name, url, token } => {
+        crate::ContextCommands::Add { name, url, token, events_url } => {
             config.add_context(Context {
                 name: name.clone(),
                 url,
                 token,
+                events_url,
             })?;
             println!("Context '{}' added successfully", name);
         }
@@ -81,6 +85,9 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
                     OutputFormat::Table => {
                         println!("Context: {}", ctx.name);
                         println!("  URL: {}", ctx.url);
+                        if let Some(ref events_url) = ctx.events_url {
+                            println!("  Events URL: {}", events_url);
+                        }
                         if ctx.token.is_some() {
                             println!("  Token: configured");
                         }

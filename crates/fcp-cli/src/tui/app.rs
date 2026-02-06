@@ -125,6 +125,8 @@ pub struct App {
     pub api_client: ApiClient,
     /// Server context information
     pub context: ResolvedContext,
+    /// Events server URL (for aggregated calls)
+    pub events_url: Option<String>,
     /// Deployment mode for feature availability
     pub deployment_mode: DeploymentMode,
     /// Current user for permission checks
@@ -155,6 +157,7 @@ impl App {
     /// Create a new application
     pub fn new(context: ResolvedContext) -> Result<Self> {
         let api_client = ApiClient::new(context.url.clone(), context.token.clone())?;
+        let events_url = context.events_url.clone();
 
         // TODO: Fetch the actual authenticated user and deployment mode from the API
         // The current implementation uses a hard-coded SuperAdmin user as a workaround.
@@ -176,6 +179,7 @@ impl App {
             theme: Theme::default(),
             api_client,
             context,
+            events_url,
             deployment_mode,
             current_user,
             error: None,

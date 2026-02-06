@@ -16,6 +16,10 @@ pub struct Context {
     /// Optional authentication token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Optional events server URL (e.g., "http://localhost:8081")
+    /// Used for aggregated call views in multi-node deployments
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events_url: Option<String>,
 }
 
 /// Application-level settings persisted alongside contexts
@@ -177,6 +181,8 @@ pub struct ResolvedContext {
     pub url: String,
     /// Authentication token (if any)
     pub token: Option<String>,
+    /// Events server URL (if any)
+    pub events_url: Option<String>,
 }
 
 impl Config {
@@ -277,8 +283,9 @@ impl Default for Config {
             current_context: "local".to_string(),
             contexts: vec![Context {
                 name: "local".to_string(),
-                url: "http://localhost:8081".to_string(),
+                url: "http://localhost:8080".to_string(),
                 token: None,
+                events_url: Some("http://localhost:8081".to_string()),
             }],
             settings: AppSettings::default(),
         }
@@ -305,6 +312,7 @@ mod tests {
             name: "production".to_string(),
             url: "https://fcp.example.com".to_string(),
             token: Some("secret-token".to_string()),
+            events_url: Some("https://events.fcp.example.com".to_string()),
         };
 
         // Note: This will fail in tests because it tries to save to disk
