@@ -245,6 +245,10 @@ pub struct FcpRegistrar {
 
     /// Realm for extracting tenant context (used in events)
     realm: String,
+
+    /// Domain aliases - list of domains that should be treated as equivalent.
+    /// When looking up registrations, all aliased domains are checked.
+    domain_aliases: Vec<String>,
 }
 
 impl FcpRegistrar {
@@ -280,7 +284,17 @@ impl FcpRegistrar {
             max_expires: 86400,
             event_publisher: None,
             realm: realm_str,
+            domain_aliases: Vec::new(),
         }
+    }
+
+    /// Set domain aliases for registration lookups.
+    ///
+    /// All domains in the list are treated as equivalent. When looking up
+    /// registrations for alice@domain1, we also check alice@domain2, etc.
+    pub fn with_domain_aliases(mut self, aliases: Vec<String>) -> Self {
+        self.domain_aliases = aliases;
+        self
     }
 
     /// Create a new registrar with event publishing support.
@@ -835,6 +849,9 @@ impl FcpRegistrar {
     }
 
     /// Get all registrations for an Address-of-Record.
+    ///
+    /// If domain aliases are configured, this will also look up registrations
+    /// for the same user at aliased domains.
     pub async fn get_registrations(&self, aor: &str) -> Result<Vec<Binding>> {
         // Normalize AOR so lookups match stored keys even if clients send
         // params or percent-encoded users.
@@ -844,7 +861,55 @@ impl FcpRegistrar {
             Err(_) => aor.split(';').next().unwrap_or(aor).to_string(),
         };
 
-        self.location_store.lookup(&normalized).await
+        // Look up the primary AOR
+        let mut all_bindings = self.location_store.lookup(&normalized).await?;
+
+        // If domain aliases are configured, check for registrations at aliased domains
+        if !self.domain_aliases.is_empty() {
+            if let Some((user, domain)) = Self::split_aor(&normalized) {
+                // Check if the domain is in our alias list
+                let domain_lower = domain.to_lowercase();
+                let is_aliased_domain = self
+                    .domain_aliases
+                    .iter()
+                    .any(|a| a.to_lowercase() == domain_lower);
+
+                if is_aliased_domain {
+                    // Look up all aliased domains
+                    for alias in &self.domain_aliases {
+                        if alias.to_lowercase() != domain_lower {
+                            let aliased_aor = format!("sip:{}@{}", user, alias);
+                            if let Ok(mut bindings) =
+                                self.location_store.lookup(&aliased_aor).await
+                            {
+                                debug!(
+                                    original_aor = %normalized,
+                                    aliased_aor = %aliased_aor,
+                                    found = bindings.len(),
+                                    "Found registrations at aliased domain"
+                                );
+                                all_bindings.append(&mut bindings);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(all_bindings)
+    }
+
+    /// Split an AOR into user and domain parts.
+    /// Returns None if the AOR doesn't have the expected format.
+    fn split_aor(aor: &str) -> Option<(&str, &str)> {
+        // Handle "sip:user@domain" format
+        let without_scheme = aor.strip_prefix("sip:").or_else(|| aor.strip_prefix("sips:"))?;
+        let at_pos = without_scheme.find('@')?;
+        let user = &without_scheme[..at_pos];
+        let domain = &without_scheme[at_pos + 1..];
+        // Strip any port from domain
+        let domain = domain.split(':').next().unwrap_or(domain);
+        Some((user, domain))
     }
 
     /// Get media preferences for a user.

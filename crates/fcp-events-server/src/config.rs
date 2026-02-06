@@ -30,6 +30,30 @@ pub struct EventsConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// Upstream services configuration
+    #[serde(default)]
+    pub upstream: UpstreamConfig,
+}
+
+/// Upstream services configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UpstreamConfig {
+    /// Call manager URL for registration data
+    #[serde(default = "default_call_manager_url")]
+    pub call_manager_url: String,
+}
+
+fn default_call_manager_url() -> String {
+    "http://localhost:8084".to_string()
+}
+
+impl Default for UpstreamConfig {
+    fn default() -> Self {
+        Self {
+            call_manager_url: default_call_manager_url(),
+        }
+    }
 }
 
 impl Default for EventsConfig {
@@ -40,6 +64,7 @@ impl Default for EventsConfig {
             event_bus: EventBusConfig::default(),
             limits: LimitsConfig::default(),
             logging: LoggingConfig::default(),
+            upstream: UpstreamConfig::default(),
         }
     }
 }

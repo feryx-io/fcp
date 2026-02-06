@@ -15,6 +15,9 @@ realm = "fcp.local"
 default_expires = 3600
 min_expires = 60
 max_expires = 86400
+# Domain aliases - these domains are treated as equivalent for registration lookups.
+# Calls to alice@192.168.1.225 will also ring alice@fcp.local and vice versa.
+domain_aliases = ["fcp.local", "192.168.1.225"]
 
 [calls]
 max_concurrent_calls = 100

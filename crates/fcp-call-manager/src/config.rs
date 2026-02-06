@@ -168,6 +168,14 @@ pub struct RegistrarSection {
     /// Maximum registration expiry in seconds
     #[serde(default = "default_max_expires")]
     pub max_expires: u32,
+
+    /// Domain aliases - list of domains that should be treated as equivalent.
+    /// All domains in the same list are considered aliases of each other.
+    /// Example: ["fcp.local", "192.168.1.225", "pbx.example.com"]
+    /// When looking up registrations for alice@192.168.1.225, we also check
+    /// alice@fcp.local and alice@pbx.example.com.
+    #[serde(default)]
+    pub domain_aliases: Vec<String>,
 }
 
 fn default_realm() -> String {
@@ -195,6 +203,7 @@ impl Default for RegistrarSection {
             default_expires: default_expires(),
             min_expires: default_min_expires(),
             max_expires: default_max_expires(),
+            domain_aliases: Vec::new(),
         }
     }
 }

@@ -221,6 +221,97 @@ pub struct RegistrationResponse {
     pub expires_in_seconds: u64,
 }
 
+/// Simple registration response from call-manager /registrations endpoint
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SimpleRegistrationResponse {
+    pub aor: String,
+    pub contact: String,
+    pub expires_at_epoch: u64,
+    pub user_agent: Option<String>,
+}
+
+/// Wrapper for all registrations list response
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AllRegistrationsResponse {
+    pub count: usize,
+    pub registrations: Vec<SimpleRegistrationResponse>,
+}
+
+impl SimpleRegistrationResponse {
+    /// Convert to full RegistrationResponse with default values for missing fields
+    pub fn to_registration_response(&self) -> RegistrationResponse {
+        let expires_at = std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(self.expires_at_epoch);
+        let now = std::time::SystemTime::now();
+        let expires_in_seconds = expires_at
+            .duration_since(now)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        RegistrationResponse {
+            aor: self.aor.clone(),
+            contact: self.contact.clone(),
+            expires_at,
+            call_id: String::new(), // Not available from simple endpoint
+            cseq: 0,                // Not available from simple endpoint
+            user_agent: self.user_agent.clone(),
+            q: None,                // Not available from simple endpoint
+            registered_at: now,     // Approximate
+            expires_in_seconds,
+        }
+    }
+}
+
+/// Aggregated registration response from events server (/registrations)
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AggregatedRegistrationResponse {
+    pub aor: String,
+    pub contact: String,
+    pub tenant_id: String,
+    pub node_id: Option<String>,
+    pub user_agent: Option<String>,
+    pub expires_secs: u32,
+    pub registered_at: u64,
+    pub last_updated: u64,
+}
+
+impl AggregatedRegistrationResponse {
+    /// Convert to RegistrationResponse for TUI compatibility
+    pub fn to_registration_response(&self) -> RegistrationResponse {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let now = std::time::SystemTime::now();
+        let registered_at = UNIX_EPOCH + Duration::from_secs(self.registered_at);
+        let last_updated = UNIX_EPOCH + Duration::from_secs(self.last_updated);
+
+        // Calculate expires_at from last_updated + expires_secs
+        let expires_at = last_updated + Duration::from_secs(self.expires_secs as u64);
+        let expires_in_seconds = expires_at
+            .duration_since(now)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        RegistrationResponse {
+            aor: self.aor.clone(),
+            contact: self.contact.clone(),
+            expires_at,
+            call_id: String::new(), // Not available from aggregated endpoint
+            cseq: 0,                // Not available from aggregated endpoint
+            user_agent: self.user_agent.clone(),
+            q: None,                // Not available from aggregated endpoint
+            registered_at,
+            expires_in_seconds,
+        }
+    }
+}
+
+/// Response wrapper for aggregated registrations from events server
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AggregatedRegistrationsResponse {
+    pub registrations: Vec<AggregatedRegistrationResponse>,
+    pub count: usize,
+}
+
 // ==================== Call Models ====================
 
 /// Call information response (from /api/v1/calls)

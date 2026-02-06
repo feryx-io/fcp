@@ -560,12 +560,25 @@ fn create_registrar(
         };
     let realm = Some(config.registrar.realm.clone());
 
-    Arc::new(fcp_sip::registrar::FcpRegistrar::with_events(
+    let registrar = fcp_sip::registrar::FcpRegistrar::with_events(
         registration_store,
         credential_store,
         realm,
         event_publisher,
-    ))
+    );
+
+    // Add domain aliases if configured
+    let registrar = if !config.registrar.domain_aliases.is_empty() {
+        info!(
+            aliases = ?config.registrar.domain_aliases,
+            "Domain aliasing enabled for registration lookups"
+        );
+        registrar.with_domain_aliases(config.registrar.domain_aliases.clone())
+    } else {
+        registrar
+    };
+
+    Arc::new(registrar)
 }
 
 /// Create a transport dispatcher with shared TCP pool.
@@ -594,7 +607,22 @@ async fn create_transport_dispatcher(
     let std_socket: std::net::UdpSocket = socket.into();
     let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
 
-    let dispatcher = RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
+    let mut dispatcher =
+        RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
+
+    // Add TLS client config if TLS is enabled (for outbound SIPS connections)
+    // We check if TLS cert is configured, meaning TLS server is enabled
+    if config.sip.tls_cert_path.is_some() {
+        match RealTransportDispatcher::load_tls_client_config() {
+            Ok(tls_config) => {
+                info!("TLS client configuration loaded for outbound SIPS connections");
+                dispatcher = dispatcher.with_tls_config(tls_config);
+            }
+            Err(e) => {
+                warn!("Failed to load TLS client config: {}. Outbound TLS will not work.", e);
+            }
+        }
+    }
 
     Ok(Arc::new(dispatcher))
 }

@@ -282,6 +282,25 @@ impl ApiClient {
 
     // ==================== Registration Endpoints ====================
 
+    /// List all registrations (from call-manager endpoint)
+    pub async fn list_all_registrations(&self) -> Result<Vec<RegistrationResponse>> {
+        // Try the call-manager's simple endpoint first
+        let result: Result<crate::api::AllRegistrationsResponse> =
+            self.request(Method::GET, "/registrations").await;
+
+        match result {
+            Ok(response) => Ok(response
+                .registrations
+                .into_iter()
+                .map(|r| r.to_registration_response())
+                .collect()),
+            Err(_) => {
+                // Fall back to empty list if endpoint doesn't exist
+                Ok(Vec::new())
+            }
+        }
+    }
+
     /// List registrations for an AOR
     pub async fn list_registrations(&self, aor: &str) -> Result<Vec<RegistrationResponse>> {
         let encoded_aor = urlencoding::encode(aor);
@@ -585,6 +604,16 @@ impl ApiClient {
     /// Get statistics from events server
     pub async fn get_events_stats(&self, events_url: &str) -> Result<EventsStatsResponse> {
         self.events_request(events_url, Method::GET, "/stats").await
+    }
+
+    /// List aggregated registrations from events server
+    pub async fn list_aggregated_registrations(
+        &self,
+        events_url: &str,
+    ) -> Result<Vec<AggregatedRegistrationResponse>> {
+        let response: AggregatedRegistrationsResponse =
+            self.events_request(events_url, Method::GET, "/registrations").await?;
+        Ok(response.registrations)
     }
 }
 

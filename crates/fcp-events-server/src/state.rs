@@ -385,6 +385,160 @@ mod option_system_time_serde {
     }
 }
 
+// =============================================================================
+// Registration State Store
+// =============================================================================
+
+use fcp_events::RegistrationEvent;
+
+/// Aggregated registration information from across all nodes.
+#[derive(Debug, Clone, Serialize)]
+pub struct AggregatedRegistration {
+    /// Address of Record (user@domain)
+    pub aor: String,
+    /// Contact URI
+    pub contact: String,
+    /// Tenant ID
+    pub tenant_id: String,
+    /// Node that reported this registration
+    pub node_id: Option<String>,
+    /// User agent string
+    pub user_agent: Option<String>,
+    /// Expires in seconds (from last update)
+    pub expires_secs: u32,
+    /// When the registration was created
+    #[serde(with = "system_time_serde")]
+    pub registered_at: SystemTime,
+    /// Last update timestamp
+    #[serde(with = "system_time_serde")]
+    pub last_updated: SystemTime,
+}
+
+/// Key for registration lookups (aor + contact)
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct RegistrationKey {
+    pub aor: String,
+    pub contact: String,
+}
+
+/// Store for aggregated registration state across all nodes.
+pub struct RegistrationStateStore {
+    registrations: DashMap<RegistrationKey, AggregatedRegistration>,
+}
+
+impl RegistrationStateStore {
+    /// Create a new registration state store.
+    pub fn new() -> Self {
+        Self {
+            registrations: DashMap::new(),
+        }
+    }
+
+    /// Process a registration event and update state accordingly.
+    pub fn process_event(&self, event: &RegistrationEvent, node_id: Option<&str>) {
+        match event {
+            RegistrationEvent::Registered {
+                aor,
+                contact,
+                tenant_id,
+                expires_secs,
+                user_agent,
+                timestamp,
+            } => {
+                let key = RegistrationKey {
+                    aor: aor.clone(),
+                    contact: contact.clone(),
+                };
+                let reg = AggregatedRegistration {
+                    aor: aor.clone(),
+                    contact: contact.clone(),
+                    tenant_id: tenant_id.to_string(),
+                    node_id: node_id.map(String::from),
+                    user_agent: user_agent.clone(),
+                    expires_secs: *expires_secs,
+                    registered_at: *timestamp,
+                    last_updated: SystemTime::now(),
+                };
+                self.registrations.insert(key, reg);
+            }
+            RegistrationEvent::Refreshed {
+                aor,
+                contact,
+                expires_secs,
+                timestamp,
+                ..
+            } => {
+                let key = RegistrationKey {
+                    aor: aor.clone(),
+                    contact: contact.clone(),
+                };
+                if let Some(mut reg) = self.registrations.get_mut(&key) {
+                    reg.expires_secs = *expires_secs;
+                    reg.last_updated = *timestamp;
+                }
+            }
+            RegistrationEvent::Unregistered { aor, contact, .. }
+            | RegistrationEvent::Expired { aor, contact, .. } => {
+                let key = RegistrationKey {
+                    aor: aor.clone(),
+                    contact: contact.clone(),
+                };
+                self.registrations.remove(&key);
+            }
+            RegistrationEvent::Failed { .. } => {
+                // Failed registrations don't affect the store
+            }
+        }
+    }
+
+    /// Get all active registrations.
+    pub fn get_all_registrations(&self) -> Vec<AggregatedRegistration> {
+        self.registrations
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// Get registrations for a specific AOR (all contacts).
+    pub fn get_registrations_by_aor(&self, aor: &str) -> Vec<AggregatedRegistration> {
+        self.registrations
+            .iter()
+            .filter(|entry| entry.key().aor == aor)
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// Get the total count of active registrations.
+    pub fn count(&self) -> usize {
+        self.registrations.len()
+    }
+
+    /// Clean up expired registrations.
+    /// Registrations are considered expired if last_updated + expires_secs is in the past.
+    pub fn cleanup_expired(&self) -> usize {
+        let now = SystemTime::now();
+        let mut removed = 0;
+
+        self.registrations.retain(|_, reg| {
+            let expiry_time = reg.last_updated + Duration::from_secs(reg.expires_secs as u64);
+            if expiry_time < now {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+
+        removed
+    }
+}
+
+impl Default for RegistrationStateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

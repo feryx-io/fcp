@@ -37,7 +37,7 @@ use crate::cli::Cli;
 use crate::config::{load_config, EventsConfig};
 use crate::connection::{cleanup_task, handle_websocket, ConnectionManager};
 use crate::nodes::{NodeRegistry, NodeType};
-use crate::state::CallStateStore;
+use crate::state::{CallStateStore, RegistrationStateStore};
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -46,6 +46,7 @@ struct AppState {
     manager: Arc<ConnectionManager>,
     event_bus: Arc<InMemoryEventBus>,
     call_store: Arc<CallStateStore>,
+    registration_store: Arc<RegistrationStateStore>,
     node_registry: Arc<NodeRegistry>,
 }
 
@@ -90,8 +91,9 @@ async fn main() -> Result<()> {
         config.limits.max_connections_per_tenant,
     ));
 
-    // Create call state store and node registry
+    // Create call state store, registration store, and node registry
     let call_store = Arc::new(CallStateStore::new());
+    let registration_store = Arc::new(RegistrationStateStore::new());
     let node_registry = Arc::new(NodeRegistry::new());
 
     // Create application state
@@ -100,6 +102,7 @@ async fn main() -> Result<()> {
         manager: manager.clone(),
         event_bus: event_bus.clone(),
         call_store: call_store.clone(),
+        registration_store: registration_store.clone(),
         node_registry: node_registry.clone(),
     };
 
@@ -116,6 +119,8 @@ async fn main() -> Result<()> {
         // Call aggregation API
         .route("/calls", get(list_calls_handler))
         .route("/calls/:call_id", get(get_call_handler))
+        // Registration aggregation API
+        .route("/registrations", get(list_registrations_handler))
         // Node registry API
         .route("/nodes", get(list_nodes_handler))
         // Aggregated statistics
@@ -138,9 +143,10 @@ async fn main() -> Result<()> {
 
     // Spawn stale cleanup task
     let call_store_cleanup = call_store.clone();
+    let registration_store_cleanup = registration_store.clone();
     let node_registry_cleanup = node_registry.clone();
     tokio::spawn(async move {
-        stale_cleanup_task(call_store_cleanup, node_registry_cleanup).await;
+        stale_cleanup_task(call_store_cleanup, registration_store_cleanup, node_registry_cleanup).await;
     });
 
     // Start server
@@ -285,7 +291,14 @@ async fn ingest_handler(
     Json(event): Json<PlatformEvent>,
 ) -> impl IntoResponse {
     // Process event for state tracking
-    process_event_for_state(&event, &state.call_store, &state.node_registry);
+    // Note: source_node_id could be extracted from X-Node-ID header if needed
+    process_event_for_state(
+        &event,
+        &state.call_store,
+        &state.registration_store,
+        &state.node_registry,
+        None,
+    );
 
     // Publish to event bus for WebSocket broadcast
     let _ = state.event_bus.publish(event).await;
@@ -299,7 +312,13 @@ async fn ingest_batch_handler(
 ) -> impl IntoResponse {
     for event in events {
         // Process event for state tracking
-        process_event_for_state(&event, &state.call_store, &state.node_registry);
+        process_event_for_state(
+            &event,
+            &state.call_store,
+            &state.registration_store,
+            &state.node_registry,
+            None,
+        );
 
         // Publish to event bus for WebSocket broadcast
         let _ = state.event_bus.publish(event).await;
@@ -345,6 +364,15 @@ async fn get_call_handler(
     }
 }
 
+/// List all active registrations (aggregated from all call-manager nodes)
+async fn list_registrations_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let registrations = state.registration_store.get_all_registrations();
+    Json(serde_json::json!({
+        "registrations": registrations,
+        "count": registrations.len(),
+    }))
+}
+
 /// List registered nodes endpoint
 async fn list_nodes_handler(State(state): State<AppState>) -> impl IntoResponse {
     let nodes = state.node_registry.get_all_nodes();
@@ -382,11 +410,13 @@ async fn stats_handler(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-/// Process an event for state tracking (call store and node registry).
+/// Process an event for state tracking (call store, registration store, and node registry).
 fn process_event_for_state(
     event: &PlatformEvent,
     call_store: &CallStateStore,
+    registration_store: &RegistrationStateStore,
     node_registry: &NodeRegistry,
+    source_node_id: Option<&str>,
 ) {
     match event {
         PlatformEvent::Call(call_event) => {
@@ -414,6 +444,11 @@ fn process_event_for_state(
             // Process event in call store
             call_store.process_event(call_event);
         }
+        PlatformEvent::Registration(reg_event) => {
+            // Process registration event
+            registration_store.process_event(reg_event, source_node_id);
+            debug!(event = ?reg_event, "Processed registration event");
+        }
         PlatformEvent::System(system_event) => {
             match system_event {
                 SystemEvent::Started { node_id, .. } => {
@@ -433,7 +468,7 @@ fn process_event_for_state(
             }
         }
         _ => {
-            // Other events don't affect call/node state tracking
+            // Other events don't affect state tracking
         }
     }
 }
@@ -484,8 +519,12 @@ async fn event_broadcast_task(
     }
 }
 
-/// Background task to clean up stale calls and check node health.
-async fn stale_cleanup_task(call_store: Arc<CallStateStore>, node_registry: Arc<NodeRegistry>) {
+/// Background task to clean up stale calls, expired registrations, and check node health.
+async fn stale_cleanup_task(
+    call_store: Arc<CallStateStore>,
+    registration_store: Arc<RegistrationStateStore>,
+    node_registry: Arc<NodeRegistry>,
+) {
     let mut interval = tokio::time::interval(Duration::from_secs(30));
 
     info!("Stale cleanup task started (30s interval)");
@@ -503,6 +542,12 @@ async fn stale_cleanup_task(call_store: Arc<CallStateStore>, node_registry: Arc<
         let removed_calls = call_store.cleanup_stale(Duration::from_secs(300));
         if removed_calls > 0 {
             debug!(count = removed_calls, "Cleaned up stale ended calls");
+        }
+
+        // Clean up expired registrations
+        let expired_regs = registration_store.cleanup_expired();
+        if expired_regs > 0 {
+            debug!(count = expired_regs, "Cleaned up expired registrations");
         }
 
         // Optionally remove nodes that have been offline for more than 10 minutes
