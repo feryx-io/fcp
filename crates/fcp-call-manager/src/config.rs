@@ -102,6 +102,17 @@ pub struct SipSection {
     #[serde(default = "default_sip_bind")]
     pub tcp_bind: String,
 
+    /// TLS/SIPS bind address (default: 0.0.0.0:5061)
+    /// Only active if tls_cert_path and tls_key_path are set.
+    #[serde(default = "default_sips_bind")]
+    pub sips_bind: String,
+
+    /// Path to TLS certificate file (PEM format)
+    pub tls_cert_path: Option<String>,
+
+    /// Path to TLS private key file (PEM format)
+    pub tls_key_path: Option<String>,
+
     /// Local IP for SDP/Contact (auto-detect if not set)
     pub local_ip: Option<String>,
 
@@ -113,11 +124,18 @@ fn default_sip_bind() -> String {
     "0.0.0.0:5060".to_string()
 }
 
+fn default_sips_bind() -> String {
+    "0.0.0.0:5061".to_string()
+}
+
 impl Default for SipSection {
     fn default() -> Self {
         Self {
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
+            sips_bind: default_sips_bind(),
+            tls_cert_path: None,
+            tls_key_path: None,
             local_ip: None,
             local_uri: None,
         }

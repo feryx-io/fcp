@@ -594,6 +594,12 @@ pub struct Registration {
     /// Registration timestamp
     #[serde(with = "system_time_serde")]
     pub registered_at: SystemTime,
+
+    /// Path header from REGISTER request (RFC 3327)
+    /// Stored as serialized string for persistence.
+    /// The registrar uses this to build route sets for requests sent to the UA.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// Storage backend for user credentials.

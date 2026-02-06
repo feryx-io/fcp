@@ -607,6 +607,7 @@ impl RegistrationStore for MongodbStorage {
             "user_agent": registration.user_agent.as_ref(),
             "q": registration.q.map(|q| q as f64),
             "registered_at": system_time_to_bson_datetime(registration.registered_at),
+            "path": registration.path.as_ref(),
         };
 
         let filter = doc! {
@@ -1188,6 +1189,7 @@ fn document_to_registration(doc: Document) -> Result<Registration> {
         user_agent: doc.get_str("user_agent").ok().map(String::from),
         q: doc.get_f64("q").ok().map(|q| q as f32),
         registered_at,
+        path: doc.get_str("path").ok().map(String::from),
     })
 }
 

@@ -70,4 +70,31 @@ pub struct Cli {
         env = "FCP_CALL_MANAGER_PUBLIC_IP"
     )]
     pub public_ip: Option<String>,
+
+    /// SIPS/TLS bind address (default: 0.0.0.0:5061)
+    #[arg(
+        long = "sips-bind",
+        value_name = "ADDR",
+        help = "SIPS (TLS) bind address (e.g., 0.0.0.0:5061)",
+        env = "FCP_CALL_MANAGER_SIPS_BIND"
+    )]
+    pub sips_bind: Option<String>,
+
+    /// Path to TLS certificate file (PEM format)
+    #[arg(
+        long = "tls-cert",
+        value_name = "FILE",
+        help = "Path to TLS certificate (PEM format)",
+        env = "FCP_CALL_MANAGER_TLS_CERT"
+    )]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to TLS private key file (PEM format)
+    #[arg(
+        long = "tls-key",
+        value_name = "FILE",
+        help = "Path to TLS private key (PEM format)",
+        env = "FCP_CALL_MANAGER_TLS_KEY"
+    )]
+    pub tls_key: Option<PathBuf>,
 }

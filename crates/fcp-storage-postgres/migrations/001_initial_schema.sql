@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS registrations (
     user_agent TEXT,
     q REAL,
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    path TEXT,
     PRIMARY KEY (aor, contact)
 );
 

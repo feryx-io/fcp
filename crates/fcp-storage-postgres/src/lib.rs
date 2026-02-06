@@ -396,8 +396,8 @@ impl RegistrationStore for PostgresStorage {
         let registered_at = system_time_to_datetime(registration.registered_at);
 
         sqlx::query(
-            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (aor, contact)
              DO UPDATE SET
                  expires_at = EXCLUDED.expires_at,
@@ -405,7 +405,8 @@ impl RegistrationStore for PostgresStorage {
                  cseq = EXCLUDED.cseq,
                  user_agent = EXCLUDED.user_agent,
                  q = EXCLUDED.q,
-                 registered_at = EXCLUDED.registered_at",
+                 registered_at = EXCLUDED.registered_at,
+                 path = EXCLUDED.path",
         )
         .bind(&registration.aor)
         .bind(&registration.contact)
@@ -415,6 +416,7 @@ impl RegistrationStore for PostgresStorage {
         .bind(&registration.user_agent)
         .bind(registration.q)
         .bind(registered_at)
+        .bind(&registration.path)
         .execute(&self.pool)
         .await?;
 
@@ -946,6 +948,7 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
         user_agent: row.get("user_agent"),
         q: row.get("q"),
         registered_at,
+        path: row.try_get("path").ok(),
     })
 }
 

@@ -180,6 +180,10 @@ impl SqliteStorage {
         let migration_007 = include_str!("../migrations/007_add_user_id_and_rbac.sql");
         Self::execute_migration(pool, migration_007, "007").await?;
 
+        // Migration 008: Registration path column (RFC 3327)
+        let migration_008 = include_str!("../migrations/008_add_registration_path.sql");
+        Self::execute_migration(pool, migration_008, "008").await?;
+
         info!("SQLite migrations completed successfully");
         Ok(())
     }
@@ -457,7 +461,7 @@ impl CredentialStore for SqliteStorage {
 impl RegistrationStore for SqliteStorage {
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at
+            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path
              FROM registrations
              WHERE aor = ?
              ORDER BY q DESC",
@@ -487,15 +491,16 @@ impl RegistrationStore for SqliteStorage {
             .as_secs() as i64;
 
         sqlx::query(
-            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(aor, contact) DO UPDATE SET
                  expires_at = excluded.expires_at,
                  call_id = excluded.call_id,
                  cseq = excluded.cseq,
                  user_agent = excluded.user_agent,
                  q = excluded.q,
-                 registered_at = excluded.registered_at",
+                 registered_at = excluded.registered_at,
+                 path = excluded.path",
         )
         .bind(&registration.aor)
         .bind(&registration.contact)
@@ -505,6 +510,7 @@ impl RegistrationStore for SqliteStorage {
         .bind(&registration.user_agent)
         .bind(registration.q)
         .bind(registered_at)
+        .bind(&registration.path)
         .execute(&self.pool)
         .await?;
 
@@ -559,7 +565,7 @@ impl RegistrationStore for SqliteStorage {
             .as_secs() as i64;
 
         let rows = sqlx::query(
-            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at
+            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path
              FROM registrations
              WHERE expires_at > ?
              ORDER BY aor, q DESC",
@@ -930,6 +936,7 @@ fn row_to_registration(row: sqlx::sqlite::SqliteRow) -> Result<Registration> {
         user_agent: row.get("user_agent"),
         q: row.get("q"),
         registered_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("registered_at") as u64),
+        path: row.try_get("path").ok(),
     })
 }
 
@@ -3213,6 +3220,7 @@ mod tests {
             user_agent: Some("Test UA".to_string()),
             q: Some(1.0),
             registered_at: SystemTime::now(),
+            path: None,
         };
 
         storage.put_registration(reg.clone()).await.unwrap();
@@ -3235,6 +3243,7 @@ mod tests {
             user_agent: Some("Test UA 2".to_string()),
             q: Some(0.5),
             registered_at: SystemTime::now(),
+            path: None,
         };
 
         storage.put_registration(reg2).await.unwrap();
@@ -3284,6 +3293,7 @@ mod tests {
             user_agent: Some("Test UA".to_string()),
             q: Some(1.0),
             registered_at: SystemTime::now() - Duration::from_secs(3660),
+            path: None,
         };
 
         storage.put_registration(reg).await.unwrap();

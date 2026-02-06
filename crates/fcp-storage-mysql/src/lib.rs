@@ -411,15 +411,16 @@ impl RegistrationStore for MysqlStorage {
         let registered_at = system_time_to_datetime(registration.registered_at);
 
         sqlx::query(
-            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                  expires_at = VALUES(expires_at),
                  call_id = VALUES(call_id),
                  cseq = VALUES(cseq),
                  user_agent = VALUES(user_agent),
                  q = VALUES(q),
-                 registered_at = VALUES(registered_at)",
+                 registered_at = VALUES(registered_at),
+                 path = VALUES(path)",
         )
         .bind(&registration.aor)
         .bind(&registration.contact)
@@ -429,6 +430,7 @@ impl RegistrationStore for MysqlStorage {
         .bind(&registration.user_agent)
         .bind(registration.q)
         .bind(registered_at)
+        .bind(&registration.path)
         .execute(&self.pool)
         .await?;
 
@@ -923,6 +925,7 @@ fn row_to_registration(row: sqlx::mysql::MySqlRow) -> Result<Registration> {
         user_agent: row.get("user_agent"),
         q: row.get("q"),
         registered_at: datetime_to_system_time(registered_at),
+        path: row.try_get("path").ok(),
     })
 }
 

@@ -57,7 +57,24 @@ impl LocationStoreAdapter {
             binding = binding.with_user_agent(SmolStr::new(ua))?;
         }
 
+        // Add Path header if present (RFC 3327)
+        if let Some(ref path_str) = reg.path {
+            // Parse the serialized Path header back into PathHeader
+            // Path headers are stored as Display format: "<uri1>, <uri2>"
+            if let Ok(path) = Self::parse_path_from_string(path_str) {
+                binding = binding.with_path(path);
+            }
+        }
+
         Ok(binding)
+    }
+
+    /// Parse a Path header from its serialized string representation.
+    fn parse_path_from_string(path_str: &str) -> anyhow::Result<sip_core::PathHeader> {
+        // Create a temporary Headers object to use sip_parse::parse_path
+        let mut headers = sip_core::Headers::new();
+        let _ = headers.push(SmolStr::new("Path"), SmolStr::new(path_str));
+        sip_parse::parse_path(&headers).map_err(|e| anyhow::anyhow!("Failed to parse Path: {:?}", e))
     }
 
     /// Convert siphon-rs Binding to FCP Registration.
@@ -71,6 +88,8 @@ impl LocationStoreAdapter {
             user_agent: binding.user_agent().map(|s| s.to_string()),
             q: Some(binding.q_value()),
             registered_at: SystemTime::now(),
+            // Serialize Path header to string for storage (RFC 3327)
+            path: binding.path().map(|p| p.to_string()),
         }
     }
 }
@@ -706,6 +725,14 @@ impl FcpRegistrar {
                 .map_err(|e| anyhow!("Failed to set user_agent: {}", e))?;
         }
 
+        // Extract and add Path header if present (RFC 3327)
+        if let Ok(path) = sip_parse::parse_path(request.headers()) {
+            if !path.is_empty() {
+                debug!(path = %path, "Storing Path header from REGISTER");
+                binding = binding.with_path(path);
+            }
+        }
+
         Ok(binding)
     }
 
@@ -735,8 +762,8 @@ impl FcpRegistrar {
             let _ = headers.push(SmolStr::new("CSeq"), cseq.clone());
         }
 
-        // Add Contact headers for each binding
-        for binding in bindings {
+        // Add Contact headers for each binding and collect Service-Route info
+        for binding in &bindings {
             let contact_str = binding.contact();
             // Check if contact already has angle brackets
             let contact = if contact_str.starts_with('<') {
@@ -747,6 +774,17 @@ impl FcpRegistrar {
                 format!("<{}>;expires={}", contact_str, binding.expires().as_secs())
             };
             let _ = headers.push(SmolStr::new("Contact"), SmolStr::new(contact));
+        }
+
+        // Add Service-Route header for bindings with Path (RFC 3608)
+        // The Service-Route informs the UA of the route set to use for subsequent requests.
+        // We derive it from the stored Path headers.
+        for binding in &bindings {
+            if let Some(path) = binding.path() {
+                // Path and Service-Route have the same format
+                let _ = headers.push(SmolStr::new("Service-Route"), SmolStr::new(path.to_string()));
+                debug!(service_route = %path, "Added Service-Route to 200 OK");
+            }
         }
 
         let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));

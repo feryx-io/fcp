@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS registrations (
     user_agent VARCHAR(255),
     q DOUBLE,
     registered_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    path TEXT,
     PRIMARY KEY (aor, contact),
     INDEX idx_registrations_aor (aor),
     INDEX idx_registrations_expires (expires_at)

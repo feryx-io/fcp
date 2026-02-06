@@ -271,11 +271,11 @@ impl EventPublisher for SbcEventHooks {
                     self.admission.registration_added();
                     debug!("SBC: registration added, concurrent count incremented");
                 }
-                RegistrationEvent::Unregistered { .. } => {
+                RegistrationEvent::Unregistered { .. } | RegistrationEvent::Expired { .. } => {
                     self.admission.registration_removed();
                     debug!("SBC: registration removed, concurrent count decremented");
                 }
-                RegistrationEvent::Failed { .. } => {}
+                RegistrationEvent::Refreshed { .. } | RegistrationEvent::Failed { .. } => {}
             }
         }
 

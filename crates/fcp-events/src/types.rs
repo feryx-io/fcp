@@ -391,12 +391,31 @@ pub enum RegistrationEvent {
         timestamp: SystemTime,
     },
 
+    /// Registration refreshed (re-REGISTER with same contact)
+    Refreshed {
+        aor: String,
+        contact: String,
+        tenant_id: TenantId,
+        expires_secs: u32,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// User unregistered (explicit or expired)
     Unregistered {
         aor: String,
         contact: String,
         tenant_id: TenantId,
         reason: String, // "explicit", "expired", "replaced"
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Registration expired (TTL expired without refresh)
+    Expired {
+        aor: String,
+        contact: String,
+        tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
@@ -544,7 +563,9 @@ impl RegistrationEvent {
     pub fn timestamp(&self) -> SystemTime {
         match self {
             RegistrationEvent::Registered { timestamp, .. }
+            | RegistrationEvent::Refreshed { timestamp, .. }
             | RegistrationEvent::Unregistered { timestamp, .. }
+            | RegistrationEvent::Expired { timestamp, .. }
             | RegistrationEvent::Failed { timestamp, .. } => *timestamp,
         }
     }

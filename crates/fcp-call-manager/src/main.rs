@@ -65,6 +65,16 @@ async fn main() -> Result<()> {
             config.media.public_ip = Some(ip.clone());
         }
     }
+    // Apply TLS/SIPS CLI overrides
+    if let Some(ref sips_bind) = cli.sips_bind {
+        config.sip.sips_bind = sips_bind.clone();
+    }
+    if let Some(ref tls_cert) = cli.tls_cert {
+        config.sip.tls_cert_path = Some(tls_cert.display().to_string());
+    }
+    if let Some(ref tls_key) = cli.tls_key {
+        config.sip.tls_key_path = Some(tls_key.display().to_string());
+    }
 
     // Auto-detect local IP if not explicitly configured and bind is 0.0.0.0
     // This prevents using unroutable addresses (0.0.0.0, 127.0.0.1) in SIP
@@ -309,15 +319,42 @@ async fn main() -> Result<()> {
         .parse()
         .context("Invalid TCP bind address")?;
 
+    // Parse TLS bind address and configure TLS if cert and key are provided
+    #[cfg(feature = "tls")]
+    let (tls_bind, tls_cert, tls_key) = {
+        let tls_configured =
+            config.sip.tls_cert_path.is_some() && config.sip.tls_key_path.is_some();
+        if tls_configured {
+            let sips_bind: std::net::SocketAddr = config
+                .sip
+                .sips_bind
+                .parse()
+                .context("Invalid SIPS bind address")?;
+            info!(
+                sips_bind = %sips_bind,
+                cert = ?config.sip.tls_cert_path,
+                key = ?config.sip.tls_key_path,
+                "TLS/SIPS configuration enabled"
+            );
+            (
+                Some(sips_bind),
+                config.sip.tls_cert_path.clone(),
+                config.sip.tls_key_path.clone(),
+            )
+        } else {
+            (None, None, None)
+        }
+    };
+
     let listener_config = ListenerConfig {
         udp_bind: Some(udp_bind),
         tcp_bind: Some(tcp_bind),
         #[cfg(feature = "tls")]
-        tls_bind: None,
+        tls_bind,
         #[cfg(feature = "tls")]
-        tls_cert: None,
+        tls_cert,
         #[cfg(feature = "tls")]
-        tls_key: None,
+        tls_key,
     };
 
     let handler_dyn: Arc<dyn InboundMessageHandler> =
@@ -466,9 +503,11 @@ async fn main() -> Result<()> {
         info!("Operating in call-manager mode");
     }
 
+    let tls_enabled = config.sip.tls_cert_path.is_some() && config.sip.tls_key_path.is_some();
     info!(
         udp = %config.sip.udp_bind,
         tcp = %config.sip.tcp_bind,
+        sips = if tls_enabled { config.sip.sips_bind.as_str() } else { "disabled" },
         http = %config.http.bind_address,
         registrar = config.registrar.enabled,
         auth = config.registrar.auth_enabled,
