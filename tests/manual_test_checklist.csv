@@ -1,0 +1,170 @@
+Test ID,Category,Crate,Test Name,Description,Prerequisites,Steps,Expected Result,Status,Tested By,Date,Notes
+REG-001,Registration,fcp-call-manager,Register user via TCP,Register a SIP user using TCP transport,User exists in database,"1. Configure softphone with TCP transport
+2. Set server address and credentials
+3. Enable account/register",Registration successful - 200 OK response,,,
+REG-002,Registration,fcp-call-manager,Register user via UDP,Register a SIP user using UDP transport,User exists in database,"1. Configure phone with UDP transport (default)
+2. Set server address and credentials
+3. Enable account/register",Registration successful - 200 OK response,,,
+REG-003,Registration,fcp-call-manager,Register user via TLS,Register a SIP user using TLS transport,TLS configured on server,"1. Configure softphone with TLS transport
+2. Set server address and credentials
+3. Enable account/register",Registration successful - 200 OK response,,,
+REG-004,Registration,fcp-call-manager,Multiple contacts per AOR,Register same user from two devices simultaneously,User exists in database,"1. Register alice from Device A (TCP)
+2. Register alice from Device B (UDP)
+3. Query registrations API",Both contacts appear in registration list,,,
+REG-005,Registration,fcp-call-manager,Registration expiry,Verify registration expires after timeout,Registered user,"1. Register with short expiry (60s)
+2. Wait for expiry + grace period
+3. Query registrations API",Registration no longer present,,,
+REG-006,Registration,fcp-call-manager,Registration refresh,Verify registration refresh before expiry,Registered user,"1. Register user
+2. Monitor re-REGISTER requests
+3. Verify expiry time resets",Registration persists with updated expiry,,,
+REG-007,Registration,fcp-call-manager,Explicit de-registration,Unregister user with Expires: 0,Registered user,"1. Register user
+2. Disable account or send REGISTER with Expires: 0
+3. Query registrations API",Registration removed immediately,,,
+REG-008,Registration,fcp-call-manager,Wildcard de-registration,Unregister all contacts with Contact: *,Multiple contacts registered,"1. Register user from multiple devices
+2. Send REGISTER with Contact: * and Expires: 0
+3. Query registrations API",All contacts removed,,,
+REG-009,Registration,fcp-call-manager,Authentication failure - wrong password,Reject registration with incorrect password,User exists with known password,"1. Configure softphone with wrong password
+2. Attempt registration",401 Unauthorized response,,,
+REG-010,Registration,fcp-call-manager,Authentication failure - unknown user,Reject registration for non-existent user,No user with test username,"1. Configure softphone with non-existent username
+2. Attempt registration",401 Unauthorized or 404 Not Found,,,
+REG-011,Registration,fcp-call-manager,q-value handling,Register with different q-values,User exists,"1. Register Device A with q=1.0
+2. Register Device B with q=0.5
+3. Query registrations API",Both contacts present with correct q-values,,,
+REG-012,Registration,fcp-call-manager,NAT registration (rport),Registration through NAT with rport,NAT environment,"1. Register from behind NAT
+2. Check Via header processing
+3. Verify contact rewriting if needed",Registration works and calls can reach device,,,
+REG-013,Registration,fcp-call-manager,Registration rate limiting,Prevent registration flooding,Rate limiting enabled,"1. Send 20+ rapid REGISTER requests
+2. Monitor responses",Rate limited after threshold (429 or 503),,,
+CALL-001,Calling,fcp-call-manager,Basic call TCP to TCP,Call between two TCP-registered users,Both users registered via TCP,"1. Alice (TCP) calls Bob (TCP)
+2. Bob answers
+3. Verify two-way audio
+4. Hangup",Call connects with bidirectional audio,,,
+CALL-002,Calling,fcp-call-manager,Basic call UDP to UDP,Call between two UDP-registered users,Both users registered via UDP,"1. Polycom (UDP) calls Phone2 (UDP)
+2. Answer call
+3. Verify two-way audio
+4. Hangup",Call connects with bidirectional audio,,,
+CALL-003,Calling,fcp-call-manager,Cross-transport TCP to UDP,Call from TCP user to UDP user,TCP and UDP users registered,"1. Alice (TCP) calls Polycom (UDP)
+2. Polycom answers
+3. Verify two-way audio
+4. Hangup",Call connects with bidirectional audio,,,
+CALL-004,Calling,fcp-call-manager,Cross-transport UDP to TCP,Call from UDP user to TCP user,TCP and UDP users registered,"1. Polycom (UDP) calls Alice (TCP)
+2. Alice answers
+3. Verify two-way audio
+4. Hangup",Call connects with bidirectional audio,,,
+CALL-005,Calling,fcp-call-manager,Forked call - parallel ringing,Call user with multiple registrations,User registered on 2+ devices,"1. Call alice (registered on 2 devices)
+2. Verify both devices ring
+3. Answer on Device A",Both devices ring simultaneously,,,
+CALL-006,Calling,fcp-call-manager,Forked call - winner takes all,First answer wins in forked call,User registered on 2+ devices,"1. Call alice (registered on 2 devices)
+2. Answer on Device A
+3. Observe Device B",Device B stops ringing (receives CANCEL),,,
+CALL-007,Calling,fcp-call-manager,Call to unregistered user,Call user with no active registration,Target user not registered,"1. Ensure bob is not registered
+2. Alice calls bob",Call fails with 480 Temporarily Unavailable or 404,,,
+CALL-008,Calling,fcp-call-manager,Caller hangup,Caller terminates call,Active call,"1. Establish call
+2. Caller hangs up",Call terminated cleanly (BYE sent),,,
+CALL-009,Calling,fcp-call-manager,Callee hangup,Callee terminates call,Active call,"1. Establish call
+2. Callee hangs up",Call terminated cleanly (BYE sent),,,
+CALL-010,Calling,fcp-call-manager,Rejected call (486 Busy),Callee rejects incoming call,Incoming call ringing,"1. Alice calls Bob
+2. Bob rejects/declines call",Call fails with 486 Busy Here,,,
+CALL-011,Calling,fcp-call-manager,No answer timeout,Call times out when not answered,Ringing call,"1. Alice calls Bob
+2. Bob does not answer
+3. Wait for timeout",Call fails with 408 Request Timeout or 480,,,
+CALL-012,Calling,fcp-call-manager,Call hold,Place call on hold,Active call,"1. Establish call
+2. Alice puts call on hold (re-INVITE with sendonly)
+3. Resume call",Hold music or silence and call resumes correctly,,,
+CALL-013,Calling,fcp-call-manager,Attended transfer,Transfer call with consultation,Two active calls,"1. Alice calls Bob (Call 1)
+2. Alice calls Charlie (Call 2)
+3. Alice transfers Bob to Charlie (REFER)",Bob and Charlie connected Alice disconnected,,,
+CALL-014,Calling,fcp-call-manager,Blind transfer,Transfer call without consultation,Active call,"1. Alice calls Bob
+2. Alice blind transfers to Charlie
+3. Charlie answers",Bob and Charlie connected,,,
+CALL-015,Calling,fcp-call-manager,DTMF - RFC 2833,DTMF tones via RTP events,Active call,"1. Establish call
+2. Send DTMF digits
+3. Verify digits received",DTMF digits transmitted correctly,,,
+CALL-016,Calling,fcp-call-manager,DTMF - SIP INFO,DTMF tones via SIP INFO method,Active call,"1. Establish call
+2. Send DTMF via SIP INFO
+3. Verify digits received",DTMF digits transmitted correctly,,,
+MEDIA-001,Media,fcp-media/forge-media,Codec negotiation PCMU,Negotiate G.711 μ-law codec,Both endpoints support PCMU,"1. Establish call
+2. Check negotiated codec in SDP",PCMU (payload 0) negotiated,,,
+MEDIA-002,Media,fcp-media/forge-media,Codec negotiation PCMA,Negotiate G.711 A-law codec,Both endpoints support PCMA,"1. Establish call with PCMA preferred
+2. Check negotiated codec in SDP",PCMA (payload 8) negotiated,,,
+MEDIA-003,Media,fcp-media/forge-media,Codec negotiation G.722,Negotiate G.722 wideband codec,Both endpoints support G.722,"1. Establish call with G.722 preferred
+2. Check negotiated codec in SDP",G.722 (payload 9) negotiated,,,
+MEDIA-004,Media,fcp-media/forge-media,Transcoding PCMU to PCMA,Transcode between G.711 variants,Endpoints prefer different codecs,"1. Alice offers PCMU only
+2. Bob offers PCMA only
+3. Establish call",Call connects with transcoding,,,
+MEDIA-005,Media,fcp-media/forge-media,Transcoding G.722 to PCMU,Transcode wideband to narrowband,Endpoints prefer different codecs,"1. Alice offers G.722 only
+2. Polycom offers PCMU only
+3. Establish call",Call connects with transcoding,,,
+MEDIA-006,Media,fcp-media/forge-media,RTP timeout detection,Detect media timeout,Active call,"1. Establish call
+2. Block RTP traffic (firewall)
+3. Wait for timeout",Call terminated or event generated,,,
+MEDIA-007,Media,fcp-media/forge-media,Onesided audio detection,Detect one-way audio issue,Active call with issue,"1. Establish call
+2. Block one direction of RTP
+3. Check for detection",Issue detected and logged,,,
+API-001,API,fcp-call-manager,List registrations,GET /api/v1/registrations/:aor,Registered users,"1. GET /api/v1/registrations/sip:alice@domain
+2. Check response",JSON array of registration objects,,,
+API-002,API,fcp-call-manager,List active calls,GET /api/v1/calls,Active calls,"1. Establish a call
+2. GET /api/v1/calls
+3. Check response",JSON array with active call details,,,
+API-003,API,fcp-call-manager,Get call details,GET /api/v1/calls/:id,Active call,"1. Get call ID from list
+2. GET /api/v1/calls/:id",JSON object with call details,,,
+API-004,API,fcp-call-manager,Hangup call via API,DELETE /api/v1/calls/:id,Active call,"1. Establish call
+2. DELETE /api/v1/calls/:id
+3. Verify call ends",Call terminated 200 OK response,,,
+API-005,API,fcp-call-manager,List users,GET /api/v1/users,Users in database,"1. GET /api/v1/users
+2. Check response",JSON array of user objects,,,
+API-006,API,fcp-call-manager,Create user,POST /api/v1/users,Valid user data,"1. POST /api/v1/users with user JSON
+2. Check response
+3. Verify user can register",User created 201 response,,,
+API-007,API,fcp-call-manager,Delete user,DELETE /api/v1/users/:username,Existing user,"1. DELETE /api/v1/users/:username
+2. Verify user cannot register",User deleted 200/204 response,,,
+API-008,API,fcp-call-manager,Health check,GET /api/v1/health,Server running,"1. GET /api/v1/health
+2. Check response",200 OK with status healthy,,,
+EVENTS-001,Events,fcp-events-server,Call initiated event,Event published on call start,Events server running,"1. Subscribe to WebSocket
+2. Initiate call
+3. Check for event",CallInitiated event received,,,
+EVENTS-002,Events,fcp-events-server,Call answered event,Event published on call answer,Events server running,"1. Subscribe to WebSocket
+2. Answer call
+3. Check for event",CallAnswered event received,,,
+EVENTS-003,Events,fcp-events-server,Call ended event,Event published on call end,Events server running,"1. Subscribe to WebSocket
+2. End call
+3. Check for event",CallEnded event received with duration,,,
+EVENTS-004,Events,fcp-events-server,Aggregated calls API,GET /calls returns all active calls,Events server running,"1. Make calls on call-manager
+2. GET /calls on events-server",JSON with all active calls across nodes,,,
+EVENTS-005,Events,fcp-events-server,Call duration calculation,Duration calculated for active calls,Answered call,"1. GET /calls
+2. Check duration_ms field",duration_ms present and increasing,,,
+EVENTS-006,Events,fcp-events-server,Node tracking,Nodes registered when events received,Multiple nodes publishing,"1. Check /nodes endpoint
+2. Verify node info",Node list with health status,,,
+CLI-001,CLI,fcp-cli,TUI launch,Launch TUI mode,CLI built,"1. Run fcp-cli tui
+2. Verify UI displays",TUI displays with tabs and data,,,
+CLI-002,CLI,fcp-cli,TUI calls view,View active calls in TUI,Active calls,"1. Launch TUI
+2. Navigate to Calls tab (7)
+3. Verify calls displayed",Calls shown with duration updating,,,
+CLI-003,CLI,fcp-cli,TUI registrations view,View registrations in TUI,Registered users,"1. Launch TUI
+2. Navigate to Registrations tab
+3. Verify registrations displayed",Registrations shown with details,,,
+CLI-004,CLI,fcp-cli,CLI list calls,List calls via CLI,Active calls,"1. Run: fcp-cli call list
+2. Check output",Table or JSON of active calls,,,
+CLI-005,CLI,fcp-cli,CLI hangup call,Hangup call via CLI,Active call,"1. Get call ID
+2. Run: fcp-cli call hangup <id>
+3. Verify call ends",Call terminated confirmation message,,,
+CLI-006,CLI,fcp-cli,Context management,Add/switch contexts,CLI configured,"1. fcp-cli context add prod <url>
+2. fcp-cli context use prod
+3. fcp-cli context show",Context switched successfully,,,
+CDR-001,CDR,fcp-call-manager,CDR creation,CDR created for completed call,Database configured,"1. Make and complete a call
+2. Query CDR table or API",CDR record with call details,,,
+CDR-002,CDR,fcp-call-manager,CDR fields populated,All CDR fields correctly populated,Completed call,"1. Check CDR record
+2. Verify: call_id from to duration hangup_cause",All fields present and accurate,,,
+HA-001,High Availability,fcp-events-server,Multi-node aggregation,Calls aggregated from multiple nodes,Multiple call-managers,"1. Start 2 call-managers
+2. Make calls on each
+3. Check events-server /calls",All calls from all nodes visible,,,
+SEC-001,Security,fcp-call-manager,Digest auth required,Reject unauthenticated REGISTER,Auth enabled,"1. Send REGISTER without auth
+2. Check response",401 Unauthorized with challenge,,,
+SEC-002,Security,fcp-call-manager,Replay attack prevention,Reject replayed auth response,Auth enabled,"1. Capture valid auth response
+2. Replay same response",401 Unauthorized (nonce expired/used),,,
+SEC-003,Security,fcp-call-manager,Rate limiting active,Limit excessive requests,Rate limiting enabled,"1. Send rapid requests from same source
+2. Check for limiting",429 or 503 after threshold,,,
+PERF-001,Performance,fcp-call-manager,Registration throughput,Handle many registrations/sec,Load test setup,"1. Run registration load test
+2. Measure throughput",Target: 100+ reg/sec sustained,,,
+PERF-002,Performance,fcp-call-manager,Concurrent calls,Handle many simultaneous calls,Load test setup,"1. Establish multiple concurrent calls
+2. Verify audio quality",Target: 50+ concurrent calls,,,
