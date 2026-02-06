@@ -26,3 +26,5 @@ data/
 *.db-shm
 *.db-wal
 fcp.db.backup
+deploy/docker-compose/certs/server.key
+deploy/docker-compose/certs/

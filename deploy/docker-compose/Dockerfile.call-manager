@@ -35,9 +35,10 @@ COPY --from=builder /app/target/release/fcp-call-manager /app/fcp-call-manager
 # Create data directory
 RUN mkdir -p /app/data
 
-# Expose SIP ports (UDP + TCP), HTTP API, and RTP range
+# Expose SIP ports (UDP + TCP + TLS), HTTP API, and RTP range
 EXPOSE 5060/udp
 EXPOSE 5060/tcp
+EXPOSE 5061/tcp
 EXPOSE 8084
 EXPOSE 10000-10100/udp
 

@@ -96,6 +96,7 @@ services:
     volumes:
       - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
       - ./configs/routing.yaml:/app/routing.yaml:ro
+      - ./certs:/app/certs:ro  # TLS certificates for SIPS
       - fcp_shared-data:/app/data  # Shared with main docker-compose
     environment:
       - RUST_LOG=info
