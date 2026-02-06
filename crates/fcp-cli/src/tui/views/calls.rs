@@ -462,8 +462,10 @@ pub async fn fetch_data(
                 return;
             }
             Err(e) => {
-                // Log warning but fall back to regular API
-                tracing::warn!("Failed to fetch from events server, falling back: {}", e);
+                // Show error to user instead of silently falling back
+                state.error = Some(format!("Events server error: {}", e));
+                state.loading = false;
+                return;
             }
         }
     }

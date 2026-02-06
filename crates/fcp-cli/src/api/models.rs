@@ -308,6 +308,13 @@ impl AggregatedCallResponse {
     }
 }
 
+/// Response wrapper for aggregated calls from events server
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AggregatedCallsResponse {
+    pub calls: Vec<AggregatedCallResponse>,
+    pub count: usize,
+}
+
 /// Events server statistics response
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EventsStatsResponse {
@@ -605,5 +612,55 @@ mod optional_system_time_as_string {
             SystemTime::UNIX_EPOCH
                 + std::time::Duration::new(ts.secs_since_epoch, ts.nanos_since_epoch)
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aggregated_calls_deserialization() {
+        let json = r#"{"calls":[{"answered_at":1770341243,"call_id":"call-0bb0d31e-2449-4466-9af1-959d5fe0e37b","codec":"TELEPHONE-EVENT","direction":"inbound","from":"sip:alice@192.168.1.225;transport=TCP","initiated_at":1770341240,"last_updated":1770341243,"node_id":"cm-docker-01","ringing_at":1770341240,"state":"answered","tenant_id":"tenant-00000000-0000-0000-0000-000000000000","to":"<sip:bob@192.168.1.225>"}],"count":1}"#;
+
+        let result: Result<AggregatedCallsResponse, _> = serde_json::from_str(json);
+        assert!(result.is_ok(), "Failed to deserialize: {:?}", result.err());
+
+        let response = result.unwrap();
+        assert_eq!(response.count, 1);
+        assert_eq!(response.calls.len(), 1);
+        assert_eq!(response.calls[0].call_id, "call-0bb0d31e-2449-4466-9af1-959d5fe0e37b");
+        assert_eq!(response.calls[0].state, "answered");
+        assert_eq!(response.calls[0].node_id, Some("cm-docker-01".to_string()));
+    }
+
+    #[test]
+    fn test_aggregated_call_to_call_response() {
+        let aggregated = AggregatedCallResponse {
+            call_id: "call-123".to_string(),
+            node_id: Some("node-1".to_string()),
+            tenant_id: "tenant-abc".to_string(),
+            from: "sip:alice@example.com".to_string(),
+            to: "sip:bob@example.com".to_string(),
+            direction: "inbound".to_string(),
+            state: "answered".to_string(),
+            initiated_at: 1770341240,
+            ringing_at: Some(1770341240),
+            answered_at: Some(1770341243),
+            ended_at: None,
+            codec: Some("PCMU".to_string()),
+            trunk_name: None,
+            duration_ms: Some(5000),
+            hangup_cause: None,
+            failure_reason: None,
+            last_updated: 1770341243,
+        };
+
+        let call = aggregated.to_call_response();
+        assert_eq!(call.id, "call-123");
+        assert_eq!(call.state, "answered");
+        assert_eq!(call.node_id, Some("node-1".to_string()));
+        assert_eq!(call.duration_seconds, Some(5));  // 5000ms / 1000 = 5s
+        assert!(call.media_anchored);  // codec is Some
     }
 }

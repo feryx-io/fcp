@@ -540,9 +540,12 @@ impl ApiClient {
             return Err(ApiError::Http(status, body).into());
         }
 
-        resp.json()
-            .await
-            .map_err(|e| ApiError::Deserialization(e.to_string()).into())
+        // Get body text first for better error messages
+        let body = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
+
+        serde_json::from_str(&body).map_err(|e| {
+            ApiError::Deserialization(format!("{} (body: {})", e, &body[..body.len().min(200)])).into()
+        })
     }
 
     /// List aggregated calls from events server
@@ -556,7 +559,8 @@ impl ApiClient {
             Some(id) => format!("/calls?node_id={}", urlencoding::encode(id)),
             None => "/calls".to_string(),
         };
-        self.events_request(events_url, Method::GET, &path).await
+        let response: AggregatedCallsResponse = self.events_request(events_url, Method::GET, &path).await?;
+        Ok(response.calls)
     }
 
     /// Get a specific call from events server

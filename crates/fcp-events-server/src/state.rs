@@ -213,18 +213,18 @@ impl CallStateStore {
         }
     }
 
-    /// Get all active calls (not ended or failed).
+    /// Get all active calls (not ended or failed) with calculated duration.
     pub fn get_active_calls(&self) -> Vec<AggregatedCall> {
         self.calls
             .iter()
             .filter(|entry| {
                 !matches!(entry.state, CallState::Ended | CallState::Failed)
             })
-            .map(|entry| entry.value().clone())
+            .map(|entry| Self::with_calculated_duration(entry.value().clone()))
             .collect()
     }
 
-    /// Get all active calls for a specific node.
+    /// Get all active calls for a specific node with calculated duration.
     pub fn get_active_calls_by_node(&self, node_id: &str) -> Vec<AggregatedCall> {
         self.calls
             .iter()
@@ -232,13 +232,30 @@ impl CallStateStore {
                 !matches!(entry.state, CallState::Ended | CallState::Failed)
                     && entry.node_id.as_deref() == Some(node_id)
             })
-            .map(|entry| entry.value().clone())
+            .map(|entry| Self::with_calculated_duration(entry.value().clone()))
             .collect()
     }
 
-    /// Get a specific call by ID.
+    /// Get a specific call by ID with calculated duration.
     pub fn get_call(&self, call_id: &str) -> Option<AggregatedCall> {
-        self.calls.get(call_id).map(|entry| entry.value().clone())
+        self.calls
+            .get(call_id)
+            .map(|entry| Self::with_calculated_duration(entry.value().clone()))
+    }
+
+    /// Calculate duration for active answered calls.
+    /// For ended calls, duration_ms is already set.
+    /// For answered calls still in progress, calculate from answered_at.
+    fn with_calculated_duration(mut call: AggregatedCall) -> AggregatedCall {
+        // Only calculate if not already set (i.e., call is still active)
+        if call.duration_ms.is_none() {
+            if let Some(answered_at) = call.answered_at {
+                if let Ok(duration) = SystemTime::now().duration_since(answered_at) {
+                    call.duration_ms = Some(duration.as_millis() as u64);
+                }
+            }
+        }
+        call
     }
 
     /// Get call counts by state.
