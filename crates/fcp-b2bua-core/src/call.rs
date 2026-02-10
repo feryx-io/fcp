@@ -245,6 +245,10 @@ pub struct Call {
     /// Name of the outbound trunk (if routed via trunk).
     pub trunk_name: Option<String>,
 
+    /// Allowed codecs from the outbound trunk's codec config (preference order).
+    /// When set, B-leg SDP is filtered to these codecs.
+    pub outbound_allowed_codecs: Option<Vec<String>>,
+
     /// Notify handle to signal cancellation to the parallel forking task.
     /// When the A-leg sends CANCEL before any B-leg answers, the CANCEL handler
     /// notifies this to wake up the forking task so it can CANCEL all B-legs immediately.
@@ -329,6 +333,7 @@ impl Call {
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
+            outbound_allowed_codecs: None,
             cancel_notify: None,
             custom_data: None,
             parked_orbit: None,
@@ -413,6 +418,7 @@ impl Call {
             flow_id: None,
             flow_current_node: None,
             trunk_name: None,
+            outbound_allowed_codecs: None,
             cancel_notify: None,
             custom_data: None,
             parked_orbit: None,

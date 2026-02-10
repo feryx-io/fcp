@@ -88,8 +88,8 @@ pub struct NatConfig {
     pub enable_srtp: bool,
 
     /// Enable codec transcoding (requires media anchoring).
-    /// The SBC media stack does not currently transcode — enabling this will
-    /// log a warning at startup.
+    /// When enabled, the forge-media pipeline handles codec conversion between
+    /// call legs with incompatible codec sets.
     #[serde(default)]
     pub enable_transcoding: bool,
 

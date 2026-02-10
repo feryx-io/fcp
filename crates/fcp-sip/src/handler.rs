@@ -206,6 +206,8 @@ pub struct OutboundRoute {
     pub target_uri: String,
     /// Name of the trunk selected (if trunk-based routing was used).
     pub trunk_name: Option<String>,
+    /// Allowed codecs for this trunk in preference order (empty = no restriction).
+    pub allowed_codecs: Option<Vec<String>>,
 }
 
 /// Provides fallback outbound routing when registrar lookup fails.
@@ -2051,11 +2053,14 @@ impl SipMessageHandler {
                             if let Some(provider) = &self.outbound_route_provider {
                                 let routes = provider.resolve_outbound_ordered(destination_aor).await;
                                 if let Some(route) = routes.first() {
-                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, routes = routes.len(), "Routing via outbound trunk (failover available)");
-                                    // Store trunk name on call for lifecycle tracking
-                                    if let Some(ref trunk_name) = route.trunk_name {
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, allowed_codecs = ?route.allowed_codecs, routes = routes.len(), "Routing via outbound trunk (failover available)");
+                                    // Store trunk name and allowed codecs on call for lifecycle tracking
+                                    {
+                                        let trunk_name = route.trunk_name.clone();
+                                        let allowed_codecs = route.allowed_codecs.clone();
                                         let _ = self.call_manager.update_call(&call_id, |call| {
-                                            call.trunk_name = Some(trunk_name.clone());
+                                            call.trunk_name = trunk_name;
+                                            call.outbound_allowed_codecs = allowed_codecs;
                                         });
                                     }
                                     // Build bindings for primary + failover routes
@@ -2578,11 +2583,14 @@ impl SipMessageHandler {
                             if let Some(provider) = &self.outbound_route_provider {
                                 let routes = provider.resolve_outbound_ordered(destination_aor).await;
                                 if let Some(route) = routes.first() {
-                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, routes = routes.len(), "Routing via outbound trunk (extension path, failover available)");
-                                    // Store trunk name on call for lifecycle tracking
-                                    if let Some(ref trunk_name) = route.trunk_name {
+                                    info!(call_id = %call_id, target = %route.target_uri, trunk = ?route.trunk_name, allowed_codecs = ?route.allowed_codecs, routes = routes.len(), "Routing via outbound trunk (extension path, failover available)");
+                                    // Store trunk name and allowed codecs on call for lifecycle tracking
+                                    {
+                                        let trunk_name = route.trunk_name.clone();
+                                        let allowed_codecs = route.allowed_codecs.clone();
                                         let _ = self.call_manager.update_call(&call_id, |call| {
-                                            call.trunk_name = Some(trunk_name.clone());
+                                            call.trunk_name = trunk_name;
+                                            call.outbound_allowed_codecs = allowed_codecs;
                                         });
                                     }
                                     // Build bindings for primary + failover routes
@@ -2820,31 +2828,77 @@ impl SipMessageHandler {
             }
         }
 
-        // Filter B-leg SDP to match A-leg's preferred codec
-        // This prevents codec mismatch (e.g., A-leg G722, B-leg picks PCMU)
+        // Filter B-leg SDP based on trunk codec restrictions (if any) and A-leg codecs.
+        //
+        // When the trunk has `allowed_codecs`, use those in preference order. If
+        // there is overlap with the A-leg codecs, intersect (trunk order); if no
+        // overlap, use trunk codecs only — the media pipeline will transcode.
+        //
+        // When no trunk restriction is configured, fall back to A-leg preferred
+        // codec + G.711 variants (original behaviour).
         if let Some(ref sdp) = a_leg_sdp {
-            let a_leg_codecs = fcp_media::sdp::parse_sdp_codecs(sdp);
-            if let Some(preferred) = a_leg_codecs.first() {
-                // Include preferred codec + G711 variants as fallback
-                let mut allowed: Vec<&str> = vec![preferred.encoding_name.as_str()];
+            // Retrieve trunk-level codec restrictions from the call (set at routing time)
+            let trunk_allowed: Option<Vec<String>> = self
+                .call_manager
+                .get_call(&call_id)
+                .and_then(|c| c.outbound_allowed_codecs.clone());
 
-                // Add G711 fallback if A-leg supports it
+            let a_leg_codecs = fcp_media::sdp::parse_sdp_codecs(sdp);
+
+            let allowed_owned: Vec<String> = if let Some(ref trunk_codecs) = trunk_allowed {
+                // Trunk has codec restrictions — intersect with A-leg (trunk preference order)
+                let intersection: Vec<String> = trunk_codecs
+                    .iter()
+                    .filter(|tc| {
+                        a_leg_codecs
+                            .iter()
+                            .any(|ac| ac.encoding_name.eq_ignore_ascii_case(tc))
+                    })
+                    .cloned()
+                    .collect();
+
+                if intersection.is_empty() {
+                    // No overlap — use trunk codecs only; transcoding will bridge the gap
+                    info!(
+                        call_id = %call_id,
+                        trunk_codecs = ?trunk_codecs,
+                        a_leg_codecs = ?a_leg_codecs.iter().map(|c| &c.encoding_name).collect::<Vec<_>>(),
+                        "No codec overlap between trunk and A-leg — transcoding required"
+                    );
+                    trunk_codecs.clone()
+                } else {
+                    info!(
+                        call_id = %call_id,
+                        intersection = ?intersection,
+                        "Filtered B-leg SDP to trunk/A-leg codec intersection"
+                    );
+                    intersection
+                }
+            } else if let Some(preferred) = a_leg_codecs.first() {
+                // No trunk restriction — use A-leg preferred + G.711 fallback
+                let mut allowed: Vec<String> = vec![preferred.encoding_name.clone()];
                 for codec in &a_leg_codecs {
-                    let name = codec.encoding_name.as_str();
+                    let name = &codec.encoding_name;
                     if (name.eq_ignore_ascii_case("PCMU") || name.eq_ignore_ascii_case("PCMA"))
                         && !allowed.iter().any(|a| a.eq_ignore_ascii_case(name))
                     {
-                        allowed.push(name);
+                        allowed.push(name.clone());
                     }
                 }
-
-                let filtered = fcp_media::sdp::filter_sdp_codecs(sdp, &allowed);
                 info!(
                     call_id = %call_id,
                     preferred_codec = %preferred.encoding_name,
                     allowed_codecs = ?allowed,
-                    "Filtered B-leg SDP to match A-leg codecs"
+                    "Filtered B-leg SDP to match A-leg codecs (no trunk restriction)"
                 );
+                allowed
+            } else {
+                Vec::new()
+            };
+
+            if !allowed_owned.is_empty() {
+                let allowed_refs: Vec<&str> = allowed_owned.iter().map(|s| s.as_str()).collect();
+                let filtered = fcp_media::sdp::filter_sdp_codecs(sdp, &allowed_refs);
                 a_leg_sdp = Some(filtered);
             }
         }

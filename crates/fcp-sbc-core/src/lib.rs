@@ -46,7 +46,7 @@ pub use stir_shaken::{
     AttestationLevel, StirShakenConfig, StirSignMode, StirVerifyMode,
     TrunkStirShakenConfig,
 };
-pub use trunk::{SrtpMode, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
+pub use trunk::{SrtpMode, TrunkCodecConfig, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
 
 // Re-export LCR and quality types
 pub use lcr::{LcrConfig, LcrRouteEntry, LoadBalanceStrategy};

@@ -396,9 +396,16 @@ impl TrunkRouter {
             other => format!(";transport={}", other.as_str()),
         };
 
+        let allowed_codecs = if trunk.codec.allowed_codecs.is_empty() {
+            None
+        } else {
+            Some(trunk.codec.allowed_codecs.clone())
+        };
+
         Some(OutboundRoute {
             target_uri: format!("sip:{}@{}:{}{}", user_part, host, port, transport_param),
             trunk_name: Some(trunk.name.clone()),
+            allowed_codecs,
         })
     }
 }
@@ -804,5 +811,42 @@ mod tests {
         for route in &routes {
             assert!(route.target_uri.contains("+12125551234"));
         }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_outbound_with_codec_config() {
+        use crate::trunk::TrunkCodecConfig;
+
+        let mut trunks = vec![make_trunk("codec-trunk", 100, 100, TrunkDirection::Upstream)];
+        trunks[0].codec = TrunkCodecConfig {
+            allowed_codecs: vec!["PCMU".into(), "PCMA".into()],
+            allow_transcoding: true,
+        };
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        health.record_success("codec-trunk");
+        let router = TrunkRouter::new(trunks, health, no_cps());
+
+        let route = router.resolve_outbound("sip:+15551234567@example.com").await;
+        assert!(route.is_some());
+        let route = route.unwrap();
+        assert_eq!(route.trunk_name, Some("codec-trunk".to_string()));
+        assert_eq!(
+            route.allowed_codecs,
+            Some(vec!["PCMU".to_string(), "PCMA".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_outbound_no_codec_restriction() {
+        let trunks = vec![make_trunk("plain-trunk", 100, 100, TrunkDirection::Upstream)];
+        let health = Arc::new(TrunkHealthMonitor::new(&trunks));
+        health.record_success("plain-trunk");
+        let router = TrunkRouter::new(trunks, health, no_cps());
+
+        let route = router.resolve_outbound("sip:+15551234567@example.com").await;
+        assert!(route.is_some());
+        let route = route.unwrap();
+        assert_eq!(route.trunk_name, Some("plain-trunk".to_string()));
+        assert_eq!(route.allowed_codecs, None);
     }
 }

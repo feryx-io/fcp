@@ -139,6 +139,37 @@ impl Default for TrunkSrtpConfig {
     }
 }
 
+/// Codec configuration for a trunk.
+///
+/// Controls which audio codecs are allowed on this trunk and whether
+/// transcoding is permitted when codec negotiation would otherwise fail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrunkCodecConfig {
+    /// Allowed codecs in preference order (e.g., `["PCMU", "PCMA"]`).
+    /// Empty means no restriction — all codecs are allowed.
+    #[serde(default)]
+    pub allowed_codecs: Vec<String>,
+
+    /// Whether the media pipeline may transcode when the A-leg and B-leg
+    /// codec sets don't overlap. When `false`, calls that require transcoding
+    /// will be rejected.
+    #[serde(default = "default_allow_transcoding")]
+    pub allow_transcoding: bool,
+}
+
+fn default_allow_transcoding() -> bool {
+    true
+}
+
+impl Default for TrunkCodecConfig {
+    fn default() -> Self {
+        Self {
+            allowed_codecs: Vec::new(),
+            allow_transcoding: true,
+        }
+    }
+}
+
 /// DTMF handling mode for a trunk.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TrunkDtmfMode {
@@ -217,6 +248,10 @@ pub struct TrunkConfig {
     #[serde(default)]
     pub dtmf: TrunkDtmfConfig,
 
+    /// Codec configuration for this trunk
+    #[serde(default)]
+    pub codec: TrunkCodecConfig,
+
     /// STIR/SHAKEN caller ID verification and signing configuration
     #[serde(default)]
     pub stir_shaken: TrunkStirShakenConfig,
@@ -240,6 +275,7 @@ impl Default for TrunkConfig {
             header_rules: Vec::new(),
             srtp: TrunkSrtpConfig::default(),
             dtmf: TrunkDtmfConfig::default(),
+            codec: TrunkCodecConfig::default(),
             stir_shaken: TrunkStirShakenConfig::default(),
         }
     }
@@ -291,6 +327,21 @@ impl TrunkConfig {
             if creds.username.is_empty() {
                 return Err(format!(
                     "trunk {:?}: credentials username must not be empty",
+                    self.name
+                ));
+            }
+        }
+        // Validate codec names (no empty strings, no CR/LF)
+        for (i, codec_name) in self.codec.allowed_codecs.iter().enumerate() {
+            if codec_name.is_empty() {
+                return Err(format!(
+                    "trunk {:?}: codec.allowed_codecs[{i}] must not be empty",
+                    self.name
+                ));
+            }
+            if codec_name.contains('\r') || codec_name.contains('\n') {
+                return Err(format!(
+                    "trunk {:?}: codec.allowed_codecs[{i}] must not contain CR/LF characters",
                     self.name
                 ));
             }
@@ -544,5 +595,83 @@ mod tests {
     fn test_trunk_config_dtmf_default() {
         let cfg = TrunkConfig::default();
         assert_eq!(cfg.dtmf.mode, TrunkDtmfMode::Disabled);
+    }
+
+    // ── TrunkCodecConfig tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_codec_config_default() {
+        let cfg = TrunkCodecConfig::default();
+        assert!(cfg.allowed_codecs.is_empty());
+        assert!(cfg.allow_transcoding);
+    }
+
+    #[test]
+    fn test_codec_config_serde_roundtrip() {
+        let cfg = TrunkCodecConfig {
+            allowed_codecs: vec!["PCMU".into(), "PCMA".into()],
+            allow_transcoding: false,
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: TrunkCodecConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+        assert_eq!(deserialized.allowed_codecs.len(), 2);
+        assert!(!deserialized.allow_transcoding);
+    }
+
+    #[test]
+    fn test_codec_config_serde_defaults() {
+        // When codec section is missing from JSON, defaults should apply
+        let json = r#"{"allowed_codecs":["G722"]}"#;
+        let cfg: TrunkCodecConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.allowed_codecs, vec!["G722"]);
+        assert!(cfg.allow_transcoding); // default = true
+    }
+
+    #[test]
+    fn test_trunk_config_codec_default() {
+        let cfg = TrunkConfig::default();
+        assert!(cfg.codec.allowed_codecs.is_empty());
+        assert!(cfg.codec.allow_transcoding);
+    }
+
+    #[test]
+    fn test_trunk_config_with_codec() {
+        let cfg = TrunkConfig {
+            name: "codec-trunk".into(),
+            hosts: vec!["sip.carrier.com".into()],
+            codec: TrunkCodecConfig {
+                allowed_codecs: vec!["PCMU".into(), "PCMA".into()],
+                allow_transcoding: true,
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: TrunkConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg, deserialized);
+        assert_eq!(deserialized.codec.allowed_codecs.len(), 2);
+    }
+
+    #[test]
+    fn test_validate_codec_empty_name() {
+        let mut cfg = valid_trunk();
+        cfg.codec.allowed_codecs = vec!["PCMU".into(), "".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("allowed_codecs"));
+    }
+
+    #[test]
+    fn test_validate_codec_crlf_name() {
+        let mut cfg = valid_trunk();
+        cfg.codec.allowed_codecs = vec!["bad\ncodec".into()];
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("CR/LF"));
+    }
+
+    #[test]
+    fn test_validate_codec_valid() {
+        let mut cfg = valid_trunk();
+        cfg.codec.allowed_codecs = vec!["PCMU".into(), "PCMA".into(), "G722".into()];
+        assert!(cfg.validate().is_ok());
     }
 }

@@ -78,10 +78,7 @@ async fn main() -> Result<()> {
         info!("SRTP support enabled (SDES-SRTP, RFC 4568)");
     }
     if sbc_config.nat.enable_transcoding {
-        warn!(
-            "nat.enable_transcoding is enabled but the SBC media stack does \
-             not currently support codec transcoding"
-        );
+        info!("Codec transcoding enabled (forge-media pipeline)");
     }
     if sbc_config.nat.enable_dtmf {
         info!("DTMF support enabled (RFC 2833 relay + SIP INFO passthrough)");
