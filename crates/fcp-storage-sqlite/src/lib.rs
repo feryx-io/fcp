@@ -184,6 +184,10 @@ impl SqliteStorage {
         let migration_008 = include_str!("../migrations/008_add_registration_path.sql");
         Self::execute_migration(pool, migration_008, "008").await?;
 
+        // Migration 009: Registration flow_token column (RFC 5626)
+        let migration_009 = include_str!("../migrations/009_add_registration_flow_token.sql");
+        Self::execute_migration(pool, migration_009, "009").await?;
+
         info!("SQLite migrations completed successfully");
         Ok(())
     }
