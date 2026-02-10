@@ -101,6 +101,30 @@ impl SipUserAgentClient {
         self.inner.invite(target, sdp_body).await
     }
 
+    /// Send an INVITE using an existing connection (RFC 5626 flow support).
+    ///
+    /// This method allows sending INVITEs to TLS/TCP clients that registered
+    /// through an inbound connection (NAT traversal scenario). Instead of
+    /// opening a new connection to the client's ephemeral port, the INVITE
+    /// is sent through the existing connection identified by the flow stream.
+    ///
+    /// # Arguments
+    /// * `target` - URI of the callee (e.g., "sip:bob@example.com")
+    /// * `sdp_body` - Optional SDP offer (None for late offer)
+    /// * `flow_stream` - The mpsc::Sender for the existing connection
+    /// * `peer_addr` - The peer's socket address for the TransportContext
+    pub async fn invite_via_flow(
+        &self,
+        target: &str,
+        sdp_body: Option<&str>,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<CallHandle> {
+        self.inner
+            .invite_via_flow(target, sdp_body, flow_stream, peer_addr)
+            .await
+    }
+
     /// Send BYE to terminate an established call.
     ///
     /// # Arguments
@@ -121,6 +145,26 @@ impl SipUserAgentClient {
     /// ```
     pub async fn bye(&self, dialog: &Dialog) -> Result<sip_core::Response> {
         self.inner.bye(dialog).await
+    }
+
+    /// Send BYE using an existing connection (RFC 5626 flow support).
+    ///
+    /// This method allows sending BYE to TLS/TCP clients that registered
+    /// through an inbound connection (NAT traversal scenario). Instead of
+    /// opening a new connection to the client's ephemeral port, the BYE
+    /// is sent through the existing connection identified by the flow stream.
+    ///
+    /// # Arguments
+    /// * `dialog` - The dialog to terminate
+    /// * `flow_stream` - The mpsc::Sender for the existing connection
+    /// * `peer_addr` - The peer's socket address for the TransportContext
+    pub async fn bye_via_flow(
+        &self,
+        dialog: &Dialog,
+        flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<sip_core::Response> {
+        self.inner.bye_via_flow(dialog, flow_stream, peer_addr).await
     }
 
     /// Send REGISTER request.

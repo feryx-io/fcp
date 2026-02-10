@@ -66,6 +66,11 @@ impl LocationStoreAdapter {
             }
         }
 
+        // Add flow token if present (RFC 5626)
+        if let Some(ref flow_token) = reg.flow_token {
+            binding = binding.with_flow_token(SmolStr::new(flow_token));
+        }
+
         Ok(binding)
     }
 
@@ -90,6 +95,8 @@ impl LocationStoreAdapter {
             registered_at: SystemTime::now(),
             // Serialize Path header to string for storage (RFC 3327)
             path: binding.path().map(|p| p.to_string()),
+            // Store flow token for RFC 5626 connection reuse
+            flow_token: binding.flow_token().map(|s| s.to_string()),
         }
     }
 }
@@ -342,6 +349,22 @@ impl FcpRegistrar {
     /// # Returns
     /// The response to send (200 OK, 401 Unauthorized, etc.)
     pub async fn handle_register(&self, request: &Request) -> Response {
+        self.handle_register_with_flow(request, None).await
+    }
+
+    /// Handle a REGISTER request with optional flow token for RFC 5626.
+    ///
+    /// # Arguments
+    /// * `request` - The REGISTER request
+    /// * `flow_token` - Optional flow token for TLS connection reuse
+    ///
+    /// # Returns
+    /// The response to send (200 OK, 401 Unauthorized, etc.)
+    pub async fn handle_register_with_flow(
+        &self,
+        request: &Request,
+        flow_token: Option<&str>,
+    ) -> Response {
         // Extract AOR early for event emission
         let aor = self.extract_aor_from_request(request).unwrap_or_default();
 
@@ -412,7 +435,7 @@ impl FcpRegistrar {
         }
 
         // Authentication passed or not required - handle registration
-        self.process_registration(request).await
+        self.process_registration(request, flow_token).await
     }
 
     /// Extract AOR from a REGISTER request's To header.
@@ -426,7 +449,7 @@ impl FcpRegistrar {
     }
 
     /// Process the actual registration logic
-    async fn process_registration(&self, request: &Request) -> Response {
+    async fn process_registration(&self, request: &Request, flow_token: Option<&str>) -> Response {
         // Extract To header for AOR
         let to_header = match request.headers().get_smol("To") {
             Some(to) => to,
@@ -510,13 +533,14 @@ impl FcpRegistrar {
         if let Some(contact_str) = contact_header {
             // Strip contact-params (like ;expires=0)
             let contact_uri = Self::extract_contact_uri(contact_str.as_str());
-            let binding = match Self::create_binding(&aor, contact_uri, expires, request) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("Failed to create binding: {}", e);
-                    return self.create_error_response(request, 400, "Bad Request");
-                }
-            };
+            let binding =
+                match Self::create_binding(&aor, contact_uri, expires, request, flow_token) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to create binding: {}", e);
+                        return self.create_error_response(request, 400, "Bad Request");
+                    }
+                };
 
             match self.location_store.upsert(binding).await {
                 Ok(_) => {
@@ -701,6 +725,7 @@ impl FcpRegistrar {
         contact: &str,
         expires: u32,
         request: &Request,
+        flow_token: Option<&str>,
     ) -> Result<Binding> {
         let call_id = request
             .headers()
@@ -745,6 +770,12 @@ impl FcpRegistrar {
                 debug!(path = %path, "Storing Path header from REGISTER");
                 binding = binding.with_path(path);
             }
+        }
+
+        // Add flow token if present (RFC 5626)
+        if let Some(token) = flow_token {
+            debug!(flow_token = %token, "Storing flow token from TLS REGISTER");
+            binding = binding.with_flow_token(SmolStr::new(token));
         }
 
         Ok(binding)

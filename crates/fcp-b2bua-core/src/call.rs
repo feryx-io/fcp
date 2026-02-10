@@ -138,6 +138,9 @@ pub struct CallLeg {
 
     /// Time when this leg was created
     pub created_at: SystemTime,
+
+    /// RFC 5626 flow token for TLS connection reuse (used for BYE via flow)
+    pub flow_token: Option<String>,
 }
 
 impl CallLeg {
@@ -166,6 +169,7 @@ impl CallLeg {
             contact: Some(peer),
             sdp,
             created_at: SystemTime::now(),
+            flow_token: None,
         }
     }
 
@@ -181,6 +185,7 @@ impl CallLeg {
             contact: None,
             sdp: None,
             created_at: SystemTime::now(),
+            flow_token: None,
         }
     }
 }

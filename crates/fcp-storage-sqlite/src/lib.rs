@@ -461,7 +461,7 @@ impl CredentialStore for SqliteStorage {
 impl RegistrationStore for SqliteStorage {
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path
+            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
              FROM registrations
              WHERE aor = ?
              ORDER BY q DESC",
@@ -491,8 +491,8 @@ impl RegistrationStore for SqliteStorage {
             .as_secs() as i64;
 
         sqlx::query(
-            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(aor, contact) DO UPDATE SET
                  expires_at = excluded.expires_at,
                  call_id = excluded.call_id,
@@ -500,7 +500,8 @@ impl RegistrationStore for SqliteStorage {
                  user_agent = excluded.user_agent,
                  q = excluded.q,
                  registered_at = excluded.registered_at,
-                 path = excluded.path",
+                 path = excluded.path,
+                 flow_token = excluded.flow_token",
         )
         .bind(&registration.aor)
         .bind(&registration.contact)
@@ -511,6 +512,7 @@ impl RegistrationStore for SqliteStorage {
         .bind(registration.q)
         .bind(registered_at)
         .bind(&registration.path)
+        .bind(&registration.flow_token)
         .execute(&self.pool)
         .await?;
 
@@ -937,6 +939,8 @@ fn row_to_registration(row: sqlx::sqlite::SqliteRow) -> Result<Registration> {
         q: row.get("q"),
         registered_at: UNIX_EPOCH + Duration::from_secs(row.get::<i64, _>("registered_at") as u64),
         path: row.try_get("path").ok(),
+        // Flow token for RFC 5626 - identifies the TLS/TCP connection for reuse
+        flow_token: row.try_get("flow_token").ok().flatten(),
     })
 }
 

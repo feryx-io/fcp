@@ -600,6 +600,12 @@ pub struct Registration {
     /// The registrar uses this to build route sets for requests sent to the UA.
     #[serde(default)]
     pub path: Option<String>,
+
+    /// Flow token for RFC 5626 Outbound support.
+    /// Identifies the TLS/TCP connection for reusing inbound connections
+    /// when routing requests to NAT'd clients.
+    #[serde(default)]
+    pub flow_token: Option<String>,
 }
 
 /// Storage backend for user credentials.

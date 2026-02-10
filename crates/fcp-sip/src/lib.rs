@@ -11,6 +11,7 @@
 pub mod adapters;
 pub mod auth;
 pub mod exports;
+pub mod flow;
 pub mod flow_handler;
 pub mod handler;
 pub mod listener;
@@ -37,6 +38,7 @@ pub use handler::{OutboundRoute, OutboundRouteProvider};
 pub mod prelude {
     pub use crate::adapters::*;
     pub use crate::exports::*;
+    pub use crate::flow::{FlowInfo, FlowRegistry, FlowToken};
     pub use crate::handler::SipMessageHandler;
     pub use crate::listener::{InboundMessageHandler, ListenerConfig, TransportListener};
     pub use crate::registrar::{CredentialStoreAdapter, FcpRegistrar, LocationStoreAdapter};

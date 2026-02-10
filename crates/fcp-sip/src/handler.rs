@@ -229,6 +229,15 @@ pub trait OutboundRouteProvider: Send + Sync {
 }
 use sip_transaction::ServerTransactionHandle;
 
+/// A target contact for B-leg INVITEs with optional flow token for TLS connection reuse.
+#[derive(Debug, Clone)]
+struct TargetContact {
+    /// The SIP URI to send the INVITE to
+    uri: String,
+    /// Optional flow token for RFC 5626 TLS connection reuse
+    flow_token: Option<String>,
+}
+
 /// Routes inbound SIP messages to the transaction manager.
 #[derive(Clone)]
 pub struct SipMessageHandler {
@@ -315,6 +324,10 @@ pub struct SipMessageHandler {
 
     /// Optional PBX handler for hunt groups, parking, pickup, intercom, CMC/FAC.
     pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
+
+    /// Flow registry for RFC 5626 TLS connection reuse.
+    /// Maps flow tokens to connection writers for NAT'd clients.
+    flow_registry: Arc<crate::flow::FlowRegistry>,
 }
 
 #[derive(Clone)]
@@ -613,6 +626,7 @@ impl SipMessageHandler {
             flow_handler,
             outbound_route_provider,
             pbx_handler,
+            flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
         };
 
         // Start session timer event loop
@@ -647,6 +661,11 @@ impl SipMessageHandler {
         &self,
     ) -> &Arc<dashmap::DashMap<sip_dialog::SubscriptionId, Instant>> {
         &self.subscription_created_at
+    }
+
+    /// Get a reference to the flow registry for RFC 5626 connection reuse.
+    pub fn flow_registry(&self) -> &Arc<crate::flow::FlowRegistry> {
+        &self.flow_registry
     }
 
     /// Extract DID (phone number) from a SIP URI.
@@ -701,6 +720,8 @@ impl SipMessageHandler {
         request: &sip_core::Request,
         handle: &ServerTransactionHandle,
         peer: SocketAddr,
+        transport: sip_transaction::TransportKind,
+        stream: Option<mpsc::Sender<Bytes>>,
     ) -> Result<()> {
         use sip_core::Method;
 
@@ -770,7 +791,9 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Register => {
-                let response = self.handle_register(request).await;
+                let response = self
+                    .handle_register_internal(request, transport, stream, peer)
+                    .await;
                 handle.send_final(response).await;
             }
             _ => {
@@ -2658,14 +2681,14 @@ impl SipMessageHandler {
             }
         };
 
-        // Parallel forking: Extract URIs from all contacts
-        let target_uris: Vec<String> = destination_contacts
+        // Parallel forking: Extract URIs and flow tokens from all contacts
+        let target_contacts: Vec<TargetContact> = destination_contacts
             .iter()
             .map(|contact| {
                 let contact_str = contact.contact();
                 // Extract URI from Contact header (strip angle brackets if present)
                 // Contact format: <sip:user@host> or sip:user@host
-                if let Some(start) = contact_str.find('<') {
+                let uri = if let Some(start) = contact_str.find('<') {
                     if let Some(end) = contact_str.find('>') {
                         contact_str[start + 1..end].to_string()
                     } else {
@@ -2678,6 +2701,10 @@ impl SipMessageHandler {
                         .next()
                         .unwrap_or(contact_str)
                         .to_string()
+                };
+                TargetContact {
+                    uri,
+                    flow_token: contact.flow_token().map(|s| s.to_string()),
                 }
             })
             .collect();
@@ -2685,12 +2712,12 @@ impl SipMessageHandler {
         // Deduplicate contacts by host:port to avoid sending multiple INVITEs to
         // the same physical device. Softphones like Zoiper register multiple
         // contacts with different rinstance params but the same host:port.
-        let mut target_uris = dedup_target_uris_by_hostport(target_uris);
+        let mut target_contacts = dedup_target_contacts_by_hostport(target_contacts);
 
         info!(
             call_id = %call_id,
-            target_count = target_uris.len(),
-            targets = ?target_uris,
+            target_count = target_contacts.len(),
+            targets = ?target_contacts.iter().map(|t| &t.uri).collect::<Vec<_>>(),
             "Parallel forking INVITE to all registered devices"
         );
 
@@ -2841,14 +2868,14 @@ impl SipMessageHandler {
 
         // Cap target list to configured max_parallel_legs
         let max_legs = self.b2bua_config.forking.max_parallel_legs;
-        if target_uris.len() > max_legs {
+        if target_contacts.len() > max_legs {
             info!(
                 call_id = %call_id,
-                total_targets = target_uris.len(),
+                total_targets = target_contacts.len(),
                 max_parallel_legs = max_legs,
                 "Capping parallel forking targets to configured maximum"
             );
-            target_uris.truncate(max_legs);
+            target_contacts.truncate(max_legs);
         }
 
         // Create cancel_notify BEFORE sending B-leg INVITEs so CANCEL handler can
@@ -2874,37 +2901,78 @@ impl SipMessageHandler {
             }
         }
 
-        // Create outbound INVITEs to all target URIs in PARALLEL
+        // Create outbound INVITEs to all target contacts in PARALLEL
         // This prevents TLS connection timeouts from blocking other B-legs
+        // For TLS contacts with flow tokens (RFC 5626), use the existing connection
         let mut invite_futures = Vec::new();
-        for target_uri in &target_uris {
+        for target_contact in &target_contacts {
             let uac_clone = Arc::clone(&uac);
-            let target_uri_clone = target_uri.clone();
+            let target_uri_clone = target_contact.uri.clone();
             let a_leg_sdp_clone = a_leg_sdp.clone();
             let call_id_clone = call_id.clone();
+            let flow_token_clone = target_contact.flow_token.clone();
+            let flow_registry_clone = Arc::clone(&self.flow_registry);
 
             let future = async move {
                 debug!(
                     call_id = %call_id_clone,
                     target = %target_uri_clone,
                     has_sdp = a_leg_sdp_clone.is_some(),
+                    has_flow_token = flow_token_clone.is_some(),
                     "Creating B-leg INVITE"
                 );
 
                 // Add 5-second timeout for each INVITE to prevent TLS hangs
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    uac_clone.invite(&target_uri_clone, a_leg_sdp_clone.as_deref()),
-                )
-                .await
-                {
+                let invite_result = if let Some(ref flow_token) = flow_token_clone {
+                    // RFC 5626: Use existing TLS connection via flow token
+                    if let Some(flow_info) = flow_registry_clone.lookup(flow_token) {
+                        info!(
+                            call_id = %call_id_clone,
+                            target = %target_uri_clone,
+                            flow_token = %flow_token,
+                            peer_addr = %flow_info.peer_addr,
+                            "Using RFC 5626 flow for TLS INVITE"
+                        );
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            uac_clone.invite_via_flow(
+                                &target_uri_clone,
+                                a_leg_sdp_clone.as_deref(),
+                                flow_info.stream,
+                                flow_info.peer_addr,
+                            ),
+                        )
+                        .await
+                    } else {
+                        warn!(
+                            call_id = %call_id_clone,
+                            flow_token = %flow_token,
+                            "Flow token not found or connection closed, falling back to normal INVITE"
+                        );
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            uac_clone.invite(&target_uri_clone, a_leg_sdp_clone.as_deref()),
+                        )
+                        .await
+                    }
+                } else {
+                    // Normal INVITE (UDP/TCP without flow)
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        uac_clone.invite(&target_uri_clone, a_leg_sdp_clone.as_deref()),
+                    )
+                    .await
+                };
+
+                match invite_result {
                     Ok(Ok(call)) => {
                         info!(
                             call_id = %call_id_clone,
                             target = %target_uri_clone,
+                            via_flow = flow_token_clone.is_some(),
                             "B-leg INVITE sent"
                         );
-                        Some((target_uri_clone, Arc::new(call)))
+                        Some((target_uri_clone, Arc::new(call), flow_token_clone))
                     }
                     Ok(Err(e)) => {
                         warn!(
@@ -2929,6 +2997,7 @@ impl SipMessageHandler {
         }
 
         // Wait for all INVITEs to complete (concurrently)
+        // Each result includes (target_uri, call_handle, flow_token) for RFC 5626 BYE support
         let results = futures::future::join_all(invite_futures).await;
         let b_leg_calls: Vec<_> = results.into_iter().flatten().collect();
 
@@ -3438,11 +3507,12 @@ impl SipMessageHandler {
     ///
     /// Sends INVITE to all target contacts simultaneously and races for the first 2xx response.
     /// When a 2xx arrives, CANCELs all other pending B-legs and connects winner to A-leg.
+    /// The flow_token (RFC 5626) is stored with the winning B-leg for later BYE via flow.
     async fn handle_parallel_forking(
         &self,
         request: sip_core::Request,
         a_leg_handle: Arc<ServerTransactionHandle>,
-        b_leg_calls: Vec<(String, Arc<crate::uac::OutboundCall>)>,
+        b_leg_calls: Vec<(String, Arc<crate::uac::OutboundCall>, Option<String>)>,
         call_id: fcp_b2bua_core::CallId,
         cancel_notify: Arc<tokio::sync::Notify>,
     ) -> Result<()> {
@@ -3462,7 +3532,7 @@ impl SipMessageHandler {
         let early_media_policy = self.b2bua_config.forking.early_media_policy;
         let dedup_provisionals = self.b2bua_config.forking.deduplicate_provisionals;
 
-        for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
+        for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
             let b_leg_handle_clone = Arc::clone(b_leg_handle);
             let target_clone = target.clone();
             let call_id_clone = call_id.clone();
@@ -3566,11 +3636,13 @@ impl SipMessageHandler {
         });
 
         // Create tasks to wait for FINAL responses from all B-legs (for racing)
+        // Each task returns (index, target, code, response, handle, flow_token) for the winning leg
         let mut tasks = Vec::new();
-        for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
+        for (i, (target, b_leg_handle, flow_token)) in b_leg_calls.iter().enumerate() {
             let b_leg_handle_clone = Arc::clone(b_leg_handle);
             let target_clone = target.clone();
             let call_id_clone = call_id.clone();
+            let flow_token_clone = flow_token.clone();
 
             let task = tokio::spawn(async move {
                 debug!(
@@ -3595,6 +3667,7 @@ impl SipMessageHandler {
                             code,
                             response,
                             Arc::clone(&b_leg_handle_clone),
+                            flow_token_clone,
                         ))
                     }
                     Err(e) => {
@@ -3617,6 +3690,7 @@ impl SipMessageHandler {
         let mut winning_target = None;
         let mut winning_response = None;
         let mut winning_handle = None;
+        let mut winning_flow_token: Option<String> = None;
         let mut cancelled_by_caller = false;
 
         debug!(call_id = %call_id, task_count = tasks.len(), "Starting race for first 2xx response");
@@ -3628,7 +3702,7 @@ impl SipMessageHandler {
                 tasks = remaining;
 
                 match result {
-                    Ok(Some((i, target, code, response, handle))) => {
+                    Ok(Some((i, target, code, response, handle, flow_token))) => {
                         debug!(
                             call_id = %call_id,
                             b_leg_index = i,
@@ -3642,10 +3716,11 @@ impl SipMessageHandler {
                                 call_id = %call_id,
                                 winner = %target,
                                 code = code,
+                                has_flow_token = flow_token.is_some(),
                                 "B-leg {} won the race with {}",
                                 i, code
                             );
-                            return Some((i, target, response, handle));
+                            return Some((i, target, response, handle, flow_token));
                         } else {
                             debug!(
                                 call_id = %call_id,
@@ -3684,11 +3759,12 @@ impl SipMessageHandler {
 
         tokio::select! {
             winner = &mut race_future => {
-                if let Some((i, target, response, handle)) = winner {
+                if let Some((i, target, response, handle, flow_token)) = winner {
                     winning_index = Some(i);
                     winning_target = Some(target);
                     winning_response = Some(response);
                     winning_handle = Some(handle);
+                    winning_flow_token = flow_token;
                 }
             }
             _ = cancel_notify.notified() => {
@@ -3715,7 +3791,7 @@ impl SipMessageHandler {
         );
 
         // CANCEL all non-winning B-legs
-        for (i, (target, b_leg_handle)) in b_leg_calls.iter().enumerate() {
+        for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
             if Some(i) != winning_index {
                 info!(
                     call_id = %call_id,
@@ -3745,10 +3821,12 @@ impl SipMessageHandler {
                 "Relaying winning B-leg response to A-leg"
             );
 
-            // Store the winning B-leg handle
+            // Store the winning B-leg handle and flow token (RFC 5626)
+            let winning_flow_token_clone = winning_flow_token.clone();
             let _ = self.call_manager.update_call(&call_id, |call| {
                 if let Some(b_leg) = &mut call.b_leg {
                     b_leg.outbound_handle = Some(Arc::clone(&handle));
+                    b_leg.flow_token = winning_flow_token_clone;
                 }
                 call.state = fcp_b2bua_core::CallState::Established;
             });
@@ -4274,6 +4352,7 @@ impl SipMessageHandler {
                         if let Some(b_leg_dialog) = &b_leg.dialog {
                             info!(
                                 call_id = %call.id,
+                                has_flow_token = b_leg.flow_token.is_some(),
                                 "BYE from A-leg, forwarding to B-leg"
                             );
 
@@ -4282,6 +4361,7 @@ impl SipMessageHandler {
                                 b_leg_dialog.clone(),
                                 call.id,
                                 false,
+                                b_leg.flow_token.clone(),
                             );
                         } else {
                             debug!(call_id = %call.id, "B-leg has no dialog, skipping BYE forward");
@@ -4302,6 +4382,7 @@ impl SipMessageHandler {
                             a_leg_dialog.clone(),
                             call.id,
                             true,
+                            None, // A-leg doesn't use flow tokens
                         );
                     } else {
                         debug!(call_id = %call.id, "A-leg has no dialog, skipping BYE forward");
@@ -5702,13 +5783,52 @@ impl SipMessageHandler {
     ///
     /// If a registrar is configured, delegates to the registrar for processing.
     /// Otherwise, returns 501 Not Implemented.
+    #[allow(dead_code)]
     async fn handle_register(&self, request: &sip_core::Request) -> sip_core::Response {
-        debug!("Handling REGISTER request");
+        // Default peer address for UDP (no flow needed)
+        let default_peer: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+        self.handle_register_internal(request, sip_transaction::TransportKind::Udp, None, default_peer)
+            .await
+    }
+
+    /// Handle a REGISTER request with flow token support (RFC 5626).
+    ///
+    /// For TLS/TCP connections with a stream, registers a flow token for
+    /// connection reuse when routing requests back to NAT'd clients.
+    async fn handle_register_internal(
+        &self,
+        request: &sip_core::Request,
+        transport: sip_transaction::TransportKind,
+        stream: Option<mpsc::Sender<Bytes>>,
+        peer_addr: std::net::SocketAddr,
+    ) -> sip_core::Response {
+        debug!(transport = ?transport, has_stream = stream.is_some(), peer = %peer_addr, "Handling REGISTER request");
 
         match &self.registrar {
             Some(registrar) => {
-                // Use registrar to handle the request
-                let response = registrar.handle_register(request).await;
+                // For TLS connections with a stream, register a flow token (RFC 5626)
+                let flow_token = if transport == sip_transaction::TransportKind::Tls {
+                    if let Some(ref stream_sender) = stream {
+                        let token = self.flow_registry.register(stream_sender.clone(), peer_addr);
+                        info!(
+                            flow_token = %token,
+                            aor = %sip_parse::header(request.headers(), "To")
+                                .map(|s| s.as_str())
+                                .unwrap_or(""),
+                            "Registered TLS flow token for RFC 5626"
+                        );
+                        Some(token)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Use registrar to handle the request with flow token
+                let response = registrar
+                    .handle_register_with_flow(request, flow_token.as_deref())
+                    .await;
 
                 // Log success/failure
                 if response.start_line().code() == 200 {
@@ -5716,10 +5836,15 @@ impl SipMessageHandler {
                         aor = %sip_parse::header(request.headers(), "To")
                             .map(|s| s.as_str())
                             .unwrap_or(""),
+                        flow_token = ?flow_token,
                         "REGISTER handled successfully"
                     );
                 } else if response.start_line().code() == 401 {
                     debug!("REGISTER requires authentication");
+                    // Remove flow token if auth failed (we'll create a new one on successful auth)
+                    if let Some(ref token) = flow_token {
+                        self.flow_registry.remove(token);
+                    }
                 }
 
                 response
@@ -5798,22 +5923,46 @@ impl SipMessageHandler {
     }
 
     /// Send BYE with a single retry/backoff and clean up dialog state on success.
+    /// If flow_token is provided (RFC 5626), uses the existing TLS connection for BYE.
     fn spawn_bye_with_retry(
         &self,
         uac: Arc<SipUserAgentClient>,
         dialog: sip_dialog::Dialog,
         call_id: fcp_b2bua_core::CallId,
         is_a_leg: bool,
+        flow_token: Option<String>,
     ) {
         let dialog_manager = Arc::clone(&self.dialog_manager);
         let call_manager = self.call_manager.clone();
         let stm = Arc::clone(&self.session_timer_manager);
         let subscription_index = Arc::clone(&self.subscription_index);
+        let flow_registry = Arc::clone(&self.flow_registry);
         tokio::spawn(async move {
             let mut attempts = 0;
             loop {
                 attempts += 1;
-                match uac.bye(&dialog).await {
+                // Try to use flow token for RFC 5626 TLS connection reuse
+                let bye_result = if let Some(ref token) = flow_token {
+                    if let Some(flow_info) = flow_registry.lookup(token) {
+                        tracing::info!(
+                            call_id = %call_id,
+                            flow_token = %token,
+                            peer_addr = %flow_info.peer_addr,
+                            "Sending BYE via RFC 5626 flow (TLS connection reuse)"
+                        );
+                        uac.bye_via_flow(&dialog, flow_info.stream, flow_info.peer_addr).await
+                    } else {
+                        tracing::warn!(
+                            call_id = %call_id,
+                            flow_token = %token,
+                            "Flow token not found or connection closed, falling back to normal BYE"
+                        );
+                        uac.bye(&dialog).await
+                    }
+                } else {
+                    uac.bye(&dialog).await
+                };
+                match bye_result {
                     Ok(_) => {
                         debug!(call_id = %call_id, attempt = attempts, "Successfully sent BYE to peer leg");
                         stm.stop_timer(dialog.id());
@@ -6829,6 +6978,7 @@ impl SipMessageHandler {
                         b_dialog.clone(),
                         active_call_id,
                         false,
+                        b_leg.flow_token.clone(),
                     );
                 }
             }
@@ -7107,6 +7257,7 @@ impl SipMessageHandler {
                         a_dialog.clone(),
                         *call_id,
                         true,
+                        None, // A-leg doesn't use flow tokens
                     );
                 }
             }
@@ -7368,12 +7519,13 @@ impl SipMessageHandler {
                 );
 
                 // Build outbound calls for each contact
+                // Note: Hunt group calls don't use flow tokens (RFC 5626) currently
                 let mut b_leg_calls = Vec::new();
                 for (member, binding) in &contacts {
                     let target_uri = binding.contact().to_string();
                     match self.create_outbound_call(request, &target_uri, &uac).await {
                         Ok(outbound_call) => {
-                            b_leg_calls.push((member.clone(), outbound_call));
+                            b_leg_calls.push((member.clone(), outbound_call, binding.flow_token().map(|s| s.to_string())));
                         }
                         Err(e) => {
                             warn!(
@@ -7424,11 +7576,13 @@ impl SipMessageHandler {
                                 call.cancel_notify = Some(Arc::clone(&cancel_notify));
                             });
 
+                            // Include flow token for RFC 5626 BYE support
+                            let flow_token = binding.flow_token().map(|s| s.to_string());
                             return self
                                 .handle_parallel_forking(
                                     request.clone(),
                                     Arc::new(a_leg_handle.clone()),
-                                    vec![(member.clone(), outbound_call)],
+                                    vec![(member.clone(), outbound_call, flow_token)],
                                     call_id,
                                     cancel_notify,
                                 )
@@ -7611,6 +7765,7 @@ impl SipMessageHandler {
                     dialog.clone(),
                     *call_id,
                     true,
+                    None, // A-leg doesn't use flow tokens
                 );
             }
             if let Some(b_leg) = &call.b_leg {
@@ -7620,6 +7775,7 @@ impl SipMessageHandler {
                         dialog.clone(),
                         *call_id,
                         false,
+                        b_leg.flow_token.clone(),
                     );
                 }
             }
@@ -7901,6 +8057,9 @@ impl InboundMessageHandler for SipMessageHandler {
                 return Ok(());
             }
 
+            // Clone stream for REGISTER flow token support (RFC 5626)
+            let stream_for_register = stream.clone();
+
             // Create transport context
             let ctx = sip_transaction::TransportContext::new(transport, peer, stream);
 
@@ -7911,7 +8070,10 @@ impl InboundMessageHandler for SipMessageHandler {
                 .await;
 
             // Handle request and send response(s)
-            if let Err(e) = self.handle_request(&req, &handle, peer).await {
+            if let Err(e) = self
+                .handle_request(&req, &handle, peer, transport, stream_for_register)
+                .await
+            {
                 error!("Failed to handle request: {}", e);
                 // Send error response
                 let response = self.create_simple_response(&req, 500, "Internal Server Error");
@@ -8150,6 +8312,22 @@ fn dedup_target_uris_by_hostport(uris: Vec<String>) -> Vec<String> {
         let key = extract_hostport_from_uri(&uri);
         if seen.insert(key) {
             result.push(uri);
+        }
+    }
+    result
+}
+
+/// Deduplicate target contacts by host:port.
+///
+/// Same as `dedup_target_uris_by_hostport` but works with `TargetContact`
+/// to preserve flow token information.
+fn dedup_target_contacts_by_hostport(contacts: Vec<TargetContact>) -> Vec<TargetContact> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for contact in contacts {
+        let key = extract_hostport_from_uri(&contact.uri);
+        if seen.insert(key) {
+            result.push(contact);
         }
     }
     result
