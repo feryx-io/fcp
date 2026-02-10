@@ -23,6 +23,7 @@ pub enum NodeType {
     /// SIP call manager node
     CallManager,
     /// Session manager (trunk termination)
+    #[allow(dead_code)]
     SessionManager,
     /// Unknown/generic node
     Unknown,
@@ -73,6 +74,7 @@ impl NodeRegistry {
     }
 
     /// Create a new node registry with custom thresholds.
+    #[allow(dead_code)]
     pub fn with_thresholds(degraded_threshold: Duration, offline_threshold: Duration) -> Self {
         Self {
             nodes: DashMap::new(),
@@ -107,6 +109,7 @@ impl NodeRegistry {
     }
 
     /// Update the active call count for a node.
+    #[allow(dead_code)]
     pub fn update_call_count(&self, node_id: &str, count: usize) {
         if let Some(mut info) = self.nodes.get_mut(node_id) {
             info.active_calls = count;
@@ -142,6 +145,7 @@ impl NodeRegistry {
     }
 
     /// Get a specific node by ID.
+    #[allow(dead_code)]
     pub fn get_node(&self, node_id: &str) -> Option<NodeInfo> {
         self.nodes.get(node_id).map(|entry| entry.value().clone())
     }
@@ -196,11 +200,13 @@ impl NodeRegistry {
     }
 
     /// Get the total number of registered nodes.
+    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
     /// Get the number of healthy nodes.
+    #[allow(dead_code)]
     pub fn healthy_node_count(&self) -> usize {
         self.nodes
             .iter()

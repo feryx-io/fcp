@@ -152,6 +152,7 @@ pub fn should_anchor_media(ctx: &MediaDecisionContext) -> MediaAnchoringDecision
 }
 
 /// Find a common codec between two codec lists
+#[allow(dead_code)]
 fn find_common_codec<'a>(a_leg: &'a [String], b_leg: &'a [String]) -> Option<&'a String> {
     // Normalize codec names for comparison
     for a_codec in a_leg {

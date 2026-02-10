@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct JobId(Uuid);
 
 impl JobId {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
@@ -95,6 +96,7 @@ fn default_max_retries() -> u32 {
 
 impl Job {
     /// Create a new job
+    #[allow(dead_code)]
     pub fn new(job_type: JobType, payload: serde_json::Value) -> Self {
         let now = Utc::now();
         Self {
@@ -114,12 +116,14 @@ impl Job {
     }
 
     /// Create a new job with priority
+    #[allow(dead_code)]
     pub fn with_priority(mut self, priority: JobPriority) -> Self {
         self.priority = priority;
         self
     }
 
     /// Create a new job with max retries
+    #[allow(dead_code)]
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
         self
@@ -159,6 +163,7 @@ impl Job {
     }
 
     /// Check if job is ready for retry
+    #[allow(dead_code)]
     pub fn is_ready_for_retry(&self) -> bool {
         if let Some(retry_at) = self.retry_at {
             Utc::now() >= retry_at

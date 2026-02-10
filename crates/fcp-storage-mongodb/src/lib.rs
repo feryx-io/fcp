@@ -1190,6 +1190,7 @@ fn document_to_registration(doc: Document) -> Result<Registration> {
         q: doc.get_f64("q").ok().map(|q| q as f32),
         registered_at,
         path: doc.get_str("path").ok().map(String::from),
+        flow_token: doc.get_str("flow_token").ok().map(String::from),
     })
 }
 

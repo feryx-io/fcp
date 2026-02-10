@@ -48,6 +48,7 @@ impl Theme {
     }
 
     /// Get style for bold text
+    #[allow(dead_code)]
     pub fn bold(&self) -> Style {
         Style::default().add_modifier(Modifier::BOLD)
     }

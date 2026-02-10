@@ -15,6 +15,7 @@ pub struct ApiClient {
     token: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ApiClient {
     /// Create a new API client
     pub fn new(base_url: String, token: Option<String>) -> Result<Self> {

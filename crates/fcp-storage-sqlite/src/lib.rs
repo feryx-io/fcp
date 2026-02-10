@@ -3225,6 +3225,7 @@ mod tests {
             q: Some(1.0),
             registered_at: SystemTime::now(),
             path: None,
+            flow_token: None,
         };
 
         storage.put_registration(reg.clone()).await.unwrap();
@@ -3248,6 +3249,7 @@ mod tests {
             q: Some(0.5),
             registered_at: SystemTime::now(),
             path: None,
+            flow_token: None,
         };
 
         storage.put_registration(reg2).await.unwrap();
@@ -3298,6 +3300,7 @@ mod tests {
             q: Some(1.0),
             registered_at: SystemTime::now() - Duration::from_secs(3660),
             path: None,
+            flow_token: None,
         };
 
         storage.put_registration(reg).await.unwrap();

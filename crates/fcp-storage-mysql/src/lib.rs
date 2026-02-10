@@ -926,6 +926,7 @@ fn row_to_registration(row: sqlx::mysql::MySqlRow) -> Result<Registration> {
         q: row.get("q"),
         registered_at: datetime_to_system_time(registered_at),
         path: row.try_get("path").ok(),
+        flow_token: row.try_get("flow_token").ok().flatten(),
     })
 }
 

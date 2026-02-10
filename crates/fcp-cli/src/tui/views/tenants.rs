@@ -67,6 +67,7 @@ impl TenantField {
         }
     }
 
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             TenantField::Name => "Name",

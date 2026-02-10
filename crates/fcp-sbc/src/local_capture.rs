@@ -263,6 +263,7 @@ impl LocalCaptureManager {
     }
 
     /// Accessor for the recording store (used for wiring into HealthState).
+    #[allow(dead_code)]
     pub fn store(&self) -> &Arc<RecordingStore> {
         &self.store
     }

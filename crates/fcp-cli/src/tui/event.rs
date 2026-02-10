@@ -31,6 +31,7 @@ pub enum Event {
     /// Tick event for periodic updates
     Tick,
     /// Terminal was resized
+    #[allow(dead_code)]
     Resize(u16, u16),
 }
 
@@ -187,6 +188,7 @@ impl Event {
     }
 
     /// Check if this is an enter event
+    #[allow(dead_code)]
     pub fn is_enter(&self) -> bool {
         matches!(
             self,

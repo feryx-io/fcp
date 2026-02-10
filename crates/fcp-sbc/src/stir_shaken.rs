@@ -24,6 +24,7 @@ pub enum VerificationResult {
     /// Verification succeeded with the given attestation level.
     Verified { attestation: AttestationLevel },
     /// No Identity header was present.
+    #[allow(dead_code)]
     NoIdentity,
     /// Verification failed.
     Failed(StirError),

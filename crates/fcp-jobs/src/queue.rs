@@ -9,7 +9,7 @@ use tracing::{debug, error, info, warn};
 /// Job queue backed by Redis
 #[derive(Clone)]
 pub struct JobQueue {
-    client: Client,
+    _client: Client,
     connection_manager: ConnectionManager,
     queue_prefix: String,
 }
@@ -26,13 +26,14 @@ impl JobQueue {
         info!(redis_url = %redis_url, "Connected to Redis");
 
         Ok(Self {
-            client,
+            _client: client,
             connection_manager,
             queue_prefix,
         })
     }
 
     /// Enqueue a job
+    #[allow(dead_code)]
     pub async fn enqueue(&self, job: Job) -> Result<()> {
         let job_id = job.id;
         let priority = job.priority;
@@ -237,6 +238,7 @@ impl JobQueue {
     }
 
     /// Cleanup old completed and failed jobs
+    #[allow(dead_code)]
     pub async fn cleanup_old_jobs(&self, retention_days: i64) -> Result<usize> {
         let mut conn = self.connection_manager.clone();
         let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days);

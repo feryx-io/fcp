@@ -1954,6 +1954,8 @@ mod tests {
             user_agent: Some("FCP Test".to_string()),
             q: Some(1.0),
             registered_at: SystemTime::now(),
+            path: None,
+            flow_token: None,
         };
 
         storage.put_registration(reg.clone()).await.unwrap();

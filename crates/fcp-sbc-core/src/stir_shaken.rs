@@ -249,6 +249,7 @@ pub struct ParsedIdentity {
 /// Errors that can occur during STIR/SHAKEN verification or signing.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StirError {
+    #[allow(dead_code)]
     #[error("no Identity header present")]
     NoIdentityHeader,
 

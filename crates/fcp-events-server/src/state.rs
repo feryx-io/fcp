@@ -300,11 +300,13 @@ impl CallStateStore {
     }
 
     /// Get the total number of calls (including ended).
+    #[allow(dead_code)]
     pub fn total_count(&self) -> usize {
         self.calls.len()
     }
 
     /// Get the number of active calls.
+    #[allow(dead_code)]
     pub fn active_count(&self) -> usize {
         self.calls
             .iter()
@@ -500,6 +502,7 @@ impl RegistrationStateStore {
     }
 
     /// Get registrations for a specific AOR (all contacts).
+    #[allow(dead_code)]
     pub fn get_registrations_by_aor(&self, aor: &str) -> Vec<AggregatedRegistration> {
         self.registrations
             .iter()
@@ -509,6 +512,7 @@ impl RegistrationStateStore {
     }
 
     /// Get the total count of active registrations.
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.registrations.len()
     }

@@ -43,7 +43,7 @@ pub struct TrunkQualitySnapshot {
 /// Per-trunk quality tracker with sliding window metrics.
 pub struct TrunkQualityTracker {
     state: DashMap<String, TrunkQualityState>,
-    window_secs: u64,
+    _window_secs: u64,
 }
 
 impl TrunkQualityTracker {
@@ -61,7 +61,7 @@ impl TrunkQualityTracker {
                 },
             );
         }
-        Self { state, window_secs }
+        Self { state, _window_secs: window_secs }
     }
 
     /// Record that a call attempt was initiated on this trunk.

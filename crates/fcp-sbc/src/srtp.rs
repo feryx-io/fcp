@@ -5,6 +5,7 @@ use fcp_media::sdp::parse_sdes_crypto;
 
 /// Result of SRTP policy enforcement
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum SrtpPolicyResult {
     /// Allow the call (SRTP not required or crypto offered)
     Allow {
@@ -19,6 +20,7 @@ pub enum SrtpPolicyResult {
 }
 
 /// Enforce SRTP policy for an incoming SDP based on trunk configuration.
+#[allow(dead_code)]
 pub fn enforce_srtp_policy(
     trunk_srtp: &TrunkSrtpConfig,
     sdp_body: &str,

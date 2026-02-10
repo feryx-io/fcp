@@ -230,6 +230,7 @@ impl ConnectionManager {
     }
 
     /// Get connection count for tenant
+    #[allow(dead_code)]
     pub fn tenant_connection_count(&self, tenant_id: &TenantId) -> usize {
         self.tenant_connections
             .get(tenant_id)

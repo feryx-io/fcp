@@ -200,6 +200,7 @@ impl AdmissionController {
     }
 
     /// Current CPS for a specific trunk (calls in the last second).
+    #[allow(dead_code)]
     pub fn trunk_cps(&self, trunk_name: &str) -> u64 {
         let windows = self.trunk_cps_windows.read().unwrap();
         let window = match windows.get(trunk_name) {

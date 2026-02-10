@@ -17,6 +17,7 @@ use fcp_core::{DeploymentMode, Permission, TenantId, UserRole};
 
 /// Current user information for permission checks
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CurrentUser {
     pub username: String,
     pub role: UserRole,
@@ -31,6 +32,7 @@ impl CurrentUser {
     }
 
     /// Check if user can access a tenant
+    #[allow(dead_code)]
     pub fn can_access_tenant(&self, tenant_id: &TenantId) -> bool {
         match self.role {
             UserRole::SuperAdmin => true,
@@ -39,6 +41,7 @@ impl CurrentUser {
     }
 
     /// Check if user can access a department
+    #[allow(dead_code)]
     pub fn can_access_department(&self, dept_id: &str) -> bool {
         match self.role {
             UserRole::SuperAdmin | UserRole::TelecomAdmin | UserRole::UserAdmin => true,
@@ -94,6 +97,7 @@ impl Tab {
     }
 
     /// Get next tab
+    #[allow(dead_code)]
     pub fn next(&self) -> Tab {
         let tabs = Self::all();
         let current_idx = tabs.iter().position(|t| t == self).unwrap();
@@ -101,6 +105,7 @@ impl Tab {
     }
 
     /// Get previous tab
+    #[allow(dead_code)]
     pub fn prev(&self) -> Tab {
         let tabs = Self::all();
         let current_idx = tabs.iter().position(|t| t == self).unwrap();

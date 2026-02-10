@@ -100,7 +100,7 @@ impl FlowEngine {
                 url,
                 loop_count,
                 next,
-                on_error,
+                on_error: _,
             } => {
                 let interpolated_url = self.interpolate_variables(url, context)?;
                 info!(
@@ -427,9 +427,9 @@ impl FlowEngine {
             NodeType::Fork {
                 destinations,
                 strategy,
-                timeout,
+                timeout: _,
                 next,
-                on_error,
+                on_error: _,
             } => {
                 info!(
                     call_id = %context.call_id,

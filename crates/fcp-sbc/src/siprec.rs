@@ -23,7 +23,7 @@ struct PendingCallInfo {
 
 /// Active recording session.
 struct RecordingSession {
-    recording_id: String,
+    _recording_id: String,
     _call_id: CallId,
     sip_call_id: String,
     server_uri: String,
@@ -228,7 +228,7 @@ impl SiprecRecorder {
                 self.sessions.insert(
                     call_key,
                     RecordingSession {
-                        recording_id,
+                        _recording_id: recording_id,
                         _call_id: call_id.clone(),
                         sip_call_id,
                         server_uri: server.uri.clone(),
@@ -432,11 +432,13 @@ pub(crate) fn build_multipart_body(boundary: &str, sdp: &str, metadata: &str) ->
 
 /// Check whether a SIPREC config would produce a recorder (without
 /// needing a UAC). Used for testing policy/server selection logic.
+#[allow(dead_code)]
 pub(crate) fn would_create_recorder(config: &SiprecConfig) -> bool {
     config.policy != RecordingPolicy::None && config.servers.iter().any(|s| s.enabled)
 }
 
 /// Select recording server from config (standalone version for testing).
+#[allow(dead_code)]
 pub(crate) fn select_server_from_config(config: &SiprecConfig) -> Option<&RecordingServer> {
     config
         .servers

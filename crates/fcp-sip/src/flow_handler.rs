@@ -966,7 +966,7 @@ impl FlowCallHandler {
         mailbox: String,
         is_busy: bool,
         max_duration: u32,
-        play_beep: bool,
+        _play_beep: bool,
         next_on_success: String,
         next_on_error: Option<String>,
     ) -> Result<()> {

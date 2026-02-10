@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+#[allow(dead_code)]
 pub fn print_table<T: Serialize>(data: &T) {
     // For generic table output, use JSON for now
     // Each command handler should implement custom table formatting

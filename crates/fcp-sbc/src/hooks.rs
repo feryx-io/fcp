@@ -14,7 +14,6 @@ use crate::local_capture::LocalCaptureManager;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
 use dashmap::DashMap;
-use fcp_core::CallId;
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_quality::TrunkQualityTracker;
 use anyhow::Result;

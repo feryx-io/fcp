@@ -949,6 +949,7 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
         q: row.get("q"),
         registered_at,
         path: row.try_get("path").ok(),
+        flow_token: row.try_get("flow_token").ok().flatten(),
     })
 }
 

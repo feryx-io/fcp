@@ -8305,6 +8305,7 @@ fn is_e164_number(uri: &str) -> bool {
 ///
 /// Keeps the first URI encountered for each host:port (which is typically the
 /// one with the highest q-value since registrations are sorted by priority).
+#[allow(dead_code)]
 fn dedup_target_uris_by_hostport(uris: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();

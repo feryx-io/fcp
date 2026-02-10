@@ -35,6 +35,7 @@ impl WorkerPool {
     }
 
     /// Set storage backend for CDR processing
+    #[allow(dead_code)]
     pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
         self.storage = Some(storage);
         self

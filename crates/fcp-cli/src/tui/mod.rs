@@ -119,6 +119,7 @@ fn render_content(f: &mut ratatui::Frame, app: &mut App, area: ratatui::layout::
 }
 
 /// Render a placeholder for views not yet implemented
+#[allow(dead_code)]
 fn render_placeholder(f: &mut ratatui::Frame, app: &App, area: ratatui::layout::Rect, title: &str) {
     use ratatui::{
         text::{Line, Span},

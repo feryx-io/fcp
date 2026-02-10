@@ -408,6 +408,7 @@ pub struct AggregatedCallsResponse {
 
 /// Events server statistics response
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct EventsStatsResponse {
     pub calls: CallStatsResponse,
     pub nodes: NodesStatsResponse,
@@ -415,6 +416,7 @@ pub struct EventsStatsResponse {
 
 /// Call statistics from events server
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct CallStatsResponse {
     pub total: usize,
     pub initiated: usize,
@@ -426,6 +428,7 @@ pub struct CallStatsResponse {
 
 /// Node statistics from events server
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct NodesStatsResponse {
     pub total: usize,
     pub healthy: usize,
@@ -435,6 +438,7 @@ pub struct NodesStatsResponse {
 
 /// Node information from events server
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct NodeInfoResponse {
     pub node_id: String,
     pub node_type: String,
@@ -453,6 +457,7 @@ pub struct HangupResponse {
 
 /// Recording response
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub struct RecordingResponse {
     pub call_id: String,
     pub message: String,
@@ -460,6 +465,7 @@ pub struct RecordingResponse {
 
 /// Start recording request
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 pub struct StartRecordingRequest {
     pub path: String,
 }

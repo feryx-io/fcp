@@ -327,6 +327,7 @@ async fn ingest_batch_handler(
 }
 
 /// Query parameters for listing calls
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct ListCallsQuery {
     /// Filter by node ID

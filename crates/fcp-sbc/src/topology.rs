@@ -10,6 +10,7 @@ use fcp_b2bua_core::topology::{TopologyHidingConfig, TopologyHidingMode};
 ///
 /// Returns `true` if topology hiding is active and will need an external
 /// domain for header rewriting.
+#[allow(dead_code)]
 pub fn requires_external_domain(config: &TopologyHidingConfig) -> bool {
     config.mode != TopologyHidingMode::None
         && (config.hide_via || config.hide_record_route || config.hide_contact)

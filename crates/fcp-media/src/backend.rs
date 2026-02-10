@@ -6,7 +6,6 @@ use crate::{adapters, Error, MediaSession, MediaSessionConfig, Result};
 use async_trait::async_trait;
 use fcp_core::{CallId, DialogId};
 use serde::Serialize;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 /// Information about an active RTP session (for REST API)
@@ -253,9 +252,9 @@ pub mod embedded {
         /// Forge CallId (converted from FCP CallId)
         forge_call_id: forge_core::CallId,
         /// Participant A ID
-        participant_a: ParticipantId,
+        _participant_a: ParticipantId,
         /// Participant B ID
-        participant_b: ParticipantId,
+        _participant_b: ParticipantId,
         /// FCP dialog ID
         dialog_id: fcp_core::DialogId,
         /// Cached FCP MediaSession wrapper (preserves SDP state across calls)
@@ -479,8 +478,8 @@ pub mod embedded {
             let session_info = SessionInfo {
                 forge_session: forge_session.clone(),
                 forge_call_id: forge_call_id.clone(),
-                participant_a: participant_a.clone(),
-                participant_b: participant_b.clone(),
+                _participant_a: participant_a.clone(),
+                _participant_b: participant_b.clone(),
                 dialog_id,
                 fcp_session: fcp_session.clone(),
             };
