@@ -978,6 +978,7 @@ impl FcpRegistrar {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
     use fcp_core::FileBackedStorage;
@@ -995,23 +996,23 @@ mod tests {
         headers.push(
             SmolStr::new("Via"),
             SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"),
-        );
+        ).unwrap();
         headers.push(
             SmolStr::new("From"),
             SmolStr::new("<sip:alice@example.com>;tag=abc123"),
-        );
-        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
+        ).unwrap();
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>")).unwrap();
         headers.push(
             SmolStr::new("Call-ID"),
             SmolStr::new("test-call-id@example.com"),
-        );
-        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        ).unwrap();
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER")).unwrap();
         headers.push(
             SmolStr::new("Contact"),
             SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"),
-        );
-        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        ).unwrap();
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600")).unwrap();
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0")).unwrap();
 
         let request = Request::new(
             sip_core::RequestLine::new(

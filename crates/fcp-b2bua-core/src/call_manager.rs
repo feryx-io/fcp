@@ -785,14 +785,15 @@ pub struct CallStats {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use, unused_imports)]
 mod tests {
     use super::*;
-    use crate::call::{Call, CallDirection, CallLeg};
+    use crate::call::Call;
     use std::net::SocketAddr;
 
     fn create_test_call() -> Call {
         use bytes::Bytes;
-        use sip_core::{Headers, Method, RequestLine, SipVersion};
+        use sip_core::{Headers, Method, RequestLine};
         use smol_str::SmolStr;
 
         let peer: SocketAddr = "127.0.0.1:5060".parse().unwrap();
@@ -801,12 +802,12 @@ mod tests {
         headers.push(
             SmolStr::new("From"),
             SmolStr::new("Alice <sip:alice@example.com>"),
-        );
+        ).unwrap();
         headers.push(
             SmolStr::new("To"),
             SmolStr::new("Bob <sip:bob@example.com>"),
-        );
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
+        ).unwrap();
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id")).unwrap();
 
         let request = sip_core::Request::new(
             RequestLine::new(

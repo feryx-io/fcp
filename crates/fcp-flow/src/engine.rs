@@ -427,19 +427,33 @@ impl FlowEngine {
             NodeType::Fork {
                 destinations,
                 strategy,
-                timeout: _,
+                timeout,
                 next,
-                on_error: _,
+                on_error,
             } => {
                 info!(
                     call_id = %context.call_id,
                     destinations = ?destinations,
                     strategy = ?strategy,
+                    timeout = timeout,
                     "Forking to multiple destinations"
                 );
 
-                // In real implementation, this would dial multiple destinations
-                Ok(FlowExecutionResult::Continue(next.clone()))
+                // Store fork configuration in context
+                context.set_variable(
+                    "__fork_destinations".to_string(),
+                    serde_json::to_string(destinations).unwrap_or_default(),
+                );
+                context.set_variable("__fork_strategy".to_string(), format!("{:?}", strategy));
+                context.set_variable("__fork_timeout".to_string(), timeout.to_string());
+
+                Ok(FlowExecutionResult::WaitingForFork {
+                    destinations: destinations.clone(),
+                    strategy: *strategy,
+                    timeout_secs: *timeout,
+                    next: next.clone(),
+                    on_error: on_error.clone(),
+                })
             }
 
             NodeType::StartRecording {
@@ -453,14 +467,18 @@ impl FlowEngine {
                     "Starting recording"
                 );
 
-                // In real implementation, this would start media recording
-                context.set_variable(variable.clone(), format!("recording://placeholder"));
-                Ok(FlowExecutionResult::Continue(next.clone()))
+                Ok(FlowExecutionResult::WaitingForRecording {
+                    format: *format,
+                    variable: variable.clone(),
+                    next: next.clone(),
+                })
             }
 
             NodeType::StopRecording { next } => {
                 info!(call_id = %context.call_id, "Stopping recording");
-                Ok(FlowExecutionResult::Continue(next.clone()))
+                Ok(FlowExecutionResult::StoppingRecording {
+                    next: next.clone(),
+                })
             }
 
             NodeType::Pause { duration, next } => {
@@ -582,6 +600,25 @@ impl FlowEngine {
                     call_id = %context.call_id,
                     mailbox = %mailbox,
                     "Flow execution paused, waiting for voicemail recording"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForFork { destinations, .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    num_destinations = destinations.len(),
+                    "Flow execution paused, waiting for parallel fork"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForRecording { .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    "Flow execution paused, starting recording"
+                );
+            }
+            Ok(FlowExecutionResult::StoppingRecording { .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    "Flow execution paused, stopping recording"
                 );
             }
             Err(e) => {
@@ -833,6 +870,27 @@ pub enum FlowExecutionResult {
         play_beep: bool,
         next_on_success: String,
         next_on_error: Option<String>,
+    },
+
+    /// Waiting for fork (parallel dial) to complete
+    WaitingForFork {
+        destinations: Vec<String>,
+        strategy: crate::schema::ForkStrategy,
+        timeout_secs: u32,
+        next: String,
+        on_error: Option<String>,
+    },
+
+    /// Waiting for recording to start
+    WaitingForRecording {
+        format: crate::schema::RecordingFormat,
+        variable: String,
+        next: String,
+    },
+
+    /// Recording stop requested
+    StoppingRecording {
+        next: String,
     },
 }
 

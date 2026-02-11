@@ -9020,12 +9020,12 @@ fn generate_unhold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> St
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
     use crate::registrar::FcpRegistrar;
     use bytes::Bytes as StdBytes;
     use fcp_core::{FileBackedStorage, RegistrationStore};
-    use sip_core::SipVersion;
     use sip_core::{Headers, Method, RequestLine, SipUri};
     use smol_str::SmolStr;
     use std::sync::Arc;
@@ -9137,15 +9137,15 @@ mod tests {
         headers.push(
             SmolStr::new("Via"),
             SmolStr::new("SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123"),
-        );
+        ).unwrap();
         headers.push(
             SmolStr::new("From"),
             SmolStr::new("<sip:alice@example.com>;tag=abc123"),
-        );
-        headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>"));
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
-        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 INVITE"));
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        ).unwrap();
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:bob@example.com>")).unwrap();
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id")).unwrap();
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 INVITE")).unwrap();
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0")).unwrap();
 
         let request = sip_core::Request::new(
             RequestLine::new(Method::Invite, SipUri::parse("sip:example.com").unwrap()),
@@ -9203,18 +9203,18 @@ mod tests {
         headers.push(
             SmolStr::new("Via"),
             SmolStr::new("SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKxyz"),
-        );
+        ).unwrap();
         headers.push(
             SmolStr::new("From"),
             SmolStr::new("<sip:alice@example.com>;tag=abc123"),
-        );
+        ).unwrap();
         headers.push(
             SmolStr::new("To"),
             SmolStr::new("<sip:bob@example.com>;tag=bbb"),
-        );
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id-2"));
-        headers.push(SmolStr::new("CSeq"), SmolStr::new("2 INVITE"));
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        ).unwrap();
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id-2")).unwrap();
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("2 INVITE")).unwrap();
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0")).unwrap();
 
         let request = sip_core::Request::new(
             RequestLine::new(Method::Invite, SipUri::parse("sip:example.com").unwrap()),
@@ -9373,20 +9373,20 @@ mod tests {
         headers.push(
             SmolStr::new("Via"),
             SmolStr::new("SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK123"),
-        );
+        ).unwrap();
         headers.push(
             SmolStr::new("From"),
             SmolStr::new("<sip:alice@example.com>;tag=abc123"),
-        );
-        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"));
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"));
-        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
+        ).unwrap();
+        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>")).unwrap();
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id")).unwrap();
+        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER")).unwrap();
         headers.push(
             SmolStr::new("Contact"),
             SmolStr::new("<sip:alice@127.0.0.1:5060>;expires=3600"),
-        );
-        headers.push(SmolStr::new("Expires"), SmolStr::new("3600"));
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
+        ).unwrap();
+        headers.push(SmolStr::new("Expires"), SmolStr::new("3600")).unwrap();
+        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0")).unwrap();
 
         let request = sip_core::Request::new(
             RequestLine::new(Method::Register, SipUri::parse("sip:example.com").unwrap()),

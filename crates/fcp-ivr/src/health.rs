@@ -42,6 +42,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<IvrState>) -> any
 }
 
 /// Merge the IVR health router with another router (e.g. fcp-api-core).
+#[allow(dead_code)]
 pub fn merge_with_api(api_router: Router<Arc<IvrState>>) -> Router<Arc<IvrState>> {
     ivr_router().merge(api_router)
 }

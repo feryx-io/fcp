@@ -15,6 +15,7 @@ use std::collections::HashSet;
 // Helper Functions
 // ============================================================================
 
+#[allow(dead_code)]
 fn create_basic_user(id: &str) -> User {
     User {
         id: id.to_string(),
@@ -27,6 +28,7 @@ fn create_basic_user(id: &str) -> User {
     }
 }
 
+#[allow(dead_code)]
 fn create_basic_endpoint(uri: &str) -> Endpoint {
     Endpoint {
         uri: uri.to_string(),

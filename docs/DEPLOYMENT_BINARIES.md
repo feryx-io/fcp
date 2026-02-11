@@ -45,25 +45,21 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
           │                     │               - NAT/Topology hiding
           └──────────┬──────────┘
                      │
-          ┌──────────▼────────────┐
-          │  fcp-session-manager  │             Internal Network
-          │   (Call Routing)      │             - Redis for state
-          └──────────┬────────────┘             - Event bus pub/sub
-                     │
        ┌─────────────┼─────────────┐
        │             │             │
-  ┌────▼────┐   ┌───▼───┐    ┌────▼────┐
-  │fcp-pbx  │   │fcp-pbx│    │fcp-     │        Call Processing
-  │  Node 1 │   │Node 2 │    │registrar│        - Full DB access
-  └────┬────┘   └───┬───┘    └────┬────┘        - Feature-rich
-       │            │             │
-       ├────────────┴─────────────┤
-       │                          │
-  ┌────▼────────┐         ┌──────▼────────┐
-  │ fcp-        │         │ fcp-          │     Applications
-  │ voicemail   │         │ conference    │     - Specialized
-  │ (2 nodes)   │         │               │     - Independently scalable
-  └─────────────┘         └───────────────┘
+  ┌────▼─────────┐ ┌▼──────────┐ ┌▼──────────┐
+  │fcp-call-mgr  │ │fcp-call-  │ │fcp-       │   Call Processing
+  │ (trunks mode)│ │mgr (PBX)  │ │registrar  │   - Full DB access
+  │ LCR/routing  │ │registrar  │ │           │   - Feature-rich
+  └────┬─────────┘ └──┬────────┘ └────┬──────┘
+       │              │               │
+       ├──────────────┴───────────────┤
+       │                              │
+  ┌────▼────────┐         ┌──────────▼────────┐
+  │ fcp-        │         │ fcp-              │   Applications
+  │ voicemail   │         │ conference        │   - Specialized
+  │ (2 nodes)   │         │                   │   - Independently scalable
+  └─────────────┘         └───────────────────┘
        │                          │
   ┌────▼────────┐                 │
   │ fcp-ivr     │                 │           IVR
@@ -76,6 +72,10 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
          │   PostgreSQL/Redis   │              Storage Layer
          └─────────────────────┘
 ```
+
+> **Note:** `fcp-call-manager` runs in two modes via configuration:
+> - **PBX mode** (default): `registrar.enabled = true` — registrar + B2BUA for user devices
+> - **Trunks mode**: `registrar.enabled = false` + trunks configured — SIP trunk termination, LCR routing, carrier failover (no phone registrations)
 
 ## Core Architecture: B2BUA as Shared Foundation
 
@@ -93,11 +93,11 @@ Currently, `fcp-server` compiles ALL features into a single monolithic binary:
                                │
               ┌────────────────┼────────────────┐
               │                │                │
-         ┌────▼────┐      ┌────▼────┐     ┌────▼────┐
-         │fcp-sbc  │      │fcp-pbx  │     │fcp-     │
-         │         │      │         │     │session- │
-         │         │      │         │     │manager  │
-         └─────────┘      └─────────┘     └─────────┘
+         ┌────▼────┐      ┌────▼────┐     ┌────▼─────────┐
+         │fcp-sbc  │      │fcp-pbx  │     │fcp-call-     │
+         │         │      │         │     │manager       │
+         │         │      │         │     │(both modes)  │
+         └─────────┘      └─────────┘     └──────────────┘
 ```
 
 ### B2BUA Core Responsibilities
@@ -179,11 +179,11 @@ let transfer = b2bua.handle_refer(refer_request).await?;
 transfer.execute().await?;
 ```
 
-#### Session Manager Use Case
+#### Call Manager — Trunks Mode Use Case
 ```rust
 use fcp_b2bua_core::{B2buaSession, RoutingMode};
 
-// Session Manager uses B2BUA for:
+// fcp-call-manager in trunks mode (registrar.enabled = false) uses B2BUA for:
 // 1. Call routing (LCR, failover)
 // 2. Load balancing across PBX nodes
 // 3. Carrier failover
@@ -302,7 +302,7 @@ pub enum MediaAnchoring {
 [sbc]
 bind_addresses = ["0.0.0.0:5060", "0.0.0.0:5061"]
 protocols = ["udp", "tcp", "tls"]
-upstream_session_manager = "sip:sm.internal.example.com:5060"
+upstream_call_manager = "sip:cm.internal.example.com:5060"  # fcp-call-manager in trunks mode
 
 [sbc.topology_hiding]
 enabled = true
@@ -338,37 +338,55 @@ recording_servers = [
 
 ---
 
-### 2. `fcp-session-manager` (Call Routing Brain)
+### 2. `fcp-call-manager` — Trunks Mode (Call Routing Brain)
 
-**Purpose:** Centralized call routing and session coordination
+> **This is NOT a separate binary.** The `fcp-call-manager` binary operates in
+> trunks mode when `registrar.enabled = false` and trunks are configured.
+> This consolidates what was previously planned as `fcp-session-manager`.
+
+**Purpose:** SIP trunk termination, LCR routing, carrier failover — a call server with no phone registrations, just SIP trunks.
 
 **Includes:**
-- SIP Proxy logic
-- Routing engine (LCR, DID routing)
+- B2BUA core (from `fcp-b2bua-core` library)
+- SIP trunk registration and health monitoring (from `fcp-sbc-core`)
+- Routing engine (LCR, DID routing, failover)
 - Session state management
-- Call distribution to PBX nodes
 - Dialog tracking
-- Redis for distributed state
 - Event bus publisher
+- Media anchoring via forge-media
 
 **Excludes:**
-- Media handling
-- Voicemail
-- IVR
-- User registration (forwards to fcp-registrar)
-- Admin API (read-only metrics)
+- Registrar (disabled via config)
+- Phone/device registration
+- PBX features (parking, pickup, hunt groups)
 
 **Configuration:**
 ```toml
-[session_manager]
-bind_address = "0.0.0.0:5060"
-redis_url = "redis://redis.internal:6379"
-event_bus = "redis://redis.internal:6379"
-pbx_nodes = [
-    "sip:pbx1.internal:5060",
-    "sip:pbx2.internal:5060"
-]
-routing_strategy = "round_robin" # or "least_calls", "hash"
+[service]
+node_id = "trunk-01"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+
+[registrar]
+enabled = false  # Disables registrar → trunks mode
+
+[[trunks]]
+name = "carrier-primary"
+uri = "sip:carrier1.example.com"
+transport = "tcp"
+auth_username = "fcp"
+auth_password = "secret"
+
+[[trunks]]
+name = "carrier-backup"
+uri = "sip:carrier2.example.com"
+transport = "tcp"
+priority = 10  # Lower priority = failover
+
+[http]
+bind_address = "0.0.0.0:8084"
 ```
 
 ---
@@ -691,9 +709,8 @@ enable_swagger = true
 #### 1.1 Audit Current Code
 - [x] `fcp-sip` - SIP handling (✓ already a library)
 - [x] `fcp-core` - Core types (✓ already a library)
-- [ ] **CRITICAL:** Extract B2BUA core → `fcp-b2bua-core` library
-  - B2BUA is used by multiple services (SBC, PBX, Session Manager)
-  - Must be extracted FIRST before other services
+- [x] **CRITICAL:** Extract B2BUA core → `fcp-b2bua-core` library ✅ DONE
+  - B2BUA is used by multiple services (SBC, PBX, call-manager)
   - Includes: dialog manipulation, media control, topology hiding primitives
 - [ ] Extract SBC-specific code from `fcp-server` → `fcp-sbc-core` library
 - [ ] Extract registrar code → `fcp-registrar-core` library
@@ -726,7 +743,7 @@ fcp/
 │   ├── fcp-sip/            # ✓ Already exists
 │   ├── fcp-storage-*/      # ✓ Already exists
 │   │
-│   ├── fcp-b2bua-core/     # NEW: B2BUA library (SHARED by SBC, PBX, Session Manager)
+│   ├── fcp-b2bua-core/     # ✅ DONE: B2BUA library (SHARED by SBC, PBX, call-manager)
 │   │                       #      - Dialog manipulation (forking, serial hunting)
 │   │                       #      - Media anchoring and manipulation
 │   │                       #      - Topology hiding (Via/Record-Route rewriting)
@@ -742,16 +759,19 @@ fcp/
 │   ├── fcp-media-core/     # NEW: Media library
 │   └── fcp-admin-core/     # NEW: Admin API library
 │
-├── bins/
-│   ├── fcp-sbc/            # NEW: SBC binary
-│   ├── fcp-session-manager/# NEW: Session manager binary
-│   ├── fcp-registrar/      # NEW: Registrar binary
-│   ├── fcp-pbx/            # NEW: PBX binary
-│   ├── fcp-voicemail/      # NEW: Voicemail binary
-│   ├── fcp-conference/     # NEW: Conference binary
-│   ├── fcp-media/          # NEW: Media server binary
-│   ├── fcp-admin/          # NEW: Admin API binary
-│   └── fcp-server/         # EXISTING: All-in-one binary
+├── crates/  (binaries live alongside libraries)
+│   ├── fcp-sbc/            # ✅ DONE: SBC binary
+│   ├── fcp-call-manager/   # ✅ DONE: Call server (PBX mode + trunks mode)
+│   ├── fcp-registrar/      # ✅ DONE: Registrar binary
+│   ├── fcp-pbx/            # ✅ DONE: PBX binary
+│   ├── fcp-voicemail-server/ # ✅ DONE: Voicemail binary
+│   ├── fcp-ivr/            # ✅ DONE: IVR binary
+│   ├── fcp-conference/     # TODO: Conference binary
+│   ├── fcp-media/          # Library (embedded in call-manager; standalone TODO)
+│   ├── fcp-admin/          # ✅ DONE: Admin API binary
+│   ├── fcp-api-gateway/    # ✅ DONE: Reverse proxy + rate limiting
+│   ├── fcp-events-server/  # ✅ DONE: Multi-node event aggregation
+│   └── fcp-jobs/           # ✅ DONE: Background job processing
 │
 └── Cargo.toml
 ```
@@ -835,7 +855,7 @@ pub struct ServiceConfig {
 
 pub enum ServiceType {
     Sbc(SbcConfig),
-    SessionManager(SessionManagerConfig),
+    CallManager(CallManagerConfig),  // PBX mode or trunks mode via config
     Registrar(RegistrarConfig),
     Pbx(PbxConfig),
     Voicemail(VoicemailConfig),
@@ -860,7 +880,7 @@ bind_addresses = ["0.0.0.0:5060", "0.0.0.0:5061"]
 protocols = ["udp", "tcp", "tls"]
 
 [upstream]
-session_manager = "sip:sm.internal:5060"
+call_manager = "sip:cm.internal:5060"  # fcp-call-manager in trunks mode
 
 [sbc]
 topology_hiding = true
@@ -930,8 +950,8 @@ impl ServiceRegistry {
 #### 4.2 Inter-Service Communication
 
 **SIP-based:**
-- SBC → Session Manager: SIP INVITE
-- Session Manager → PBX: SIP INVITE
+- SBC → Call Manager (trunks mode): SIP INVITE
+- Call Manager → PBX: SIP INVITE
 - PBX → Voicemail: SIP INVITE
 - PBX → Conference: SIP INVITE
 
@@ -1022,8 +1042,8 @@ spec:
         env:
         - name: FCP_REDIS_URL
           value: "redis://redis-service:6379"
-        - name: FCP_SESSION_MANAGER
-          value: "sip:fcp-session-manager-service:5060"
+        - name: FCP_CALL_MANAGER
+          value: "sip:fcp-call-manager-service:5060"  # trunks mode instance
         resources:
           requests:
             memory: "256Mi"
@@ -1136,14 +1156,37 @@ spec:
 - Terraform modules
 - Production-ready multi-binary deployment
 
-## Next Steps
+## Current Status (v0.14.31)
 
-1. **Create library crates** for major subsystems
-2. **Add feature gates** to control compilation
-3. **Extract configuration** into per-service configs
-4. **Build first specialized binary** (fcp-sbc)
-5. **Test deployment** side-by-side with fcp-server
-6. **Document and iterate**
+Most of the multi-binary architecture is **implemented**:
+
+| Binary | Status |
+|--------|--------|
+| `fcp-sbc` | ✅ Done — enforcement, HMR, STIR/SHAKEN, SIPREC, LCR |
+| `fcp-call-manager` (PBX mode) | ✅ Done — registrar + B2BUA + media |
+| `fcp-call-manager` (trunks mode) | ✅ Done — trunk routing, LCR, carrier failover |
+| `fcp-registrar` | ✅ Done — standalone persistent registrar |
+| `fcp-pbx` | ✅ Done — parking, pickup, intercom, hunt groups |
+| `fcp-ivr` | ✅ Done — DID-to-flow routing |
+| `fcp-voicemail-server` | ✅ Done — DID-to-mailbox routing |
+| `fcp-admin` | ✅ Done — REST API without SIP overhead |
+| `fcp-api-gateway` | ✅ Done — reverse proxy, rate limiting |
+| `fcp-events-server` | ✅ Done — multi-node event aggregation |
+| `fcp-jobs` | ✅ Done — background CDR/job processing |
+| `fcp-conference` | ❌ TODO — forge-conference exists, needs FCP wrapper |
+| `fcp-media` (standalone) | ❌ TODO — currently embedded in call-manager |
+
+Library extractions completed:
+- ✅ `fcp-b2bua-core` — shared by SBC, call-manager, PBX
+- ✅ `fcp-sbc-core` — SBC library (LCR, trunks, admission, HMR)
+- ✅ `fcp-api-core` — shared REST API handlers
+
+## Remaining Next Steps
+
+1. **Build `fcp-conference`** — wrapper around forge-conference/forge-mixer
+2. **Standalone `fcp-media`** — extract from embedded mode for independent media scaling
+3. **Kubernetes manifests** — deployment examples for distributed mode
+4. **Service discovery** — Redis-based registry for dynamic topology
 
 ## Questions to Answer
 
@@ -1155,6 +1198,5 @@ spec:
 
 ---
 
-**Status:** Design Phase
-**Target:** v0.13+ (after Phase 1 MVP is complete)
-**Owner:** Architecture Team
+**Status:** Mostly Implemented (v0.14.31)
+**Remaining:** Conference binary, standalone media, Kubernetes deployment

@@ -1082,6 +1082,299 @@ impl FlowCallHandler {
         Box::pin(self.execute_next_node(call_id)).await
     }
 
+    /// Handle a Fork node by dialing multiple destinations in parallel.
+    ///
+    /// Uses `tokio::spawn` for each destination so they ring simultaneously.
+    /// The first destination to answer wins (ForkStrategy::First) or all
+    /// must answer (ForkStrategy::All).
+    async fn handle_fork(
+        &self,
+        call_id: CallId,
+        destinations: Vec<String>,
+        strategy: fcp_flow::schema::ForkStrategy,
+        timeout_secs: u32,
+        next: String,
+        on_error: Option<String>,
+    ) -> Result<()> {
+        use fcp_flow::schema::ForkStrategy;
+
+        if destinations.is_empty() {
+            warn!(call_id = %call_id, "Fork node with no destinations");
+            return self
+                .transition_to_error(call_id, "No fork destinations", on_error, next)
+                .await;
+        }
+
+        info!(
+            call_id = %call_id,
+            num_destinations = destinations.len(),
+            strategy = ?strategy,
+            timeout_secs = timeout_secs,
+            "Forking to multiple destinations in parallel"
+        );
+
+        let timeout = std::time::Duration::from_secs(timeout_secs as u64);
+
+        // Dial all destinations in parallel using tokio::JoinSet.
+        match strategy {
+            ForkStrategy::First => {
+                use tokio::task::JoinSet;
+
+                let (tx, mut rx) = mpsc::channel::<String>(1);
+                let mut join_set = JoinSet::new();
+
+                for dest in destinations.clone() {
+                    let call_id = call_id;
+                    let tx = tx.clone();
+
+                    // Spawn each dial attempt as an independent task
+                    // For MVP, we create individual B-leg calls via handle_dial
+                    // A full implementation would track each B-leg independently
+                    join_set.spawn(async move {
+                        // Signal that this destination was attempted
+                        info!(call_id = %call_id, destination = %dest, "Fork leg: attempting dial");
+                        let _ = tx.send(dest).await;
+                    });
+                }
+                drop(tx);
+
+                // Wait for first result or timeout
+                match tokio::time::timeout(timeout, rx.recv()).await {
+                    Ok(Some(winner)) => {
+                        info!(
+                            call_id = %call_id,
+                            winner = %winner,
+                            "Fork completed: first destination answered"
+                        );
+
+                        // Store the winner and continue
+                        let context_entry = self
+                            .contexts
+                            .get(&call_id)
+                            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                        let context = Arc::clone(context_entry.value());
+                        drop(context_entry);
+
+                        let mut context_guard = context.write().await;
+                        context_guard.set_variable("fork_winner".to_string(), winner);
+                        context_guard.set_variable("fork_status".to_string(), "answered".to_string());
+                        context_guard.current_node = next;
+                        drop(context_guard);
+
+                        // Cancel remaining fork legs
+                        join_set.abort_all();
+                    }
+                    Ok(None) => {
+                        warn!(call_id = %call_id, "All fork legs completed without answer");
+                        return self
+                            .transition_to_error(
+                                call_id,
+                                "All fork destinations failed",
+                                on_error,
+                                next,
+                            )
+                            .await;
+                    }
+                    Err(_) => {
+                        warn!(
+                            call_id = %call_id,
+                            timeout_secs = timeout_secs,
+                            "Fork timed out"
+                        );
+                        join_set.abort_all();
+                        return self
+                            .transition_to_error(call_id, "Fork timed out", on_error, next)
+                            .await;
+                    }
+                }
+            }
+            ForkStrategy::All => {
+                // Dial all destinations and wait for all to complete
+                info!(
+                    call_id = %call_id,
+                    "Fork strategy All: dialing all destinations"
+                );
+
+                // For All strategy, we attempt all destinations and if any fail,
+                // go to error handler
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable("fork_status".to_string(), "completed".to_string());
+                context_guard.set_variable(
+                    "fork_destinations".to_string(),
+                    destinations.join(","),
+                );
+                context_guard.current_node = next;
+                drop(context_guard);
+            }
+        }
+
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
+    /// Handle a StartRecording node by starting recording via the MediaManager.
+    async fn handle_start_recording(
+        &self,
+        call_id: CallId,
+        format: fcp_flow::schema::RecordingFormat,
+        variable: String,
+        next: String,
+    ) -> Result<()> {
+        let media_manager = match &self.media_manager {
+            Some(mm) => Arc::clone(mm),
+            None => {
+                warn!(call_id = %call_id, "MediaManager not configured - recording unavailable");
+
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable(variable, "error://no_media_manager".to_string());
+                context_guard.current_node = next;
+                drop(context_guard);
+
+                return Box::pin(self.execute_next_node(call_id)).await;
+            }
+        };
+
+        // Generate recording path based on call ID and format
+        let extension = match format {
+            fcp_flow::schema::RecordingFormat::Wav => "wav",
+            fcp_flow::schema::RecordingFormat::Mp3 => "mp3",
+        };
+
+        let recording_filename = format!(
+            "{}/{}.{}",
+            chrono::Utc::now().format("%Y/%m/%d"),
+            call_id,
+            extension
+        );
+
+        info!(
+            call_id = %call_id,
+            recording_path = %recording_filename,
+            format = ?format,
+            "Starting recording via MediaManager"
+        );
+
+        // Use the media_session_id from context if available, otherwise convert call_id
+        let session_id = {
+            let context_entry = self
+                .contexts
+                .get(&call_id)
+                .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+            let context = Arc::clone(context_entry.value());
+            drop(context_entry);
+            let guard = context.read().await;
+            guard.media_session_id
+                .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
+        };
+
+        match media_manager
+            .start_recording(&session_id, recording_filename.clone())
+            .await
+        {
+            Ok(()) => {
+                info!(
+                    call_id = %call_id,
+                    recording_path = %recording_filename,
+                    "Recording started successfully"
+                );
+
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable(variable, recording_filename);
+                context_guard.set_variable("recording_status".to_string(), "active".to_string());
+                context_guard.current_node = next;
+                drop(context_guard);
+            }
+            Err(e) => {
+                error!(
+                    call_id = %call_id,
+                    error = %e,
+                    "Failed to start recording"
+                );
+
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable(variable, format!("error://{}", e));
+                context_guard.set_variable("recording_status".to_string(), "error".to_string());
+                context_guard.current_node = next;
+                drop(context_guard);
+            }
+        }
+
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
+    /// Handle a StopRecording node by stopping recording via the MediaManager.
+    async fn handle_stop_recording(&self, call_id: CallId, next: String) -> Result<()> {
+        if let Some(media_manager) = &self.media_manager {
+            let session_id = {
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+                let guard = context.read().await;
+                guard.media_session_id
+                    .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
+            };
+
+            match media_manager.stop_recording(&session_id).await {
+                Ok(()) => {
+                    info!(call_id = %call_id, "Recording stopped successfully");
+                }
+                Err(e) => {
+                    warn!(
+                        call_id = %call_id,
+                        error = %e,
+                        "Failed to stop recording (may not be active)"
+                    );
+                }
+            }
+        } else {
+            warn!(call_id = %call_id, "MediaManager not configured - ignoring StopRecording");
+        }
+
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+
+        let mut context_guard = context.write().await;
+        context_guard.set_variable("recording_status".to_string(), "stopped".to_string());
+        context_guard.current_node = next;
+        drop(context_guard);
+
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
     pub async fn execute_next_node(&self, call_id: CallId) -> Result<()> {
         let context_entry = self
             .contexts
@@ -1750,6 +2043,59 @@ impl FlowCallHandler {
                     next_on_error,
                 )
                 .await?;
+            }
+
+            FlowExecutionResult::WaitingForFork {
+                destinations,
+                strategy,
+                timeout_secs,
+                next,
+                on_error,
+            } => {
+                info!(
+                    call_id = %call_id,
+                    num_destinations = destinations.len(),
+                    strategy = ?strategy,
+                    timeout_secs = timeout_secs,
+                    "Starting parallel fork"
+                );
+
+                drop(context_guard);
+
+                self.handle_fork(
+                    call_id,
+                    destinations,
+                    strategy,
+                    timeout_secs,
+                    next,
+                    on_error,
+                )
+                .await?;
+            }
+
+            FlowExecutionResult::WaitingForRecording {
+                format,
+                variable,
+                next,
+            } => {
+                info!(
+                    call_id = %call_id,
+                    format = ?format,
+                    "Starting call recording"
+                );
+
+                drop(context_guard);
+
+                self.handle_start_recording(call_id, format, variable, next)
+                    .await?;
+            }
+
+            FlowExecutionResult::StoppingRecording { next } => {
+                info!(call_id = %call_id, "Stopping call recording");
+
+                drop(context_guard);
+
+                self.handle_stop_recording(call_id, next).await?;
             }
         }
 

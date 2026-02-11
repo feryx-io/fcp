@@ -471,6 +471,7 @@ fn parse_name_addr(header: &str) -> (String, Option<String>) {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use, unused_imports)]
 mod tests {
     use super::*;
 
@@ -500,14 +501,14 @@ mod tests {
     #[test]
     fn test_park_and_unpark() {
         use bytes::Bytes;
-        use sip_core::{Headers, Method, RequestLine, SipVersion};
+        use sip_core::{Headers, Method, RequestLine};
         use smol_str::SmolStr;
 
         let peer: std::net::SocketAddr = "127.0.0.1:5060".parse().unwrap();
         let mut headers = Headers::new();
-        headers.push(SmolStr::new("From"), SmolStr::new("Alice <sip:alice@example.com>"));
-        headers.push(SmolStr::new("To"), SmolStr::new("Bob <sip:bob@example.com>"));
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-park"));
+        headers.push(SmolStr::new("From"), SmolStr::new("Alice <sip:alice@example.com>")).unwrap();
+        headers.push(SmolStr::new("To"), SmolStr::new("Bob <sip:bob@example.com>")).unwrap();
+        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-park")).unwrap();
 
         let request = sip_core::Request::new(
             RequestLine::new(Method::Invite, sip_core::SipUri::parse("sip:bob@example.com").unwrap()),

@@ -213,10 +213,10 @@ impl MysqlStorage {
             "INSERT INTO device_bindings (line_binding_id, device_id, priority, line_appearance, shared_line, enabled)
              VALUES (?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
-                 priority = priority,
-                 line_appearance = line_appearance,
-                 shared_line = shared_line,
-                 enabled = enabled",
+                 priority = VALUES(priority),
+                 line_appearance = VALUES(line_appearance),
+                 shared_line = VALUES(shared_line),
+                 enabled = VALUES(enabled)",
         )
         .bind(line_binding_id.to_string())
         .bind(binding.device_id.to_string())
@@ -1072,7 +1072,7 @@ impl PhoneNumberStore for MysqlStorage {
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
                     created_at, updated_at
              FROM phone_numbers
-             WHERE tenant_id = $1
+             WHERE tenant_id = ?
              ORDER BY e164",
         )
         .bind(tenant_id.to_string())
@@ -1115,28 +1115,28 @@ impl PhoneNumberStore for MysqlStorage {
                 recording_enabled, block_anonymous, allow_list, block_list, tags,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
-                 state = state,
-                 e911_address_json = e911_address_json,
-                 e911_callback = e911_callback,
-                 cnam = cnam,
-                 spam_score = spam_score,
-                 carrier = carrier,
-                 lrn = lrn,
-                 ocn = ocn,
-                 rate_center = rate_center,
-                 lata = lata,
-                 activated_at = activated_at,
-                 ported_at = ported_at,
-                 loa_date = loa_date,
-                 foc_date = foc_date,
-                 recording_enabled = recording_enabled,
-                 block_anonymous = block_anonymous,
-                 allow_list = allow_list,
-                 block_list = block_list,
-                 tags = tags,
-                 updated_at = updated_at",
+                 state = VALUES(state),
+                 e911_address_json = VALUES(e911_address_json),
+                 e911_callback = VALUES(e911_callback),
+                 cnam = VALUES(cnam),
+                 spam_score = VALUES(spam_score),
+                 carrier = VALUES(carrier),
+                 lrn = VALUES(lrn),
+                 ocn = VALUES(ocn),
+                 rate_center = VALUES(rate_center),
+                 lata = VALUES(lata),
+                 activated_at = VALUES(activated_at),
+                 ported_at = VALUES(ported_at),
+                 loa_date = VALUES(loa_date),
+                 foc_date = VALUES(foc_date),
+                 recording_enabled = VALUES(recording_enabled),
+                 block_anonymous = VALUES(block_anonymous),
+                 allow_list = VALUES(allow_list),
+                 block_list = VALUES(block_list),
+                 tags = VALUES(tags),
+                 updated_at = VALUES(updated_at)",
         )
         .bind(&id)
         .bind(&phone_number.e164)
@@ -1249,7 +1249,7 @@ impl LineBindingStore for MysqlStorage {
                     forward_unconditional, outbound_caller_id, outbound_cnam,
                     created_at, updated_at
              FROM line_bindings
-             WHERE tenant_id = $1
+             WHERE tenant_id = ?
              ORDER BY created_at",
         )
         .bind(tenant_id.to_string())
@@ -1273,7 +1273,7 @@ impl LineBindingStore for MysqlStorage {
                     forward_unconditional, outbound_caller_id, outbound_cnam,
                     created_at, updated_at
              FROM line_bindings
-             WHERE owner_user_id = $1
+             WHERE owner_user_id = ?
              ORDER BY created_at",
         )
         .bind(user_id.to_string())
@@ -1298,7 +1298,7 @@ impl LineBindingStore for MysqlStorage {
                     lb.created_at, lb.updated_at
              FROM line_bindings lb
              INNER JOIN device_bindings db ON lb.id = db.line_binding_id
-             WHERE db.device_id = $1
+             WHERE db.device_id = ?
              ORDER BY lb.created_at",
         )
         .bind(device_id.to_string())
@@ -1332,16 +1332,16 @@ impl LineBindingStore for MysqlStorage {
                 forward_unconditional, outbound_caller_id, outbound_cnam,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
-                 ring_strategy = ring_strategy,
-                 no_answer_timeout_secs = no_answer_timeout_secs,
-                 forward_on_busy = forward_on_busy,
-                 forward_on_no_answer = forward_on_no_answer,
-                 forward_unconditional = forward_unconditional,
-                 outbound_caller_id = outbound_caller_id,
-                 outbound_cnam = outbound_cnam,
-                 updated_at = updated_at",
+                 ring_strategy = VALUES(ring_strategy),
+                 no_answer_timeout_secs = VALUES(no_answer_timeout_secs),
+                 forward_on_busy = VALUES(forward_on_busy),
+                 forward_on_no_answer = VALUES(forward_on_no_answer),
+                 forward_unconditional = VALUES(forward_unconditional),
+                 outbound_caller_id = VALUES(outbound_caller_id),
+                 outbound_cnam = VALUES(outbound_cnam),
+                 updated_at = VALUES(updated_at)",
         )
         .bind(&id)
         .bind(&phone_number_id)
@@ -1432,7 +1432,7 @@ impl ExtensionStore for MysqlStorage {
             "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
                     created_at, updated_at
              FROM extensions
-             WHERE tenant_id = $1
+             WHERE tenant_id = ?
              ORDER BY number",
         )
         .bind(tenant_id.to_string())
@@ -1464,13 +1464,13 @@ impl ExtensionStore for MysqlStorage {
                 id, number, target_type, target_id, tenant_id, description, enabled,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
-                 target_type = target_type,
-                 target_id = target_id,
-                 description = description,
-                 enabled = enabled,
-                 updated_at = updated_at",
+                 target_type = VALUES(target_type),
+                 target_id = VALUES(target_id),
+                 description = VALUES(description),
+                 enabled = VALUES(enabled),
+                 updated_at = VALUES(updated_at)",
         )
         .bind(&id)
         .bind(&extension.number)
@@ -1809,7 +1809,7 @@ impl DeviceStore for MysqlStorage {
                     location, e911_override_json, provisioning_url, config_template_id, enabled,
                     created_at, updated_at
              FROM devices
-             WHERE tenant_id = $1
+             WHERE tenant_id = ?
              ORDER BY name",
         )
         .bind(tenant_id.to_string())
@@ -1832,7 +1832,7 @@ impl DeviceStore for MysqlStorage {
                     location, e911_override_json, provisioning_url, config_template_id, enabled,
                     created_at, updated_at
              FROM devices
-             WHERE owner_user_id = $1
+             WHERE owner_user_id = ?
              ORDER BY name",
         )
         .bind(user_id.to_string())
@@ -1876,28 +1876,28 @@ impl DeviceStore for MysqlStorage {
                 location, e911_override_json, provisioning_url, config_template_id, enabled,
                 created_at, updated_at
              )
-             VALUES ($24, $23, $22, $21, $20, $19, $18, $17, $16, $15, $14, $13, $12, $11, $10, $9, $8, $7, $6, $5, $4, $3, $2, $1)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
-                 name = name,
-                 mac_address = mac_address,
-                 model = model,
-                 firmware_version = firmware_version,
-                 owner_user_id = owner_user_id,
-                 sip_uri = sip_uri,
-                 registration_state = registration_state,
-                 last_registration = last_registration,
-                 last_ip_address = last_ip_address,
-                 user_agent = user_agent,
-                 max_lines = max_lines,
-                 supports_video = supports_video,
-                 supports_blf = supports_blf,
-                 codec_support = codec_support,
-                 location = location,
-                 e911_override_json = e911_override_json,
-                 provisioning_url = provisioning_url,
-                 config_template_id = config_template_id,
-                 enabled = enabled,
-                 updated_at = updated_at",
+                 name = VALUES(name),
+                 mac_address = VALUES(mac_address),
+                 model = VALUES(model),
+                 firmware_version = VALUES(firmware_version),
+                 owner_user_id = VALUES(owner_user_id),
+                 sip_uri = VALUES(sip_uri),
+                 registration_state = VALUES(registration_state),
+                 last_registration = VALUES(last_registration),
+                 last_ip_address = VALUES(last_ip_address),
+                 user_agent = VALUES(user_agent),
+                 max_lines = VALUES(max_lines),
+                 supports_video = VALUES(supports_video),
+                 supports_blf = VALUES(supports_blf),
+                 codec_support = VALUES(codec_support),
+                 location = VALUES(location),
+                 e911_override_json = VALUES(e911_override_json),
+                 provisioning_url = VALUES(provisioning_url),
+                 config_template_id = VALUES(config_template_id),
+                 enabled = VALUES(enabled),
+                 updated_at = VALUES(updated_at)",
         )
         .bind(&id)
         .bind(&device.name)

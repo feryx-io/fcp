@@ -306,9 +306,9 @@ mod tests {
 
     #[test]
     fn test_add_context() {
-        let mut config = Config::default();
+        let _config = Config::default();
 
-        let new_context = Context {
+        let _new_context = Context {
             name: "production".to_string(),
             url: "https://fcp.example.com".to_string(),
             token: Some("secret-token".to_string()),
