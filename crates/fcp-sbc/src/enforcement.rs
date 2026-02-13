@@ -154,6 +154,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         if self.security.signaling_acl.evaluate(peer_ip) == AclAction::Deny {
             warn!(%peer, "SBC: ACL denied");
             self.metrics.record_security_rejection();
+            self.metrics.record_per_ip_security(peer_ip);
             self.send_rejection(transport, peer, &payload, &stream, 403, "Forbidden")
                 .await;
             return Ok(());
@@ -163,6 +164,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         if payload.len() > self.security.max_message_size {
             warn!(%peer, len = payload.len(), max = self.security.max_message_size, "SBC: message too large");
             self.metrics.record_security_rejection();
+            self.metrics.record_per_ip_security(peer_ip);
             self.send_rejection(
                 transport,
                 peer,
@@ -180,6 +182,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
         if !self.rate_limiter.connections().check_rate_limit(&ip_str) {
             debug!(%peer, "SBC: rate limited (connections)");
             self.metrics.record_rate_limit_rejection();
+            self.metrics.record_per_ip_rate_limit(peer_ip);
             self.send_rejection(
                 transport,
                 peer,
@@ -197,11 +200,13 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             match self.security.malformed_sip_policy {
                 MalformedSipPolicy::Drop => {
                     self.metrics.record_security_rejection();
+                    self.metrics.record_per_ip_security(peer_ip);
                     return Ok(());
                 }
                 MalformedSipPolicy::Reject => {
                     warn!(%peer, "SBC: malformed SIP request — rejecting with 400");
                     self.metrics.record_security_rejection();
+                    self.metrics.record_per_ip_security(peer_ip);
                     self.send_rejection(transport, peer, &payload, &stream, 400, "Bad Request")
                         .await;
                     return Ok(());
@@ -209,6 +214,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                 MalformedSipPolicy::LogAndDrop => {
                     warn!(%peer, "SBC: malformed SIP request — dropping");
                     self.metrics.record_security_rejection();
+                    self.metrics.record_per_ip_security(peer_ip);
                     return Ok(());
                 }
             }
@@ -224,6 +230,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             if !allowed {
                 debug!(%peer, method, "SBC: rate limited (method)");
                 self.metrics.record_rate_limit_rejection();
+                self.metrics.record_per_ip_rate_limit(peer_ip);
                 self.send_rejection(
                     transport,
                     peer,
@@ -239,19 +246,50 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             // 6a. Admission control for INVITE (new call attempts)
             if method == "INVITE" {
                 self.metrics.record_call_attempt();
-                if !self.admission.try_admit_call() {
-                    warn!(%peer, "SBC: admission control rejected (overloaded)");
-                    self.metrics.record_admission_rejection();
-                    self.send_rejection(
-                        transport,
-                        peer,
-                        &payload,
-                        &stream,
-                        503,
-                        "Service Unavailable",
-                    )
-                    .await;
-                    return Ok(());
+                self.metrics.record_per_ip_call_attempt(peer_ip);
+                match self.admission.try_admit_or_queue() {
+                    crate::admission::AdmitResult::Admitted => {}
+                    crate::admission::AdmitResult::Rejected => {
+                        warn!(%peer, "SBC: admission control rejected (overloaded)");
+                        self.metrics.record_admission_rejection();
+                        self.metrics.record_per_ip_rejection(peer_ip);
+                        self.send_rejection(
+                            transport,
+                            peer,
+                            &payload,
+                            &stream,
+                            503,
+                            "Service Unavailable",
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    crate::admission::AdmitResult::Queued(rx) => {
+                        let cfg = self.admission.config_snapshot();
+                        let timeout_dur =
+                            std::time::Duration::from_secs(cfg.queue_timeout_secs);
+                        match tokio::time::timeout(timeout_dur, rx).await {
+                            Ok(Ok(true)) => {
+                                // Admitted from queue
+                            }
+                            _ => {
+                                // Timeout or channel closed or rejected
+                                warn!(%peer, "SBC: queued call timed out");
+                                self.metrics.record_admission_rejection();
+                                self.metrics.record_per_ip_rejection(peer_ip);
+                                self.send_rejection(
+                                    transport,
+                                    peer,
+                                    &payload,
+                                    &stream,
+                                    503,
+                                    "Service Unavailable",
+                                )
+                                .await;
+                                return Ok(());
+                            }
+                        }
+                    }
                 }
             }
 

@@ -49,6 +49,12 @@ pub struct AdmissionConfig {
 
     /// Retry-After value in seconds.
     pub retry_after_secs: u64,
+
+    /// Maximum number of calls to queue when `overload_action` is `Queue`.
+    pub queue_max_size: u32,
+
+    /// Timeout in seconds for queued calls before rejecting with 503.
+    pub queue_timeout_secs: u64,
 }
 
 impl Default for AdmissionConfig {
@@ -61,6 +67,8 @@ impl Default for AdmissionConfig {
             overload_action: AdmissionAction::Reject,
             include_retry_after: true,
             retry_after_secs: 5,
+            queue_max_size: 100,
+            queue_timeout_secs: 10,
         }
     }
 }
@@ -82,6 +90,12 @@ impl AdmissionConfig {
         }
         if self.retry_after_secs < 1 || self.retry_after_secs > 3600 {
             return Err("retry_after_secs must be between 1 and 3600".into());
+        }
+        if self.queue_max_size < 1 || self.queue_max_size > 10_000 {
+            return Err("queue_max_size must be between 1 and 10,000".into());
+        }
+        if self.queue_timeout_secs < 1 || self.queue_timeout_secs > 60 {
+            return Err("queue_timeout_secs must be between 1 and 60".into());
         }
         for entry in &self.per_trunk_cps {
             if entry.trunk_name.is_empty() {

@@ -111,6 +111,8 @@ pub struct AdmissionConfigView {
     pub per_trunk_cps: Vec<TrunkCpsView>,
     pub overload_action: String,
     pub retry_after_secs: u64,
+    pub queue_max_size: u32,
+    pub queue_timeout_secs: u64,
 }
 
 #[derive(Serialize)]
@@ -134,6 +136,8 @@ pub struct UpdateAdmissionRequest {
     pub per_trunk_cps: Option<Vec<TrunkCpsUpdate>>,
     pub overload_action: Option<String>,
     pub retry_after_secs: Option<u64>,
+    pub queue_max_size: Option<u32>,
+    pub queue_timeout_secs: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +194,7 @@ pub fn admin_router() -> Router<Arc<HealthState>> {
         .route("/calls/stats", get(call_stats))
         .route("/calls/:id", get(get_call).delete(terminate_call))
         .route("/admission", get(get_admission).put(update_admission))
+        .route("/metrics/per-ip", get(get_per_ip_metrics))
         .route("/recordings", get(list_recordings))
         .route("/recordings/:call_id", get(get_recording))
         .route("/recordings/:call_id/file", get(download_recording))
@@ -562,6 +567,8 @@ async fn get_admission(
                 .collect(),
             overload_action: format!("{:?}", cfg.overload_action),
             retry_after_secs: cfg.retry_after_secs,
+            queue_max_size: cfg.queue_max_size,
+            queue_timeout_secs: cfg.queue_timeout_secs,
         },
         counters: AdmissionCounters {
             current_cps: state.admission.current_cps(),
@@ -611,6 +618,12 @@ async fn update_admission(
     if let Some(v) = req.retry_after_secs {
         cfg.retry_after_secs = v;
     }
+    if let Some(v) = req.queue_max_size {
+        cfg.queue_max_size = v;
+    }
+    if let Some(v) = req.queue_timeout_secs {
+        cfg.queue_timeout_secs = v;
+    }
 
     state
         .admission
@@ -634,6 +647,8 @@ async fn update_admission(
                 .collect(),
             overload_action: format!("{:?}", cfg.overload_action),
             retry_after_secs: cfg.retry_after_secs,
+            queue_max_size: cfg.queue_max_size,
+            queue_timeout_secs: cfg.queue_timeout_secs,
         },
         counters: AdmissionCounters {
             current_cps: state.admission.current_cps(),
@@ -641,6 +656,14 @@ async fn update_admission(
             concurrent_registrations: state.admission.concurrent_registrations(),
         },
     }))
+}
+
+// ── Per-IP metrics handler ─────────────────────────────────────────────────
+
+async fn get_per_ip_metrics(
+    State(state): State<Arc<HealthState>>,
+) -> Json<Vec<fcp_sbc_core::PerSourceIpSnapshot>> {
+    Json(state.metrics.per_ip_snapshots())
 }
 
 // ── Recording handlers ─────────────────────────────────────────────────────

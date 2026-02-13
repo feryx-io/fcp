@@ -135,7 +135,7 @@ impl StirVerifier {
     }
 
     /// Verify the ES256 signature over the JWS signing input.
-    fn verify_signature(
+    pub(crate) fn verify_signature(
         &self,
         parsed: &ParsedIdentity,
         verifying_key: &VerifyingKey,
@@ -152,7 +152,7 @@ impl StirVerifier {
     }
 
     /// Validate PASSporT claims (iat freshness, orig/dest TN).
-    fn validate_claims(
+    pub(crate) fn validate_claims(
         &self,
         parsed: &ParsedIdentity,
         from_tn: &str,
@@ -511,6 +511,311 @@ impl StirMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fcp_sbc_core::stir_shaken::{PassportHeader, PassportPayload, PassportTnField};
+
+    /// Helper: build a valid ParsedIdentity with configurable TNs and iat.
+    fn make_parsed_identity(
+        orig_tn: &str,
+        dest_tn: &str,
+        iat: u64,
+    ) -> ParsedIdentity {
+        let header = PassportHeader {
+            alg: "ES256".into(),
+            ppt: "shaken".into(),
+            typ: "passport".into(),
+            x5u: "https://cert.example.com/cert.pem".into(),
+        };
+        let payload = PassportPayload {
+            attest: "A".into(),
+            dest: PassportTnField {
+                tn: vec![dest_tn.to_string()],
+            },
+            iat,
+            orig: PassportTnField {
+                tn: vec![orig_tn.to_string()],
+            },
+            origid: "test-origid".into(),
+        };
+        ParsedIdentity {
+            token: "header.payload.signature".into(),
+            info_url: "https://cert.example.com/cert.pem".into(),
+            header,
+            payload,
+            raw_header: "eyJ0eXAiOiJwYXNzcG9ydCJ9".into(),
+            raw_payload: "eyJhdHRlc3QiOiJBIn0".into(),
+            raw_signature: "c2lnbmF0dXJl".into(),
+        }
+    }
+
+    /// Current epoch timestamp.
+    fn now_epoch() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    // ── validate_claims tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_claims_valid() {
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+        let parsed = make_parsed_identity("+15551001", "+15551002", now_epoch());
+
+        let result = verifier.validate_claims(
+            &parsed,
+            "<sip:+15551001@example.com>;tag=abc",
+            "<sip:+15551002@example.com>",
+            60,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_claims_iat_expired() {
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+        let old_iat = now_epoch() - 120; // 2 minutes ago
+        let parsed = make_parsed_identity("+15551001", "+15551002", old_iat);
+
+        let result = verifier.validate_claims(
+            &parsed,
+            "<sip:+15551001@example.com>",
+            "<sip:+15551002@example.com>",
+            60, // max age 60s
+        );
+        assert!(matches!(result, Err(StirError::IatExpired { .. })));
+    }
+
+    #[test]
+    fn test_validate_claims_orig_mismatch() {
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+        let parsed = make_parsed_identity("+15551001", "+15551002", now_epoch());
+
+        let result = verifier.validate_claims(
+            &parsed,
+            "<sip:+15559999@example.com>", // different TN
+            "<sip:+15551002@example.com>",
+            60,
+        );
+        assert!(matches!(result, Err(StirError::OrigTnMismatch { .. })));
+    }
+
+    #[test]
+    fn test_validate_claims_dest_mismatch() {
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+        let parsed = make_parsed_identity("+15551001", "+15551002", now_epoch());
+
+        let result = verifier.validate_claims(
+            &parsed,
+            "<sip:+15551001@example.com>",
+            "<sip:+15559999@example.com>", // different TN
+            60,
+        );
+        assert!(matches!(result, Err(StirError::DestTnMismatch { .. })));
+    }
+
+    #[test]
+    fn test_validate_claims_empty_orig() {
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+        let mut parsed = make_parsed_identity("+15551001", "+15551002", now_epoch());
+        parsed.payload.orig.tn.clear(); // empty orig
+
+        let result = verifier.validate_claims(
+            &parsed,
+            "<sip:+15551001@example.com>",
+            "<sip:+15551002@example.com>",
+            60,
+        );
+        assert!(matches!(result, Err(StirError::ClaimsInvalid(_))));
+    }
+
+    // ── verify_signature tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_verify_signature_valid() {
+        use p256::ecdsa::{signature::Signer, SigningKey};
+
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+
+        // Generate a key pair
+        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let verifying_key = VerifyingKey::from(&signing_key);
+
+        // Build a minimal ParsedIdentity with real signature
+        let raw_header = stir_shaken::base64url_encode(b"{\"alg\":\"ES256\"}");
+        let raw_payload = stir_shaken::base64url_encode(b"{\"iat\":0}");
+        let signing_input = format!("{}.{}", raw_header, raw_payload);
+        let sig: Signature = signing_key.sign(signing_input.as_bytes());
+        let raw_signature = stir_shaken::base64url_encode(&sig.to_bytes());
+
+        let parsed = ParsedIdentity {
+            token: format!("{}.{}.{}", raw_header, raw_payload, raw_signature),
+            info_url: "https://cert.example.com/cert.pem".into(),
+            header: PassportHeader {
+                alg: "ES256".into(),
+                ppt: "shaken".into(),
+                typ: "passport".into(),
+                x5u: "https://cert.example.com/cert.pem".into(),
+            },
+            payload: PassportPayload {
+                attest: "A".into(),
+                dest: PassportTnField { tn: vec![] },
+                iat: 0,
+                orig: PassportTnField { tn: vec![] },
+                origid: "test".into(),
+            },
+            raw_header,
+            raw_payload,
+            raw_signature,
+        };
+
+        let result = verifier.verify_signature(&parsed, &verifying_key);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_invalid() {
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+
+        // Generate two different key pairs
+        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let wrong_key = SigningKey::random(&mut rand::thread_rng());
+        let wrong_verifying_key = VerifyingKey::from(&wrong_key);
+
+        use p256::ecdsa::signature::Signer;
+        let raw_header = stir_shaken::base64url_encode(b"{\"alg\":\"ES256\"}");
+        let raw_payload = stir_shaken::base64url_encode(b"{\"iat\":0}");
+        let signing_input = format!("{}.{}", raw_header, raw_payload);
+        let sig: Signature = signing_key.sign(signing_input.as_bytes());
+        let raw_signature = stir_shaken::base64url_encode(&sig.to_bytes());
+
+        let parsed = ParsedIdentity {
+            token: format!("{}.{}.{}", raw_header, raw_payload, raw_signature),
+            info_url: "https://cert.example.com/cert.pem".into(),
+            header: PassportHeader {
+                alg: "ES256".into(),
+                ppt: "shaken".into(),
+                typ: "passport".into(),
+                x5u: "https://cert.example.com/cert.pem".into(),
+            },
+            payload: PassportPayload {
+                attest: "A".into(),
+                dest: PassportTnField { tn: vec![] },
+                iat: 0,
+                orig: PassportTnField { tn: vec![] },
+                origid: "test".into(),
+            },
+            raw_header,
+            raw_payload,
+            raw_signature,
+        };
+
+        // Verify with wrong key should fail
+        let result = verifier.verify_signature(&parsed, &wrong_verifying_key);
+        assert!(matches!(result, Err(StirError::SignatureInvalid)));
+    }
+
+    // ── StirSigner roundtrip test ────────────────────────────────────────
+
+    #[test]
+    fn test_signer_roundtrip() {
+        // Generate a key pair
+        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let verifying_key = VerifyingKey::from(&signing_key);
+
+        // Create a signer directly
+        let signer = StirSigner {
+            signing_key: signing_key.clone(),
+            cert_url: "https://cert.example.com/cert.pem".into(),
+        };
+
+        // Sign
+        let identity_header = signer
+            .sign("+15551001", "+15551002", AttestationLevel::A)
+            .expect("signing should succeed");
+
+        // Parse the generated Identity header
+        let parsed = stir_shaken::parse_identity_header(&identity_header)
+            .expect("should parse identity header");
+
+        // Verify signature
+        let config = StirShakenConfig::default();
+        let verifier = StirVerifier::new(&config);
+        let result = verifier.verify_signature(&parsed, &verifying_key);
+        assert!(result.is_ok(), "roundtrip signature verification should succeed");
+    }
+
+    // ── StirTransportDispatcher test ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_dispatch_passthrough_non_invite() {
+        use sip_transaction::TransportKind;
+
+        // Create a mock inner dispatcher that records payloads
+        struct MockDispatcher {
+            payloads: tokio::sync::Mutex<Vec<Bytes>>,
+        }
+
+        #[async_trait::async_trait]
+        impl TransportDispatcher for MockDispatcher {
+            async fn dispatch(&self, _ctx: &TransportContext, payload: Bytes) -> anyhow::Result<()> {
+                self.payloads.lock().await.push(payload);
+                Ok(())
+            }
+        }
+
+        let mock = Arc::new(MockDispatcher {
+            payloads: tokio::sync::Mutex::new(Vec::new()),
+        });
+
+        let signing_key = SigningKey::random(&mut rand::thread_rng());
+        let signer = Arc::new(StirSigner {
+            signing_key,
+            cert_url: "https://cert.example.com/cert.pem".into(),
+        });
+        let metrics = Arc::new(StirMetrics::new());
+
+        let dispatcher = StirTransportDispatcher {
+            inner: mock.clone(),
+            signer,
+            peer_trunk_map: HashMap::new(),
+            trunk_configs: HashMap::new(),
+            metrics,
+        };
+
+        // Send an OPTIONS request (not INVITE)
+        let options_payload = Bytes::from(
+            "OPTIONS sip:example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776\r\n\
+             From: <sip:alice@example.com>;tag=abc\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: test123\r\n\
+             CSeq: 1 OPTIONS\r\n\
+             Content-Length: 0\r\n\
+             \r\n",
+        );
+
+        let ctx = TransportContext::new(
+            TransportKind::Udp,
+            "10.0.0.1:5060".parse().unwrap(),
+            None,
+        );
+        dispatcher.dispatch(&ctx, options_payload.clone()).await.unwrap();
+
+        // Payload should pass through unchanged
+        let recorded = mock.payloads.lock().await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0], options_payload);
+    }
+
+    // ── Original tests ───────────────────────────────────────────────────
 
     #[test]
     fn test_stir_metrics_counters() {

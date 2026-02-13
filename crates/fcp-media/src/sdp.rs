@@ -321,6 +321,21 @@ pub fn convert_forge_to_sip_sdp(forge_sdp: &str) -> Result<String> {
     Ok(forge_sdp.to_string())
 }
 
+/// SRTP context for SDP rewriting.
+///
+/// When provided to SDP rewriting functions, causes `RTP/AVP` to be replaced
+/// with `RTP/SAVP` on the `m=audio` line and an `a=crypto:` attribute to be
+/// injected.  Existing `a=crypto:` lines are stripped first.
+#[derive(Debug, Clone)]
+pub struct SrtpSdpContext {
+    /// Base64-encoded SRTP key material (e.g., `"inline:<base64>"`).
+    pub local_key_b64: String,
+    /// Crypto suite name (e.g., `"AES_CM_128_HMAC_SHA1_80"`).
+    pub suite: String,
+    /// Crypto tag (typically `1`).
+    pub tag: u32,
+}
+
 /// Rewrite SDP to point to server's RTP endpoint
 ///
 /// This function modifies the SDP to redirect RTP traffic through the server
@@ -330,6 +345,8 @@ pub fn convert_forge_to_sip_sdp(forge_sdp: &str) -> Result<String> {
 /// * `original_sdp` - The original SDP body
 /// * `server_ip` - The server's IP address for RTP
 /// * `rtp_port` - The RTP port allocated by forge-media
+/// * `srtp` - Optional SRTP context; when `Some`, replaces `RTP/AVP` with
+///   `RTP/SAVP`, strips existing `a=crypto:` lines, and injects a new one.
 ///
 /// # Returns
 /// Modified SDP string with updated c= and m= lines
@@ -337,13 +354,19 @@ pub fn convert_forge_to_sip_sdp(forge_sdp: &str) -> Result<String> {
 /// # Example
 /// ```ignore
 /// let original = "v=0\no=- 123 456 IN IP4 192.168.1.100\n...";
-/// let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000);
+/// let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000, None);
 /// // Result: c= line changed to 10.0.0.5, m= line port changed to 20000
 /// ```
-pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: u16) -> String {
+pub fn rewrite_sdp_for_anchoring(
+    original_sdp: &str,
+    server_ip: &str,
+    rtp_port: u16,
+    srtp: Option<&SrtpSdpContext>,
+) -> String {
     let mut result = String::new();
     let mut in_audio_section = false;
     let mut audio_connection_replaced = false;
+    let mut crypto_injected = false;
 
     for line in original_sdp.lines() {
         let trimmed = line.trim();
@@ -352,6 +375,11 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
         if trimmed.starts_with("m=") {
             in_audio_section = trimmed.starts_with("m=audio");
             audio_connection_replaced = false; // Reset for each media section
+        }
+
+        // Strip existing a=crypto: lines when SRTP context is provided
+        if srtp.is_some() && in_audio_section && trimmed.starts_with("a=crypto:") {
+            continue;
         }
 
         // Replace connection address (c=)
@@ -378,12 +406,29 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
                 // Reconstruct with new port
                 result.push_str("m=audio ");
                 result.push_str(&rtp_port.to_string());
-                // Keep the rest of the line (protocol and codecs)
-                for part in &parts[2..] {
+                // Swap protocol if SRTP
+                let protocol = if srtp.is_some() {
+                    parts[2].replace("RTP/AVP", "RTP/SAVP")
+                } else {
+                    parts[2].to_string()
+                };
+                result.push(' ');
+                result.push_str(&protocol);
+                for part in &parts[3..] {
                     result.push(' ');
                     result.push_str(part);
                 }
                 result.push_str("\r\n");
+                // Inject a=crypto: line right after m= when SRTP
+                if let Some(ctx) = srtp {
+                    if !crypto_injected {
+                        result.push_str(&format!(
+                            "a=crypto:{} {} {}\r\n",
+                            ctx.tag, ctx.suite, ctx.local_key_b64
+                        ));
+                        crypto_injected = true;
+                    }
+                }
                 continue;
             }
         }
@@ -406,10 +451,17 @@ pub fn rewrite_sdp_for_anchoring(original_sdp: &str, server_ip: &str, rtp_port: 
 /// * `a_leg_offer` - A-leg's original SDP offer
 /// * `server_ip` - Server's IP address for media anchoring
 /// * `rtp_port` - Server's RTP port for media anchoring
+/// * `srtp` - Optional SRTP context; when `Some`, uses `RTP/SAVP` and
+///   appends an `a=crypto:` attribute.
 ///
 /// # Returns
 /// Constructed SDP answer with A-leg's preferred codec and server's RTP endpoint.
-pub fn construct_answer_for_a_leg(a_leg_offer: &str, server_ip: &str, rtp_port: u16) -> String {
+pub fn construct_answer_for_a_leg(
+    a_leg_offer: &str,
+    server_ip: &str,
+    rtp_port: u16,
+    srtp: Option<&SrtpSdpContext>,
+) -> String {
     let codecs = parse_sdp_codecs(a_leg_offer);
     let te_pt = extract_telephone_event_pt(a_leg_offer);
 
@@ -429,7 +481,8 @@ pub fn construct_answer_for_a_leg(a_leg_offer: &str, server_ip: &str, rtp_port: 
     sdp.push_str("t=0 0\r\n");
 
     // Build m= line with preferred codec and telephone-event
-    sdp.push_str(&format!("m=audio {} RTP/AVP", rtp_port));
+    let protocol = if srtp.is_some() { "RTP/SAVP" } else { "RTP/AVP" };
+    sdp.push_str(&format!("m=audio {} {}", rtp_port, protocol));
     if let Some(codec) = preferred {
         sdp.push_str(&format!(" {}", codec.payload_type));
     }
@@ -437,6 +490,14 @@ pub fn construct_answer_for_a_leg(a_leg_offer: &str, server_ip: &str, rtp_port: 
         sdp.push_str(&format!(" {}", te));
     }
     sdp.push_str("\r\n");
+
+    // Inject a=crypto: line when SRTP
+    if let Some(ctx) = srtp {
+        sdp.push_str(&format!(
+            "a=crypto:{} {} {}\r\n",
+            ctx.tag, ctx.suite, ctx.local_key_b64
+        ));
+    }
 
     // Add rtpmap for preferred codec
     if let Some(codec) = preferred {
@@ -631,7 +692,7 @@ a=rtpmap:8 PCMA/8000
 a=rtpmap:101 telephone-event/8000
 "#;
 
-        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000);
+        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000, None);
 
         // Check that connection address was replaced
         assert!(rewritten.contains("c=IN IP4 10.0.0.5"));
@@ -657,7 +718,7 @@ c=IN IP4 192.168.1.100
 a=rtpmap:0 PCMU/8000
 "#;
 
-        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000);
+        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000, None);
 
         assert!(rewritten.contains("c=IN IP4 10.0.0.5"));
         assert!(rewritten.contains("m=audio 20000 RTP/AVP"));
@@ -674,7 +735,7 @@ m=audio 10000 RTP/AVP 0
 a=rtpmap:0 PCMU/8000
 "#;
 
-        let rewritten = rewrite_sdp_for_anchoring(original, "2001:db8::5", 20000);
+        let rewritten = rewrite_sdp_for_anchoring(original, "2001:db8::5", 20000, None);
 
         assert!(rewritten.contains("c=IN IP6 2001:db8::5"));
         assert!(rewritten.contains("m=audio 20000 RTP/AVP"));
@@ -1065,5 +1126,114 @@ a=rtpmap:0 PCMU/8000
         assert!(filtered.contains("c=IN IP4 192.168.1.100"));
         assert!(filtered.contains("a=ptime:20"));
         assert!(filtered.contains("a=sendrecv"));
+    }
+
+    // ── SRTP SDP rewriting tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_rewrite_sdp_strips_and_injects_crypto() {
+        let original = "v=0\r\n\
+                         o=- 123 1 IN IP4 192.168.1.100\r\n\
+                         s=Test\r\n\
+                         c=IN IP4 192.168.1.100\r\n\
+                         t=0 0\r\n\
+                         m=audio 10000 RTP/AVP 0 8\r\n\
+                         a=rtpmap:0 PCMU/8000\r\n\
+                         a=rtpmap:8 PCMA/8000\r\n\
+                         a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:oldkey123\r\n";
+
+        let ctx = SrtpSdpContext {
+            local_key_b64: "inline:newkey456".into(),
+            suite: "AES_CM_128_HMAC_SHA1_80".into(),
+            tag: 1,
+        };
+        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000, Some(&ctx));
+
+        // Protocol should be RTP/SAVP
+        assert!(rewritten.contains("m=audio 20000 RTP/SAVP 0 8"));
+        // Old crypto line stripped
+        assert!(!rewritten.contains("inline:oldkey123"));
+        // New crypto line injected
+        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:newkey456"));
+        // Connection address updated
+        assert!(rewritten.contains("c=IN IP4 10.0.0.5"));
+        // Codecs preserved
+        assert!(rewritten.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(rewritten.contains("a=rtpmap:8 PCMA/8000"));
+    }
+
+    #[test]
+    fn test_rewrite_sdp_none_context_passthrough() {
+        let original = "v=0\r\n\
+                         o=- 123 1 IN IP4 192.168.1.100\r\n\
+                         s=Test\r\n\
+                         c=IN IP4 192.168.1.100\r\n\
+                         t=0 0\r\n\
+                         m=audio 10000 RTP/AVP 0\r\n\
+                         a=rtpmap:0 PCMU/8000\r\n\
+                         a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:existingkey\r\n";
+
+        let rewritten = rewrite_sdp_for_anchoring(original, "10.0.0.5", 20000, None);
+
+        // Protocol stays RTP/AVP (no SRTP)
+        assert!(rewritten.contains("m=audio 20000 RTP/AVP 0"));
+        // Existing crypto line preserved (no stripping when None)
+        assert!(rewritten.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:existingkey"));
+        // No new crypto lines injected
+        assert_eq!(
+            rewritten.matches("a=crypto:").count(),
+            1,
+            "should have exactly one crypto line (the original)"
+        );
+    }
+
+    #[test]
+    fn test_construct_answer_with_srtp() {
+        let offer = "v=0\r\n\
+                      o=- 123 1 IN IP4 192.168.1.100\r\n\
+                      s=Test\r\n\
+                      c=IN IP4 192.168.1.100\r\n\
+                      t=0 0\r\n\
+                      m=audio 10000 RTP/AVP 0 101\r\n\
+                      a=rtpmap:0 PCMU/8000\r\n\
+                      a=rtpmap:101 telephone-event/8000\r\n\
+                      a=fmtp:101 0-16\r\n";
+
+        let ctx = SrtpSdpContext {
+            local_key_b64: "inline:answersrtpkey".into(),
+            suite: "AES_CM_128_HMAC_SHA1_80".into(),
+            tag: 1,
+        };
+        let answer = construct_answer_for_a_leg(offer, "10.0.0.5", 20000, Some(&ctx));
+
+        // Protocol should be RTP/SAVP
+        assert!(answer.contains("m=audio 20000 RTP/SAVP"));
+        // Crypto line present
+        assert!(answer.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:answersrtpkey"));
+        // Codec and TE preserved
+        assert!(answer.contains("a=rtpmap:0 PCMU/8000"));
+        assert!(answer.contains("a=rtpmap:101 telephone-event/8000"));
+    }
+
+    #[test]
+    fn test_construct_answer_without_srtp() {
+        let offer = "v=0\r\n\
+                      o=- 123 1 IN IP4 192.168.1.100\r\n\
+                      s=Test\r\n\
+                      c=IN IP4 192.168.1.100\r\n\
+                      t=0 0\r\n\
+                      m=audio 10000 RTP/AVP 0 101\r\n\
+                      a=rtpmap:0 PCMU/8000\r\n\
+                      a=rtpmap:101 telephone-event/8000\r\n\
+                      a=fmtp:101 0-16\r\n";
+
+        let answer = construct_answer_for_a_leg(offer, "10.0.0.5", 20000, None);
+
+        // Protocol should stay RTP/AVP
+        assert!(answer.contains("m=audio 20000 RTP/AVP"));
+        // No crypto line
+        assert!(!answer.contains("a=crypto:"));
+        // Codec preserved
+        assert!(answer.contains("a=rtpmap:0 PCMU/8000"));
     }
 }

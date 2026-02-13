@@ -4,11 +4,29 @@
 //! call/registration counts via atomics. Used by `SbcEnforcementHandler` to
 //! reject traffic when the SBC is overloaded.
 
-use fcp_sbc_core::AdmissionConfig;
+use fcp_sbc_core::{AdmissionAction, AdmissionConfig};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
+use tokio::sync::oneshot;
+
+/// Result of attempting to admit a call.
+pub enum AdmitResult {
+    /// Call admitted immediately.
+    Admitted,
+    /// Call rejected (overloaded and not queueable).
+    Rejected,
+    /// Call queued — await the receiver for admission result.
+    /// Receives `true` if admitted when capacity frees up, `false` if expired.
+    Queued(oneshot::Receiver<bool>),
+}
+
+/// A call waiting in the admission queue.
+struct QueuedCall {
+    sender: oneshot::Sender<bool>,
+    queued_at: Instant,
+}
 
 /// Runtime admission controller.
 ///
@@ -25,6 +43,8 @@ pub struct AdmissionController {
     trunk_cps_limits: RwLock<HashMap<String, u32>>,
     /// Per-trunk sliding windows (trunk_name -> timestamps).
     trunk_cps_windows: RwLock<HashMap<String, Mutex<VecDeque<Instant>>>>,
+    /// Queue of calls waiting for capacity when `overload_action` is `Queue`.
+    call_queue: Mutex<VecDeque<QueuedCall>>,
 }
 
 impl AdmissionController {
@@ -44,6 +64,7 @@ impl AdmissionController {
             cps_window: Mutex::new(VecDeque::new()),
             trunk_cps_limits: RwLock::new(trunk_cps_limits),
             trunk_cps_windows: RwLock::new(trunk_cps_windows),
+            call_queue: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -82,6 +103,67 @@ impl AdmissionController {
         true
     }
 
+    /// Try to admit a call, or queue it if the overload action is `Queue`.
+    ///
+    /// Returns:
+    /// - `Admitted` if the call can proceed immediately
+    /// - `Rejected` if overloaded and action is Reject (or queue is full)
+    /// - `Queued(rx)` if the call is enqueued — await `rx` for the result
+    pub fn try_admit_or_queue(&self) -> AdmitResult {
+        if self.try_admit_call() {
+            return AdmitResult::Admitted;
+        }
+
+        let cfg = self.config.read().unwrap();
+        if cfg.overload_action != AdmissionAction::Queue {
+            return AdmitResult::Rejected;
+        }
+
+        let queue_max = cfg.queue_max_size as usize;
+        drop(cfg);
+
+        let (tx, rx) = oneshot::channel();
+        let mut queue = self.call_queue.lock().unwrap();
+        if queue.len() >= queue_max {
+            return AdmitResult::Rejected;
+        }
+        queue.push_back(QueuedCall {
+            sender: tx,
+            queued_at: Instant::now(),
+        });
+        AdmitResult::Queued(rx)
+    }
+
+    /// Drain queued calls when capacity becomes available.
+    ///
+    /// Prunes expired entries and admits the next waiting call if possible.
+    fn drain_queue(&self) {
+        let cfg = self.config.read().unwrap();
+        let timeout = std::time::Duration::from_secs(cfg.queue_timeout_secs);
+        drop(cfg);
+
+        let mut queue = self.call_queue.lock().unwrap();
+        let now = Instant::now();
+
+        // Prune expired entries
+        while let Some(front) = queue.front() {
+            if now.duration_since(front.queued_at) >= timeout {
+                if let Some(expired) = queue.pop_front() {
+                    let _ = expired.sender.send(false);
+                }
+            } else {
+                break;
+            }
+        }
+
+        // Admit the next waiting call if we have capacity
+        if self.try_admit_call() {
+            if let Some(next) = queue.pop_front() {
+                let _ = next.sender.send(true);
+            }
+        }
+    }
+
     /// Try to admit a new registration. Returns `true` if allowed.
     pub fn try_admit_registration(&self) -> bool {
         let cfg = self.config.read().unwrap();
@@ -95,6 +177,9 @@ impl AdmissionController {
     }
 
     /// Record that a call has ended (decrement concurrent count).
+    ///
+    /// Also drains the queue: if calls are waiting and capacity is now
+    /// available, the next queued call is admitted.
     pub fn call_ended(&self) {
         // Saturating sub via compare-exchange loop
         loop {
@@ -110,6 +195,8 @@ impl AdmissionController {
                 break;
             }
         }
+        // Try to drain queued calls now that capacity may be free
+        self.drain_queue();
     }
 
     /// Record that a registration was added.
@@ -420,6 +507,101 @@ mod tests {
         assert!(result.is_err());
         // Original config should be unchanged
         assert_eq!(ctrl.config_snapshot().max_cps, 100);
+    }
+
+    #[test]
+    fn test_queue_admit_when_capacity_available() {
+        let ctrl = default_controller();
+        // Should be admitted directly (capacity available)
+        let result = ctrl.try_admit_or_queue();
+        assert!(matches!(result, AdmitResult::Admitted));
+    }
+
+    #[tokio::test]
+    async fn test_queue_then_drain() {
+        let config = AdmissionConfig {
+            max_concurrent_calls: 1,
+            overload_action: AdmissionAction::Queue,
+            ..Default::default()
+        };
+        let ctrl = AdmissionController::new(config);
+        ctrl.call_started(); // fill capacity
+
+        // Should be queued
+        let result = ctrl.try_admit_or_queue();
+        let rx = match result {
+            AdmitResult::Queued(rx) => rx,
+            other => panic!("expected Queued, got {:?}", matches!(other, AdmitResult::Admitted)),
+        };
+
+        // End a call — drain_queue should admit the queued call
+        ctrl.call_ended();
+
+        let admitted = rx.await.unwrap();
+        assert!(admitted);
+    }
+
+    #[test]
+    fn test_queue_full_rejects() {
+        let config = AdmissionConfig {
+            max_concurrent_calls: 1,
+            overload_action: AdmissionAction::Queue,
+            queue_max_size: 1,
+            ..Default::default()
+        };
+        let ctrl = AdmissionController::new(config);
+        ctrl.call_started(); // fill capacity
+
+        // First queue should succeed
+        let r1 = ctrl.try_admit_or_queue();
+        assert!(matches!(r1, AdmitResult::Queued(_)));
+
+        // Second queue should be rejected (queue full)
+        let r2 = ctrl.try_admit_or_queue();
+        assert!(matches!(r2, AdmitResult::Rejected));
+    }
+
+    #[test]
+    fn test_queue_disabled_rejects() {
+        let config = AdmissionConfig {
+            max_concurrent_calls: 1,
+            overload_action: AdmissionAction::Reject, // not Queue
+            ..Default::default()
+        };
+        let ctrl = AdmissionController::new(config);
+        ctrl.call_started(); // fill capacity
+
+        let result = ctrl.try_admit_or_queue();
+        assert!(matches!(result, AdmitResult::Rejected));
+    }
+
+    #[test]
+    fn test_drain_prunes_expired() {
+        let config = AdmissionConfig {
+            max_concurrent_calls: 1,
+            overload_action: AdmissionAction::Queue,
+            queue_timeout_secs: 1, // very short
+            ..Default::default()
+        };
+        let ctrl = AdmissionController::new(config);
+        ctrl.call_started(); // fill capacity
+
+        // Enqueue a call
+        let result = ctrl.try_admit_or_queue();
+        let mut rx = match result {
+            AdmitResult::Queued(rx) => rx,
+            _ => panic!("expected Queued"),
+        };
+
+        // Manually expire by sleeping > 1s
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // End a call → drain_queue will prune the expired entry
+        ctrl.call_ended();
+
+        // The receiver should get false (expired)
+        let result = rx.try_recv();
+        assert!(matches!(result, Ok(false)));
     }
 
     #[test]

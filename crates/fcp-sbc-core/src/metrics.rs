@@ -104,6 +104,23 @@ pub struct SbcMetricsSnapshot {
     pub concurrent_registrations: u64,
 }
 
+/// Per-source-IP metrics snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerSourceIpSnapshot {
+    /// Source IP address.
+    pub ip: String,
+    /// Total call attempts from this IP.
+    pub calls_attempted: u64,
+    /// Total calls rejected from this IP.
+    pub calls_rejected: u64,
+    /// Rate-limit rejections from this IP.
+    pub rate_limit_rejections: u64,
+    /// Security rejections from this IP.
+    pub security_rejections: u64,
+    /// Last seen time as epoch seconds.
+    pub last_seen_epoch_secs: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

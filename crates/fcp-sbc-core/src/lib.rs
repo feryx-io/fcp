@@ -33,7 +33,7 @@ pub mod trunk_router;
 // Re-export config types for convenience
 pub use admission::{AdmissionAction, AdmissionConfig, TrunkCpsLimit};
 pub use config::{SbcConfig, SbcStorageConfig};
-pub use metrics::{SbcMetricsConfig, SbcMetricsSnapshot, TrunkHealthStatus};
+pub use metrics::{PerSourceIpSnapshot, SbcMetricsConfig, SbcMetricsSnapshot, TrunkHealthStatus};
 pub use nat::{NatConfig, StunServerConfig, TurnServerConfig};
 pub use rate_limit::{MethodRateLimits, RateLimitEntry, RateLimitPolicyConfig};
 pub use security::{AclAction, IpAcl, IpAclEntry, MalformedSipPolicy, SecurityConfig};
