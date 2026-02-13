@@ -130,6 +130,14 @@ pub struct B2buaConfig {
     /// trigger phone-number normalization).
     #[serde(default = "default_max_extension_digits")]
     pub max_extension_digits: u8,
+
+    /// SIP URI of the voicemail server for CFNA routing.
+    ///
+    /// When a call forwards to "voicemail", the B2BUA constructs a SIP
+    /// INVITE to `sip:{callee}@{host}` where `{host}` comes from this URI.
+    /// Example: `"sip:vm@192.168.1.50:5060"` or `"sip:vm@voicemail.local"`.
+    #[serde(default)]
+    pub voicemail_server_uri: Option<String>,
 }
 
 impl Default for B2buaConfig {
@@ -144,6 +152,7 @@ impl Default for B2buaConfig {
             insert_record_route: true,
             session_timer: SessionTimerConfig::default(),
             max_extension_digits: default_max_extension_digits(),
+            voicemail_server_uri: None,
         }
     }
 }
@@ -232,6 +241,7 @@ mod tests {
             transfer: TransferConfig::sbc_defaults(),
             session_timer: SessionTimerConfig::default(),
             max_extension_digits: 6,
+            voicemail_server_uri: None,
         };
         let session = B2buaSession::with_config(call_id, config.clone());
         assert_eq!(session.call_id, call_id);
@@ -277,6 +287,7 @@ mod tests {
                 min_se_secs: 120,
             },
             max_extension_digits: 6,
+            voicemail_server_uri: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();
@@ -390,5 +401,38 @@ mod tests {
         assert!(!cfg.enabled);
         assert_eq!(cfg.session_expires_secs, 1800);
         assert_eq!(cfg.min_se_secs, 90);
+    }
+
+    // ============================================================================
+    // Voicemail Server URI Tests
+    // ============================================================================
+
+    #[test]
+    fn test_b2bua_config_voicemail_uri_default_none() {
+        let cfg = B2buaConfig::default();
+        assert!(cfg.voicemail_server_uri.is_none());
+    }
+
+    #[test]
+    fn test_b2bua_config_voicemail_uri_serde() {
+        // Serialize default, modify, deserialize
+        let mut cfg = B2buaConfig::default();
+        cfg.voicemail_server_uri = Some("sip:vm@192.168.1.50:5060".to_string());
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.voicemail_server_uri.as_deref(),
+            Some("sip:vm@192.168.1.50:5060")
+        );
+    }
+
+    #[test]
+    fn test_b2bua_config_voicemail_uri_serde_missing() {
+        // Default config should serialize without voicemail_server_uri,
+        // and deserialize back with it as None
+        let cfg = B2buaConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.voicemail_server_uri.is_none());
     }
 }

@@ -263,6 +263,15 @@ pub struct Call {
 
     /// Extension of the user who parked this call.
     pub parker_extension: Option<String>,
+
+    /// Line binding ID for the callee (used for CFNA lookup).
+    pub line_binding_id: Option<fcp_core::LineBindingId>,
+
+    /// Original callee identifier (phone number or extension) before routing resolution.
+    pub original_callee: Option<String>,
+
+    /// Caller's phone number or extension.
+    pub caller_number: Option<String>,
 }
 
 impl fmt::Debug for CallLeg {
@@ -338,6 +347,9 @@ impl Call {
             custom_data: None,
             parked_orbit: None,
             parker_extension: None,
+            line_binding_id: None,
+            original_callee: None,
+            caller_number: None,
         }
     }
 
@@ -423,6 +435,9 @@ impl Call {
             custom_data: None,
             parked_orbit: None,
             parker_extension: None,
+            line_binding_id: None,
+            original_callee: None,
+            caller_number: None,
         }
     }
 

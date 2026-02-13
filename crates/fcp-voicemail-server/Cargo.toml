@@ -49,7 +49,7 @@ sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 
 # HTTP API
-axum = "0.7"
+axum = { version = "0.7", features = ["multipart"] }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

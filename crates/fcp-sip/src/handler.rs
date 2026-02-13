@@ -1113,7 +1113,27 @@ impl SipMessageHandler {
                 if let Some(did) = did {
                     debug!(call_id = %call_id, did = %did, "Checking for flow routing");
 
-                    if let Some(flow_id) = flow_handler.get_flow_for_did(&did).await {
+                    // Try To header DID first, then Request-URI user part, then _default
+                    let flow_id_opt = if let Some(fid) = flow_handler.get_flow_for_did(&did).await {
+                        Some(fid)
+                    } else {
+                        // Try Request-URI user part (for CFNA→voicemail routing where
+                        // the callee is in the R-URI but not necessarily in To)
+                        let ruri_did = Self::extract_did_from_uri(&request.uri().to_string());
+                        let ruri_match = match ruri_did {
+                            Some(ref user) if user != &did => {
+                                flow_handler.get_flow_for_did(user).await
+                            }
+                            _ => None,
+                        };
+                        // Fall back to _default route
+                        match ruri_match {
+                            Some(fid) => Some(fid),
+                            None => flow_handler.get_flow_for_did("_default").await,
+                        }
+                    };
+
+                    if let Some(flow_id) = flow_id_opt {
                         info!(
                             call_id = %call_id,
                             did = %did,
@@ -1796,6 +1816,16 @@ impl SipMessageHandler {
                                     "Found line binding for phone number"
                                 );
 
+                                // Store routing context for CFNA lookup
+                                {
+                                    let lb_id = line_binding.id;
+                                    let callee = destination_aor.to_string();
+                                    let _ = self.call_manager.update_call(&call_id, |call| {
+                                        call.line_binding_id = Some(lb_id);
+                                        call.original_callee = Some(callee);
+                                    });
+                                }
+
                                 // Handle different binding types
                                 match line_binding.binding_type {
                                     fcp_core::BindingType::User => {
@@ -2206,6 +2236,16 @@ impl SipMessageHandler {
                                             .await
                                         {
                                             Ok(Some(line_binding)) => {
+                                                // Store routing context for CFNA lookup
+                                                {
+                                                    let lb_id = line_binding.id;
+                                                    let callee = destination_aor.to_string();
+                                                    let _ = self.call_manager.update_call(&call_id, |call| {
+                                                        call.line_binding_id = Some(lb_id);
+                                                        call.original_callee = Some(callee);
+                                                    });
+                                                }
+
                                                 // Get devices from line binding
                                                 let enabled_devices =
                                                     line_binding.enabled_devices();
@@ -4132,13 +4172,50 @@ impl SipMessageHandler {
             // Just clean up; don't send another response to A-leg.
             info!(call_id = %call_id, "Forking task exiting after caller cancellation");
         } else {
-            // All B-legs failed (not due to cancellation)
-            warn!(call_id = %call_id, "All B-legs failed, returning 480");
-            let response = self.create_simple_response(&request, 480, "Temporarily Unavailable");
-            a_leg_handle.send_final(response).await;
-            let _ = self
-                .call_manager
-                .terminate_call(&call_id, Some("All B-legs failed".to_string()));
+            // All B-legs failed (not due to cancellation) — check CFNA
+            let call = self.call_manager.get_call(&call_id);
+            let cfna_dest = if let Some(ref call) = call {
+                if let Some(ref lb_id) = call.line_binding_id {
+                    self.check_cfna_destination(lb_id).await
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(dest) = cfna_dest {
+                info!(call_id = %call_id, destination = %dest, "CFNA: routing to forward destination");
+                let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
+                match self
+                    .route_cfna(&request, &a_leg_handle, call_id, &dest, callee)
+                    .await
+                {
+                    Ok(()) => {} // route_cfna handles forking + response
+                    Err(e) => {
+                        error!(call_id = %call_id, error = %e, "CFNA routing failed, sending 480");
+                        let resp = self.create_simple_response(
+                            &request,
+                            480,
+                            "Temporarily Unavailable",
+                        );
+                        a_leg_handle.send_final(resp).await;
+                        let _ = self.call_manager.terminate_call(
+                            &call_id,
+                            Some(format!("CFNA failed: {}", e)),
+                        );
+                    }
+                }
+            } else {
+                // No CFNA configured — original behavior
+                warn!(call_id = %call_id, "All B-legs failed, returning 480");
+                let response =
+                    self.create_simple_response(&request, 480, "Temporarily Unavailable");
+                a_leg_handle.send_final(response).await;
+                let _ = self
+                    .call_manager
+                    .terminate_call(&call_id, Some("All B-legs failed".to_string()));
+            }
         }
 
         Ok(())
@@ -7676,7 +7753,19 @@ impl SipMessageHandler {
                 destination = %dest,
                 "Hunt group: no answer, routing to fallback destination"
             );
-            // TODO: Phase 2 — route to voicemail or other destination
+            let call = self.call_manager.get_call(&call_id);
+            let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
+            let a_handle = Arc::new(a_leg_handle.clone());
+            match self
+                .route_cfna(request, &a_handle, call_id, dest, callee)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    error!(call_id = %call_id, error = %e, "Hunt group CFNA routing failed");
+                    // Fall through to 480
+                }
+            }
         }
 
         let response = self.create_simple_response(request, 480, "Temporarily Unavailable");
@@ -7686,6 +7775,126 @@ impl SipMessageHandler {
             Some("Hunt group: no members answered".to_string()),
         );
         Ok(())
+    }
+
+    // =========================================================================
+    // Call Forward No Answer (CFNA)
+    // =========================================================================
+
+    /// Look up the CFNA destination for a line binding.
+    ///
+    /// Returns the `forward_on_no_answer` value from the line binding if set.
+    async fn check_cfna_destination(
+        &self,
+        line_binding_id: &fcp_core::LineBindingId,
+    ) -> Option<String> {
+        let storage = self.storage.as_ref()?;
+        match storage.get_line_binding(line_binding_id).await {
+            Ok(Some(lb)) => lb.forward_on_no_answer.clone(),
+            Ok(None) => {
+                debug!(line_binding_id = %line_binding_id, "Line binding not found for CFNA check");
+                None
+            }
+            Err(e) => {
+                warn!(line_binding_id = %line_binding_id, error = %e, "Failed to get line binding for CFNA check");
+                None
+            }
+        }
+    }
+
+    /// Route a call via CFNA to a forward destination.
+    ///
+    /// Resolves the destination (including "voicemail" → voicemail server URI),
+    /// creates a new B-leg INVITE, and runs parallel forking for the CFNA target.
+    fn route_cfna<'a>(
+        &'a self,
+        original_request: &'a sip_core::Request,
+        a_leg_handle: &'a Arc<ServerTransactionHandle>,
+        call_id: fcp_b2bua_core::CallId,
+        destination: &'a str,
+        original_callee: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+        let uac = self
+            .uac
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("UAC not configured — cannot route CFNA"))?;
+
+        // Resolve the target URI
+        let target_uri = if destination.eq_ignore_ascii_case("voicemail") {
+            // Construct voicemail SIP URI from config
+            let vm_uri = self
+                .b2bua_config
+                .voicemail_server_uri
+                .as_deref()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("CFNA destination is 'voicemail' but voicemail_server_uri is not configured")
+                })?;
+
+            // Extract host:port from the configured voicemail server URI
+            let vm_host = vm_uri
+                .strip_prefix("sip:")
+                .or_else(|| vm_uri.strip_prefix("sips:"))
+                .unwrap_or(vm_uri)
+                .split('@')
+                .last()
+                .unwrap_or(vm_uri);
+
+            // Use the original callee as the user part
+            let user = original_callee.unwrap_or("unknown");
+            // Strip sip: prefix and @host from callee to get just the user part
+            let user_part = user
+                .strip_prefix("sip:")
+                .or_else(|| user.strip_prefix("sips:"))
+                .unwrap_or(user)
+                .split('@')
+                .next()
+                .unwrap_or(user);
+
+            format!("sip:{}@{}", user_part, vm_host)
+        } else if destination.starts_with("sip:") || destination.starts_with("sips:") {
+            destination.to_string()
+        } else {
+            // Assume it's a number/extension — resolve via registrar or outbound route
+            let host = self.uas.local_uri.host().to_string();
+            format!("sip:{}@{}", destination, host)
+        };
+
+        info!(
+            call_id = %call_id,
+            destination = %destination,
+            target_uri = %target_uri,
+            "CFNA: creating B-leg to forward destination"
+        );
+
+        // Create the outbound call
+        let outbound_call = self
+            .create_outbound_call(original_request, &target_uri, uac)
+            .await?;
+
+        // Create a fresh cancel_notify for the CFNA B-leg
+        let cancel_notify = Arc::new(tokio::sync::Notify::new());
+        let _ = self.call_manager.update_call(&call_id, |call| {
+            call.cancel_notify = Some(Arc::clone(&cancel_notify));
+            // Clear the old B-leg so the CFNA B-leg takes over
+            call.b_leg = None;
+        });
+
+        // Run parallel forking with the single CFNA B-leg
+        // Clear line_binding_id so CFNA doesn't recurse infinitely
+        let _ = self.call_manager.update_call(&call_id, |call| {
+            call.line_binding_id = None;
+        });
+
+        self.handle_parallel_forking(
+            original_request.clone(),
+            Arc::clone(a_leg_handle),
+            vec![(target_uri, outbound_call, None)],
+            call_id,
+            cancel_notify,
+        )
+        .await
+        }) // end Box::pin(async move { ... })
     }
 
     /// Create an outbound call to a target URI via the UAC.
@@ -9609,5 +9818,98 @@ mod tests {
         let unheld = generate_unhold_sdp(Some(&held), "10.0.0.1", 5000);
         assert!(unheld.contains("a=sendrecv"));
         assert!(!unheld.contains("a=sendonly"));
+    }
+
+    // =========================================================================
+    // CFNA / Voicemail URI construction tests
+    // =========================================================================
+
+    #[test]
+    fn test_voicemail_uri_from_e164_callee() {
+        // Simulate the URI construction logic from route_cfna
+        let vm_uri = "sip:vm@192.168.1.50:5060";
+        let original_callee = "sip:+15551234567@pbx.local";
+
+        let vm_host = vm_uri
+            .strip_prefix("sip:")
+            .unwrap_or(vm_uri)
+            .split('@')
+            .last()
+            .unwrap_or(vm_uri);
+        let user_part = original_callee
+            .strip_prefix("sip:")
+            .unwrap_or(original_callee)
+            .split('@')
+            .next()
+            .unwrap_or(original_callee);
+        let result = format!("sip:{}@{}", user_part, vm_host);
+
+        assert_eq!(result, "sip:+15551234567@192.168.1.50:5060");
+    }
+
+    #[test]
+    fn test_voicemail_uri_from_extension_callee() {
+        let vm_uri = "sip:vm@voicemail.local";
+        let original_callee = "5000";
+
+        let vm_host = vm_uri
+            .strip_prefix("sip:")
+            .unwrap_or(vm_uri)
+            .split('@')
+            .last()
+            .unwrap_or(vm_uri);
+        let user_part = original_callee
+            .strip_prefix("sip:")
+            .unwrap_or(original_callee)
+            .split('@')
+            .next()
+            .unwrap_or(original_callee);
+        let result = format!("sip:{}@{}", user_part, vm_host);
+
+        assert_eq!(result, "sip:5000@voicemail.local");
+    }
+
+    #[test]
+    fn test_voicemail_uri_unknown_callee() {
+        let vm_uri = "sip:vm@192.168.1.50:5060";
+        let original_callee: Option<&str> = None;
+
+        let vm_host = vm_uri
+            .strip_prefix("sip:")
+            .unwrap_or(vm_uri)
+            .split('@')
+            .last()
+            .unwrap_or(vm_uri);
+        let user = original_callee.unwrap_or("unknown");
+        let user_part = user
+            .strip_prefix("sip:")
+            .unwrap_or(user)
+            .split('@')
+            .next()
+            .unwrap_or(user);
+        let result = format!("sip:{}@{}", user_part, vm_host);
+
+        assert_eq!(result, "sip:unknown@192.168.1.50:5060");
+    }
+
+    #[test]
+    fn test_cfna_destination_direct_sip_uri() {
+        // When destination starts with sip:, it should be used directly
+        let destination = "sip:+15559876543@gateway.example.com";
+        let is_direct = destination.starts_with("sip:") || destination.starts_with("sips:");
+        assert!(is_direct);
+    }
+
+    #[test]
+    fn test_cfna_destination_extension_resolution() {
+        // When destination is a plain number, it should be resolved as extension
+        let destination = "5001";
+        let host = "pbx.local";
+        let is_direct = destination.starts_with("sip:") || destination.starts_with("sips:");
+        assert!(!is_direct);
+        let is_voicemail = destination.eq_ignore_ascii_case("voicemail");
+        assert!(!is_voicemail);
+        let result = format!("sip:{}@{}", destination, host);
+        assert_eq!(result, "sip:5001@pbx.local");
     }
 }

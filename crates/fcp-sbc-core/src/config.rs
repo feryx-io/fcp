@@ -149,6 +149,7 @@ impl Default for SbcConfig {
                     min_se_secs: 90,
                 },
                 max_extension_digits: 6,
+                voicemail_server_uri: None,
             },
             admission: AdmissionConfig::default(),
             rate_limit: RateLimitPolicyConfig::default(),

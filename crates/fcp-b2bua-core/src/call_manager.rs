@@ -1283,4 +1283,56 @@ mod tests {
 
         assert_eq!(extract_codec_from_sdp(Some(sdp)), Some("PCMU".to_string()));
     }
+
+    // ============================================================================
+    // Routing Context Fields Tests (CFNA support)
+    // ============================================================================
+
+    #[test]
+    fn test_call_routing_context_fields_default_none() {
+        let call = create_test_call();
+        assert!(call.line_binding_id.is_none());
+        assert!(call.original_callee.is_none());
+        assert!(call.caller_number.is_none());
+    }
+
+    #[test]
+    fn test_call_routing_context_fields_update() {
+        let manager = CallManager::new();
+        let call = create_test_call();
+        let call_id = call.id;
+        manager.create_call(call);
+
+        let lb_id = fcp_core::LineBindingId::new();
+        let result = manager.update_call(&call_id, |call| {
+            call.line_binding_id = Some(lb_id);
+            call.original_callee = Some("sip:+15551234567@example.com".to_string());
+            call.caller_number = Some("sip:alice@example.com".to_string());
+        });
+        assert!(result.is_ok());
+
+        let updated = manager.get_call(&call_id).unwrap();
+        assert_eq!(updated.line_binding_id, Some(lb_id));
+        assert_eq!(
+            updated.original_callee.as_deref(),
+            Some("sip:+15551234567@example.com")
+        );
+        assert_eq!(
+            updated.caller_number.as_deref(),
+            Some("sip:alice@example.com")
+        );
+    }
+
+    #[test]
+    fn test_originated_call_routing_context_none() {
+        let call = crate::call::Call::new_originated(
+            "sip:alice@example.com".to_string(),
+            None,
+            "sip:bob@example.com".to_string(),
+            fcp_core::TenantId::nil(),
+        );
+        assert!(call.line_binding_id.is_none());
+        assert!(call.original_callee.is_none());
+        assert!(call.caller_number.is_none());
+    }
 }

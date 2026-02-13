@@ -426,4 +426,39 @@ mod tests {
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].priority, 5); // Lower priority (higher precedence) comes first
     }
+
+    #[test]
+    fn test_forwarding_rules_no_answer_type() {
+        let mut manager = ForwardingRulesManager::new();
+        let line_binding_id = LineBindingId::new();
+
+        let rule = ForwardingRule::new(
+            line_binding_id,
+            TenantId::nil(),
+            ForwardType::NoAnswer,
+            ForwardDestination::Voicemail,
+        );
+        manager.add_rule(rule);
+
+        let now = SystemTime::now();
+        let found = manager.find_applicable_rule(&line_binding_id, ForwardType::NoAnswer, "+15551234567", now);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().forward_type, ForwardType::NoAnswer);
+        assert_eq!(found.unwrap().destination, ForwardDestination::Voicemail);
+
+        // Should NOT match Unconditional
+        let not_found = manager.find_applicable_rule(&line_binding_id, ForwardType::Unconditional, "+15551234567", now);
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_forward_destination_voicemail_display() {
+        assert_eq!(ForwardDestination::Voicemail.to_string(), "voicemail");
+    }
+
+    #[test]
+    fn test_forward_destination_extension_display() {
+        let dest = ForwardDestination::Extension("5001".to_string());
+        assert_eq!(dest.to_string(), "ext:5001");
+    }
 }
