@@ -116,6 +116,7 @@ pub struct MongodbStorage {
     extensions: Collection<Document>,
     devices: Collection<Document>,
     device_bindings: Collection<Document>,
+    meetings: Collection<Document>,
 }
 
 impl MongodbStorage {
@@ -153,6 +154,7 @@ impl MongodbStorage {
         let extensions = db.collection::<Document>("extensions");
         let devices = db.collection::<Document>("devices");
         let device_bindings = db.collection::<Document>("device_bindings");
+        let meetings = db.collection::<Document>("meetings");
 
         let storage = Self {
             client,
@@ -166,6 +168,7 @@ impl MongodbStorage {
             extensions,
             devices,
             device_bindings,
+            meetings,
         };
 
         // Create indexes
@@ -325,6 +328,25 @@ impl MongodbStorage {
             .create_indexes(device_bindings_indexes)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create device_bindings indexes: {}", e))?;
+
+        // Meetings indexes
+        let meetings_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "tenant_id": 1 })
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "tenant_id": 1, "room_number": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+        ];
+        self.meetings
+            .create_indexes(meetings_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create meetings indexes: {}", e))?;
 
         debug!("MongoDB indexes created successfully");
         Ok(())
@@ -2196,39 +2218,174 @@ impl DeviceStore for MongodbStorage {
 impl ConferenceStore for MongodbStorage {
     async fn get_meeting(
         &self,
-        _id: &fcp_core::MeetingId,
+        id: &fcp_core::MeetingId,
     ) -> Result<Option<fcp_core::Meeting>> {
-        Ok(None)
+        let filter = doc! { "id": id.to_string() };
+        let result = self
+            .meetings
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get meeting: {}", e))?;
+
+        match result {
+            Some(doc) => Ok(Some(document_to_meeting(doc)?)),
+            None => Ok(None),
+        }
     }
 
     async fn get_meeting_by_room_number(
         &self,
-        _tenant_id: &TenantId,
-        _room_number: &str,
+        tenant_id: &TenantId,
+        room_number: &str,
     ) -> Result<Option<fcp_core::Meeting>> {
-        Ok(None)
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+            "room_number": room_number,
+        };
+        let result = self
+            .meetings
+            .find_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get meeting by room number: {}", e))?;
+
+        match result {
+            Some(doc) => Ok(Some(document_to_meeting(doc)?)),
+            None => Ok(None),
+        }
     }
 
-    async fn list_meetings(&self, _tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
-        Ok(Vec::new())
+    async fn list_meetings(&self, tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
+        let filter = doc! { "tenant_id": tenant_id.to_string() };
+        let mut cursor = self
+            .meetings
+            .find(filter)
+            .sort(doc! { "room_number": 1 })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list meetings: {}", e))?;
+
+        let mut meetings = Vec::new();
+        while cursor.advance().await.map_err(|e| anyhow::anyhow!("Cursor error: {}", e))? {
+            let doc = cursor.deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Deserialize error: {}", e))?;
+            if let Ok(meeting) = document_to_meeting(doc) {
+                meetings.push(meeting);
+            }
+        }
+
+        Ok(meetings)
     }
 
-    async fn put_meeting(&self, _meeting: fcp_core::Meeting) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Conference storage not yet implemented for MongoDB"
-        ))
+    async fn put_meeting(&self, meeting: fcp_core::Meeting) -> Result<()> {
+        let created_at = system_time_to_bson_datetime(meeting.created_at);
+        let updated_at = system_time_to_bson_datetime(SystemTime::now());
+
+        let doc = doc! {
+            "id": meeting.id.to_string(),
+            "tenant_id": meeting.tenant_id.to_string(),
+            "room_number": &meeting.room_number,
+            "name": &meeting.name,
+            "guest_pin": meeting.guest_pin.as_deref(),
+            "host_pin": meeting.host_pin.as_deref(),
+            "require_guest_pin": meeting.require_guest_pin,
+            "max_participants": meeting.max_participants as i64,
+            "wait_for_moderator": meeting.wait_for_moderator,
+            "enabled": meeting.enabled,
+            "auto_record": meeting.auto_record,
+            "default_locked": meeting.default_locked,
+            "permanent": meeting.permanent,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        };
+
+        let filter = doc! { "id": meeting.id.to_string() };
+        self.meetings
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to store meeting: {}", e))?;
+
+        debug!(id = %meeting.id, "Meeting stored in MongoDB");
+        Ok(())
     }
 
-    async fn delete_meeting(&self, _id: &fcp_core::MeetingId) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Conference storage not yet implemented for MongoDB"
-        ))
+    async fn delete_meeting(&self, id: &fcp_core::MeetingId) -> Result<()> {
+        let filter = doc! { "id": id.to_string() };
+        self.meetings
+            .delete_one(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete meeting: {}", e))?;
+
+        debug!(id = %id, "Meeting deleted from MongoDB");
+        Ok(())
     }
 }
 
 // ============================================================================
 // Document Conversion Helpers for New Types
 // ============================================================================
+
+fn document_to_meeting(doc: Document) -> Result<fcp_core::Meeting> {
+    let id = fcp_core::MeetingId::from_str(
+        doc.get_str("id")
+            .map_err(|_| anyhow::anyhow!("Missing id field"))?,
+    )
+    .map_err(|e| anyhow::anyhow!("Invalid MeetingId: {}", e))?;
+
+    let tenant_id = TenantId::from_str(
+        doc.get_str("tenant_id")
+            .map_err(|_| anyhow::anyhow!("Missing tenant_id field"))?,
+    )
+    .map_err(|e| anyhow::anyhow!("Invalid TenantId: {}", e))?;
+
+    let room_number = doc
+        .get_str("room_number")
+        .map_err(|_| anyhow::anyhow!("Missing room_number field"))?
+        .to_string();
+
+    let name = doc
+        .get_str("name")
+        .map_err(|_| anyhow::anyhow!("Missing name field"))?
+        .to_string();
+
+    let guest_pin = doc.get_str("guest_pin").ok().map(|s| s.to_string());
+    let host_pin = doc.get_str("host_pin").ok().map(|s| s.to_string());
+
+    let require_guest_pin = doc.get_bool("require_guest_pin").unwrap_or(false);
+    let max_participants = doc.get_i64("max_participants").unwrap_or(0) as usize;
+    let wait_for_moderator = doc.get_bool("wait_for_moderator").unwrap_or(false);
+    let enabled = doc.get_bool("enabled").unwrap_or(true);
+    let auto_record = doc.get_bool("auto_record").unwrap_or(false);
+    let default_locked = doc.get_bool("default_locked").unwrap_or(false);
+    let permanent = doc.get_bool("permanent").unwrap_or(false);
+
+    let created_at = doc
+        .get_datetime("created_at")
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or(SystemTime::now());
+
+    let updated_at = doc
+        .get_datetime("updated_at")
+        .map(|dt| bson_datetime_to_system_time(*dt))
+        .unwrap_or(SystemTime::now());
+
+    Ok(fcp_core::Meeting {
+        id,
+        tenant_id,
+        room_number,
+        name,
+        guest_pin,
+        host_pin,
+        require_guest_pin,
+        max_participants,
+        wait_for_moderator,
+        enabled,
+        auto_record,
+        default_locked,
+        permanent,
+        created_at,
+        updated_at,
+    })
+}
 
 fn document_to_phone_number(doc: Document) -> Result<PhoneNumber> {
     let id = PhoneNumberId::from_str(

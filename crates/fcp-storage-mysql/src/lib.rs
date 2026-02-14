@@ -1945,34 +1945,152 @@ impl DeviceStore for MysqlStorage {
 impl ConferenceStore for MysqlStorage {
     async fn get_meeting(
         &self,
-        _id: &fcp_core::MeetingId,
+        id: &fcp_core::MeetingId,
     ) -> Result<Option<fcp_core::Meeting>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(map_meeting_row_mysql(row)?)),
+            None => Ok(None),
+        }
     }
 
     async fn get_meeting_by_room_number(
         &self,
-        _tenant_id: &TenantId,
-        _room_number: &str,
+        tenant_id: &TenantId,
+        room_number: &str,
     ) -> Result<Option<fcp_core::Meeting>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE tenant_id = ? AND room_number = ?",
+        )
+        .bind(tenant_id.to_string())
+        .bind(room_number)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(map_meeting_row_mysql(row)?)),
+            None => Ok(None),
+        }
     }
 
-    async fn list_meetings(&self, _tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
-        Ok(Vec::new())
+    async fn list_meetings(&self, tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE tenant_id = ? ORDER BY room_number",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let meetings = rows
+            .into_iter()
+            .filter_map(|row| map_meeting_row_mysql(row).ok())
+            .collect();
+
+        Ok(meetings)
     }
 
-    async fn put_meeting(&self, _meeting: fcp_core::Meeting) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Conference storage not yet implemented for MySQL"
-        ))
+    async fn put_meeting(&self, meeting: fcp_core::Meeting) -> Result<()> {
+        let created_at = system_time_to_datetime(meeting.created_at);
+        let updated_at = system_time_to_datetime(SystemTime::now());
+
+        sqlx::query(
+            "INSERT INTO conference_meetings
+             (id, tenant_id, room_number, name, guest_pin, host_pin,
+              require_guest_pin, max_participants, wait_for_moderator,
+              enabled, auto_record, default_locked, permanent,
+              created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+              tenant_id = VALUES(tenant_id),
+              room_number = VALUES(room_number),
+              name = VALUES(name),
+              guest_pin = VALUES(guest_pin),
+              host_pin = VALUES(host_pin),
+              require_guest_pin = VALUES(require_guest_pin),
+              max_participants = VALUES(max_participants),
+              wait_for_moderator = VALUES(wait_for_moderator),
+              enabled = VALUES(enabled),
+              auto_record = VALUES(auto_record),
+              default_locked = VALUES(default_locked),
+              permanent = VALUES(permanent),
+              updated_at = VALUES(updated_at)",
+        )
+        .bind(meeting.id.to_string())
+        .bind(meeting.tenant_id.to_string())
+        .bind(&meeting.room_number)
+        .bind(&meeting.name)
+        .bind(meeting.guest_pin.as_deref())
+        .bind(meeting.host_pin.as_deref())
+        .bind(meeting.require_guest_pin)
+        .bind(meeting.max_participants as i32)
+        .bind(meeting.wait_for_moderator)
+        .bind(meeting.enabled)
+        .bind(meeting.auto_record)
+        .bind(meeting.default_locked)
+        .bind(meeting.permanent)
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(id = %meeting.id, "Meeting stored");
+        Ok(())
     }
 
-    async fn delete_meeting(&self, _id: &fcp_core::MeetingId) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Conference storage not yet implemented for MySQL"
-        ))
+    async fn delete_meeting(&self, id: &fcp_core::MeetingId) -> Result<()> {
+        sqlx::query("DELETE FROM conference_meetings WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Meeting deleted");
+        Ok(())
     }
+}
+
+fn map_meeting_row_mysql(row: sqlx::mysql::MySqlRow) -> Result<fcp_core::Meeting> {
+    let id_str: String = row.get("id");
+    let tenant_str: String = row.get("tenant_id");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let updated_at: DateTime<Utc> = row.get("updated_at");
+
+    Ok(fcp_core::Meeting {
+        id: fcp_core::MeetingId::from_str(&id_str)
+            .map_err(|e| anyhow::anyhow!("Invalid MeetingId: {}", e))?,
+        tenant_id: TenantId::from_str(&tenant_str)
+            .map_err(|e| anyhow::anyhow!("Invalid TenantId: {}", e))?,
+        room_number: row.get("room_number"),
+        name: row.get("name"),
+        guest_pin: row.get("guest_pin"),
+        host_pin: row.get("host_pin"),
+        require_guest_pin: row.get("require_guest_pin"),
+        max_participants: row.get::<i32, _>("max_participants") as usize,
+        wait_for_moderator: row.get("wait_for_moderator"),
+        enabled: row.get("enabled"),
+        auto_record: row.get("auto_record"),
+        default_locked: row.get("default_locked"),
+        permanent: row.get("permanent"),
+        created_at: datetime_to_system_time(created_at),
+        updated_at: datetime_to_system_time(updated_at),
+    })
 }
 
 #[cfg(test)]

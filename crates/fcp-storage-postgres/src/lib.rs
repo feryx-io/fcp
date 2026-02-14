@@ -1714,34 +1714,152 @@ impl DeviceStore for PostgresStorage {
 impl ConferenceStore for PostgresStorage {
     async fn get_meeting(
         &self,
-        _id: &fcp_core::MeetingId,
+        id: &fcp_core::MeetingId,
     ) -> Result<Option<fcp_core::Meeting>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(map_meeting_row_pg(row)?)),
+            None => Ok(None),
+        }
     }
 
     async fn get_meeting_by_room_number(
         &self,
-        _tenant_id: &TenantId,
-        _room_number: &str,
+        tenant_id: &TenantId,
+        room_number: &str,
     ) -> Result<Option<fcp_core::Meeting>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE tenant_id = $1 AND room_number = $2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(room_number)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(map_meeting_row_pg(row)?)),
+            None => Ok(None),
+        }
     }
 
-    async fn list_meetings(&self, _tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
-        Ok(Vec::new())
+    async fn list_meetings(&self, tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let meetings = rows
+            .into_iter()
+            .filter_map(|row| map_meeting_row_pg(row).ok())
+            .collect();
+
+        Ok(meetings)
     }
 
-    async fn put_meeting(&self, _meeting: fcp_core::Meeting) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Conference storage not yet implemented for PostgreSQL"
-        ))
+    async fn put_meeting(&self, meeting: fcp_core::Meeting) -> Result<()> {
+        let created_at = system_time_to_datetime(meeting.created_at);
+        let updated_at = system_time_to_datetime(SystemTime::now());
+
+        sqlx::query(
+            "INSERT INTO conference_meetings
+             (id, tenant_id, room_number, name, guest_pin, host_pin,
+              require_guest_pin, max_participants, wait_for_moderator,
+              enabled, auto_record, default_locked, permanent,
+              created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             ON CONFLICT (id) DO UPDATE SET
+              tenant_id = EXCLUDED.tenant_id,
+              room_number = EXCLUDED.room_number,
+              name = EXCLUDED.name,
+              guest_pin = EXCLUDED.guest_pin,
+              host_pin = EXCLUDED.host_pin,
+              require_guest_pin = EXCLUDED.require_guest_pin,
+              max_participants = EXCLUDED.max_participants,
+              wait_for_moderator = EXCLUDED.wait_for_moderator,
+              enabled = EXCLUDED.enabled,
+              auto_record = EXCLUDED.auto_record,
+              default_locked = EXCLUDED.default_locked,
+              permanent = EXCLUDED.permanent,
+              updated_at = EXCLUDED.updated_at",
+        )
+        .bind(meeting.id.to_string())
+        .bind(meeting.tenant_id.to_string())
+        .bind(&meeting.room_number)
+        .bind(&meeting.name)
+        .bind(meeting.guest_pin.as_deref())
+        .bind(meeting.host_pin.as_deref())
+        .bind(meeting.require_guest_pin)
+        .bind(meeting.max_participants as i32)
+        .bind(meeting.wait_for_moderator)
+        .bind(meeting.enabled)
+        .bind(meeting.auto_record)
+        .bind(meeting.default_locked)
+        .bind(meeting.permanent)
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(id = %meeting.id, "Meeting stored");
+        Ok(())
     }
 
-    async fn delete_meeting(&self, _id: &fcp_core::MeetingId) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Conference storage not yet implemented for PostgreSQL"
-        ))
+    async fn delete_meeting(&self, id: &fcp_core::MeetingId) -> Result<()> {
+        sqlx::query("DELETE FROM conference_meetings WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Meeting deleted");
+        Ok(())
     }
+}
+
+fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
+    let id_str: String = row.get("id");
+    let tenant_str: String = row.get("tenant_id");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let updated_at: DateTime<Utc> = row.get("updated_at");
+
+    Ok(fcp_core::Meeting {
+        id: fcp_core::MeetingId::from_str(&id_str)
+            .map_err(|e| anyhow::anyhow!("Invalid MeetingId: {}", e))?,
+        tenant_id: TenantId::from_str(&tenant_str)
+            .map_err(|e| anyhow::anyhow!("Invalid TenantId: {}", e))?,
+        room_number: row.get("room_number"),
+        name: row.get("name"),
+        guest_pin: row.get("guest_pin"),
+        host_pin: row.get("host_pin"),
+        require_guest_pin: row.get("require_guest_pin"),
+        max_participants: row.get::<i32, _>("max_participants") as usize,
+        wait_for_moderator: row.get("wait_for_moderator"),
+        enabled: row.get("enabled"),
+        auto_record: row.get("auto_record"),
+        default_locked: row.get("default_locked"),
+        permanent: row.get("permanent"),
+        created_at: datetime_to_system_time(created_at),
+        updated_at: datetime_to_system_time(updated_at),
+    })
 }
 
 fn row_to_phone_number(row: sqlx::postgres::PgRow) -> Result<PhoneNumber> {
