@@ -32,8 +32,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
-        CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        RegistrationStore, TenantStore,
+        CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
+        PhoneNumberStore, RegistrationStore, TenantStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -1709,6 +1709,41 @@ impl DeviceStore for PostgresStorage {
         Ok(())
     }
 }
+
+#[async_trait]
+impl ConferenceStore for PostgresStorage {
+    async fn get_meeting(
+        &self,
+        _id: &fcp_core::MeetingId,
+    ) -> Result<Option<fcp_core::Meeting>> {
+        Ok(None)
+    }
+
+    async fn get_meeting_by_room_number(
+        &self,
+        _tenant_id: &TenantId,
+        _room_number: &str,
+    ) -> Result<Option<fcp_core::Meeting>> {
+        Ok(None)
+    }
+
+    async fn list_meetings(&self, _tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_meeting(&self, _meeting: fcp_core::Meeting) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Conference storage not yet implemented for PostgreSQL"
+        ))
+    }
+
+    async fn delete_meeting(&self, _id: &fcp_core::MeetingId) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Conference storage not yet implemented for PostgreSQL"
+        ))
+    }
+}
+
 fn row_to_phone_number(row: sqlx::postgres::PgRow) -> Result<PhoneNumber> {
     let id = PhoneNumberId::from_str(&row.get::<String, _>("id"))?;
     let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;

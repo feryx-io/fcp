@@ -1533,7 +1533,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "axum",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "axum",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1707,6 +1707,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-conference-server"
+version = "0.14.34"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "clap",
+ "dashmap 6.1.0",
+ "fcp-b2bua-core",
+ "fcp-core",
+ "fcp-events",
+ "fcp-media",
+ "fcp-sbc-core",
+ "fcp-sip",
+ "fcp-storage-mongodb",
+ "fcp-storage-mysql",
+ "fcp-storage-postgres",
+ "fcp-storage-sqlite",
+ "forge-codecs",
+ "forge-conference",
+ "forge-core",
+ "forge-mixer",
+ "forge-rtp",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sip-core",
+ "sip-dialog",
+ "sip-dns",
+ "sip-observe",
+ "sip-sdp",
+ "sip-transaction",
+ "sip-transport",
+ "sip-uac",
+ "socket2 0.5.10",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-core"
 version = "0.3.0"
 dependencies = [
@@ -1726,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1743,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "axum",
@@ -1790,7 +1834,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1831,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "axum",
@@ -1888,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -1905,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1960,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2008,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2081,7 +2125,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2100,7 +2144,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2118,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2136,7 +2180,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2171,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.14.33"
+version = "0.14.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2347,6 +2391,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-conference"
+version = "0.3.1"
+dependencies = [
+ "bytes",
+ "dashmap 5.5.3",
+ "forge-core",
+ "forge-engine",
+ "forge-mixer",
+ "forge-recorder",
+ "hound",
+ "metrics",
+ "parking_lot 0.12.5",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "forge-core"
 version = "0.2.0"
 dependencies = [
@@ -2408,6 +2472,19 @@ dependencies = [
  "symphonia",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "forge-mixer"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "dashmap 5.5.3",
+ "forge-core",
+ "forge-recorder",
+ "parking_lot 0.12.5",
+ "thiserror 1.0.69",
  "tracing",
 ]
 

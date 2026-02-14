@@ -272,6 +272,7 @@ async fn main() -> Result<()> {
         config.b2bua.clone(),
         outbound_route_provider,
         None, // No PBX handler
+        None, // No conference handler
     )?);
 
     // 19. Create and start TransportListener

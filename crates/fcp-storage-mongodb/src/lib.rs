@@ -25,9 +25,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bson::{doc, DateTime as BsonDateTime, Document};
 use fcp_core::storage::{
-    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty, LineBindingStore,
-    MediaPreferences, PhoneNumberStore, Registration, RegistrationStore, TenantStore, User,
+    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
+    CredentialStore, DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty,
+    LineBindingStore, MediaPreferences, PhoneNumberStore, Registration, RegistrationStore,
+    TenantStore, User,
 };
 use fcp_core::{
     AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
@@ -2188,6 +2189,40 @@ impl DeviceStore for MongodbStorage {
 
         debug!(id = %id, "Device deleted from MongoDB");
         Ok(())
+    }
+}
+
+#[async_trait]
+impl ConferenceStore for MongodbStorage {
+    async fn get_meeting(
+        &self,
+        _id: &fcp_core::MeetingId,
+    ) -> Result<Option<fcp_core::Meeting>> {
+        Ok(None)
+    }
+
+    async fn get_meeting_by_room_number(
+        &self,
+        _tenant_id: &TenantId,
+        _room_number: &str,
+    ) -> Result<Option<fcp_core::Meeting>> {
+        Ok(None)
+    }
+
+    async fn list_meetings(&self, _tenant_id: &TenantId) -> Result<Vec<fcp_core::Meeting>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_meeting(&self, _meeting: fcp_core::Meeting) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Conference storage not yet implemented for MongoDB"
+        ))
+    }
+
+    async fn delete_meeting(&self, _id: &fcp_core::MeetingId) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Conference storage not yet implemented for MongoDB"
+        ))
     }
 }
 

@@ -1098,6 +1098,29 @@ pub trait GeoRoutingStore: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Storage backend for conference meetings.
+#[async_trait::async_trait]
+pub trait ConferenceStore: Send + Sync {
+    /// Get a meeting by ID
+    async fn get_meeting(&self, id: &crate::MeetingId) -> Result<Option<crate::Meeting>>;
+
+    /// Get a meeting by room number within a tenant
+    async fn get_meeting_by_room_number(
+        &self,
+        tenant_id: &crate::TenantId,
+        room_number: &str,
+    ) -> Result<Option<crate::Meeting>>;
+
+    /// List all meetings for a tenant
+    async fn list_meetings(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Meeting>>;
+
+    /// Create or update a meeting
+    async fn put_meeting(&self, meeting: crate::Meeting) -> Result<()>;
+
+    /// Delete a meeting by ID
+    async fn delete_meeting(&self, id: &crate::MeetingId) -> Result<()>;
+}
+
 /// Serde helper for Optional<SystemTime>
 mod optional_system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1408,6 +1431,7 @@ pub struct DynStorage {
     geo_routing_store: Arc<dyn GeoRoutingStore>,
     porting_store: Arc<dyn crate::porting::PortingStore>,
     tenant_store: Arc<dyn TenantStore>,
+    conference_store: Arc<dyn ConferenceStore>,
 }
 
 impl DynStorage {
@@ -1424,6 +1448,7 @@ impl DynStorage {
         geo_routing_store: Arc<dyn GeoRoutingStore>,
         porting_store: Arc<dyn crate::porting::PortingStore>,
         tenant_store: Arc<dyn TenantStore>,
+        conference_store: Arc<dyn ConferenceStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1437,6 +1462,7 @@ impl DynStorage {
             geo_routing_store,
             porting_store,
             tenant_store,
+            conference_store,
         }
     }
 
@@ -1457,6 +1483,7 @@ impl DynStorage {
             + GeoRoutingStore
             + crate::porting::PortingStore
             + TenantStore
+            + ConferenceStore
             + 'static,
     {
         Self {
@@ -1470,7 +1497,8 @@ impl DynStorage {
             voicemail_store: storage.clone(),
             geo_routing_store: storage.clone(),
             porting_store: storage.clone(),
-            tenant_store: storage,
+            tenant_store: storage.clone(),
+            conference_store: storage,
         }
     }
 }
@@ -1875,6 +1903,35 @@ impl TenantStore for DynStorage {
 
     async fn delete_tenant(&self, id: &crate::TenantId) -> Result<()> {
         self.tenant_store.delete_tenant(id).await
+    }
+}
+
+#[async_trait]
+impl ConferenceStore for DynStorage {
+    async fn get_meeting(&self, id: &crate::MeetingId) -> Result<Option<crate::Meeting>> {
+        self.conference_store.get_meeting(id).await
+    }
+
+    async fn get_meeting_by_room_number(
+        &self,
+        tenant_id: &crate::TenantId,
+        room_number: &str,
+    ) -> Result<Option<crate::Meeting>> {
+        self.conference_store
+            .get_meeting_by_room_number(tenant_id, room_number)
+            .await
+    }
+
+    async fn list_meetings(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Meeting>> {
+        self.conference_store.list_meetings(tenant_id).await
+    }
+
+    async fn put_meeting(&self, meeting: crate::Meeting) -> Result<()> {
+        self.conference_store.put_meeting(meeting).await
+    }
+
+    async fn delete_meeting(&self, id: &crate::MeetingId) -> Result<()> {
+        self.conference_store.delete_meeting(id).await
     }
 }
 

@@ -166,6 +166,7 @@ async fn main() -> Result<()> {
         B2buaConfig::default(),
         None,                    // outbound_route_provider
         None,                    // pbx_handler
+        None,                    // conference_handler
     )?);
 
     let api_config = fcp_core::ApiConfig {

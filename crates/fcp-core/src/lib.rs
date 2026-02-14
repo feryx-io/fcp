@@ -13,6 +13,7 @@ pub mod extension;
 pub mod forwarding;
 pub mod geographic;
 pub mod identifiers;
+pub mod meeting;
 pub mod line_binding;
 pub mod permissions;
 pub mod phone_number;
@@ -53,6 +54,7 @@ pub use crate::geographic::{
 };
 pub use crate::identifiers::*;
 pub use crate::line_binding::{BindingType, DeviceBinding, LineBinding, RingStrategy};
+pub use crate::meeting::Meeting;
 pub use crate::permissions::{DeploymentMode, Permission, UserRole};
 pub use crate::phone_number::{E911Address, NumberState, PhoneNumber};
 pub use crate::porting::{
@@ -69,9 +71,9 @@ pub use crate::sip_handler::{
     InviteContext, InviteHandler, InviteResponse, SipError, SipResponseCode, SipResult,
 };
 pub use crate::storage::{
-    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, CredentialStore,
-    DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences,
-    Registration, RegistrationStore, TenantStore, User, UserFileEntry,
+    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
+    CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
+    MediaPreferences, Registration, RegistrationStore, TenantStore, User, UserFileEntry,
 };
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{

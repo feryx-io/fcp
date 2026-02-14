@@ -305,6 +305,7 @@ async fn main() -> Result<()> {
         config.b2bua.clone(),
         outbound_route_provider,
         pbx_handler.clone(),
+        None, // No conference handler
     )?);
 
     // 16. Create and start TransportListener

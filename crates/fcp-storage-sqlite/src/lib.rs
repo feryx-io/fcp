@@ -188,6 +188,10 @@ impl SqliteStorage {
         let migration_009 = include_str!("../migrations/009_add_registration_flow_token.sql");
         Self::execute_migration(pool, migration_009, "009").await?;
 
+        // Migration 010: Conference meeting support
+        let migration_010 = include_str!("../migrations/010_add_conference_support.sql");
+        Self::execute_migration(pool, migration_010, "010").await?;
+
         info!("SQLite migrations completed successfully");
         Ok(())
     }
@@ -2618,7 +2622,7 @@ fn parse_flow_from_row(
 // ============================================================================
 
 use fcp_core::porting::PortingStore;
-use fcp_core::storage::{GeoRoutingStore, TenantStore, VoicemailStore};
+use fcp_core::storage::{ConferenceStore, GeoRoutingStore, TenantStore, VoicemailStore};
 
 #[async_trait]
 impl VoicemailStore for SqliteStorage {
@@ -3131,6 +3135,167 @@ impl TenantStore for SqliteStorage {
 
     async fn delete_tenant(&self, _id: &fcp_core::TenantId) -> Result<()> {
         Err(anyhow::anyhow!("Multi-tenant storage not yet implemented"))
+    }
+}
+
+#[async_trait]
+impl ConferenceStore for SqliteStorage {
+    async fn get_meeting(
+        &self,
+        id: &fcp_core::MeetingId,
+    ) -> Result<Option<fcp_core::Meeting>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_meeting_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_meeting_by_room_number(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        room_number: &str,
+    ) -> Result<Option<fcp_core::Meeting>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE tenant_id = ? AND room_number = ?",
+        )
+        .bind(tenant_id.to_string())
+        .bind(room_number)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_meeting_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_meetings(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::Meeting>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent,
+                    created_at, updated_at
+             FROM conference_meetings WHERE tenant_id = ? ORDER BY room_number",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let meetings = rows
+            .into_iter()
+            .filter_map(|row| Self::map_meeting_row(row).ok())
+            .collect();
+
+        Ok(meetings)
+    }
+
+    async fn put_meeting(&self, meeting: fcp_core::Meeting) -> Result<()> {
+        let created_at = meeting
+            .created_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO conference_meetings
+             (id, tenant_id, room_number, name, guest_pin, host_pin,
+              require_guest_pin, max_participants, wait_for_moderator,
+              enabled, auto_record, default_locked, permanent,
+              created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(meeting.id.to_string())
+        .bind(meeting.tenant_id.to_string())
+        .bind(&meeting.room_number)
+        .bind(&meeting.name)
+        .bind(meeting.guest_pin.as_deref())
+        .bind(meeting.host_pin.as_deref())
+        .bind(meeting.require_guest_pin as i32)
+        .bind(meeting.max_participants as i64)
+        .bind(meeting.wait_for_moderator as i32)
+        .bind(meeting.enabled as i32)
+        .bind(meeting.auto_record as i32)
+        .bind(meeting.default_locked as i32)
+        .bind(meeting.permanent as i32)
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_meeting(&self, id: &fcp_core::MeetingId) -> Result<()> {
+        sqlx::query("DELETE FROM conference_meetings WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+impl SqliteStorage {
+    fn map_meeting_row(row: sqlx::sqlite::SqliteRow) -> Result<fcp_core::Meeting> {
+        use sqlx::Row;
+
+        let id_str: String = row.try_get("id")?;
+        let tenant_str: String = row.try_get("tenant_id")?;
+        let room_number: String = row.try_get("room_number")?;
+        let name: String = row.try_get("name")?;
+        let guest_pin: Option<String> = row.try_get("guest_pin")?;
+        let host_pin: Option<String> = row.try_get("host_pin")?;
+        let require_guest_pin: i32 = row.try_get("require_guest_pin")?;
+        let max_participants: i64 = row.try_get("max_participants")?;
+        let wait_for_moderator: i32 = row.try_get("wait_for_moderator")?;
+        let enabled: i32 = row.try_get("enabled")?;
+        let auto_record: i32 = row.try_get("auto_record")?;
+        let default_locked: i32 = row.try_get("default_locked")?;
+        let permanent: i32 = row.try_get("permanent")?;
+        let created_at: i64 = row.try_get("created_at")?;
+        let updated_at: i64 = row.try_get("updated_at")?;
+
+        Ok(fcp_core::Meeting {
+            id: fcp_core::MeetingId::from_str(&id_str)
+                .map_err(|e| anyhow::anyhow!("Invalid MeetingId: {}", e))?,
+            tenant_id: fcp_core::TenantId::from_str(&tenant_str)
+                .map_err(|e| anyhow::anyhow!("Invalid TenantId: {}", e))?,
+            room_number,
+            name,
+            guest_pin,
+            host_pin,
+            require_guest_pin: require_guest_pin != 0,
+            max_participants: max_participants as usize,
+            wait_for_moderator: wait_for_moderator != 0,
+            enabled: enabled != 0,
+            auto_record: auto_record != 0,
+            default_locked: default_locked != 0,
+            permanent: permanent != 0,
+            created_at: UNIX_EPOCH + Duration::from_secs(created_at as u64),
+            updated_at: UNIX_EPOCH + Duration::from_secs(updated_at as u64),
+        })
     }
 }
 

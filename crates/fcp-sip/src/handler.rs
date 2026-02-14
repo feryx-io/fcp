@@ -319,6 +319,9 @@ pub struct SipMessageHandler {
     /// Flow call handler for executing programmable flows
     flow_handler: Option<Arc<crate::flow_handler::FlowCallHandler>>,
 
+    /// Conference call handler for routing INVITEs to conference rooms
+    conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
+
     /// Optional outbound route provider for trunk routing fallback.
     /// When the registrar has no binding for the destination, this provider
     /// is consulted before returning 480 Temporarily Unavailable.
@@ -452,6 +455,7 @@ impl SipMessageHandler {
         b2bua_config: B2buaConfig,
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
+        conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
     ) -> anyhow::Result<Self> {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -473,6 +477,7 @@ impl SipMessageHandler {
             b2bua_config,
             outbound_route_provider,
             pbx_handler,
+            conference_handler,
         )
     }
 
@@ -495,6 +500,7 @@ impl SipMessageHandler {
         b2bua_config: B2buaConfig,
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
+        conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
     ) -> anyhow::Result<Self> {
         // Validate settings early to catch configuration errors at startup
         settings.validate().map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
@@ -626,6 +632,7 @@ impl SipMessageHandler {
             b2bua_config,
             rate_limits: Arc::new(dashmap::DashMap::new()),
             flow_handler,
+            conference_handler,
             outbound_route_provider,
             pbx_handler,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
@@ -1100,6 +1107,14 @@ impl SipMessageHandler {
                     );
                     return self.handle_pbx_feature_code(request, &handle, &call_id, action).await;
                 }
+            }
+        }
+
+        // Check if a conference handler wants this call (before flow routing)
+        if let Some(conf_handler) = &self.conference_handler {
+            if conf_handler.can_handle(request).await {
+                debug!(call_id = %call_id, "Routing to conference handler");
+                return conf_handler.handle_invite(request, handle, peer).await;
             }
         }
 
@@ -4445,6 +4460,16 @@ impl SipMessageHandler {
         // Extract Call-ID to find the call
         let dialog_call_id = sip_parse::header(request.headers(), "Call-ID")
             .ok_or_else(|| anyhow::anyhow!("Missing Call-ID in BYE"))?;
+
+        // Check if conference handler owns this call
+        if let Some(conf_handler) = &self.conference_handler {
+            // If the call_id isn't a conference call, handle_bye returns Err
+            // and we fall through to normal B2BUA handling.
+            if conf_handler.handle_bye(dialog_call_id.as_str()).is_ok() {
+                debug!(call_id = %dialog_call_id, "Conference handler processed BYE");
+                return Ok(self.create_simple_response(request, 200, "OK"));
+            }
+        }
 
         // Try to find the dialog - it might be in dialog_manager (A-leg/UAS) or only in call_manager (B-leg/UAC)
         let dialog_opt = self.dialog_manager.find_by_request(request);
@@ -9288,6 +9313,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
+            None, // No conference handler
         ).unwrap();
 
         // Create a REGISTER request
@@ -9354,6 +9380,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
+            None, // No conference handler
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9420,6 +9447,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
+            None, // No conference handler
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9589,6 +9617,7 @@ mod tests {
             B2buaConfig::default(),
             None, // No outbound route provider
             None, // No PBX handler
+            None, // No conference handler
         ).unwrap();
 
         // Create a REGISTER request
