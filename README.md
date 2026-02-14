@@ -100,17 +100,22 @@ FCP is a multi-tenant, API-first alternative to FreeSWITCH, Kamailio, and Asteri
 git clone --recursive https://github.com/thevoiceguy/fcp.git
 cd fcp
 
-# Build the project
+# Build all binaries
 cargo build --release
 
-# Run the server
-./target/release/fcp-server
+# Run the call manager (registrar + B2BUA + PBX)
+./target/release/fcp-call-manager --config config/fcp-call-manager.toml
+
+# Run individual services as needed
+./target/release/fcp-sbc --config config/fcp-sbc.toml
+./target/release/fcp-admin --config config/fcp-admin.toml
 ```
 
 ### Docker Deployment (Recommended)
 
 ```bash
-# Using docker-compose (includes PostgreSQL)
+# Using docker-compose (includes Redis, all services)
+cd deploy/docker-compose
 docker-compose up -d
 
 # Access the API
@@ -119,13 +124,11 @@ curl http://localhost:8080/api/v1/health
 
 ### Configuration
 
-Create a configuration file at `config/fcp.toml`:
+Each service has its own TOML config file. Example for `fcp-call-manager`:
 
 ```toml
-[server]
-bind_address = "0.0.0.0:8080"
-log_level = "info"
-log_format = "json"
+[service]
+node_id = "cm-01"
 
 [sip]
 bind_address = "0.0.0.0:5060"
@@ -146,11 +149,7 @@ recordings_dir = "/var/lib/fcp/voicemail"
 max_message_duration = 300
 ```
 
-Run with custom config:
-
-```bash
-./target/release/fcp-server --config config/fcp.toml
-```
+See `deploy/docker-compose/configs/` for example configurations for all services.
 
 ---
 
@@ -193,7 +192,7 @@ FCP uses a layered architecture:
 - **fcp-media**: Media session management, RTP relay
 - **fcp-flow**: Flow engine for programmable call flows
 - **fcp-voicemail**: Voicemail service implementation
-- **fcp-server**: Main binary with REST API
+- **fcp-call-manager**: Main PBX binary (registrar + B2BUA + call routing)
 - **fcp-cli**: Terminal UI for monitoring
 - **siphon-rs**: Production-grade SIP stack (submodule)
 
@@ -421,7 +420,7 @@ fcp/
 │   ├── fcp-media/       # Media handling
 │   ├── fcp-flow/        # Flow engine
 │   ├── fcp-voicemail/   # Voicemail service
-│   ├── fcp-server/      # Main server binary
+│   ├── fcp-call-manager/ # Main PBX binary
 │   ├── fcp-cli/         # Terminal UI
 │   └── fcp-storage-*/   # Storage backends
 ├── external/
@@ -443,11 +442,11 @@ cargo build
 # Release build (optimized)
 cargo build --release
 
-# Build specific crate
-cargo build -p fcp-server
+# Build specific binary
+cargo build -p fcp-call-manager
 
 # Watch and rebuild on changes
-cargo watch -x "build -p fcp-server"
+cargo watch -x "build -p fcp-call-manager"
 ```
 
 ### Code Style

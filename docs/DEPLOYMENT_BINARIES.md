@@ -2,30 +2,19 @@
 
 ## Overview
 
-FCP needs to support two deployment models:
-1. **All-in-one** (`fcp-server`) - Small business, development, testing
-2. **Distributed** (multiple specialized binaries) - Scalable, carrier-grade deployments
+FCP uses a **distributed multi-binary architecture** where each service is an independent, purpose-built binary. This allows independent scaling, security isolation, and resource efficiency.
+
+For small deployments, `fcp-call-manager` serves as the primary entry point, combining registrar + B2BUA + PBX features in a single process. Additional services (voicemail, IVR, SBC, etc.) are deployed as needed.
 
 This document defines the architecture for building independent, purpose-built binaries for each service type.
 
-## Problem Statement
+## Design Principles
 
-Currently, `fcp-server` compiles ALL features into a single monolithic binary:
-- SBC capabilities
-- Registrar
-- B2BUA/Call processing
-- Voicemail
-- IVR/Flow engine
-- Media processing
-- CDR
-- Admin API
-
-**Issues:**
-- Cannot scale individual components independently
-- Voicemail servers don't need SBC code
-- SBC nodes don't need voicemail/IVR code
-- Larger binary size and memory footprint
-- Security: edge nodes shouldn't have admin API access publicly but access on internal management ips
+- Each service is independently deployable and scalable
+- Services communicate via SIP (signaling) and REST APIs (management)
+- Shared logic lives in library crates (`fcp-b2bua-core`, `fcp-sbc-core`, `fcp-api-core`)
+- Security: edge nodes (SBC) have no database access; admin API is isolated from edge
+- Small deployments use `fcp-call-manager` as the primary all-in-one-ish service
 
 ## Proposed Architecture
 
@@ -656,23 +645,7 @@ recording_path = "s3://call-recordings/"
 
 ---
 
-### 9. `fcp-server` (All-in-One)
-
-**Purpose:** Small business, development, testing
-
-**Includes:** EVERYTHING from all the above binaries
-
-**Use Cases:**
-- Small offices (< 100 users)
-- Development environment
-- Demo/testing
-- Docker Compose single-container deployment
-
-**Configuration:** Superset of all other configs
-
----
-
-### 10. `fcp-admin` (Admin API Server)
+### 9. `fcp-admin` (Admin API Server)
 
 **Purpose:** REST API for configuration and management
 
@@ -704,7 +677,7 @@ enable_swagger = true
 
 ### Phase 1: Extract Core Libraries (Current State → Shared Libs)
 
-**Goal:** Ensure all functionality is in shared library crates, not in `fcp-server` binary
+**Goal:** Ensure all functionality is in shared library crates
 
 #### 1.1 Audit Current Code
 - [x] `fcp-sip` - SIP handling (✓ already a library)
@@ -712,9 +685,8 @@ enable_swagger = true
 - [x] **CRITICAL:** Extract B2BUA core → `fcp-b2bua-core` library ✅ DONE
   - B2BUA is used by multiple services (SBC, PBX, call-manager)
   - Includes: dialog manipulation, media control, topology hiding primitives
-- [ ] Extract SBC-specific code from `fcp-server` → `fcp-sbc-core` library
-- [ ] Extract registrar code → `fcp-registrar-core` library
-- [ ] Extract voicemail logic → `fcp-voicemail-core` library
+- [x] Extract SBC-specific code → `fcp-sbc-core` library ✅ DONE
+- [x] Extract admin API handlers → `fcp-api-core` library ✅ DONE
 - [ ] Extract conference logic → `fcp-conference-core` library
 
 #### 1.2 Create Feature Gates
@@ -751,13 +723,9 @@ fcp/
 │   │                       #      - Call parking/pickup
 │   │                       #      - Mid-call modifications (hold, unhold, reinvite)
 │   │
-│   ├── fcp-sbc-core/       # NEW: SBC library (depends on fcp-b2bua-core)
-│   ├── fcp-registrar-core/ # NEW: Registrar library
-│   ├── fcp-pbx-core/       # NEW: PBX library (depends on fcp-b2bua-core)
-│   ├── fcp-voicemail-core/ # NEW: Voicemail library
-│   ├── fcp-conference-core/# NEW: Conference library
-│   ├── fcp-media-core/     # NEW: Media library
-│   └── fcp-admin-core/     # NEW: Admin API library
+│   ├── fcp-sbc-core/       # ✅ DONE: SBC library (LCR, trunks, admission, HMR)
+│   ├── fcp-api-core/       # ✅ DONE: Shared REST API handlers
+│   ├── fcp-conference-core/# TODO: Conference library
 │
 ├── crates/  (binaries live alongside libraries)
 │   ├── fcp-sbc/            # ✅ DONE: SBC binary
@@ -862,7 +830,6 @@ pub enum ServiceType {
     Conference(ConferenceConfig),
     Media(MediaConfig),
     Admin(AdminConfig),
-    AllInOne(AllInOneConfig),
 }
 ```
 
@@ -968,36 +935,36 @@ impl ServiceRegistry {
 
 #### 5.1 Docker Compose (Small Business)
 
+For small deployments, `fcp-call-manager` handles registrar + B2BUA + PBX features,
+with `fcp-admin` providing the REST management API.
+
 `docker-compose.yml`:
 ```yaml
 version: '3.8'
 
 services:
-  # All-in-one deployment
-  fcp-server:
-    image: fcp/fcp-server:latest
-    ports:
-      - "5060:5060/udp"
-      - "5060:5060/tcp"
-      - "8080:8080"
-    environment:
-      - FCP_DATABASE_URL=postgres://fcp:password@db:5432/fcp
-      - FCP_REDIS_URL=redis://redis:6379
+  fcp-call-manager:
+    image: fcp/fcp-call-manager:latest
+    network_mode: host
     volumes:
-      - ./fcp.toml:/etc/fcp/fcp.toml
-      - ./data:/var/lib/fcp
+      - ./configs/fcp-call-manager.toml:/app/fcp-call-manager.toml:ro
+      - fcp-data:/app/data
+    environment:
+      - RUST_LOG=info
     depends_on:
-      - db
       - redis
 
-  db:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=fcp
-      - POSTGRES_USER=fcp
-      - POSTGRES_PASSWORD=password
+  fcp-admin:
+    image: fcp/fcp-admin:latest
+    ports:
+      - "8080:8080"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./configs/fcp-admin.toml:/app/fcp-admin.toml:ro
+      - fcp-data:/app/data
+    environment:
+      - RUST_LOG=info
+    depends_on:
+      - redis
 
   redis:
     image: redis:7-alpine
@@ -1005,7 +972,7 @@ services:
       - redis_data:/data
 
 volumes:
-  postgres_data:
+  fcp-data:
   redis_data:
 ```
 
@@ -1127,52 +1094,43 @@ spec:
 - Conference issues don't impact registration
 - Blast radius limited to service type
 
-## Migration Path
+## Migration History
 
-### Step 1: Keep `fcp-server` Working (v0.10)
-- Current monolithic binary continues to work
-- All code stays in `crates/`
-- No breaking changes
+### v0.10-0.12: Library Extraction
+- Created `fcp-b2bua-core`, `fcp-sbc-core`, `fcp-api-core` shared libraries
+- All functionality moved into library crates
 
-### Step 2: Extract Libraries (v0.11-0.12)
-- Create `fcp-*-core` library crates
-- Move code from `fcp-server/` to libraries
-- Add feature gates
-- `fcp-server` depends on all libraries with all features
+### v0.13: First Standalone Binary — `fcp-sbc`
+- SBC binary with trunk management, codec filtering, STIR/SHAKEN
 
-### Step 3: Create First Binary - `fcp-sbc` (v0.13)
-- Implement `bins/fcp-sbc/`
-- Test in parallel with `fcp-server`
-- Document deployment
+### v0.14: Full Multi-Binary Suite
+- Added `fcp-registrar`, `fcp-call-manager`, `fcp-pbx`, `fcp-ivr`, `fcp-voicemail-server`
+- Added `fcp-admin`, `fcp-api-gateway`, `fcp-events-server`, `fcp-jobs`
+- Removed `fcp-server` monolith — `fcp-call-manager` serves as the primary entry point for small deployments
 
-### Step 4: Create More Binaries (v0.14-0.16)
-- `fcp-registrar`
-- `fcp-pbx`
-- `fcp-voicemail`
-- Each release adds one new binary
-
-### Step 5: Reference Architecture (v1.0)
+### Next: v1.0 Reference Architecture
 - Complete Kubernetes deployment examples
-- Terraform modules
-- Production-ready multi-binary deployment
+- Conference binary (`fcp-conference`)
+- Service discovery (Redis-based registry)
 
-## Current Status (v0.14.31)
+## Current Status (v0.14.33)
 
-Most of the multi-binary architecture is **implemented**:
+The multi-binary architecture is **fully implemented** (except conference):
 
 | Binary | Status |
 |--------|--------|
-| `fcp-sbc` | ✅ Done — enforcement, HMR, STIR/SHAKEN, SIPREC, LCR |
-| `fcp-call-manager` (PBX mode) | ✅ Done — registrar + B2BUA + media |
+| `fcp-sbc` | ✅ Done — enforcement, HMR, STIR/SHAKEN, SIPREC, LCR, SRTP SDP rewriting |
+| `fcp-call-manager` (PBX mode) | ✅ Done — registrar + B2BUA + media + CFNA |
 | `fcp-call-manager` (trunks mode) | ✅ Done — trunk routing, LCR, carrier failover |
 | `fcp-registrar` | ✅ Done — standalone persistent registrar |
 | `fcp-pbx` | ✅ Done — parking, pickup, intercom, hunt groups |
 | `fcp-ivr` | ✅ Done — DID-to-flow routing |
-| `fcp-voicemail-server` | ✅ Done — DID-to-mailbox routing |
+| `fcp-voicemail-server` | ✅ Done — DID-to-mailbox routing, greeting management API |
 | `fcp-admin` | ✅ Done — REST API without SIP overhead |
 | `fcp-api-gateway` | ✅ Done — reverse proxy, rate limiting |
 | `fcp-events-server` | ✅ Done — multi-node event aggregation |
 | `fcp-jobs` | ✅ Done — background CDR/job processing |
+| `fcp-cli` | ✅ Done — CLI + TUI for administration |
 | `fcp-conference` | ❌ TODO — forge-conference exists, needs FCP wrapper |
 | `fcp-media` (standalone) | ❌ TODO — currently embedded in call-manager |
 
@@ -1198,5 +1156,5 @@ Library extractions completed:
 
 ---
 
-**Status:** Mostly Implemented (v0.14.31)
+**Status:** Mostly Implemented (v0.14.33)
 **Remaining:** Conference binary, standalone media, Kubernetes deployment
