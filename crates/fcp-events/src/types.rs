@@ -35,6 +35,9 @@ pub enum PlatformEvent {
 
     /// Voicemail event
     Voicemail(VoicemailEvent),
+
+    /// Conference event
+    Conference(ConferenceEvent),
 }
 
 /// Call lifecycle events.
@@ -430,6 +433,79 @@ pub enum RegistrationEvent {
     },
 }
 
+/// Conference-related events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConferenceEvent {
+    /// Participant joined a conference room
+    ParticipantJoined {
+        room_number: String,
+        participant_id: String,
+        is_host: bool,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Participant left a conference room
+    ParticipantLeft {
+        room_number: String,
+        participant_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Conference room was locked
+    RoomLocked {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Conference room was unlocked
+    RoomUnlocked {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Conference recording started
+    RecordingStarted {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Conference recording stopped
+    RecordingStopped {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Participant failed PIN authentication
+    PinFailed {
+        room_number: String,
+        participant_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Empty conference room was destroyed
+    RoomDestroyed {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
 /// Voicemail-related events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -528,6 +604,7 @@ impl PlatformEvent {
             PlatformEvent::User(_) => None,
             PlatformEvent::Registration(_) => None,
             PlatformEvent::Voicemail(event) => event.call_id(),
+            PlatformEvent::Conference(_) => None,
         }
     }
 
@@ -543,6 +620,7 @@ impl PlatformEvent {
             PlatformEvent::User(event) => event.timestamp(),
             PlatformEvent::Registration(event) => event.timestamp(),
             PlatformEvent::Voicemail(event) => event.timestamp(),
+            PlatformEvent::Conference(event) => event.timestamp(),
         }
     }
 }
@@ -704,6 +782,21 @@ impl VoicemailEvent {
             | VoicemailEvent::MessageDeleted { timestamp, .. }
             | VoicemailEvent::MessagePlayed { timestamp, .. }
             | VoicemailEvent::MwiUpdated { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl ConferenceEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            ConferenceEvent::ParticipantJoined { timestamp, .. }
+            | ConferenceEvent::ParticipantLeft { timestamp, .. }
+            | ConferenceEvent::RoomLocked { timestamp, .. }
+            | ConferenceEvent::RoomUnlocked { timestamp, .. }
+            | ConferenceEvent::RecordingStarted { timestamp, .. }
+            | ConferenceEvent::RecordingStopped { timestamp, .. }
+            | ConferenceEvent::PinFailed { timestamp, .. }
+            | ConferenceEvent::RoomDestroyed { timestamp, .. } => *timestamp,
         }
     }
 }

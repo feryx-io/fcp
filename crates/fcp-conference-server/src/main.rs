@@ -240,6 +240,7 @@ async fn main() -> Result<()> {
         local_uri.as_str().to_string(),
         local_addr.clone(),
         Arc::clone(&port_pool),
+        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
     ));
 
     info!(

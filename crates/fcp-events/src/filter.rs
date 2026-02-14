@@ -30,6 +30,7 @@ pub enum EventType {
     User,
     Registration,
     Voicemail,
+    Conference,
 }
 
 impl EventFilter {
@@ -82,6 +83,7 @@ impl EventFilter {
                 PlatformEvent::User(_) => EventType::User,
                 PlatformEvent::Registration(_) => EventType::Registration,
                 PlatformEvent::Voicemail(_) => EventType::Voicemail,
+                PlatformEvent::Conference(_) => EventType::Conference,
             };
 
             if !types.contains(&event_type) {
