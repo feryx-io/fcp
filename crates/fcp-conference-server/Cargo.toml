@@ -51,6 +51,7 @@ sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
 
 # HTTP API
 axum = "0.7"
@@ -78,6 +79,7 @@ async-trait = "0.1"
 bytes = { workspace = true }
 dashmap = "6"
 socket2 = "0.5"
+rand = "0.8"
 uuid = { workspace = true }
 
 # HTTP client for event forwarding

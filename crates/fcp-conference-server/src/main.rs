@@ -23,6 +23,7 @@ use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use forge_conference::ConferenceBridge;
 use forge_core::AudioFormat;
+use forge_rtp::{PortPool, PortPoolConfig};
 use forge_mixer::MixerOptions;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
 use std::sync::Arc;
@@ -210,7 +211,13 @@ async fn main() -> Result<()> {
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
     ));
 
-    // 16. Create ConferenceBridge + ConferenceCallHandler
+    // 16. Create RTP port pool for conference participants
+    let port_pool = Arc::new(PortPool::new(
+        PortPoolConfig::new(config.media.rtp_port_start, config.media.rtp_port_end)
+            .context("Invalid RTP port range")?,
+    ));
+
+    // 17. Create ConferenceBridge + ConferenceCallHandler
     let audio_format = AudioFormat::pcm_mono();
     let mixer_options = MixerOptions::default();
     let bridge = Arc::new(
@@ -232,6 +239,7 @@ async fn main() -> Result<()> {
         config.conference.clone(),
         local_uri.as_str().to_string(),
         local_addr.clone(),
+        Arc::clone(&port_pool),
     ));
 
     info!(
@@ -240,7 +248,7 @@ async fn main() -> Result<()> {
         "ConferenceBridge created"
     );
 
-    // 17. Create SipMessageHandler
+    // 18. Create SipMessageHandler
     //     flow_handler = None (conference doesn't use flows)
     //     The conference handler is wired via the conference_handler field
     let handler = Arc::new(SipMessageHandler::new(
@@ -267,10 +275,10 @@ async fn main() -> Result<()> {
         config.b2bua.clone(),
         outbound_route_provider,
         None, // No PBX handler
-        None, // conference_handler — will be wired when full SIP INVITE handling is built
+        Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
     )?);
 
-    // 18. Create and start TransportListener
+    // 19. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
         .sip
         .udp_bind
@@ -301,7 +309,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to start transport listeners")?;
 
-    // 19. Spawn TCP response routing task
+    // 20. Spawn TCP response routing task
     let handler_clone = Arc::clone(&handler);
     let mut client_rx = client_rx;
     tokio::spawn(async move {
@@ -330,7 +338,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 20. Spawn HTTP server (conference API)
+    // 21. Spawn HTTP server (conference API)
     let conf_state = Arc::new(health::ConferenceState {
         bridge: Arc::clone(&bridge),
         storage: Arc::clone(&dyn_storage),
@@ -345,7 +353,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 21. Spawn event forwarding task (if configured)
+    // 22. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);
@@ -360,7 +368,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    // 22. Log startup summary
+    // 23. Log startup summary
     info!(
         udp = %config.sip.udp_bind,
         tcp = %config.sip.tcp_bind,
@@ -371,7 +379,7 @@ async fn main() -> Result<()> {
         "fcp-conference ready — listening for SIP INVITE messages"
     );
 
-    // 23. Wait for shutdown signal
+    // 24. Wait for shutdown signal
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("Failed to register SIGTERM handler");
 
@@ -384,7 +392,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 24. Graceful shutdown
+    // 25. Graceful shutdown
     if let Some(tx) = trunk_shutdown_tx {
         let _ = tx.send(true);
         tokio::time::sleep(Duration::from_secs(4)).await;

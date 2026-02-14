@@ -1,56 +1,107 @@
+use bytes::Bytes;
+use forge_codecs::AudioCodec;
 use forge_conference::ConferenceRoom;
+use forge_rtp::{RtpPacket, RtpSocketPair};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// Per-participant audio bridge task.
 ///
-/// Runs at 20ms intervals, reading incoming RTP packets from the participant,
-/// decoding them to PCM, writing to the conference mixer, then reading the
-/// mix-minus output and encoding back to RTP for send.
+/// Runs concurrently:
+/// - Receives inbound RTP packets, decodes to PCM, writes to the conference mixer
+/// - Every 20ms, reads the mix-minus output, encodes, and sends as RTP
 ///
 /// This bypasses ForwardingEngine (designed for 1:1 B2BUA bridging) and
 /// works directly with the forge-conference mixer.
 pub async fn run_audio_bridge(
     room: Arc<ConferenceRoom>,
     participant_id: String,
+    rtp_socket: Arc<RtpSocketPair>,
+    mut encoder: Box<dyn AudioCodec>,
+    mut decoder: Box<dyn AudioCodec>,
+    payload_type: u8,
     frame_size: usize,
 ) {
+    let mut seq: u16 = rand::random();
+    let ssrc: u32 = rand::random();
+    let mut timestamp: u32 = 0;
     let mut interval = tokio::time::interval(Duration::from_millis(20));
 
     debug!(
         participant = %participant_id,
         room = room.id(),
         frame_size = frame_size,
+        payload_type = payload_type,
+        codec = encoder.name(),
         "Audio bridge started"
     );
 
     loop {
-        interval.tick().await;
+        tokio::select! {
+            // Branch 1: Receive inbound RTP → decode → write to mixer
+            result = rtp_socket.recv_rtp() => {
+                match result {
+                    Ok((packet, _addr)) => {
+                        match decoder.decode(&packet.payload[..]) {
+                            Ok(pcm_samples) => {
+                                let _ = room.write_audio(&participant_id, &pcm_samples);
+                            }
+                            Err(e) => {
+                                trace!(participant = %participant_id, error = %e, "Decode error");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!(
+                            participant = %participant_id,
+                            error = %e,
+                            "RTP recv error, stopping bridge"
+                        );
+                        break;
+                    }
+                }
+            }
 
-        // Read mix-minus audio for this participant
-        match room.mix_for_participant(&participant_id) {
-            Ok(Some(_mixed)) => {
-                // In a full implementation, we would:
-                // 1. Encode the PCM samples to the negotiated codec (PCMU/PCMA/G.722)
-                // 2. Send as RTP packet via the participant's forge-rtp session
-                //
-                // For now, the mixer is running and producing output.
-                // RTP send/receive integration will be wired when the SIP INVITE
-                // handler establishes the actual RTP session.
-                trace!(participant = %participant_id, "Mixed audio frame ready");
-            }
-            Ok(None) => {
-                // No audio available yet (silence)
-            }
-            Err(e) => {
-                // Participant was removed from room
-                debug!(
-                    participant = %participant_id,
-                    error = %e,
-                    "Mix failed, participant likely removed"
-                );
-                break;
+            // Branch 2: 20ms tick → read mix-minus → encode → send RTP
+            _ = interval.tick() => {
+                match room.mix_for_participant(&participant_id) {
+                    Ok(Some(mixed_pcm)) => {
+                        match encoder.encode(&mixed_pcm) {
+                            Ok(encoded) => {
+                                let packet = RtpPacket::build(
+                                    payload_type,
+                                    seq,
+                                    timestamp,
+                                    ssrc,
+                                    Bytes::from(encoded),
+                                    false,
+                                );
+                                if let Err(e) = rtp_socket.send_rtp(&packet).await {
+                                    trace!(participant = %participant_id, error = %e, "RTP send error");
+                                }
+                                seq = seq.wrapping_add(1);
+                                timestamp = timestamp.wrapping_add(frame_size as u32);
+                            }
+                            Err(e) => {
+                                trace!(participant = %participant_id, error = %e, "Encode error");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        // Silence — no audio to mix yet, still advance timestamp
+                        timestamp = timestamp.wrapping_add(frame_size as u32);
+                    }
+                    Err(e) => {
+                        // Participant was removed from room
+                        warn!(
+                            participant = %participant_id,
+                            error = %e,
+                            "Mix failed, participant likely removed"
+                        );
+                        break;
+                    }
+                }
             }
         }
     }
