@@ -109,6 +109,18 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/{room_number}/announce",
             post(announce_handler),
         )
+        // Admin: admit waiting participants
+        .route(
+            "/conferences/{room_number}/admit/{pid}",
+            post(admit_participant_handler),
+        )
+        .route(
+            "/conferences/{room_number}/admit-all",
+            post(admit_all_handler),
+        )
+        // Recording management
+        .route("/recordings", get(list_recordings_handler))
+        .route("/recordings/{filename}", delete(delete_recording_handler))
 }
 
 /// Run the HTTP API server.
@@ -422,6 +434,10 @@ async fn update_meeting_handler(
 
     match state.storage.put_meeting(meeting.clone()).await {
         Ok(()) => {
+            // Invalidate meeting cache
+            state
+                .conference_handler
+                .invalidate_meeting_cache(&meeting.tenant_id, &meeting.room_number);
             publish_event(
                 &state.event_bus,
                 ConferenceEvent::MeetingUpdated {
@@ -465,6 +481,12 @@ async fn delete_meeting_handler(
 
     match state.storage.delete_meeting(&meeting_id).await {
         Ok(()) => {
+            if let Some(ref meeting) = meeting_info {
+                // Invalidate meeting cache
+                state
+                    .conference_handler
+                    .invalidate_meeting_cache(&meeting.tenant_id, &meeting.room_number);
+            }
             if let Some(meeting) = meeting_info {
                 publish_event(
                     &state.event_bus,
@@ -872,6 +894,129 @@ async fn announce_handler(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+// =========================================================================
+// Admin: Admit Waiting Participants
+// =========================================================================
+
+async fn admit_participant_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.admit_waiting(&room_number, &pid) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "admitted", "participant": pid })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn admit_all_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.admit_all_waiting(&room_number) {
+        Ok(count) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "admitted_all", "count": count })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+// =========================================================================
+// Recording Management
+// =========================================================================
+
+async fn list_recordings_handler(
+    State(state): State<Arc<ConferenceState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let recordings_dir = &state.conference_handler.conference_config.recordings_dir;
+
+    let entries = match std::fs::read_dir(recordings_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("Cannot read recordings dir: {}", e) })),
+            );
+        }
+    };
+
+    let mut recordings = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("wav") {
+            let filename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let meta = entry.metadata().ok();
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            recordings.push(serde_json::json!({
+                "filename": filename,
+                "size_bytes": size,
+                "modified_at": modified,
+            }));
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "recordings": recordings, "count": recordings.len() })),
+    )
+}
+
+async fn delete_recording_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(filename): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // Prevent path traversal
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid filename" })),
+        );
+    }
+
+    let path = std::path::Path::new(&state.conference_handler.conference_config.recordings_dir)
+        .join(&filename);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Recording not found" })),
+        );
+    }
+
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            info!(filename = %filename, "Recording deleted");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "deleted", "filename": filename })),
+            )
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to delete: {}", e) })),
         ),
     }
 }

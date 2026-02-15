@@ -369,7 +369,22 @@ async fn main() -> Result<()> {
         }
     });
 
-    // 22. Spawn event forwarding task (if configured)
+    // 22. Spawn recording cleanup task (if retention configured)
+    if let Some(days) = config.conference.recording_retention_days {
+        if days > 0 {
+            let recordings_dir = config.conference.recordings_dir.clone();
+            let retention_days = days;
+            tokio::spawn(async move {
+                run_recording_cleanup(recordings_dir, retention_days).await;
+            });
+            info!(
+                retention_days = days,
+                "Recording cleanup task started"
+            );
+        }
+    }
+
+    // 23. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);
@@ -620,6 +635,54 @@ fn init_tracing(config: &ConferenceServerConfig) {
                 .with_env_filter(env_filter)
                 .init();
         }
+    }
+}
+
+/// Periodically delete recordings older than the retention period.
+async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
+    let retention = Duration::from_secs(retention_days as u64 * 86400);
+    // Run cleanup on startup, then every hour
+    loop {
+        let dir = match std::fs::read_dir(&recordings_dir) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(error = %e, "Recording cleanup: cannot read directory");
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                continue;
+            }
+        };
+
+        let mut deleted = 0u32;
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                let age = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .unwrap_or_default();
+                if age > retention {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        warn!(path = %path.display(), error = %e, "Failed to delete old recording");
+                    } else {
+                        deleted += 1;
+                    }
+                }
+            }
+        }
+
+        if deleted > 0 {
+            info!(
+                deleted = deleted,
+                retention_days = retention_days,
+                "Recording cleanup completed"
+            );
+        }
+
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     }
 }
 

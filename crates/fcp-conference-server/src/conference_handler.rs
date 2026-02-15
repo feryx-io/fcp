@@ -18,7 +18,7 @@ use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -63,6 +63,8 @@ pub struct ConferenceCallHandler {
     event_bus: Arc<dyn EventPublisher>,
     uac: Arc<SipUserAgentClient>,
     dtmf_handlers: DashMap<String, Arc<DtmfCommandHandler>>,
+    /// In-memory meeting cache: (TenantId, room_number) → (Meeting, cached_at)
+    meeting_cache: DashMap<(TenantId, String), (Meeting, Instant)>,
 }
 
 impl ConferenceCallHandler {
@@ -87,19 +89,75 @@ impl ConferenceCallHandler {
             event_bus,
             uac,
             dtmf_handlers: DashMap::new(),
+            meeting_cache: DashMap::new(),
         }
     }
 
-    /// Look up a meeting by room number.
+    /// Look up a meeting by room number, with in-memory cache and DB fallback.
+    ///
+    /// Cache strategy:
+    /// - On cache hit within TTL: return cached meeting (no DB query)
+    /// - On cache miss or expired: query DB, update cache on success
+    /// - On DB failure: return stale cached entry if available (graceful degradation)
     pub async fn lookup_meeting(
         &self,
         tenant_id: &TenantId,
         room_number: &str,
     ) -> Result<Option<Meeting>> {
         use fcp_core::storage::ConferenceStore;
-        self.storage
+
+        let cache_key = (tenant_id.clone(), room_number.to_string());
+        let ttl = Duration::from_secs(self.conference_config.cache_ttl_secs);
+
+        // Check cache first (if TTL > 0)
+        if ttl > Duration::ZERO {
+            if let Some(entry) = self.meeting_cache.get(&cache_key) {
+                let (meeting, cached_at) = entry.value();
+                if cached_at.elapsed() < ttl {
+                    return Ok(Some(meeting.clone()));
+                }
+            }
+        }
+
+        // Query database
+        match self
+            .storage
             .get_meeting_by_room_number(tenant_id, room_number)
             .await
+        {
+            Ok(Some(meeting)) => {
+                if ttl > Duration::ZERO {
+                    self.meeting_cache
+                        .insert(cache_key, (meeting.clone(), Instant::now()));
+                }
+                Ok(Some(meeting))
+            }
+            Ok(None) => {
+                // Meeting doesn't exist — remove stale cache entry if any
+                self.meeting_cache.remove(&cache_key);
+                Ok(None)
+            }
+            Err(e) => {
+                // DB failure — return stale cache if available
+                if let Some(entry) = self.meeting_cache.get(&cache_key) {
+                    let (meeting, cached_at) = entry.value();
+                    warn!(
+                        room = %room_number,
+                        stale_secs = cached_at.elapsed().as_secs(),
+                        error = %e,
+                        "DB lookup failed, using stale cached meeting"
+                    );
+                    return Ok(Some(meeting.clone()));
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Invalidate cached meeting entry (call after update/delete).
+    pub fn invalidate_meeting_cache(&self, tenant_id: &TenantId, room_number: &str) {
+        self.meeting_cache
+            .remove(&(tenant_id.clone(), room_number.to_string()));
     }
 
     /// Check if a call ID belongs to an active conference session.
@@ -206,6 +264,25 @@ impl ConferenceCallHandler {
             .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
         room.promote_to_host(participant_id)
             .map_err(|e| anyhow::anyhow!("Failed to promote: {}", e))
+    }
+
+    /// Admit a specific waiting participant into the conference (admin bypass).
+    pub fn admit_waiting(&self, room_number: &str, participant_id: &str) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+        room.admit_waiting_participant(participant_id)
+            .map_err(|e| anyhow::anyhow!("Failed to admit: {}", e))
+    }
+
+    /// Admit all waiting participants into the conference (admin bypass).
+    pub fn admit_all_waiting(&self, room_number: &str) -> Result<usize> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+        Ok(room.admit_all_waiting())
     }
 
     /// Set participant audio gain.
@@ -643,10 +720,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let sdp_offer = std::str::from_utf8(&body[..])
             .context("SDP body is not valid UTF-8")?;
 
-        // 4. Parse codecs and pick first supported one
+        // 4. Parse codecs and pick first supported one (filtered by allowed_codecs config)
         let offered_codecs = parse_sdp_codecs(sdp_offer);
-        let (codec_name, payload_type, frame_size) = pick_codec(&offered_codecs)
-            .context("No supported codec in SDP offer")?;
+        let allowed = self.conference_config.allowed_codecs.as_deref();
+        let codec_result = pick_codec(&offered_codecs, allowed);
+        let (codec_name, payload_type, frame_size) = match codec_result {
+            Some(c) => c,
+            None => {
+                let reject =
+                    UserAgentServer::create_response(request, 488, "Not Acceptable Here");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        };
 
         // Also look for telephone-event payload type for DTMF
         let te_pt = find_telephone_event_pt(&offered_codecs, sdp_offer);
@@ -1165,7 +1251,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Check for codec change
         let offered_codecs = parse_sdp_codecs(sdp_offer);
-        if let Some((new_codec, new_pt, new_frame_size)) = pick_codec(&offered_codecs) {
+        let allowed = self.conference_config.allowed_codecs.as_deref();
+        if let Some((new_codec, new_pt, new_frame_size)) = pick_codec(&offered_codecs, allowed) {
             if new_codec != session.codec_name {
                 info!(
                     call_id = %call_id,
@@ -1320,10 +1407,20 @@ fn parse_remote_rtp_addr(sdp: &str) -> Option<SocketAddr> {
 
 /// Pick the first supported codec from an SDP offer.
 ///
+/// If `allowed` is `Some`, only codecs in that list are considered.
 /// Returns (codec_name, payload_type, frame_size_in_samples).
-fn pick_codec(codecs: &[fcp_media::SdpCodecInfo]) -> Option<(String, u8, usize)> {
+fn pick_codec(
+    codecs: &[fcp_media::SdpCodecInfo],
+    allowed: Option<&[String]>,
+) -> Option<(String, u8, usize)> {
     for codec in codecs {
         let name_upper = codec.encoding_name.to_uppercase();
+        // Check against allowed list if configured
+        if let Some(allowed_list) = allowed {
+            if !allowed_list.iter().any(|a| a.eq_ignore_ascii_case(&name_upper)) {
+                continue;
+            }
+        }
         match name_upper.as_str() {
             "PCMU" => return Some(("PCMU".to_string(), codec.payload_type, 160)),
             "PCMA" => return Some(("PCMA".to_string(), codec.payload_type, 160)),
@@ -1438,7 +1535,7 @@ mod tests {
                 clock_rate: 8000,
             },
         ];
-        let (name, pt, frame_size) = pick_codec(&codecs).unwrap();
+        let (name, pt, frame_size) = pick_codec(&codecs, None).unwrap();
         assert_eq!(name, "PCMU");
         assert_eq!(pt, 0);
         assert_eq!(frame_size, 160);
@@ -1451,7 +1548,7 @@ mod tests {
             encoding_name: "G722".to_string(),
             clock_rate: 8000,
         }];
-        let (name, pt, frame_size) = pick_codec(&codecs).unwrap();
+        let (name, pt, frame_size) = pick_codec(&codecs, None).unwrap();
         assert_eq!(name, "G722");
         assert_eq!(pt, 9);
         assert_eq!(frame_size, 320);
@@ -1464,7 +1561,37 @@ mod tests {
             encoding_name: "opus".to_string(),
             clock_rate: 48000,
         }];
-        assert!(pick_codec(&codecs).is_none());
+        assert!(pick_codec(&codecs, None).is_none());
+    }
+
+    #[test]
+    fn test_pick_codec_allowed_filter() {
+        let codecs = vec![
+            fcp_media::SdpCodecInfo {
+                payload_type: 0,
+                encoding_name: "PCMU".to_string(),
+                clock_rate: 8000,
+            },
+            fcp_media::SdpCodecInfo {
+                payload_type: 8,
+                encoding_name: "PCMA".to_string(),
+                clock_rate: 8000,
+            },
+            fcp_media::SdpCodecInfo {
+                payload_type: 9,
+                encoding_name: "G722".to_string(),
+                clock_rate: 8000,
+            },
+        ];
+        // Only allow PCMA
+        let allowed = vec!["PCMA".to_string()];
+        let (name, pt, _) = pick_codec(&codecs, Some(&allowed)).unwrap();
+        assert_eq!(name, "PCMA");
+        assert_eq!(pt, 8);
+
+        // Allow none of the offered codecs
+        let allowed = vec!["G729".to_string()];
+        assert!(pick_codec(&codecs, Some(&allowed)).is_none());
     }
 
     #[test]

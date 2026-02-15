@@ -266,6 +266,18 @@ pub struct ConferenceSection {
     /// Enable DTMF conference control commands (*6=mute, *7=vol up, etc.)
     #[serde(default = "default_true")]
     pub dtmf_enabled: bool,
+
+    /// Meeting lookup cache TTL in seconds (default: 60). Set 0 to disable.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+
+    /// Recording retention in days. None/0 = keep forever.
+    #[serde(default)]
+    pub recording_retention_days: Option<u32>,
+
+    /// Allowed codecs for conference participants. None = all supported (PCMU, PCMA, G722).
+    #[serde(default)]
+    pub allowed_codecs: Option<Vec<String>>,
 }
 
 fn default_sample_rate() -> u32 {
@@ -296,6 +308,10 @@ fn default_jitter_buffer_ms() -> u64 {
     40
 }
 
+fn default_cache_ttl_secs() -> u64 {
+    60
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -309,6 +325,9 @@ impl Default for ConferenceSection {
             max_pin_attempts: default_max_pin_attempts(),
             jitter_buffer_ms: default_jitter_buffer_ms(),
             dtmf_enabled: true,
+            cache_ttl_secs: default_cache_ttl_secs(),
+            recording_retention_days: None,
+            allowed_codecs: None,
         }
     }
 }
