@@ -1,15 +1,44 @@
 use bytes::Bytes;
 use forge_codecs::AudioCodec;
-use forge_conference::ConferenceRoom;
+use forge_conference::{
+    ConferenceRoom, DtmfCommand, DtmfCommandHandler, ParticipantState,
+};
+use forge_dtmf::rfc2833::Rfc2833Detector;
+use forge_dtmf::{DtmfDigit, DtmfEventType};
 use forge_rtp::{JitterBuffer, RtpPacket, RtpSocketPair};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
+
+/// Audio quality statistics tracked per participant.
+pub struct AudioStats {
+    pub packets_received: AtomicU64,
+    pub packets_decoded: AtomicU64,
+    pub decode_errors: AtomicU64,
+    pub packets_sent: AtomicU64,
+    pub encode_errors: AtomicU64,
+    pub dtmf_events: AtomicU64,
+}
+
+impl AudioStats {
+    pub fn new() -> Self {
+        Self {
+            packets_received: AtomicU64::new(0),
+            packets_decoded: AtomicU64::new(0),
+            decode_errors: AtomicU64::new(0),
+            packets_sent: AtomicU64::new(0),
+            encode_errors: AtomicU64::new(0),
+            dtmf_events: AtomicU64::new(0),
+        }
+    }
+}
 
 /// Per-participant audio bridge task.
 ///
 /// Runs concurrently:
 /// - Receives inbound RTP packets, decodes to PCM, writes to the conference mixer
+/// - Detects DTMF telephone-event packets and routes to command handler
 /// - Every 20ms, reads the mix-minus output, encodes, and sends as RTP
 ///
 /// This bypasses ForwardingEngine (designed for 1:1 B2BUA bridging) and
@@ -23,12 +52,24 @@ pub async fn run_audio_bridge(
     payload_type: u8,
     frame_size: usize,
     jitter_buffer_ms: u64,
+    te_pt: Option<u8>,
+    dtmf_handler: Option<Arc<DtmfCommandHandler>>,
+    is_host: bool,
+    stats: Arc<AudioStats>,
 ) {
     let mut seq: u16 = rand::random();
     let ssrc: u32 = rand::random();
     let mut timestamp: u32 = 0;
     let mut interval = tokio::time::interval(Duration::from_millis(20));
     let mut jitter_buffer = JitterBuffer::new(Duration::from_millis(jitter_buffer_ms));
+
+    // DTMF detector for telephone-event packets
+    let mut dtmf_detector = if te_pt.is_some() {
+        Some(Rfc2833Detector::new(8000))
+    } else {
+        None
+    };
+    let te_payload_type = te_pt.unwrap_or(101);
 
     debug!(
         participant = %participant_id,
@@ -37,6 +78,8 @@ pub async fn run_audio_bridge(
         payload_type = payload_type,
         codec = encoder.name(),
         jitter_buffer_ms = jitter_buffer_ms,
+        te_pt = ?te_pt,
+        dtmf_enabled = dtmf_handler.is_some(),
         "Audio bridge started"
     );
 
@@ -46,7 +89,48 @@ pub async fn run_audio_bridge(
             result = rtp_socket.recv_rtp() => {
                 match result {
                     Ok((packet, _addr)) => {
-                        // Push raw payload into jitter buffer
+                        stats.packets_received.fetch_add(1, Ordering::Relaxed);
+
+                        // Check if this is a telephone-event (DTMF) packet
+                        if packet.header.payload_type() == te_payload_type {
+                            if let Some(ref mut detector) = dtmf_detector {
+                                if let Ok(events) = detector.process_with_timestamp(
+                                    &packet.payload[..],
+                                    packet.header.timestamp,
+                                ) {
+                                    for event in events {
+                                        if event.event_type == DtmfEventType::End {
+                                            if let Some(ch) = dtmf_digit_to_char(&event.digit) {
+                                                stats.dtmf_events.fetch_add(1, Ordering::Relaxed);
+                                                // Route to DTMF command handler
+                                                if let Some(ref handler) = dtmf_handler {
+                                                    if let Some((cmd, _role)) =
+                                                        handler.process_digit(&participant_id, ch)
+                                                    {
+                                                        let should_leave = execute_dtmf_command(
+                                                            &room,
+                                                            &participant_id,
+                                                            is_host,
+                                                            cmd,
+                                                        );
+                                                        if should_leave {
+                                                            debug!(
+                                                                participant = %participant_id,
+                                                                "DTMF leave command, stopping bridge"
+                                                            );
+                                                            return;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            continue; // Don't decode telephone-event as audio
+                        }
+
+                        // Push audio payload into jitter buffer
                         jitter_buffer.push(
                             packet.header.sequence_number,
                             packet.header.timestamp,
@@ -57,9 +141,11 @@ pub async fn run_audio_bridge(
                         while let Some(payload_data) = jitter_buffer.pop() {
                             match decoder.decode(&payload_data) {
                                 Ok(pcm_samples) => {
+                                    stats.packets_decoded.fetch_add(1, Ordering::Relaxed);
                                     let _ = room.write_audio(&participant_id, &pcm_samples);
                                 }
                                 Err(e) => {
+                                    stats.decode_errors.fetch_add(1, Ordering::Relaxed);
                                     trace!(participant = %participant_id, error = %e, "Decode error");
                                 }
                             }
@@ -93,10 +179,12 @@ pub async fn run_audio_bridge(
                                 if let Err(e) = rtp_socket.send_rtp(&packet).await {
                                     trace!(participant = %participant_id, error = %e, "RTP send error");
                                 }
+                                stats.packets_sent.fetch_add(1, Ordering::Relaxed);
                                 seq = seq.wrapping_add(1);
                                 timestamp = timestamp.wrapping_add(frame_size as u32);
                             }
                             Err(e) => {
+                                stats.encode_errors.fetch_add(1, Ordering::Relaxed);
                                 trace!(participant = %participant_id, error = %e, "Encode error");
                             }
                         }
@@ -119,8 +207,131 @@ pub async fn run_audio_bridge(
         }
     }
 
+    // Clean up DTMF state
+    if let Some(ref handler) = dtmf_handler {
+        handler.clear_participant(&participant_id);
+    }
+
     debug!(
         participant = %participant_id,
         "Audio bridge stopped"
     );
+}
+
+/// Execute a DTMF command on the conference room.
+/// Returns `true` if the participant should leave (bridge should stop).
+fn execute_dtmf_command(
+    room: &Arc<ConferenceRoom>,
+    participant_id: &str,
+    is_host: bool,
+    command: DtmfCommand,
+) -> bool {
+    match command {
+        DtmfCommand::MuteToggle => {
+            // Toggle between Active and Muted
+            match room.get_participant_metadata(participant_id) {
+                Ok(meta) => {
+                    let new_state = match meta.state {
+                        ParticipantState::Muted => ParticipantState::Active,
+                        _ => ParticipantState::Muted,
+                    };
+                    if let Err(e) = room.set_participant_state(participant_id, new_state.clone()) {
+                        warn!(error = %e, "Failed to toggle mute");
+                    } else {
+                        info!(participant = %participant_id, state = ?new_state, "DTMF mute toggle");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to get participant state for mute toggle"),
+            }
+            false
+        }
+        DtmfCommand::VolumeUp => {
+            if let Ok(meta) = room.get_participant_metadata(participant_id) {
+                let new_gain = (meta.gain + 0.1).min(2.0);
+                let _ = room.set_participant_gain(participant_id, new_gain);
+                debug!(participant = %participant_id, gain = new_gain, "DTMF volume up");
+            }
+            false
+        }
+        DtmfCommand::VolumeDown => {
+            if let Ok(meta) = room.get_participant_metadata(participant_id) {
+                let new_gain = (meta.gain - 0.1).max(0.0);
+                let _ = room.set_participant_gain(participant_id, new_gain);
+                debug!(participant = %participant_id, gain = new_gain, "DTMF volume down");
+            }
+            false
+        }
+        DtmfCommand::Info => {
+            let count = room.participant_count();
+            info!(participant = %participant_id, participant_count = count, "DTMF info request");
+            false
+        }
+        DtmfCommand::Leave => {
+            info!(participant = %participant_id, "DTMF leave requested");
+            true // Signal bridge to stop
+        }
+        DtmfCommand::MuteAll => {
+            if is_host {
+                for pid in room.participants() {
+                    let _ = room.set_participant_state(&pid, ParticipantState::Muted);
+                }
+                info!(participant = %participant_id, "DTMF host: muted all");
+            }
+            false
+        }
+        DtmfCommand::UnmuteAll => {
+            if is_host {
+                for pid in room.participants() {
+                    let _ = room.set_participant_state(&pid, ParticipantState::Active);
+                }
+                info!(participant = %participant_id, "DTMF host: unmuted all");
+            }
+            false
+        }
+        DtmfCommand::LockConference => {
+            if is_host {
+                room.lock();
+                info!(participant = %participant_id, "DTMF host: locked conference");
+            }
+            false
+        }
+        DtmfCommand::UnlockConference => {
+            if is_host {
+                room.unlock();
+                info!(participant = %participant_id, "DTMF host: unlocked conference");
+            }
+            false
+        }
+        DtmfCommand::EndConference | DtmfCommand::KickParticipant(_) => {
+            // Complex commands — log only for now
+            debug!(participant = %participant_id, command = ?command, "DTMF command not implemented yet");
+            false
+        }
+        DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin => {
+            // Internal states, no action needed
+            false
+        }
+    }
+}
+
+/// Convert a DtmfDigit to its character representation.
+fn dtmf_digit_to_char(digit: &DtmfDigit) -> Option<char> {
+    match digit {
+        DtmfDigit::Zero => Some('0'),
+        DtmfDigit::One => Some('1'),
+        DtmfDigit::Two => Some('2'),
+        DtmfDigit::Three => Some('3'),
+        DtmfDigit::Four => Some('4'),
+        DtmfDigit::Five => Some('5'),
+        DtmfDigit::Six => Some('6'),
+        DtmfDigit::Seven => Some('7'),
+        DtmfDigit::Eight => Some('8'),
+        DtmfDigit::Nine => Some('9'),
+        DtmfDigit::Star => Some('*'),
+        DtmfDigit::Hash => Some('#'),
+        DtmfDigit::A => Some('A'),
+        DtmfDigit::B => Some('B'),
+        DtmfDigit::C => Some('C'),
+        DtmfDigit::D => Some('D'),
+    }
 }

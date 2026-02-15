@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware,
     routing::{delete, get, post},
     Json, Router,
@@ -75,6 +75,39 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
         .route(
             "/conferences/{room_number}/recording/stop",
             post(stop_recording_handler),
+        )
+        // Participant details and stats
+        .route(
+            "/conferences/{room_number}/participants/{pid}",
+            get(get_participant_handler),
+        )
+        .route(
+            "/conferences/{room_number}/participants/{pid}/gain",
+            post(set_gain_handler),
+        )
+        .route(
+            "/conferences/{room_number}/participants/{pid}/recording/start",
+            post(start_participant_recording_handler),
+        )
+        .route(
+            "/conferences/{room_number}/participants/{pid}/recording/stop",
+            post(stop_participant_recording_handler),
+        )
+        .route(
+            "/conferences/{room_number}/waiting",
+            get(list_waiting_handler),
+        )
+        .route(
+            "/conferences/{room_number}/promote/{pid}",
+            post(promote_participant_handler),
+        )
+        .route(
+            "/conferences/{room_number}/stats",
+            get(room_stats_handler),
+        )
+        .route(
+            "/conferences/{room_number}/announce",
+            post(announce_handler),
         )
 }
 
@@ -171,10 +204,11 @@ fn default_true() -> bool {
 
 async fn list_meetings_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
 ) -> Json<serde_json::Value> {
     use fcp_core::storage::ConferenceStore;
 
-    let tenant_id = TenantId::nil();
+    let tenant_id = extract_tenant_id(&headers);
     match state.storage.list_meetings(&tenant_id).await {
         Ok(meetings) => {
             let list: Vec<serde_json::Value> = meetings.iter().map(meeting_to_json).collect();
@@ -188,11 +222,12 @@ async fn list_meetings_handler(
 
 async fn create_meeting_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Json(payload): Json<CreateMeetingRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     use fcp_core::storage::ConferenceStore;
 
-    let tenant_id = TenantId::nil();
+    let tenant_id = extract_tenant_id(&headers);
 
     // Check for duplicate room number
     match state
@@ -704,8 +739,159 @@ async fn stop_recording_handler(
 }
 
 // =========================================================================
+// Participant Details & Stats
+// =========================================================================
+
+async fn get_participant_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.get_participant_details(&room_number, &pid) {
+        Ok(details) => (StatusCode::OK, Json(details)),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetGainRequest {
+    gain: f32,
+}
+
+async fn set_gain_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((room_number, pid)): Path<(String, String)>,
+    Json(payload): Json<SetGainRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.set_gain(&room_number, &pid, payload.gain) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "gain_set", "participant": pid, "gain": payload.gain })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn list_waiting_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.list_waiting(&room_number) {
+        Ok(waiting) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "room_number": room_number, "waiting": waiting })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn promote_participant_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.promote_participant(&room_number, &pid) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "promoted", "participant": pid })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn room_stats_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.get_room_stats(&room_number) {
+        Ok(stats) => (StatusCode::OK, Json(stats)),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn start_participant_recording_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.start_participant_recording(&room_number, &pid).await {
+        Ok(path) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "recording_started", "participant": pid, "path": path })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn stop_participant_recording_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path((room_number, pid)): Path<(String, String)>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.stop_participant_recording(&room_number, &pid) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "recording_stopped", "participant": pid })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct AnnounceRequest {
+    audio_path: String,
+}
+
+async fn announce_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+    Json(payload): Json<AnnounceRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.play_announcement(&room_number, &payload.audio_path).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "announced", "room": room_number })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+// =========================================================================
 // Helpers
 // =========================================================================
+
+/// Extract tenant ID from request headers.
+/// Checks X-Tenant-ID header first, falls back to TenantId::nil().
+fn extract_tenant_id(headers: &HeaderMap) -> TenantId {
+    if let Some(value) = headers.get("X-Tenant-ID") {
+        if let Ok(s) = value.to_str() {
+            if let Ok(tid) = s.parse::<TenantId>() {
+                return tid;
+            }
+        }
+    }
+    TenantId::nil()
+}
 
 fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
     serde_json::json!({

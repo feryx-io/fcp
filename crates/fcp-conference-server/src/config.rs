@@ -262,6 +262,10 @@ pub struct ConferenceSection {
     /// Jitter buffer depth in milliseconds (default: 40ms)
     #[serde(default = "default_jitter_buffer_ms")]
     pub jitter_buffer_ms: u64,
+
+    /// Enable DTMF conference control commands (*6=mute, *7=vol up, etc.)
+    #[serde(default = "default_true")]
+    pub dtmf_enabled: bool,
 }
 
 fn default_sample_rate() -> u32 {
@@ -304,6 +308,7 @@ impl Default for ConferenceSection {
             pin_timeout_secs: default_pin_timeout_secs(),
             max_pin_attempts: default_max_pin_attempts(),
             jitter_buffer_ms: default_jitter_buffer_ms(),
+            dtmf_enabled: true,
         }
     }
 }

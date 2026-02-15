@@ -3,22 +3,26 @@ use dashmap::DashMap;
 use fcp_core::{DynStorage, Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{construct_answer_for_a_leg, parse_sdp_codecs};
-use forge_codecs::{g711, g722, AudioCodec};
-use forge_conference::{ConferenceBridge, ConferenceConfig, ConferenceError, PinAuthResult, RoomConfig};
-use forge_dtmf::rfc2833::Rfc2833Detector;
-use forge_dtmf::{DtmfEventType, DtmfDigit};
 use fcp_sip::prelude::SipUserAgentClient;
+use forge_codecs::{g711, g722, AudioCodec};
+use forge_conference::{
+    ConferenceBridge, ConferenceConfig, ConferenceDtmfConfig, ConferenceError,
+    DtmfCommandHandler, PinAuthResult, RoomConfig,
+};
+use forge_dtmf::rfc2833::Rfc2833Detector;
+use forge_dtmf::{DtmfDigit, DtmfEventType};
 use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
 use sip_core::{SipUri, Uri};
 use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::audio_bridge;
+use crate::audio_bridge::{self, AudioStats};
 use crate::config::ConferenceSection;
 
 /// Tracks a single participant's connection to a conference room.
@@ -34,6 +38,9 @@ pub struct ParticipantSession {
     pub codec_name: String,
     pub tenant_id: TenantId,
     pub dialog: Dialog,
+    pub joined_at: SystemTime,
+    pub te_pt: Option<u8>,
+    pub stats: Arc<AudioStats>,
 }
 
 /// Handles SIP INVITEs for conference rooms.
@@ -55,6 +62,7 @@ pub struct ConferenceCallHandler {
     port_pool: Arc<PortPool>,
     event_bus: Arc<dyn EventPublisher>,
     uac: Arc<SipUserAgentClient>,
+    dtmf_handlers: DashMap<String, Arc<DtmfCommandHandler>>,
 }
 
 impl ConferenceCallHandler {
@@ -78,6 +86,7 @@ impl ConferenceCallHandler {
             port_pool,
             event_bus,
             uac,
+            dtmf_handlers: DashMap::new(),
         }
     }
 
@@ -123,6 +132,220 @@ impl ConferenceCallHandler {
             .get_room(room_number)
             .ok()
             .map(|room| room.participants())
+    }
+
+    /// Get detailed metadata for a specific participant in a room.
+    pub fn get_participant_details(
+        &self,
+        room_number: &str,
+        participant_id: &str,
+    ) -> Result<serde_json::Value> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        let meta = room
+            .get_participant_metadata(participant_id)
+            .map_err(|e| anyhow::anyhow!("Participant not found: {}", e))?;
+
+        // Enrich with session data (codec, remote addr, stats)
+        let session_data = self
+            .sessions
+            .iter()
+            .find(|entry| entry.value().participant_id == participant_id);
+
+        let mut json = serde_json::json!({
+            "participant_id": meta.id,
+            "state": format!("{:?}", meta.state),
+            "gain": meta.gain,
+            "is_recording": meta.is_recording,
+            "packets_received": meta.packets_received,
+            "is_speaking": meta.is_speaking,
+            "is_host": room.is_host(participant_id),
+        });
+
+        if let Some(entry) = session_data {
+            let session = entry.value();
+            let joined_secs = session
+                .joined_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            json["codec"] = serde_json::json!(session.codec_name);
+            json["remote_addr"] = serde_json::json!(session.remote_addr.to_string());
+            json["joined_at"] = serde_json::json!(joined_secs);
+            json["call_id"] = serde_json::json!(session.call_id);
+            json["stats"] = serde_json::json!({
+                "packets_received": session.stats.packets_received.load(Ordering::Relaxed),
+                "packets_decoded": session.stats.packets_decoded.load(Ordering::Relaxed),
+                "decode_errors": session.stats.decode_errors.load(Ordering::Relaxed),
+                "packets_sent": session.stats.packets_sent.load(Ordering::Relaxed),
+                "encode_errors": session.stats.encode_errors.load(Ordering::Relaxed),
+                "dtmf_events": session.stats.dtmf_events.load(Ordering::Relaxed),
+            });
+        }
+
+        Ok(json)
+    }
+
+    /// List participants waiting for moderator in a room.
+    pub fn list_waiting(&self, room_number: &str) -> Result<Vec<String>> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+        Ok(room.waiting_participants())
+    }
+
+    /// Promote a participant to host (releases waiting participants).
+    pub fn promote_participant(&self, room_number: &str, participant_id: &str) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+        room.promote_to_host(participant_id)
+            .map_err(|e| anyhow::anyhow!("Failed to promote: {}", e))
+    }
+
+    /// Set participant audio gain.
+    pub fn set_gain(&self, room_number: &str, participant_id: &str, gain: f32) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+        room.set_participant_gain(participant_id, gain)
+            .map_err(|e| anyhow::anyhow!("Failed to set gain: {}", e))
+    }
+
+    /// Get aggregated room stats.
+    pub fn get_room_stats(&self, room_number: &str) -> Result<serde_json::Value> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        let all_meta = room.get_all_participant_metadata();
+        let participants: Vec<serde_json::Value> = all_meta
+            .iter()
+            .map(|meta| {
+                let mut p = serde_json::json!({
+                    "participant_id": meta.id,
+                    "state": format!("{:?}", meta.state),
+                    "gain": meta.gain,
+                    "is_recording": meta.is_recording,
+                    "is_speaking": meta.is_speaking,
+                    "packets_received": meta.packets_received,
+                });
+
+                // Enrich with session stats
+                if let Some(entry) = self.sessions.iter().find(|e| e.value().participant_id == meta.id) {
+                    let s = &entry.value().stats;
+                    p["rtp_stats"] = serde_json::json!({
+                        "packets_received": s.packets_received.load(Ordering::Relaxed),
+                        "packets_decoded": s.packets_decoded.load(Ordering::Relaxed),
+                        "decode_errors": s.decode_errors.load(Ordering::Relaxed),
+                        "packets_sent": s.packets_sent.load(Ordering::Relaxed),
+                        "encode_errors": s.encode_errors.load(Ordering::Relaxed),
+                        "dtmf_events": s.dtmf_events.load(Ordering::Relaxed),
+                    });
+                }
+
+                p
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "room_number": room_number,
+            "participant_count": room.participant_count(),
+            "waiting_count": room.waiting_count(),
+            "is_locked": room.is_locked(),
+            "is_recording": room.is_recording(),
+            "host_count": room.host_count(),
+            "participants": participants,
+        }))
+    }
+
+    /// Start per-participant recording.
+    pub async fn start_participant_recording(
+        &self,
+        room_number: &str,
+        participant_id: &str,
+    ) -> Result<String> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let path = format!(
+            "{}/{}-{}-{}.wav",
+            self.conference_config.recordings_dir, room_number, participant_id, timestamp
+        );
+
+        room.start_participant_recording(participant_id, &path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start recording: {}", e))?;
+
+        info!(
+            room = %room_number,
+            participant = %participant_id,
+            path = %path,
+            "Per-participant recording started"
+        );
+        Ok(path)
+    }
+
+    /// Stop per-participant recording.
+    pub fn stop_participant_recording(
+        &self,
+        room_number: &str,
+        participant_id: &str,
+    ) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        room.stop_participant_recording(participant_id)
+            .map_err(|e| anyhow::anyhow!("Failed to stop recording: {}", e))?;
+
+        info!(
+            room = %room_number,
+            participant = %participant_id,
+            "Per-participant recording stopped"
+        );
+        Ok(())
+    }
+
+    /// Play an audio announcement into a conference room.
+    pub async fn play_announcement(&self, room_number: &str, audio_path: &str) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        room.play_announcement(audio_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to play announcement: {}", e))?;
+
+        info!(room = %room_number, path = %audio_path, "Announcement played");
+        Ok(())
+    }
+
+    /// Get or create DTMF command handler for a room.
+    fn get_or_create_dtmf_handler(&self, room_number: &str) -> Arc<DtmfCommandHandler> {
+        if let Some(handler) = self.dtmf_handlers.get(room_number) {
+            return Arc::clone(handler.value());
+        }
+        let config = ConferenceDtmfConfig::default();
+        let handler = Arc::new(DtmfCommandHandler::new(room_number.to_string(), config));
+        self.dtmf_handlers
+            .insert(room_number.to_string(), Arc::clone(&handler));
+        handler
     }
 
     /// Kick a participant by their participant_id: send SIP BYE and clean up session.
@@ -644,6 +867,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let decoder = create_codec_instance(&codec_name)?;
                 let jitter_buffer_ms = self.conference_config.jitter_buffer_ms;
                 let recordings_dir = self.conference_config.recordings_dir.clone();
+                let dtmf_handler = if self.conference_config.dtmf_enabled {
+                    Some(self.get_or_create_dtmf_handler(&room_number))
+                } else {
+                    None
+                };
+                let wait_stats = Arc::new(AudioStats::new());
+                let wait_stats_clone = Arc::clone(&wait_stats);
 
                 let wait_handle = tokio::spawn(async move {
                     // Poll every 500ms waiting to be released into the mixer
@@ -733,6 +963,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     payload_type,
                                     frame_size,
                                     jitter_buffer_ms,
+                                    te_pt,
+                                    dtmf_handler,
+                                    false, // waiting participants are not hosts
+                                    wait_stats_clone,
                                 )
                                 .await;
                             }
@@ -758,6 +992,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         codec_name,
                         tenant_id,
                         dialog: dialog.clone(),
+                        joined_at: SystemTime::now(),
+                        te_pt,
+                        stats: wait_stats,
                     },
                 );
 
@@ -836,10 +1073,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let encoder = create_codec_instance(&codec_name)?;
         let decoder = create_codec_instance(&codec_name)?;
 
-        // 17. Spawn audio bridge task
+        // 17. Create DTMF handler and stats for audio bridge
+        let dtmf_handler = if self.conference_config.dtmf_enabled {
+            Some(self.get_or_create_dtmf_handler(&room_number))
+        } else {
+            None
+        };
+        let stats = Arc::new(AudioStats::new());
+
+        // 18. Spawn audio bridge task
         let bridge_room = Arc::clone(&room);
         let bridge_participant = participant_id.clone();
         let bridge_socket = Arc::clone(&rtp_socket);
+        let stats_clone = Arc::clone(&stats);
         let audio_bridge_handle = tokio::spawn(audio_bridge::run_audio_bridge(
             bridge_room,
             bridge_participant,
@@ -849,9 +1095,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             payload_type,
             frame_size,
             self.conference_config.jitter_buffer_ms,
+            te_pt,
+            dtmf_handler,
+            is_host,
+            stats_clone,
         ));
 
-        // 18. Store session
+        // 19. Store session
         let remote_addr = parse_remote_rtp_addr(sdp_offer)
             .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
         self.sessions.insert(
@@ -868,6 +1118,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 codec_name,
                 tenant_id,
                 dialog,
+                joined_at: SystemTime::now(),
+                te_pt,
+                stats,
             },
         );
 
@@ -934,11 +1187,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     .get_room(&session.room_number)
                     .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
-                // Spawn new audio bridge
+                // Spawn new audio bridge (reuse existing DTMF handler and stats)
                 let bridge_room = Arc::clone(&room);
                 let bridge_participant = session.participant_id.clone();
                 let bridge_socket = Arc::clone(&session.rtp_socket);
                 let jitter_buffer_ms = self.conference_config.jitter_buffer_ms;
+                let reinvite_dtmf = if self.conference_config.dtmf_enabled {
+                    Some(self.get_or_create_dtmf_handler(&session.room_number))
+                } else {
+                    None
+                };
+                let reinvite_stats = Arc::clone(&session.stats);
+                let reinvite_is_host = session.is_host;
+                let reinvite_te_pt = session.te_pt;
                 let new_handle = tokio::spawn(audio_bridge::run_audio_bridge(
                     bridge_room,
                     bridge_participant,
@@ -948,6 +1209,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     new_pt,
                     new_frame_size,
                     jitter_buffer_ms,
+                    reinvite_te_pt,
+                    reinvite_dtmf,
+                    reinvite_is_host,
+                    reinvite_stats,
                 ));
 
                 session.audio_bridge_handle = new_handle;
