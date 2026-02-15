@@ -505,20 +505,23 @@ async fn kick_participant_handler(
     State(state): State<Arc<ConferenceState>>,
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.bridge.get_room(&room_number) {
-        Ok(room) => match room.remove_participant(&pid) {
-            Ok(()) => (
-                StatusCode::OK,
-                Json(serde_json::json!({ "status": "kicked", "participant": pid })),
-            ),
-            Err(e) => (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": format!("{}", e) })),
-            ),
-        },
-        Err(_) => (
+    // Verify room exists
+    if state.bridge.get_room(&room_number).is_err() {
+        return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Conference room not active" })),
+        );
+    }
+
+    // Kick via conference handler: sends SIP BYE, aborts bridge, deallocates port
+    match state.conference_handler.kick_participant(&pid).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "kicked", "participant": pid })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
         ),
     }
 }

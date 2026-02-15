@@ -233,6 +233,17 @@ async fn main() -> Result<()> {
         .or_else(|| config.media.public_ip.clone())
         .unwrap_or_else(|| derive_local_ip(&config.sip.udp_bind));
 
+    // Ensure recordings directory exists
+    if let Err(e) = std::fs::create_dir_all(&config.conference.recordings_dir) {
+        warn!(
+            path = %config.conference.recordings_dir,
+            error = %e,
+            "Failed to create recordings directory"
+        );
+    } else {
+        info!(path = %config.conference.recordings_dir, "Recordings directory ready");
+    }
+
     let conference_handler = Arc::new(ConferenceCallHandler::new(
         Arc::clone(&bridge),
         Arc::clone(&dyn_storage),
@@ -241,6 +252,7 @@ async fn main() -> Result<()> {
         local_addr.clone(),
         Arc::clone(&port_pool),
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        Arc::clone(&uac),
     ));
 
     info!(

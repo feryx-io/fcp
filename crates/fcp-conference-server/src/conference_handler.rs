@@ -7,8 +7,10 @@ use forge_codecs::{g711, g722, AudioCodec};
 use forge_conference::{ConferenceBridge, ConferenceConfig, ConferenceError, PinAuthResult, RoomConfig};
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfEventType, DtmfDigit};
+use fcp_sip::prelude::SipUserAgentClient;
 use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
 use sip_core::{SipUri, Uri};
+use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -31,6 +33,7 @@ pub struct ParticipantSession {
     pub remote_addr: SocketAddr,
     pub codec_name: String,
     pub tenant_id: TenantId,
+    pub dialog: Dialog,
 }
 
 /// Handles SIP INVITEs for conference rooms.
@@ -51,6 +54,7 @@ pub struct ConferenceCallHandler {
     pub local_addr: String,
     port_pool: Arc<PortPool>,
     event_bus: Arc<dyn EventPublisher>,
+    uac: Arc<SipUserAgentClient>,
 }
 
 impl ConferenceCallHandler {
@@ -62,6 +66,7 @@ impl ConferenceCallHandler {
         local_addr: String,
         port_pool: Arc<PortPool>,
         event_bus: Arc<dyn EventPublisher>,
+        uac: Arc<SipUserAgentClient>,
     ) -> Self {
         Self {
             bridge,
@@ -72,6 +77,7 @@ impl ConferenceCallHandler {
             local_addr,
             port_pool,
             event_bus,
+            uac,
         }
     }
 
@@ -119,6 +125,29 @@ impl ConferenceCallHandler {
             .map(|room| room.participants())
     }
 
+    /// Kick a participant by their participant_id: send SIP BYE and clean up session.
+    pub async fn kick_participant(&self, participant_id: &str) -> Result<()> {
+        // Reverse lookup: find call_id by participant_id
+        let call_id = self
+            .sessions
+            .iter()
+            .find(|entry| entry.value().participant_id == participant_id)
+            .map(|entry| entry.key().clone());
+
+        let call_id = call_id
+            .ok_or_else(|| anyhow::anyhow!("No session found for participant: {}", participant_id))?;
+
+        // Send BYE before cleaning up
+        if let Some(session) = self.sessions.get(&call_id) {
+            if let Err(e) = self.uac.bye(&session.dialog).await {
+                warn!(call_id = %call_id, error = %e, "Failed to send BYE for kicked participant");
+            }
+        }
+
+        self.remove_session(&call_id);
+        Ok(())
+    }
+
     /// Graceful shutdown: drain all participant sessions and clean up resources.
     pub async fn shutdown(&self) {
         let session_count = self.sessions.len();
@@ -131,8 +160,14 @@ impl ConferenceCallHandler {
             .map(|entry| entry.key().clone())
             .collect();
 
-        // Remove each session (aborts bridge, deallocates port, publishes events)
+        // Send BYE and remove each session
         for call_id in &call_ids {
+            if let Some(session) = self.sessions.get(call_id) {
+                if let Err(e) = self.uac.bye(&session.dialog).await {
+                    warn!(call_id = %call_id, error = %e, "Failed to send BYE during shutdown");
+                }
+                drop(session); // Release DashMap ref before remove_session
+            }
             self.remove_session(call_id);
         }
 
@@ -422,7 +457,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             construct_answer_for_a_leg(sdp_offer, &self.local_addr, port_pair.rtp_port, None);
 
         // 8. Create 200 OK with SDP answer using UAS
-        let (response, _dialog) = uas
+        let (response, dialog) = uas
             .accept_invite(request, Some(&sdp_answer))
             .context("Failed to create 200 OK")?;
 
@@ -523,7 +558,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     tenant_id,
                                     timestamp: SystemTime::now(),
                                 });
-                                // Clean up and reject
+                                // Send BYE to disconnect the answered call
+                                if let Err(e) = self.uac.bye(&dialog).await {
+                                    warn!(error = %e, "Failed to send BYE after PIN lockout");
+                                }
                                 let pool = Arc::clone(&self.port_pool);
                                 tokio::spawn(async move { pool.deallocate(port_pair).await });
                                 return Ok(());
@@ -550,6 +588,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     tenant_id,
                     timestamp: SystemTime::now(),
                 });
+                // Send BYE to disconnect the answered call
+                if let Err(e) = self.uac.bye(&dialog).await {
+                    warn!(error = %e, "Failed to send BYE after PIN failure");
+                }
                 let pool = Arc::clone(&self.port_pool);
                 tokio::spawn(async move { pool.deallocate(port_pair).await });
                 return Ok(());
@@ -567,12 +609,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
             Err(ConferenceError::ConferenceFull(max)) => {
                 warn!(room = %room_number, max = max, "Conference is full, rejecting participant");
+                if let Err(e) = self.uac.bye(&dialog).await {
+                    warn!(error = %e, "Failed to send BYE after conference full");
+                }
                 let pool = Arc::clone(&self.port_pool);
                 tokio::spawn(async move { pool.deallocate(port_pair).await });
                 return Ok(());
             }
             Err(ConferenceError::ConferenceLocked) => {
                 warn!(room = %room_number, "Conference is locked, rejecting participant");
+                if let Err(e) = self.uac.bye(&dialog).await {
+                    warn!(error = %e, "Failed to send BYE after conference locked");
+                }
                 let pool = Arc::clone(&self.port_pool);
                 tokio::spawn(async move { pool.deallocate(port_pair).await });
                 return Ok(());
@@ -709,6 +757,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         remote_addr,
                         codec_name,
                         tenant_id,
+                        dialog: dialog.clone(),
                     },
                 );
 
@@ -716,6 +765,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
             Err(e) => {
                 warn!(room = %room_number, error = %e, "Failed to add participant");
+                if let Err(bye_err) = self.uac.bye(&dialog).await {
+                    warn!(error = %bye_err, "Failed to send BYE after add_participant error");
+                }
                 let pool = Arc::clone(&self.port_pool);
                 tokio::spawn(async move { pool.deallocate(port_pair).await });
                 return Ok(());
@@ -815,6 +867,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 remote_addr,
                 codec_name,
                 tenant_id,
+                dialog,
             },
         );
 
