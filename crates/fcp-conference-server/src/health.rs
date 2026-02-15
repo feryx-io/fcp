@@ -118,6 +118,19 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/{room_number}/admit-all",
             post(admit_all_handler),
         )
+        // AI participant
+        .route(
+            "/conferences/{room_number}/ai",
+            post(attach_ai_handler),
+        )
+        .route(
+            "/conferences/{room_number}/ai",
+            delete(detach_ai_handler),
+        )
+        .route(
+            "/conferences/{room_number}/ai/status",
+            get(ai_status_handler),
+        )
         // Recording management
         .route("/recordings", get(list_recordings_handler))
         .route("/recordings/{filename}", delete(delete_recording_handler))
@@ -693,7 +706,7 @@ async fn start_recording_handler(
         Ok(room) => {
             let recording_path = format!(
                 "{}/{}-{}.wav",
-                state.conference_handler.conference_config.recordings_dir,
+                state.conference_handler.recordings_dir(),
                 room_number,
                 chrono_timestamp()
             );
@@ -935,13 +948,62 @@ async fn admit_all_handler(
 }
 
 // =========================================================================
+// AI Participant
+// =========================================================================
+
+async fn attach_ai_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.attach_ai(&room_number).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "ai_attached", "room": room_number })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn detach_ai_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.detach_ai(&room_number).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "ai_detached", "room": room_number })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+async fn ai_status_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.ai_status(&room_number) {
+        Ok(status) => (StatusCode::OK, Json(status)),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
+        ),
+    }
+}
+
+// =========================================================================
 // Recording Management
 // =========================================================================
 
 async fn list_recordings_handler(
     State(state): State<Arc<ConferenceState>>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let recordings_dir = &state.conference_handler.conference_config.recordings_dir;
+    let recordings_dir = state.conference_handler.recordings_dir();
 
     let entries = match std::fs::read_dir(recordings_dir) {
         Ok(entries) => entries,
@@ -996,8 +1058,8 @@ async fn delete_recording_handler(
         );
     }
 
-    let path = std::path::Path::new(&state.conference_handler.conference_config.recordings_dir)
-        .join(&filename);
+    let recordings_dir = state.conference_handler.recordings_dir();
+    let path = std::path::Path::new(&recordings_dir).join(&filename);
 
     if !path.exists() {
         return (

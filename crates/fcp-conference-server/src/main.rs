@@ -32,12 +32,12 @@ use tracing::{info, warn};
 
 mod audio_bridge;
 mod cli;
-mod config;
 mod conference_handler;
 mod health;
 mod storage;
 
 use cli::Cli;
+use fcp_conference_server::config;
 use config::ConferenceServerConfig;
 use conference_handler::ConferenceCallHandler;
 
@@ -253,7 +253,12 @@ async fn main() -> Result<()> {
         Arc::clone(&port_pool),
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
         Arc::clone(&uac),
+        config.ai.clone(),
     ));
+
+    if config.ai.enabled {
+        info!(model = %config.ai.model, "AI participant support enabled");
+    }
 
     info!(
         sample_rate = config.conference.sample_rate,
@@ -384,7 +389,23 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 23. Spawn event forwarding task (if configured)
+    // 23. Spawn config hot-reload watcher
+    {
+        let config_path = cli
+            .config
+            .as_ref()
+            .map(|p| p.clone())
+            .unwrap_or_else(|| std::path::PathBuf::from("fcp-conference-server.toml"));
+        if config_path.exists() {
+            let handler_ref = Arc::clone(&conference_handler);
+            tokio::spawn(async move {
+                run_config_watcher(config_path, handler_ref).await;
+            });
+            info!("Config hot-reload watcher started");
+        }
+    }
+
+    // 24. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);
@@ -699,6 +720,9 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
 
     info!(url = %events_url, "Event forwarder started");
 
+    let mut failed_events: u64 = 0;
+    let mut delivered_events: u64 = 0;
+
     loop {
         match stream.next().await {
             Some(event) => {
@@ -706,23 +730,16 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 let client = client.clone();
                 let url = events_url.to_string();
                 tokio::spawn(async move {
-                    match client.post(&url).json(&event).send().await {
-                        Ok(resp) => {
-                            if !resp.status().is_success() {
-                                tracing::warn!(
-                                    status = %resp.status(),
-                                    "Event forward received non-2xx response"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(%e, "Failed to forward event to events server");
-                        }
-                    }
+                    forward_event_with_retry(&client, &url, &event).await;
                 });
+                delivered_events += 1;
             }
             None => {
-                warn!("Event stream ended unexpectedly, resubscribing...");
+                warn!(
+                    delivered = delivered_events,
+                    failed = failed_events,
+                    "Event stream ended unexpectedly, resubscribing..."
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 match event_bus.subscribe(EventFilter::new()).await {
                     Ok(new_stream) => {
@@ -730,10 +747,90 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                         info!("Resubscribed to event bus");
                     }
                     Err(e) => {
+                        failed_events += 1;
                         warn!(%e, "Failed to resubscribe to event bus");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Forward a single event with exponential backoff retry (max 3 attempts).
+async fn forward_event_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    event: &fcp_events::PlatformEvent,
+) {
+    let max_retries = 3u32;
+    let mut delay = Duration::from_millis(200);
+
+    for attempt in 1..=max_retries {
+        match client.post(url).json(event).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    return; // Success
+                }
+                tracing::warn!(
+                    status = %resp.status(),
+                    attempt = attempt,
+                    "Event forward received non-2xx response"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    %e,
+                    attempt = attempt,
+                    max = max_retries,
+                    "Failed to forward event"
+                );
+            }
+        }
+
+        if attempt < max_retries {
+            tokio::time::sleep(delay).await;
+            delay *= 2; // Exponential backoff
+        }
+    }
+
+    tracing::error!("Event dropped after {} failed attempts", max_retries);
+}
+
+/// Watch config file for changes and hot-reload conference/AI settings.
+/// Polls file mtime every 10 seconds. Only reloads [conference] and [ai] sections.
+async fn run_config_watcher(
+    config_path: std::path::PathBuf,
+    handler: Arc<ConferenceCallHandler>,
+) {
+    let mut last_mtime = std::fs::metadata(&config_path)
+        .and_then(|m| m.modified())
+        .ok();
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+
+        let current_mtime = match std::fs::metadata(&config_path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "Config watcher: cannot stat config file");
+                continue;
+            }
+        };
+
+        if last_mtime == Some(current_mtime) {
+            continue;
+        }
+        last_mtime = Some(current_mtime);
+
+        info!(path = %config_path.display(), "Config file changed, reloading...");
+
+        match config::load_config(Some(&config_path)) {
+            Ok(new_config) => {
+                handler.reload_config(new_config.conference, new_config.ai);
+            }
+            Err(e) => {
+                warn!(error = %e, "Config reload failed, keeping current config");
             }
         }
     }

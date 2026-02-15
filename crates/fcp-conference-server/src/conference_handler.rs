@@ -6,9 +6,10 @@ use fcp_media::{construct_answer_for_a_leg, parse_sdp_codecs};
 use fcp_sip::prelude::SipUserAgentClient;
 use forge_codecs::{g711, g722, AudioCodec};
 use forge_conference::{
-    ConferenceBridge, ConferenceConfig, ConferenceDtmfConfig, ConferenceError,
-    DtmfCommandHandler, PinAuthResult, RoomConfig,
+    ConferenceAIConfig, ConferenceAIManager, ConferenceBridge, ConferenceConfig,
+    ConferenceDtmfConfig, ConferenceError, DtmfCommandHandler, PinAuthResult, RoomConfig,
 };
+use forge_engine::{AISessionConfig, AISessionManager};
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfDigit, DtmfEventType};
 use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
@@ -18,12 +19,13 @@ use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use parking_lot::RwLock;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::audio_bridge::{self, AudioStats};
-use crate::config::ConferenceSection;
+use crate::config::{AiSection, ConferenceSection};
 
 /// Tracks a single participant's connection to a conference room.
 pub struct ParticipantSession {
@@ -55,7 +57,7 @@ pub struct ParticipantSession {
 pub struct ConferenceCallHandler {
     pub bridge: Arc<ConferenceBridge>,
     pub storage: Arc<DynStorage>,
-    pub conference_config: ConferenceSection,
+    pub conference_config: RwLock<ConferenceSection>,
     sessions: DashMap<String, ParticipantSession>,
     pub local_uri: String,
     pub local_addr: String,
@@ -65,6 +67,9 @@ pub struct ConferenceCallHandler {
     dtmf_handlers: DashMap<String, Arc<DtmfCommandHandler>>,
     /// In-memory meeting cache: (TenantId, room_number) → (Meeting, cached_at)
     meeting_cache: DashMap<(TenantId, String), (Meeting, Instant)>,
+    /// Shared AI session manager (created once, reused for all rooms)
+    ai_session_manager: Arc<AISessionManager>,
+    pub ai_config: RwLock<AiSection>,
 }
 
 impl ConferenceCallHandler {
@@ -77,11 +82,12 @@ impl ConferenceCallHandler {
         port_pool: Arc<PortPool>,
         event_bus: Arc<dyn EventPublisher>,
         uac: Arc<SipUserAgentClient>,
+        ai_config: AiSection,
     ) -> Self {
         Self {
             bridge,
             storage,
-            conference_config,
+            conference_config: RwLock::new(conference_config),
             sessions: DashMap::new(),
             local_uri,
             local_addr,
@@ -90,6 +96,8 @@ impl ConferenceCallHandler {
             uac,
             dtmf_handlers: DashMap::new(),
             meeting_cache: DashMap::new(),
+            ai_session_manager: Arc::new(AISessionManager::new()),
+            ai_config: RwLock::new(ai_config),
         }
     }
 
@@ -107,7 +115,7 @@ impl ConferenceCallHandler {
         use fcp_core::storage::ConferenceStore;
 
         let cache_key = (tenant_id.clone(), room_number.to_string());
-        let ttl = Duration::from_secs(self.conference_config.cache_ttl_secs);
+        let ttl = Duration::from_secs(self.conference_config.read().cache_ttl_secs);
 
         // Check cache first (if TTL > 0)
         if ttl > Duration::ZERO {
@@ -360,7 +368,7 @@ impl ConferenceCallHandler {
             .as_secs();
         let path = format!(
             "{}/{}-{}-{}.wav",
-            self.conference_config.recordings_dir, room_number, participant_id, timestamp
+            self.conference_config.read().recordings_dir, room_number, participant_id, timestamp
         );
 
         room.start_participant_recording(participant_id, &path)
@@ -425,6 +433,94 @@ impl ConferenceCallHandler {
         handler
     }
 
+    /// Attach an AI participant to a conference room.
+    pub async fn attach_ai(&self, room_number: &str) -> Result<()> {
+        let ai_conf = self.ai_config.read().clone();
+        if !ai_conf.enabled {
+            anyhow::bail!("AI participants are not enabled in configuration");
+        }
+
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        // Build AI session config from server config
+        let mut session_config = AISessionConfig::default();
+        if let Some(ref key) = ai_conf.api_key {
+            session_config.api_key = forge_core::SecureString::new(key.clone());
+        }
+        session_config.model = ai_conf.model.clone();
+        session_config.voice = Some(ai_conf.voice.clone());
+        if let Some(ref instructions) = ai_conf.instructions {
+            session_config.instructions = Some(instructions.clone());
+        }
+        if let Some(ref endpoint) = ai_conf.endpoint {
+            session_config.endpoint = Some(endpoint.clone());
+        }
+
+        // Create ConferenceAIManager
+        let call_id = forge_core::CallId::generate();
+        let conference_ai_config =
+            ConferenceAIConfig::new(forge_core::AudioFormat::pcm_mono());
+        let ai_manager = ConferenceAIManager::new(
+            room_number.to_string(),
+            call_id.clone(),
+            Arc::clone(&self.ai_session_manager),
+            conference_ai_config,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create AI manager: {}", e))?;
+
+        // Attach AI session to the session manager
+        self.ai_session_manager
+            .attach_ai(call_id, session_config, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to attach AI session: {}", e))?;
+
+        // Attach AI participant to room
+        room.attach_ai(ai_manager, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to attach AI to room: {}", e))?;
+
+        info!(room = %room_number, "AI participant attached");
+        Ok(())
+    }
+
+    /// Detach AI participant from a conference room.
+    pub async fn detach_ai(&self, room_number: &str) -> Result<()> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        room.detach_ai()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to detach AI: {}", e))?;
+
+        info!(room = %room_number, "AI participant detached");
+        Ok(())
+    }
+
+    /// Get AI participant status for a room.
+    pub fn ai_status(&self, room_number: &str) -> Result<serde_json::Value> {
+        let room = self
+            .bridge
+            .get_room(room_number)
+            .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+        let has_ai = room.has_ai();
+        let state = room.ai_state().map(|s| format!("{:?}", s));
+        let ai_conf = self.ai_config.read();
+
+        Ok(serde_json::json!({
+            "room_number": room_number,
+            "ai_enabled": ai_conf.enabled,
+            "ai_attached": has_ai,
+            "ai_state": state,
+            "model": ai_conf.model,
+        }))
+    }
+
     /// Kick a participant by their participant_id: send SIP BYE and clean up session.
     pub async fn kick_participant(&self, participant_id: &str) -> Result<()> {
         // Reverse lookup: find call_id by participant_id
@@ -484,6 +580,24 @@ impl ConferenceCallHandler {
         info!("Conference shutdown complete");
     }
 
+    /// Hot-reload safe configuration settings (conference section, AI config).
+    /// Called by the config watcher when the config file changes.
+    pub fn reload_config(&self, conference: ConferenceSection, ai: AiSection) {
+        info!(
+            cache_ttl = conference.cache_ttl_secs,
+            dtmf = conference.dtmf_enabled,
+            ai_enabled = ai.enabled,
+            "Config hot-reload applied"
+        );
+        *self.conference_config.write() = conference;
+        *self.ai_config.write() = ai;
+    }
+
+    /// Get the recordings directory path (convenience accessor).
+    pub fn recordings_dir(&self) -> String {
+        self.conference_config.read().recordings_dir.clone()
+    }
+
     /// Publish a conference event to the event bus.
     fn publish_event(&self, event: ConferenceEvent) {
         let event_bus = Arc::clone(&self.event_bus);
@@ -537,7 +651,7 @@ impl ConferenceCallHandler {
                 }
 
                 // Auto-destroy empty rooms if configured
-                if room.participant_count() == 0 && self.conference_config.auto_destroy_empty_rooms {
+                if room.participant_count() == 0 && self.conference_config.read().auto_destroy_empty_rooms {
                     let room_number = session.room_number.clone();
                     let bridge = Arc::clone(&self.bridge);
                     let storage = Arc::clone(&self.storage);
@@ -710,6 +824,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             return Ok(());
         }
 
+        // Snapshot config for use throughout this method (avoids holding lock across awaits)
+        let conf = self.conference_config.read().clone();
+
         // 3. Extract SDP offer from INVITE body
         let body = request.body();
         if body.is_empty() {
@@ -722,7 +839,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 4. Parse codecs and pick first supported one (filtered by allowed_codecs config)
         let offered_codecs = parse_sdp_codecs(sdp_offer);
-        let allowed = self.conference_config.allowed_codecs.as_deref();
+        let allowed = conf.allowed_codecs.as_deref();
         let codec_result = pick_codec(&offered_codecs, allowed);
         let (codec_name, payload_type, frame_size) = match codec_result {
             Some(c) => c,
@@ -821,8 +938,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 14. PIN authentication (if required)
         let is_host = if Self::meeting_requires_pin(&meeting) {
-            let max_attempts = self.conference_config.max_pin_attempts;
-            let pin_timeout = Duration::from_secs(self.conference_config.pin_timeout_secs);
+            let max_attempts = conf.max_pin_attempts;
+            let pin_timeout = Duration::from_secs(conf.pin_timeout_secs);
 
             let mut authenticated = false;
             let mut is_host_auth = false;
@@ -951,9 +1068,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let pid = participant_id.clone();
                 let encoder = create_codec_instance(&codec_name)?;
                 let decoder = create_codec_instance(&codec_name)?;
-                let jitter_buffer_ms = self.conference_config.jitter_buffer_ms;
-                let recordings_dir = self.conference_config.recordings_dir.clone();
-                let dtmf_handler = if self.conference_config.dtmf_enabled {
+                let jitter_buffer_ms = conf.jitter_buffer_ms;
+                let recordings_dir = conf.recordings_dir.clone();
+                let dtmf_handler = if conf.dtmf_enabled {
                     Some(self.get_or_create_dtmf_handler(&room_number))
                 } else {
                     None
@@ -1136,7 +1253,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         .as_secs();
                     let path = format!(
                         "{}/{}-{}.wav",
-                        self.conference_config.recordings_dir, room_number, timestamp
+                        conf.recordings_dir, room_number, timestamp
                     );
                     match room.start_recording(&path, None).await {
                         Ok(()) => {
@@ -1160,7 +1277,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let decoder = create_codec_instance(&codec_name)?;
 
         // 17. Create DTMF handler and stats for audio bridge
-        let dtmf_handler = if self.conference_config.dtmf_enabled {
+        let dtmf_handler = if conf.dtmf_enabled {
             Some(self.get_or_create_dtmf_handler(&room_number))
         } else {
             None
@@ -1180,7 +1297,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             decoder,
             payload_type,
             frame_size,
-            self.conference_config.jitter_buffer_ms,
+            conf.jitter_buffer_ms,
             te_pt,
             dtmf_handler,
             is_host,
@@ -1215,6 +1332,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
     fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         let call_id = extract_call_id(request);
+        let conf = self.conference_config.read().clone();
 
         // Look up session — if not found, return Err so caller falls through to B2BUA
         let mut session = self
@@ -1251,7 +1369,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Check for codec change
         let offered_codecs = parse_sdp_codecs(sdp_offer);
-        let allowed = self.conference_config.allowed_codecs.as_deref();
+        let allowed = conf.allowed_codecs.as_deref();
         if let Some((new_codec, new_pt, new_frame_size)) = pick_codec(&offered_codecs, allowed) {
             if new_codec != session.codec_name {
                 info!(
@@ -1278,8 +1396,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let bridge_room = Arc::clone(&room);
                 let bridge_participant = session.participant_id.clone();
                 let bridge_socket = Arc::clone(&session.rtp_socket);
-                let jitter_buffer_ms = self.conference_config.jitter_buffer_ms;
-                let reinvite_dtmf = if self.conference_config.dtmf_enabled {
+                let jitter_buffer_ms = conf.jitter_buffer_ms;
+                let reinvite_dtmf = if conf.dtmf_enabled {
                     Some(self.get_or_create_dtmf_handler(&session.room_number))
                 } else {
                     None

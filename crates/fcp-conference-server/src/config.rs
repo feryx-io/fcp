@@ -37,6 +37,9 @@ pub struct ConferenceServerConfig {
 
     #[serde(default)]
     pub trunks: Vec<fcp_sbc_core::TrunkConfig>,
+
+    #[serde(default)]
+    pub ai: AiSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -221,6 +224,52 @@ pub struct EventsSection {
 impl Default for EventsSection {
     fn default() -> Self {
         Self { server_url: None }
+    }
+}
+
+/// AI participant configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AiSection {
+    /// Enable AI participant support (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// API key (can also be set via FORGE_AI_API_KEY env var)
+    pub api_key: Option<String>,
+
+    /// AI model (default: "gpt-4o-realtime-preview")
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+
+    /// Voice for AI responses (default: "alloy")
+    #[serde(default = "default_ai_voice")]
+    pub voice: String,
+
+    /// System instructions for AI behavior
+    pub instructions: Option<String>,
+
+    /// Custom API endpoint URL
+    pub endpoint: Option<String>,
+}
+
+fn default_ai_model() -> String {
+    "gpt-4o-realtime-preview".to_string()
+}
+
+fn default_ai_voice() -> String {
+    "alloy".to_string()
+}
+
+impl Default for AiSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            model: default_ai_model(),
+            voice: default_ai_voice(),
+            instructions: None,
+            endpoint: None,
+        }
     }
 }
 
