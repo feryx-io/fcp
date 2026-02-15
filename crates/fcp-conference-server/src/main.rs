@@ -345,6 +345,7 @@ async fn main() -> Result<()> {
         storage: Arc::clone(&dyn_storage),
         conference_handler: Arc::clone(&conference_handler),
         call_manager: Arc::clone(&call_manager),
+        event_bus: Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
         start_time: Instant::now(),
     });
     let http_bind = config.http.bind_address;

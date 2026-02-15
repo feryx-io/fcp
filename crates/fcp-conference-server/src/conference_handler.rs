@@ -161,6 +161,15 @@ impl ConferenceCallHandler {
             if let Ok(room) = self.bridge.get_room(&session.room_number) {
                 let _ = room.remove_participant(&session.participant_id);
 
+                // Publish MeetingEnded when last participant leaves
+                if room.participant_count() == 0 {
+                    self.publish_event(ConferenceEvent::MeetingEnded {
+                        room_number: session.room_number.clone(),
+                        tenant_id: session.tenant_id,
+                        timestamp: SystemTime::now(),
+                    });
+                }
+
                 // Auto-destroy empty rooms if configured
                 if room.participant_count() == 0 && self.conference_config.auto_destroy_empty_rooms {
                     let room_number = session.room_number.clone();
@@ -640,6 +649,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             is_host = is_host,
             "Participant joined conference"
         );
+
+        // Publish MeetingStarted if this is the first participant
+        if room.participant_count() == 1 {
+            self.publish_event(ConferenceEvent::MeetingStarted {
+                room_number: room_number.clone(),
+                tenant_id,
+                timestamp: SystemTime::now(),
+            });
+        }
 
         // Publish join event
         self.publish_event(ConferenceEvent::ParticipantJoined {

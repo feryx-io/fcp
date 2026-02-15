@@ -504,6 +504,52 @@ pub enum ConferenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Meeting configuration created via API
+    MeetingCreated {
+        meeting_id: String,
+        room_number: String,
+        name: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Meeting configuration updated via API
+    MeetingUpdated {
+        meeting_id: String,
+        room_number: String,
+        name: String,
+        tenant_id: TenantId,
+        changed_fields: Vec<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Meeting configuration deleted via API
+    MeetingDeleted {
+        meeting_id: String,
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Conference session started (first participant joined a room)
+    MeetingStarted {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Conference session ended (last participant left, room still exists)
+    MeetingEnded {
+        room_number: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Voicemail-related events.
@@ -796,7 +842,12 @@ impl ConferenceEvent {
             | ConferenceEvent::RecordingStarted { timestamp, .. }
             | ConferenceEvent::RecordingStopped { timestamp, .. }
             | ConferenceEvent::PinFailed { timestamp, .. }
-            | ConferenceEvent::RoomDestroyed { timestamp, .. } => *timestamp,
+            | ConferenceEvent::RoomDestroyed { timestamp, .. }
+            | ConferenceEvent::MeetingCreated { timestamp, .. }
+            | ConferenceEvent::MeetingUpdated { timestamp, .. }
+            | ConferenceEvent::MeetingDeleted { timestamp, .. }
+            | ConferenceEvent::MeetingStarted { timestamp, .. }
+            | ConferenceEvent::MeetingEnded { timestamp, .. } => *timestamp,
         }
     }
 }

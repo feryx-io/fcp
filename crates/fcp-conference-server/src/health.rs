@@ -6,12 +6,13 @@ use axum::{
 };
 use fcp_b2bua_core::CallManager;
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
+use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use forge_conference::ConferenceBridge;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::conference_handler::ConferenceCallHandler;
 
@@ -21,6 +22,7 @@ pub struct ConferenceState {
     pub storage: Arc<DynStorage>,
     pub conference_handler: Arc<ConferenceCallHandler>,
     pub call_manager: Arc<CallManager>,
+    pub event_bus: Arc<dyn EventPublisher>,
     pub start_time: Instant,
 }
 
@@ -212,10 +214,19 @@ async fn create_meeting_handler(
     };
 
     match state.storage.put_meeting(meeting.clone()).await {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(meeting_to_json(&meeting)),
-        ),
+        Ok(()) => {
+            publish_event(
+                &state.event_bus,
+                ConferenceEvent::MeetingCreated {
+                    meeting_id: meeting.id.to_string(),
+                    room_number: meeting.room_number.clone(),
+                    name: meeting.name.clone(),
+                    tenant_id: meeting.tenant_id,
+                    timestamp: SystemTime::now(),
+                },
+            );
+            (StatusCode::CREATED, Json(meeting_to_json(&meeting)))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -305,41 +316,65 @@ async fn update_meeting_handler(
         }
     };
 
-    // Apply updates
+    // Apply updates, tracking which fields changed
+    let mut changed_fields = Vec::new();
     if let Some(name) = payload.name {
         meeting.name = name;
+        changed_fields.push("name".to_string());
     }
     if let Some(guest_pin) = payload.guest_pin {
         meeting.guest_pin = Some(guest_pin);
+        changed_fields.push("guest_pin".to_string());
     }
     if let Some(host_pin) = payload.host_pin {
         meeting.host_pin = Some(host_pin);
+        changed_fields.push("host_pin".to_string());
     }
     if let Some(v) = payload.require_guest_pin {
         meeting.require_guest_pin = v;
+        changed_fields.push("require_guest_pin".to_string());
     }
     if let Some(v) = payload.max_participants {
         meeting.max_participants = v;
+        changed_fields.push("max_participants".to_string());
     }
     if let Some(v) = payload.wait_for_moderator {
         meeting.wait_for_moderator = v;
+        changed_fields.push("wait_for_moderator".to_string());
     }
     if let Some(v) = payload.enabled {
         meeting.enabled = v;
+        changed_fields.push("enabled".to_string());
     }
     if let Some(v) = payload.auto_record {
         meeting.auto_record = v;
+        changed_fields.push("auto_record".to_string());
     }
     if let Some(v) = payload.default_locked {
         meeting.default_locked = v;
+        changed_fields.push("default_locked".to_string());
     }
     if let Some(v) = payload.permanent {
         meeting.permanent = v;
+        changed_fields.push("permanent".to_string());
     }
     meeting.updated_at = SystemTime::now();
 
     match state.storage.put_meeting(meeting.clone()).await {
-        Ok(()) => (StatusCode::OK, Json(meeting_to_json(&meeting))),
+        Ok(()) => {
+            publish_event(
+                &state.event_bus,
+                ConferenceEvent::MeetingUpdated {
+                    meeting_id: meeting.id.to_string(),
+                    room_number: meeting.room_number.clone(),
+                    name: meeting.name.clone(),
+                    tenant_id: meeting.tenant_id,
+                    changed_fields,
+                    timestamp: SystemTime::now(),
+                },
+            );
+            (StatusCode::OK, Json(meeting_to_json(&meeting)))
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -365,11 +400,27 @@ async fn delete_meeting_handler(
         }
     };
 
+    // Fetch meeting details before deletion for the event
+    let meeting_info = state.storage.get_meeting(&meeting_id).await.ok().flatten();
+
     match state.storage.delete_meeting(&meeting_id).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "deleted" })),
-        ),
+        Ok(()) => {
+            if let Some(meeting) = meeting_info {
+                publish_event(
+                    &state.event_bus,
+                    ConferenceEvent::MeetingDeleted {
+                        meeting_id: meeting.id.to_string(),
+                        room_number: meeting.room_number,
+                        tenant_id: meeting.tenant_id,
+                        timestamp: SystemTime::now(),
+                    },
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "deleted" })),
+            )
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -502,6 +553,14 @@ async fn lock_room_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.lock();
+            publish_event(
+                &state.event_bus,
+                ConferenceEvent::RoomLocked {
+                    room_number: room_number.clone(),
+                    tenant_id: TenantId::nil(),
+                    timestamp: SystemTime::now(),
+                },
+            );
             (
                 StatusCode::OK,
                 Json(serde_json::json!({ "status": "locked", "room": room_number })),
@@ -521,6 +580,14 @@ async fn unlock_room_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.unlock();
+            publish_event(
+                &state.event_bus,
+                ConferenceEvent::RoomUnlocked {
+                    room_number: room_number.clone(),
+                    tenant_id: TenantId::nil(),
+                    timestamp: SystemTime::now(),
+                },
+            );
             (
                 StatusCode::OK,
                 Json(serde_json::json!({ "status": "unlocked", "room": room_number })),
@@ -546,13 +613,23 @@ async fn start_recording_handler(
                 chrono_timestamp()
             );
             match room.start_recording(&recording_path, None).await {
-                Ok(()) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "status": "recording_started",
-                        "path": recording_path,
-                    })),
-                ),
+                Ok(()) => {
+                    publish_event(
+                        &state.event_bus,
+                        ConferenceEvent::RecordingStarted {
+                            room_number: room_number.clone(),
+                            tenant_id: TenantId::nil(),
+                            timestamp: SystemTime::now(),
+                        },
+                    );
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "status": "recording_started",
+                            "path": recording_path,
+                        })),
+                    )
+                }
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -572,10 +649,20 @@ async fn stop_recording_handler(
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.bridge.get_room(&room_number) {
         Ok(room) => match room.stop_recording() {
-            Ok(()) => (
-                StatusCode::OK,
-                Json(serde_json::json!({ "status": "recording_stopped" })),
-            ),
+            Ok(()) => {
+                publish_event(
+                    &state.event_bus,
+                    ConferenceEvent::RecordingStopped {
+                        room_number: room_number.clone(),
+                        tenant_id: TenantId::nil(),
+                        timestamp: SystemTime::now(),
+                    },
+                );
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "recording_stopped" })),
+                )
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -616,6 +703,16 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
             .map(|d| d.as_secs())
             .unwrap_or(0),
     })
+}
+
+fn publish_event(event_bus: &Arc<dyn EventPublisher>, event: ConferenceEvent) {
+    let event_bus = Arc::clone(event_bus);
+    let platform_event = PlatformEvent::Conference(event);
+    tokio::spawn(async move {
+        if let Err(e) = event_bus.publish(platform_event).await {
+            warn!(error = %e, "Failed to publish conference event");
+        }
+    });
 }
 
 fn chrono_timestamp() -> String {
