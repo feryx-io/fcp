@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use forge_codecs::AudioCodec;
 use forge_conference::ConferenceRoom;
-use forge_rtp::{RtpPacket, RtpSocketPair};
+use forge_rtp::{JitterBuffer, RtpPacket, RtpSocketPair};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, trace, warn};
@@ -22,11 +22,13 @@ pub async fn run_audio_bridge(
     mut decoder: Box<dyn AudioCodec>,
     payload_type: u8,
     frame_size: usize,
+    jitter_buffer_ms: u64,
 ) {
     let mut seq: u16 = rand::random();
     let ssrc: u32 = rand::random();
     let mut timestamp: u32 = 0;
     let mut interval = tokio::time::interval(Duration::from_millis(20));
+    let mut jitter_buffer = JitterBuffer::new(Duration::from_millis(jitter_buffer_ms));
 
     debug!(
         participant = %participant_id,
@@ -34,21 +36,32 @@ pub async fn run_audio_bridge(
         frame_size = frame_size,
         payload_type = payload_type,
         codec = encoder.name(),
+        jitter_buffer_ms = jitter_buffer_ms,
         "Audio bridge started"
     );
 
     loop {
         tokio::select! {
-            // Branch 1: Receive inbound RTP → decode → write to mixer
+            // Branch 1: Receive inbound RTP → buffer → decode ready packets → write to mixer
             result = rtp_socket.recv_rtp() => {
                 match result {
                     Ok((packet, _addr)) => {
-                        match decoder.decode(&packet.payload[..]) {
-                            Ok(pcm_samples) => {
-                                let _ = room.write_audio(&participant_id, &pcm_samples);
-                            }
-                            Err(e) => {
-                                trace!(participant = %participant_id, error = %e, "Decode error");
+                        // Push raw payload into jitter buffer
+                        jitter_buffer.push(
+                            packet.header.sequence_number,
+                            packet.header.timestamp,
+                            packet.payload.to_vec(),
+                        );
+
+                        // Drain all ready packets from the jitter buffer
+                        while let Some(payload_data) = jitter_buffer.pop() {
+                            match decoder.decode(&payload_data) {
+                                Ok(pcm_samples) => {
+                                    let _ = room.write_audio(&participant_id, &pcm_samples);
+                                }
+                                Err(e) => {
+                                    trace!(participant = %participant_id, error = %e, "Decode error");
+                                }
                             }
                         }
                     }

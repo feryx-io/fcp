@@ -27,6 +27,7 @@ pub struct ParticipantSession {
     pub is_host: bool,
     pub audio_bridge_handle: JoinHandle<()>,
     pub port_pair: PortPair,
+    pub rtp_socket: Arc<RtpSocketPair>,
     pub remote_addr: SocketAddr,
     pub codec_name: String,
     pub tenant_id: TenantId,
@@ -116,6 +117,36 @@ impl ConferenceCallHandler {
             .get_room(room_number)
             .ok()
             .map(|room| room.participants())
+    }
+
+    /// Graceful shutdown: drain all participant sessions and clean up resources.
+    pub async fn shutdown(&self) {
+        let session_count = self.sessions.len();
+        info!(sessions = session_count, "Shutting down conference sessions");
+
+        // Collect all call IDs
+        let call_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        // Remove each session (aborts bridge, deallocates port, publishes events)
+        for call_id in &call_ids {
+            self.remove_session(call_id);
+        }
+
+        // Stop recordings and delete all active rooms
+        for room_id in self.bridge.list_rooms() {
+            if let Ok(room) = self.bridge.get_room(&room_id) {
+                if room.is_recording() {
+                    let _ = room.stop_recording();
+                }
+            }
+            let _ = self.bridge.delete_room(&room_id);
+        }
+
+        info!("Conference shutdown complete");
     }
 
     /// Publish a conference event to the event bus.
@@ -563,6 +594,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let pid = participant_id.clone();
                 let encoder = create_codec_instance(&codec_name)?;
                 let decoder = create_codec_instance(&codec_name)?;
+                let jitter_buffer_ms = self.conference_config.jitter_buffer_ms;
+                let recordings_dir = self.conference_config.recordings_dir.clone();
 
                 let wait_handle = tokio::spawn(async move {
                     // Poll every 500ms waiting to be released into the mixer
@@ -587,7 +620,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 // Publish join event
                                 let event = PlatformEvent::Conference(
                                     ConferenceEvent::ParticipantJoined {
-                                        room_number: rn,
+                                        room_number: rn.clone(),
                                         participant_id: pid.clone(),
                                         is_host: false,
                                         tenant_id,
@@ -595,6 +628,52 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     },
                                 );
                                 let _ = event_bus.publish(event).await;
+
+                                // Auto-record check after moderator releases waiting participants
+                                if !bridge_room.is_recording() {
+                                    if let Some(cfg) = bridge_room.get_effective_config() {
+                                        if cfg.min_recording_participants > 0
+                                            && bridge_room.participant_count()
+                                                >= cfg.min_recording_participants
+                                        {
+                                            let ts = SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs();
+                                            let rec_path = format!(
+                                                "{}/{}-{}.wav",
+                                                recordings_dir, rn, ts
+                                            );
+                                            match bridge_room
+                                                .start_recording(&rec_path, None)
+                                                .await
+                                            {
+                                                Ok(()) => {
+                                                    tracing::info!(
+                                                        room = %rn,
+                                                        path = %rec_path,
+                                                        "Auto-recording started (after moderator join)"
+                                                    );
+                                                    let rec_event = PlatformEvent::Conference(
+                                                        ConferenceEvent::RecordingStarted {
+                                                            room_number: rn.clone(),
+                                                            tenant_id,
+                                                            timestamp: SystemTime::now(),
+                                                        },
+                                                    );
+                                                    let _ = event_bus.publish(rec_event).await;
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        room = %rn,
+                                                        error = %e,
+                                                        "Auto-record failed (after moderator join)"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 // Start audio bridge
                                 audio_bridge::run_audio_bridge(
@@ -605,6 +684,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     decoder,
                                     payload_type,
                                     frame_size,
+                                    jitter_buffer_ms,
                                 )
                                 .await;
                             }
@@ -625,6 +705,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         is_host,
                         audio_bridge_handle: wait_handle,
                         port_pair,
+                        rtp_socket: Arc::clone(&rtp_socket),
                         remote_addr,
                         codec_name,
                         tenant_id,
@@ -668,6 +749,37 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             timestamp: SystemTime::now(),
         });
 
+        // Auto-record: start recording when participant threshold is reached
+        if !room.is_recording() {
+            if let Some(cfg) = room.get_effective_config() {
+                if cfg.min_recording_participants > 0
+                    && room.participant_count() >= cfg.min_recording_participants
+                {
+                    let timestamp = SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let path = format!(
+                        "{}/{}-{}.wav",
+                        self.conference_config.recordings_dir, room_number, timestamp
+                    );
+                    match room.start_recording(&path, None).await {
+                        Ok(()) => {
+                            info!(room = %room_number, path = %path, "Auto-recording started");
+                            self.publish_event(ConferenceEvent::RecordingStarted {
+                                room_number: room_number.clone(),
+                                tenant_id,
+                                timestamp: SystemTime::now(),
+                            });
+                        }
+                        Err(e) => {
+                            warn!(room = %room_number, error = %e, "Auto-record failed");
+                        }
+                    }
+                }
+            }
+        }
+
         // 16. Create codec instances for the audio bridge
         let encoder = create_codec_instance(&codec_name)?;
         let decoder = create_codec_instance(&codec_name)?;
@@ -684,6 +796,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             decoder,
             payload_type,
             frame_size,
+            self.conference_config.jitter_buffer_ms,
         ));
 
         // 18. Store session
@@ -698,6 +811,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 is_host,
                 audio_bridge_handle,
                 port_pair,
+                rtp_socket,
                 remote_addr,
                 codec_name,
                 tenant_id,
@@ -705,6 +819,108 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         );
 
         Ok(())
+    }
+
+    fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        let call_id = extract_call_id(request);
+
+        // Look up session — if not found, return Err so caller falls through to B2BUA
+        let mut session = self
+            .sessions
+            .get_mut(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
+
+        // Parse new SDP body
+        let body = request.body();
+        let sdp_offer = std::str::from_utf8(&body[..])
+            .context("re-INVITE SDP body is not valid UTF-8")?;
+
+        // Check for remote address change
+        if let Some(new_remote) = parse_remote_rtp_addr(sdp_offer) {
+            if new_remote != session.remote_addr {
+                info!(
+                    call_id = %call_id,
+                    old = %session.remote_addr,
+                    new = %new_remote,
+                    "re-INVITE: remote RTP address changed"
+                );
+                session.remote_addr = new_remote;
+                let rtp_socket = Arc::clone(&session.rtp_socket);
+                tokio::spawn(async move {
+                    rtp_socket
+                        .set_remote_endpoint(RemoteEndpoint {
+                            rtp_addr: new_remote,
+                            rtcp_addr: None,
+                        })
+                        .await;
+                });
+            }
+        }
+
+        // Check for codec change
+        let offered_codecs = parse_sdp_codecs(sdp_offer);
+        if let Some((new_codec, new_pt, new_frame_size)) = pick_codec(&offered_codecs) {
+            if new_codec != session.codec_name {
+                info!(
+                    call_id = %call_id,
+                    old_codec = %session.codec_name,
+                    new_codec = %new_codec,
+                    "re-INVITE: codec changed, restarting audio bridge"
+                );
+
+                // Abort old audio bridge
+                session.audio_bridge_handle.abort();
+
+                // Create new codec instances
+                let encoder = create_codec_instance(&new_codec)?;
+                let decoder = create_codec_instance(&new_codec)?;
+
+                // Get room reference
+                let room = self
+                    .bridge
+                    .get_room(&session.room_number)
+                    .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
+
+                // Spawn new audio bridge
+                let bridge_room = Arc::clone(&room);
+                let bridge_participant = session.participant_id.clone();
+                let bridge_socket = Arc::clone(&session.rtp_socket);
+                let jitter_buffer_ms = self.conference_config.jitter_buffer_ms;
+                let new_handle = tokio::spawn(audio_bridge::run_audio_bridge(
+                    bridge_room,
+                    bridge_participant,
+                    bridge_socket,
+                    encoder,
+                    decoder,
+                    new_pt,
+                    new_frame_size,
+                    jitter_buffer_ms,
+                ));
+
+                session.audio_bridge_handle = new_handle;
+                session.codec_name = new_codec;
+            }
+        }
+
+        // Construct SDP answer with current local RTP port
+        let sdp_answer = construct_answer_for_a_leg(
+            sdp_offer,
+            &self.local_addr,
+            session.port_pair.rtp_port,
+            None,
+        );
+
+        // Build 200 OK response with SDP answer
+        let local_sip_uri = Uri::parse(&self.local_uri)
+            .ok()
+            .and_then(|u| u.as_sip().cloned())
+            .unwrap_or_else(|| SipUri::parse("sip:conference@localhost").unwrap());
+        let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+        let response = uas
+            .create_ok(request, Some(&sdp_answer))
+            .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for re-INVITE: {}", e))?;
+
+        Ok(response)
     }
 
     fn handle_bye(&self, call_id: &str) -> Result<()> {

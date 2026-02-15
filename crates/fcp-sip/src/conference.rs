@@ -31,6 +31,14 @@ pub trait ConferenceHandler: Send + Sync {
         peer: SocketAddr,
     ) -> Result<()>;
 
+    /// Handle a mid-dialog re-INVITE for a conference participant.
+    ///
+    /// Processes codec changes, hold/resume, and IP address updates.
+    /// Returns a SIP response (200 OK with SDP answer on success).
+    /// Returns `Err` if the call_id is unknown (not a conference call),
+    /// so the caller can fall through to normal B2BUA re-INVITE handling.
+    fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
+
     /// Clean up when a BYE is received for a conference participant.
     ///
     /// Called with the SIP Call-ID so the handler can remove the participant

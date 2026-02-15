@@ -127,6 +127,13 @@ impl Default for StorageSection {
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
+
+    /// Enable Bearer token authentication on protected endpoints
+    #[serde(default)]
+    pub auth_enabled: bool,
+
+    /// Bearer token for API authentication (required when auth_enabled = true)
+    pub auth_token: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
@@ -137,6 +144,8 @@ impl Default for HttpSection {
     fn default() -> Self {
         Self {
             bind_address: default_http_bind(),
+            auth_enabled: false,
+            auth_token: None,
         }
     }
 }
@@ -249,6 +258,10 @@ pub struct ConferenceSection {
     /// Maximum PIN entry attempts before disconnect
     #[serde(default = "default_max_pin_attempts")]
     pub max_pin_attempts: u32,
+
+    /// Jitter buffer depth in milliseconds (default: 40ms)
+    #[serde(default = "default_jitter_buffer_ms")]
+    pub jitter_buffer_ms: u64,
 }
 
 fn default_sample_rate() -> u32 {
@@ -275,6 +288,10 @@ fn default_max_pin_attempts() -> u32 {
     3
 }
 
+fn default_jitter_buffer_ms() -> u64 {
+    40
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -286,6 +303,7 @@ impl Default for ConferenceSection {
             recordings_dir: default_recordings_dir(),
             pin_timeout_secs: default_pin_timeout_secs(),
             max_pin_attempts: default_max_pin_attempts(),
+            jitter_buffer_ms: default_jitter_buffer_ms(),
         }
     }
 }

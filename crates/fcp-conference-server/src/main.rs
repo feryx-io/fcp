@@ -347,6 +347,8 @@ async fn main() -> Result<()> {
         call_manager: Arc::clone(&call_manager),
         event_bus: Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
         start_time: Instant::now(),
+        auth_enabled: config.http.auth_enabled,
+        auth_token: config.http.auth_token.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -395,6 +397,9 @@ async fn main() -> Result<()> {
     }
 
     // 25. Graceful shutdown
+    info!("Shutting down conference sessions...");
+    conference_handler.shutdown().await;
+
     if let Some(tx) = trunk_shutdown_tx {
         let _ = tx.send(true);
         tokio::time::sleep(Duration::from_secs(4)).await;

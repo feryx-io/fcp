@@ -740,6 +740,15 @@ impl SipMessageHandler {
                 if self.dialog_manager.find_by_request(request).is_some()
                     || self.is_b_leg_reinvite(request)
                 {
+                    // Check conference handler first — conference participants
+                    // don't have B2BUA call objects
+                    if let Some(ref conf) = self.conference_handler {
+                        if let Ok(resp) = conf.handle_reinvite(request) {
+                            handle.send_final(resp).await;
+                            return Ok(());
+                        }
+                    }
+                    // Fall through to B2BUA re-INVITE
                     let response = self.handle_reinvite(request).await?;
                     handle.send_final(response).await;
                 } else {

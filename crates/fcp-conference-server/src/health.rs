@@ -1,9 +1,11 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    middleware,
     routing::{delete, get, post},
     Json, Router,
 };
+use fcp_api_core::auth::{AuthConfig, validate_bearer_token};
 use fcp_b2bua_core::CallManager;
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
@@ -24,13 +26,18 @@ pub struct ConferenceState {
     pub call_manager: Arc<CallManager>,
     pub event_bus: Arc<dyn EventPublisher>,
     pub start_time: Instant,
+    pub auth_enabled: bool,
+    pub auth_token: Option<String>,
 }
 
-/// Create the conference API router.
-pub fn conference_router() -> Router<Arc<ConferenceState>> {
+/// Public routes (no auth required).
+fn public_router() -> Router<Arc<ConferenceState>> {
+    Router::new().route("/health", get(health_handler))
+}
+
+/// Protected routes (auth required when enabled).
+fn protected_router() -> Router<Arc<ConferenceState>> {
     Router::new()
-        // Health & status
-        .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         // Meeting CRUD (persistent config in DB)
         .route("/meetings", get(list_meetings_handler))
@@ -76,7 +83,25 @@ pub async fn run_http_server(
     bind_addr: SocketAddr,
     state: Arc<ConferenceState>,
 ) -> anyhow::Result<()> {
-    let app = conference_router().with_state(state);
+    let protected = if state.auth_enabled {
+        if let Some(ref token) = state.auth_token {
+            let auth_config = AuthConfig::new(token.clone());
+            info!("HTTP API authentication enabled");
+            protected_router()
+                .layer(middleware::from_fn(move |req, next| {
+                    validate_bearer_token(auth_config.clone(), req, next)
+                }))
+        } else {
+            warn!("auth_enabled=true but no auth_token configured, running without auth");
+            protected_router()
+        }
+    } else {
+        protected_router()
+    };
+
+    let app = public_router()
+        .merge(protected)
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");

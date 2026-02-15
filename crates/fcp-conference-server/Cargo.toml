@@ -24,6 +24,7 @@ path = "src/main.rs"
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-sip = { path = "../fcp-sip" }
+fcp-api-core = { path = "../fcp-api-core" }
 fcp-sbc-core = { path = "../fcp-sbc-core" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-media = { path = "../fcp-media" }
@@ -56,6 +57,7 @@ sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
 
 # HTTP API
 axum = "0.7"
+tower = "0.5"
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }
