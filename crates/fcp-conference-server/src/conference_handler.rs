@@ -33,6 +33,17 @@ use crate::config::{AiSection, ConferenceSection};
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
 const UNKNOWN_REMOTE: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
 
+/// Aggregated audio quality metrics across all active sessions.
+#[derive(Default)]
+pub struct AggregatedAudioStats {
+    pub packets_received: u64,
+    pub packets_decoded: u64,
+    pub decode_errors: u64,
+    pub packets_sent: u64,
+    pub encode_errors: u64,
+    pub dtmf_events: u64,
+}
+
 /// Tracks a single participant's connection to a conference room.
 pub struct ParticipantSession {
     pub call_id: String,
@@ -593,6 +604,58 @@ impl ConferenceCallHandler {
         Ok(())
     }
 
+    /// Force-destroy a specific conference room: BYE all participants, stop recording, delete room.
+    pub async fn destroy_conference(&self, room_number: &str) -> Result<usize> {
+        // Verify room exists
+        self.bridge
+            .get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("Conference room not active: {}", room_number))?;
+
+        // Collect call IDs for participants in this room
+        let call_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|entry| entry.value().room_number == room_number)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        let kicked = call_ids.len();
+
+        // Send BYE and remove each session
+        for call_id in &call_ids {
+            if let Some(session) = self.sessions.get(call_id) {
+                if let Err(e) = self.uac.bye(&session.dialog).await {
+                    warn!(call_id = %call_id, error = %e, "Failed to send BYE for destroy");
+                }
+                drop(session);
+            }
+            self.remove_session(call_id);
+        }
+
+        // Stop recording if active
+        if let Ok(room) = self.bridge.get_room(room_number) {
+            if room.is_recording() {
+                let _ = room.stop_recording();
+            }
+        }
+
+        // Delete the room
+        let _ = self.bridge.delete_room(room_number);
+
+        // Clean up associated state
+        self.dtmf_handlers.remove(room_number);
+
+        // Publish RoomDestroyed event (use nil tenant since we don't know which tenant)
+        self.publish_event(ConferenceEvent::RoomDestroyed {
+            room_number: room_number.to_string(),
+            tenant_id: TenantId::nil(),
+            timestamp: SystemTime::now(),
+        });
+
+        info!(room = %room_number, participants = kicked, "Conference room force-destroyed");
+        Ok(kicked)
+    }
+
     /// Graceful shutdown: drain all participant sessions and clean up resources.
     pub async fn shutdown(&self) {
         let session_count = self.sessions.len();
@@ -655,6 +718,21 @@ impl ConferenceCallHandler {
     /// Get the number of active SIP sessions.
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Aggregate audio stats across all active sessions for Prometheus metrics.
+    pub fn aggregate_audio_stats(&self) -> AggregatedAudioStats {
+        let mut agg = AggregatedAudioStats::default();
+        for entry in self.sessions.iter() {
+            let stats = &entry.value().stats;
+            agg.packets_received += stats.packets_received.load(Ordering::Relaxed);
+            agg.packets_decoded += stats.packets_decoded.load(Ordering::Relaxed);
+            agg.decode_errors += stats.decode_errors.load(Ordering::Relaxed);
+            agg.packets_sent += stats.packets_sent.load(Ordering::Relaxed);
+            agg.encode_errors += stats.encode_errors.load(Ordering::Relaxed);
+            agg.dtmf_events += stats.dtmf_events.load(Ordering::Relaxed);
+        }
+        agg
     }
 
     /// Reap expired sessions (RFC 4028 session timer).
@@ -1681,6 +1759,36 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
+        // Check for SRTP key rollover (new a=crypto line in re-INVITE)
+        let srtp_sdp = if conf.enable_srtp {
+            let crypto_lines = parse_sdes_crypto(sdp_offer);
+            if let Some(crypto) = crypto_lines.first() {
+                match Self::negotiate_srtp(crypto) {
+                    Ok((new_ctx, sdp_ctx)) => {
+                        info!(call_id = %call_id, "re-INVITE: SRTP key rollover");
+                        if let Some(ref srtp_lock) = session.srtp_context {
+                            let srtp_lock = Arc::clone(srtp_lock);
+                            tokio::spawn(async move {
+                                *srtp_lock.write().await = new_ctx;
+                            });
+                        } else {
+                            // Upgrading from plain RTP to SRTP
+                            session.srtp_context = Some(Arc::new(tokio::sync::RwLock::new(new_ctx)));
+                        }
+                        Some(sdp_ctx)
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "SRTP renegotiation failed, keeping existing keys");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Refresh session timer (re-INVITE counts as a session refresh per RFC 4028)
         session.last_refreshed = Instant::now();
 
@@ -1689,7 +1797,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             sdp_offer,
             &self.local_addr,
             session.port_pair.rtp_port,
-            None,
+            srtp_sdp.as_ref(),
         );
 
         // Build 200 OK response with SDP answer
@@ -1780,6 +1888,56 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             uas.create_ok(request, None)
                 .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for UPDATE: {}", e))?
         };
+
+        Ok(response)
+    }
+
+    fn handle_info(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        let call_id = extract_call_id(request);
+
+        // Look up session — if not found, return Err so caller falls through to B2BUA
+        let session = self
+            .sessions
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
+
+        // Parse DTMF from application/dtmf-relay body
+        let body = request.body();
+        if !body.is_empty() {
+            let body_str = String::from_utf8_lossy(&body);
+            // Format: "Signal=5\r\nDuration=160\r\n"
+            for line in body_str.lines() {
+                let line = line.trim();
+                if let Some(signal) = line.strip_prefix("Signal=").or_else(|| line.strip_prefix("signal=")) {
+                    let digit_str = signal.trim();
+                    if let Some(ch) = digit_str.chars().next() {
+                        if let Ok(_digit) = DtmfDigit::from_char(ch) {
+                            debug!(
+                                call_id = %call_id,
+                                room = %session.room_number,
+                                digit = %digit_str,
+                                "INFO DTMF received"
+                            );
+                            // Route to DTMF handler if enabled
+                            if self.conference_config.read().dtmf_enabled {
+                                let handler = self.get_or_create_dtmf_handler(&session.room_number);
+                                let _ = handler.process_digit(
+                                    &session.participant_id,
+                                    ch,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Always respond 200 OK to INFO
+        let local_sip_uri = self.parse_local_sip_uri();
+        let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+        let response = uas
+            .create_ok(request, None)
+            .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for INFO: {}", e))?;
 
         Ok(response)
     }

@@ -788,6 +788,13 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Info => {
+                // Check conference handler first
+                if let Some(ref conf) = self.conference_handler {
+                    if let Ok(resp) = conf.handle_info(request) {
+                        handle.send_final(resp).await;
+                        return Ok(());
+                    }
+                }
                 let response = self.handle_info(request).await?;
                 handle.send_final(response).await;
             }

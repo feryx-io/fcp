@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
     middleware,
     response::{
@@ -62,7 +62,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
         .route("/meetings/{id}", delete(delete_meeting_handler))
         // Runtime conference operations (active rooms on THIS instance)
         .route("/conferences", get(list_conferences_handler))
-        .route("/conferences/{room_number}", get(get_conference_handler))
+        .route("/conferences/{room_number}", get(get_conference_handler).delete(destroy_conference_handler))
         .route(
             "/conferences/{room_number}/kick/{pid}",
             post(kick_participant_handler),
@@ -264,6 +264,7 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
     let active_rooms = state.conference_handler.active_rooms();
     let total_participants: usize = active_rooms.iter().map(|(_, count)| count).sum();
     let active_sessions = state.conference_handler.session_count();
+    let audio = state.conference_handler.aggregate_audio_stats();
 
     let body = format!(
         "# HELP fcp_conference_active_rooms Number of active conference rooms\n\
@@ -280,12 +281,36 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
          fcp_conference_calls_total {}\n\
          # HELP fcp_conference_uptime_seconds Server uptime in seconds\n\
          # TYPE fcp_conference_uptime_seconds gauge\n\
-         fcp_conference_uptime_seconds {}\n",
+         fcp_conference_uptime_seconds {}\n\
+         # HELP fcp_conference_rtp_packets_received_total RTP packets received across all sessions\n\
+         # TYPE fcp_conference_rtp_packets_received_total counter\n\
+         fcp_conference_rtp_packets_received_total {}\n\
+         # HELP fcp_conference_rtp_packets_decoded_total RTP packets successfully decoded\n\
+         # TYPE fcp_conference_rtp_packets_decoded_total counter\n\
+         fcp_conference_rtp_packets_decoded_total {}\n\
+         # HELP fcp_conference_rtp_decode_errors_total RTP packet decode errors\n\
+         # TYPE fcp_conference_rtp_decode_errors_total counter\n\
+         fcp_conference_rtp_decode_errors_total {}\n\
+         # HELP fcp_conference_rtp_packets_sent_total RTP packets sent across all sessions\n\
+         # TYPE fcp_conference_rtp_packets_sent_total counter\n\
+         fcp_conference_rtp_packets_sent_total {}\n\
+         # HELP fcp_conference_rtp_encode_errors_total RTP packet encode errors\n\
+         # TYPE fcp_conference_rtp_encode_errors_total counter\n\
+         fcp_conference_rtp_encode_errors_total {}\n\
+         # HELP fcp_conference_dtmf_events_total DTMF events detected across all sessions\n\
+         # TYPE fcp_conference_dtmf_events_total counter\n\
+         fcp_conference_dtmf_events_total {}\n",
         active_rooms.len(),
         total_participants,
         active_sessions,
         call_stats.total,
         uptime.as_secs(),
+        audio.packets_received,
+        audio.packets_decoded,
+        audio.decode_errors,
+        audio.packets_sent,
+        audio.encode_errors,
+        audio.dtmf_events,
     );
 
     (StatusCode::OK, [("content-type", "text/plain; version=0.0.4; charset=utf-8")], body)
@@ -321,17 +346,42 @@ fn default_true() -> bool {
     true
 }
 
+/// Pagination query parameters for list endpoints.
+#[derive(Deserialize)]
+struct PaginationParams {
+    #[serde(default)]
+    offset: usize,
+    #[serde(default = "default_page_limit")]
+    limit: usize,
+}
+
+fn default_page_limit() -> usize {
+    100
+}
+
 async fn list_meetings_handler(
     State(state): State<Arc<ConferenceState>>,
     headers: HeaderMap,
+    Query(pagination): Query<PaginationParams>,
 ) -> Json<serde_json::Value> {
     use fcp_core::storage::ConferenceStore;
 
     let tenant_id = extract_tenant_id(&headers);
     match state.storage.list_meetings(&tenant_id).await {
         Ok(meetings) => {
-            let list: Vec<serde_json::Value> = meetings.iter().map(meeting_to_json).collect();
-            Json(serde_json::json!({ "meetings": list }))
+            let total = meetings.len();
+            let page: Vec<serde_json::Value> = meetings
+                .iter()
+                .skip(pagination.offset)
+                .take(pagination.limit)
+                .map(meeting_to_json)
+                .collect();
+            Json(serde_json::json!({
+                "meetings": page,
+                "total": total,
+                "offset": pagination.offset,
+                "limit": pagination.limit,
+            }))
         }
         Err(e) => Json(serde_json::json!({
             "error": format!("Failed to list meetings: {}", e)
@@ -671,6 +721,26 @@ async fn get_conference_handler(
         Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Conference room not active" })),
+        ),
+    }
+}
+
+async fn destroy_conference_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(room_number): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match state.conference_handler.destroy_conference(&room_number).await {
+        Ok(kicked) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "destroyed",
+                "room_number": room_number,
+                "participants_removed": kicked,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("{}", e) })),
         ),
     }
 }
@@ -1124,6 +1194,7 @@ async fn ai_status_handler(
 
 async fn list_recordings_handler(
     State(state): State<Arc<ConferenceState>>,
+    Query(pagination): Query<PaginationParams>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     let recordings_dir = state.conference_handler.recordings_dir();
 
@@ -1137,7 +1208,7 @@ async fn list_recordings_handler(
         }
     };
 
-    let mut recordings = Vec::new();
+    let mut all_recordings = Vec::new();
     while let Ok(Some(entry)) = read_dir.next_entry().await {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("wav") {
@@ -1154,7 +1225,7 @@ async fn list_recordings_handler(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            recordings.push(serde_json::json!({
+            all_recordings.push(serde_json::json!({
                 "filename": filename,
                 "size_bytes": size,
                 "modified_at": modified,
@@ -1162,9 +1233,21 @@ async fn list_recordings_handler(
         }
     }
 
+    let total = all_recordings.len();
+    let page: Vec<serde_json::Value> = all_recordings
+        .into_iter()
+        .skip(pagination.offset)
+        .take(pagination.limit)
+        .collect();
+
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "recordings": recordings, "count": recordings.len() })),
+        Json(serde_json::json!({
+            "recordings": page,
+            "total": total,
+            "offset": pagination.offset,
+            "limit": pagination.limit,
+        })),
     )
 }
 

@@ -66,4 +66,11 @@ pub trait ConferenceHandler: Send + Sync {
     /// Processes session parameter changes (hold/resume, address updates).
     /// Returns `Ok(Response)` on success, `Err` if call_id is unknown.
     fn handle_update(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
+
+    /// Handle a SIP INFO request for a conference participant.
+    ///
+    /// Parses DTMF digits from `application/dtmf-relay` body and routes them
+    /// to the conference DTMF handler. Returns `Ok(Response)` (200 OK) on
+    /// success, `Err` if call_id is unknown.
+    fn handle_info(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
 }
