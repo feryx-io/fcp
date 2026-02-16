@@ -747,6 +747,9 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
     const FAILURE_THRESHOLD: u64 = 5;
     const COOLDOWN: Duration = Duration::from_secs(30);
 
+    // Concurrency limiter: max 50 in-flight HTTP POST tasks
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(50));
+
     let mut delivered_events: u64 = 0;
     let mut dropped_events: u64 = 0;
 
@@ -780,7 +783,13 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 let failures = Arc::clone(&consecutive_failures);
                 let cb_open = Arc::clone(&circuit_open);
                 let cb_opened_at = Arc::clone(&circuit_opened_at);
+                let permit = Arc::clone(&semaphore);
                 tokio::spawn(async move {
+                    // Acquire semaphore permit to bound concurrency
+                    let _permit = match permit.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => return, // Semaphore closed (shutdown)
+                    };
                     if forward_event_with_retry(&client, &url, &event).await {
                         // Success — reset failure counter
                         failures.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -915,6 +924,11 @@ async fn run_config_watcher(
 
         match config::load_config(Some(&config_path)) {
             Ok(new_config) => {
+                // Validate before applying
+                if let Err(e) = config::validate_config(&new_config) {
+                    warn!(error = %e, "Config reload rejected: validation failed, keeping current config");
+                    continue;
+                }
                 handler.reload_config(new_config.conference, new_config.ai);
             }
             Err(e) => {

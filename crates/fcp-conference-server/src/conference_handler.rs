@@ -116,12 +116,16 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// Maximum number of entries in the meeting cache.
+    const MAX_MEETING_CACHE_SIZE: usize = 10_000;
+
     /// Look up a meeting by room number, with in-memory cache and DB fallback.
     ///
     /// Cache strategy:
     /// - On cache hit within TTL: return cached meeting (no DB query)
     /// - On cache miss or expired: query DB, update cache on success
     /// - On DB failure: return stale cached entry if available (graceful degradation)
+    /// - Cache is bounded to MAX_MEETING_CACHE_SIZE entries; expired entries evicted on overflow
     pub async fn lookup_meeting(
         &self,
         tenant_id: &TenantId,
@@ -150,6 +154,21 @@ impl ConferenceCallHandler {
         {
             Ok(Some(meeting)) => {
                 if ttl > Duration::ZERO {
+                    // Evict expired entries if cache is at capacity
+                    if self.meeting_cache.len() >= Self::MAX_MEETING_CACHE_SIZE {
+                        self.meeting_cache.retain(|_, (_, cached_at)| {
+                            cached_at.elapsed() < ttl
+                        });
+                        // If still over limit after TTL eviction, drop oldest half
+                        if self.meeting_cache.len() >= Self::MAX_MEETING_CACHE_SIZE {
+                            let mut count = 0;
+                            let to_remove = self.meeting_cache.len() / 2;
+                            self.meeting_cache.retain(|_, _| {
+                                count += 1;
+                                count > to_remove
+                            });
+                        }
+                    }
                     self.meeting_cache
                         .insert(cache_key, (meeting.clone(), Instant::now()));
                 }
@@ -605,6 +624,11 @@ impl ConferenceCallHandler {
             let _ = self.bridge.delete_room(&room_id);
         }
 
+        // Clear all in-memory maps to release resources
+        self.dtmf_handlers.clear();
+        self.meeting_cache.clear();
+        self.invite_rate.clear();
+
         info!("Conference shutdown complete");
     }
 
@@ -635,11 +659,32 @@ impl ConferenceCallHandler {
     ///
     /// Uses a sliding window of 1 second. Returns `true` if the rate
     /// is within limits (OK to proceed), `false` if rate exceeded.
+    /// Periodically evicts stale entries (older than 60s) to prevent unbounded growth.
     fn check_invite_rate(&self, peer_ip: std::net::IpAddr, max_rate: u32) -> bool {
         if max_rate == 0 {
             return true; // 0 = unlimited
         }
         let now = Instant::now();
+
+        // Periodic cleanup: evict entries older than 60s (every ~100 INVITEs)
+        // Also cap map size at 10,000 entries to bound memory
+        if self.invite_rate.len() > 100 && now.duration_since(
+            self.invite_rate.iter().next().map(|e| e.value().1).unwrap_or(now)
+        ) > Duration::from_secs(10) {
+            self.invite_rate.retain(|_, (_, window_start)| {
+                now.duration_since(*window_start) < Duration::from_secs(60)
+            });
+            // Hard cap: if still over 10k, drop oldest half
+            if self.invite_rate.len() > 10_000 {
+                let mut count = 0;
+                let to_remove = self.invite_rate.len() / 2;
+                self.invite_rate.retain(|_, _| {
+                    count += 1;
+                    count > to_remove
+                });
+            }
+        }
+
         let mut entry = self.invite_rate.entry(peer_ip).or_insert((0, now));
         let (count, window_start) = entry.value_mut();
         if now.duration_since(*window_start) > Duration::from_secs(1) {
@@ -714,6 +759,13 @@ impl ConferenceCallHandler {
                     let storage = Arc::clone(&self.storage);
                     let event_bus = Arc::clone(&self.event_bus);
                     let tenant_id = session.tenant_id;
+
+                    // Clean up DTMF handler for this room
+                    self.dtmf_handlers.remove(&room_number);
+
+                    // Clean up meeting cache for this room
+                    self.meeting_cache.remove(&(tenant_id, room_number.clone()));
+
                     tokio::spawn(async move {
                         use fcp_core::storage::ConferenceStore;
                         let should_destroy = match storage
