@@ -116,6 +116,35 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # fcp-conference - Conference bridge server
+  fcp-conference:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.conference
+    container_name: fcp-conference
+    # Use host networking for proper UDP/RTP handling
+    network_mode: host
+    volumes:
+      - ./configs/fcp-conference-server.toml:/app/fcp-conference-server.toml:ro
+      - fcp-recordings:/var/fcp/conference/recordings
+      - ./configs/announcements:/var/fcp/conference/announcements:ro
+    environment:
+      - RUST_LOG=info
+      - FCP_CONFERENCE_LOG_FORMAT=pretty
+      - FCP_CONFERENCE_PUBLIC_IP=${HOST_IP:-}
+    depends_on:
+      fcp-admin:
+        condition: service_healthy
+      fcp-events-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
   # fcp-jobs - Async job processing workers
   fcp-jobs:
     build:
@@ -141,6 +170,8 @@ services:
 
 volumes:
   redis-data:
+    driver: local
+  fcp-recordings:
     driver: local
   fcp_shared-data:
     external: true  # Created by main docker-compose.yml

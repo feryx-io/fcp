@@ -55,6 +55,7 @@ sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 
 # HTTP API
 axum = "0.7"

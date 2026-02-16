@@ -22,7 +22,7 @@ use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use forge_conference::ConferenceBridge;
-use forge_core::AudioFormat;
+use forge_core::{AudioCodec as ForgeAudioCodec, AudioFormat};
 use forge_rtp::{PortPool, PortPoolConfig};
 use forge_mixer::MixerOptions;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
@@ -218,7 +218,8 @@ async fn main() -> Result<()> {
     ));
 
     // 17. Create ConferenceBridge + ConferenceCallHandler
-    let audio_format = AudioFormat::pcm_mono();
+    // Use config sample_rate for the mixer (8kHz for G.711, 16kHz for G.722 wideband)
+    let audio_format = AudioFormat::new(config.conference.sample_rate, 1, ForgeAudioCodec::PCM);
     let mixer_options = MixerOptions::default();
     let bridge = Arc::new(
         ConferenceBridge::new(audio_format, config.conference.frame_size, mixer_options)

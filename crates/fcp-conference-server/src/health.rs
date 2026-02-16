@@ -954,6 +954,7 @@ async fn stop_participant_recording_handler(
 
 #[derive(Deserialize)]
 struct AnnounceRequest {
+    /// Full path to audio file, OR just a filename to look up in announcements_dir.
     audio_path: String,
 }
 
@@ -962,10 +963,18 @@ async fn announce_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<AnnounceRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.play_announcement(&room_number, &payload.audio_path).await {
+    // If the path doesn't contain a separator, treat it as a filename in announcements_dir
+    let audio_path = if payload.audio_path.contains('/') || payload.audio_path.contains('\\') {
+        payload.audio_path.clone()
+    } else {
+        let conf = state.conference_handler.conference_config.read();
+        format!("{}/{}", conf.announcements_dir, payload.audio_path)
+    };
+
+    match state.conference_handler.play_announcement(&room_number, &audio_path).await {
         Ok(()) => (
             StatusCode::OK,
-            Json(serde_json::json!({ "status": "announced", "room": room_number })),
+            Json(serde_json::json!({ "status": "announced", "room": room_number, "audio_path": audio_path })),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -5,10 +5,11 @@ use forge_conference::{
 };
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfDigit, DtmfEventType};
-use forge_rtp::{JitterBuffer, RtpPacket, RtpSocketPair};
+use forge_rtp::{JitterBuffer, RtpPacket, RtpSocketPair, SrtpContext};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
 /// Audio quality statistics tracked per participant.
@@ -56,6 +57,7 @@ pub async fn run_audio_bridge(
     dtmf_handler: Option<Arc<DtmfCommandHandler>>,
     is_host: bool,
     stats: Arc<AudioStats>,
+    srtp_context: Option<Arc<RwLock<SrtpContext>>>,
 ) {
     let mut seq: u16 = rand::random();
     let ssrc: u32 = rand::random();
@@ -71,6 +73,8 @@ pub async fn run_audio_bridge(
     };
     let te_payload_type = te_pt.unwrap_or(101);
 
+    let srtp_enabled = srtp_context.is_some();
+
     debug!(
         participant = %participant_id,
         room = room.id(),
@@ -80,16 +84,39 @@ pub async fn run_audio_bridge(
         jitter_buffer_ms = jitter_buffer_ms,
         te_pt = ?te_pt,
         dtmf_enabled = dtmf_handler.is_some(),
+        srtp = srtp_enabled,
         "Audio bridge started"
     );
 
     loop {
         tokio::select! {
-            // Branch 1: Receive inbound RTP → buffer → decode ready packets → write to mixer
-            result = rtp_socket.recv_rtp() => {
+            // Branch 1: Receive inbound RTP → decrypt (if SRTP) → buffer → decode → write to mixer
+            result = rtp_socket.recv_rtp_raw() => {
                 match result {
-                    Ok((packet, _addr)) => {
+                    Ok((raw_data, _addr)) => {
                         stats.packets_received.fetch_add(1, Ordering::Relaxed);
+
+                        // SRTP: decrypt if enabled
+                        let plain_data = if let Some(ref ctx) = srtp_context {
+                            match ctx.write().await.unprotect_rtp(&raw_data) {
+                                Ok(d) => Bytes::from(d),
+                                Err(e) => {
+                                    trace!(participant = %participant_id, error = %e, "SRTP unprotect error");
+                                    continue;
+                                }
+                            }
+                        } else {
+                            raw_data
+                        };
+
+                        // Parse RTP packet from (decrypted) bytes
+                        let packet = match RtpPacket::parse(plain_data) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                trace!(participant = %participant_id, error = %e, "RTP parse error");
+                                continue;
+                            }
+                        };
 
                         // Check if this is a telephone-event (DTMF) packet
                         if packet.header.payload_type() == te_payload_type {
@@ -176,7 +203,20 @@ pub async fn run_audio_bridge(
                                     Bytes::from(encoded),
                                     false,
                                 );
-                                if let Err(e) = rtp_socket.send_rtp(&packet).await {
+                                // SRTP: encrypt if enabled, otherwise send plain
+                                let send_result = if let Some(ref ctx) = srtp_context {
+                                    let packet_bytes = packet.to_bytes();
+                                    match ctx.write().await.protect_rtp(&packet_bytes) {
+                                        Ok(protected) => rtp_socket.send_rtp_raw(&protected).await,
+                                        Err(e) => {
+                                            trace!(participant = %participant_id, error = %e, "SRTP protect error");
+                                            Ok(0)
+                                        }
+                                    }
+                                } else {
+                                    rtp_socket.send_rtp(&packet).await
+                                };
+                                if let Err(e) = send_result {
                                     trace!(participant = %participant_id, error = %e, "RTP send error");
                                 }
                                 stats.packets_sent.fetch_add(1, Ordering::Relaxed);

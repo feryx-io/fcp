@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use dashmap::DashMap;
 use fcp_core::{DynStorage, Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
-use fcp_media::{construct_answer_for_a_leg, parse_sdp_codecs};
+use fcp_media::{
+    construct_answer_for_a_leg, decode_sdes_key_params, generate_srtp_key_material,
+    parse_sdes_crypto, parse_sdp_codecs, SrtpSdpContext,
+};
 use fcp_sip::prelude::SipUserAgentClient;
 use forge_codecs::{g711, g722, AudioCodec};
 use forge_conference::{
@@ -12,7 +15,7 @@ use forge_conference::{
 use forge_engine::{AISessionConfig, AISessionManager};
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfDigit, DtmfEventType};
-use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
+use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair, SrtpContext, SrtpKeyMaterial};
 use sip_core::{SipUri, Uri};
 use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
@@ -43,6 +46,12 @@ pub struct ParticipantSession {
     pub joined_at: SystemTime,
     pub te_pt: Option<u8>,
     pub stats: Arc<AudioStats>,
+    /// Display name from SIP From header or P-Asserted-Identity
+    pub display_name: Option<String>,
+    /// Caller ID (SIP URI user part or tel number)
+    pub caller_id: Option<String>,
+    /// SRTP context for encrypting/decrypting RTP packets (None = plain RTP)
+    pub srtp_context: Option<Arc<tokio::sync::RwLock<SrtpContext>>>,
 }
 
 /// Handles SIP INVITEs for conference rooms.
@@ -242,6 +251,12 @@ impl ConferenceCallHandler {
             json["remote_addr"] = serde_json::json!(session.remote_addr.to_string());
             json["joined_at"] = serde_json::json!(joined_secs);
             json["call_id"] = serde_json::json!(session.call_id);
+            if let Some(ref dn) = session.display_name {
+                json["display_name"] = serde_json::json!(dn);
+            }
+            if let Some(ref cid) = session.caller_id {
+                json["caller_id"] = serde_json::json!(cid);
+            }
             json["stats"] = serde_json::json!({
                 "packets_received": session.stats.packets_received.load(Ordering::Relaxed),
                 "packets_decoded": session.stats.packets_decoded.load(Ordering::Relaxed),
@@ -323,9 +338,16 @@ impl ConferenceCallHandler {
                     "packets_received": meta.packets_received,
                 });
 
-                // Enrich with session stats
+                // Enrich with session data
                 if let Some(entry) = self.sessions.iter().find(|e| e.value().participant_id == meta.id) {
-                    let s = &entry.value().stats;
+                    let session = entry.value();
+                    if let Some(ref dn) = session.display_name {
+                        p["display_name"] = serde_json::json!(dn);
+                    }
+                    if let Some(ref cid) = session.caller_id {
+                        p["caller_id"] = serde_json::json!(cid);
+                    }
+                    let s = &session.stats;
                     p["rtp_stats"] = serde_json::json!({
                         "packets_received": s.packets_received.load(Ordering::Relaxed),
                         "packets_decoded": s.packets_decoded.load(Ordering::Relaxed),
@@ -726,6 +748,34 @@ impl ConferenceCallHandler {
             && (meeting.guest_pin.is_some() || meeting.host_pin.is_some())
     }
 
+    /// Negotiate SDES-SRTP from a parsed crypto line.
+    ///
+    /// Decodes the remote key material, generates a local key, and returns both
+    /// the `SrtpContext` (for the audio bridge) and the `SrtpSdpContext` (for
+    /// the SDP answer).
+    fn negotiate_srtp(
+        crypto: &fcp_media::SdesCryptoLine,
+    ) -> Result<(SrtpContext, SrtpSdpContext)> {
+        let (key, salt, profile) = decode_sdes_key_params(&crypto.key_params, &crypto.suite)?;
+        let remote_key = SrtpKeyMaterial::new(key, salt, profile)
+            .map_err(|e| anyhow::anyhow!("Invalid SRTP key material: {}", e))?;
+
+        let (local_key, b64) = generate_srtp_key_material()?;
+
+        let mut ctx = SrtpContext::new();
+        ctx.set_remote_key(remote_key);
+        ctx.set_local_key(local_key);
+
+        let sdp_ctx = SrtpSdpContext {
+            local_key_b64: format!("inline:{}", b64),
+            suite: crypto.suite.clone(),
+            tag: crypto.tag,
+        };
+
+        debug!(suite = %crypto.suite, tag = crypto.tag, "SRTP negotiated");
+        Ok((ctx, sdp_ctx))
+    }
+
     /// Collect a PIN via RFC 2833 DTMF from inbound RTP.
     ///
     /// Listens for telephone-event packets with the given `te_pt` payload type.
@@ -883,9 +933,31 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .await
             .context("Failed to allocate RTP port pair")?;
 
-        // 7. Construct SDP answer
-        let sdp_answer =
-            construct_answer_for_a_leg(sdp_offer, &self.local_addr, port_pair.rtp_port, None);
+        // 7. Negotiate SRTP (if enabled and offered by client)
+        let (srtp_context, srtp_sdp) = if conf.enable_srtp {
+            let crypto_lines = parse_sdes_crypto(sdp_offer);
+            if let Some(crypto) = crypto_lines.first() {
+                match Self::negotiate_srtp(crypto) {
+                    Ok((ctx, sdp_ctx)) => (Some(Arc::new(tokio::sync::RwLock::new(ctx))), Some(sdp_ctx)),
+                    Err(e) => {
+                        warn!(error = %e, "SRTP negotiation failed, falling back to plain RTP");
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None) // Client didn't offer crypto
+            }
+        } else {
+            (None, None)
+        };
+
+        // 7b. Construct SDP answer
+        let sdp_answer = construct_answer_for_a_leg(
+            sdp_offer,
+            &self.local_addr,
+            port_pair.rtp_port,
+            srtp_sdp.as_ref(),
+        );
 
         // 8. Create 200 OK with SDP answer using UAS
         let (response, dialog) = uas
@@ -919,8 +991,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             warn!("Could not parse remote RTP address from SDP offer");
         }
 
-        // 12. Generate participant ID
+        // 12. Generate participant ID and extract caller info
         let call_id = extract_call_id(request);
+        let (display_name, caller_id) = extract_caller_info(request);
         let short_uuid = uuid::Uuid::new_v4().to_string();
         let participant_id = format!(
             "{}-{}",
@@ -1082,6 +1155,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 };
                 let wait_stats = Arc::new(AudioStats::new());
                 let wait_stats_clone = Arc::clone(&wait_stats);
+                let wait_srtp = srtp_context.clone();
 
                 let wait_handle = tokio::spawn(async move {
                     // Poll every 500ms waiting to be released into the mixer
@@ -1175,6 +1249,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     dtmf_handler,
                                     false, // waiting participants are not hosts
                                     wait_stats_clone,
+                                    wait_srtp.clone(),
                                 )
                                 .await;
                             }
@@ -1203,6 +1278,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         joined_at: SystemTime::now(),
                         te_pt,
                         stats: wait_stats,
+                        display_name: display_name.clone(),
+                        caller_id: caller_id.clone(),
+                        srtp_context: srtp_context.clone(),
                     },
                 );
 
@@ -1294,6 +1372,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let bridge_participant = participant_id.clone();
         let bridge_socket = Arc::clone(&rtp_socket);
         let stats_clone = Arc::clone(&stats);
+        let bridge_srtp = srtp_context.clone();
         let audio_bridge_handle = tokio::spawn(audio_bridge::run_audio_bridge(
             bridge_room,
             bridge_participant,
@@ -1307,6 +1386,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             dtmf_handler,
             is_host,
             stats_clone,
+            bridge_srtp,
         ));
 
         // 19. Store session
@@ -1329,6 +1409,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 joined_at: SystemTime::now(),
                 te_pt,
                 stats,
+                display_name,
+                caller_id,
+                srtp_context,
             },
         );
 
@@ -1410,6 +1493,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_stats = Arc::clone(&session.stats);
                 let reinvite_is_host = session.is_host;
                 let reinvite_te_pt = session.te_pt;
+                let reinvite_srtp = session.srtp_context.clone();
                 let new_handle = tokio::spawn(audio_bridge::run_audio_bridge(
                     bridge_room,
                     bridge_participant,
@@ -1423,6 +1507,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     reinvite_dtmf,
                     reinvite_is_host,
                     reinvite_stats,
+                    reinvite_srtp,
                 ));
 
                 session.audio_bridge_handle = new_handle;
@@ -1497,6 +1582,35 @@ fn extract_call_id(request: &sip_core::Request) -> String {
         .get("Call-ID")
         .map(|v| v.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// Extract display name and caller ID from SIP request headers.
+///
+/// Checks P-Asserted-Identity first (trusted network identity), then falls back
+/// to the From header. Returns (display_name, caller_id).
+fn extract_caller_info(request: &sip_core::Request) -> (Option<String>, Option<String>) {
+    // Try P-Asserted-Identity first (more trusted on SBC/trunk calls)
+    if let Ok(Some(pai)) = sip_core::parse_p_asserted_identity(request.headers()) {
+        if let Some(identity) = pai.identities().next() {
+            let display = identity.display_name().map(|s| s.to_string());
+            let caller = identity.uri().as_sip().and_then(|u| u.user().map(|s| s.to_string()));
+            if display.is_some() || caller.is_some() {
+                return (display, caller);
+            }
+        }
+    }
+
+    // Fall back to From header
+    if let Some(from_val) = request.headers().get_smol("From") {
+        if let Some(from) = sip_parse::parse_from_header(from_val) {
+            let name_addr = from.inner();
+            let display = name_addr.display_name().map(|s| s.to_string());
+            let caller = name_addr.sip_uri().and_then(|u| u.user().map(|s| s.to_string()));
+            return (display, caller);
+        }
+    }
+
+    (None, None)
 }
 
 /// Parse remote RTP endpoint from an SDP offer.

@@ -332,6 +332,19 @@ pub struct ConferenceSection {
     /// Allowed codecs for conference participants. None = all supported (PCMU, PCMA, G722).
     #[serde(default)]
     pub allowed_codecs: Option<Vec<String>>,
+
+    /// Enable SDES-SRTP for encrypted media. When enabled, the server will
+    /// negotiate SRTP with clients that offer `a=crypto:` in their SDP.
+    #[serde(default)]
+    pub enable_srtp: bool,
+
+    /// Directory for pre-recorded announcement WAV files.
+    #[serde(default = "default_announcements_dir")]
+    pub announcements_dir: String,
+}
+
+fn default_announcements_dir() -> String {
+    "/var/fcp/conference/announcements".to_string()
 }
 
 fn default_sample_rate() -> u32 {
@@ -382,6 +395,8 @@ impl Default for ConferenceSection {
             cache_ttl_secs: default_cache_ttl_secs(),
             recording_retention_days: None,
             allowed_codecs: None,
+            enable_srtp: false,
+            announcements_dir: default_announcements_dir(),
         }
     }
 }

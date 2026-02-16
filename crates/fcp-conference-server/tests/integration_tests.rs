@@ -35,6 +35,8 @@ fn test_minimal_config_defaults() {
     assert_eq!(config.conference.cache_ttl_secs, 60);
     assert!(config.conference.recording_retention_days.is_none());
     assert!(config.conference.allowed_codecs.is_none());
+    assert!(!config.conference.enable_srtp);
+    assert_eq!(config.conference.announcements_dir, "/var/fcp/conference/announcements");
     assert!(!config.ai.enabled);
     assert_eq!(config.ai.model, "gpt-4o-realtime-preview");
     assert_eq!(config.ai.voice, "alloy");
@@ -369,4 +371,46 @@ rate_limit_rps = 100
 "#,
     );
     assert_eq!(config.http.rate_limit_rps, Some(100));
+}
+
+// =========================================================================
+// SRTP / Security Config Tests
+// =========================================================================
+
+#[test]
+fn test_srtp_disabled_by_default() {
+    let config = parse_config("");
+    assert!(!config.conference.enable_srtp);
+}
+
+#[test]
+fn test_srtp_enabled() {
+    let config = parse_config(
+        r#"
+[conference]
+enable_srtp = true
+"#,
+    );
+    assert!(config.conference.enable_srtp);
+}
+
+// =========================================================================
+// Announcements Config Tests
+// =========================================================================
+
+#[test]
+fn test_announcements_dir_default() {
+    let config = parse_config("");
+    assert_eq!(config.conference.announcements_dir, "/var/fcp/conference/announcements");
+}
+
+#[test]
+fn test_announcements_dir_custom() {
+    let config = parse_config(
+        r#"
+[conference]
+announcements_dir = "/opt/sounds"
+"#,
+    );
+    assert_eq!(config.conference.announcements_dir, "/opt/sounds");
 }
