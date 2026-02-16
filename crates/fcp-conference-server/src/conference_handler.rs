@@ -690,7 +690,7 @@ impl ConferenceCallHandler {
                     tokio::spawn(async move {
                         use fcp_core::storage::ConferenceStore;
                         let should_destroy = match storage
-                            .get_meeting_by_room_number(&TenantId::nil(), &room_number)
+                            .get_meeting_by_room_number(&tenant_id, &room_number)
                             .await
                         {
                             Ok(Some(meeting)) => !meeting.permanent,
@@ -1168,11 +1168,33 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let wait_stats = Arc::new(AudioStats::new());
                 let wait_stats_clone = Arc::clone(&wait_stats);
                 let wait_srtp = srtp_context.clone();
+                let max_wait_secs = conf.max_wait_for_moderator_secs;
 
                 let wait_handle = tokio::spawn(async move {
                     // Poll every 500ms waiting to be released into the mixer
+                    let wait_start = Instant::now();
+                    let max_wait = if max_wait_secs > 0 {
+                        Some(Duration::from_secs(max_wait_secs))
+                    } else {
+                        None // unlimited
+                    };
                     loop {
                         tokio::time::sleep(Duration::from_millis(500)).await;
+
+                        // Check timeout
+                        if let Some(limit) = max_wait {
+                            if wait_start.elapsed() > limit {
+                                warn!(
+                                    room = %rn,
+                                    participant = %pid,
+                                    timeout_secs = max_wait_secs,
+                                    "Wait-for-moderator timeout, disconnecting participant"
+                                );
+                                // Remove from room (handles waiting list cleanup)
+                                let _ = bridge_room.remove_participant(&pid);
+                                break;
+                            }
+                        }
 
                         // Check if we're still in the waiting list
                         let still_waiting = bridge_room
@@ -1556,16 +1578,30 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 }
 
 /// Extract the room number from a SIP Request-URI user part.
+///
+/// Supports both `sip:` and `tel:` URI schemes:
+/// - `sip:1234@host` → `"1234"`
+/// - `tel:+18005551234` → `"+18005551234"`
+/// - `tel:1234` → `"1234"`
 pub fn extract_room_number(request: &sip_core::Request) -> Option<String> {
     let uri = request.uri();
     let uri_str = uri.to_string();
 
-    // Extract user part from sip:user@host
+    // SIP URI: extract user part from sip:user@host
     if let Some(rest) = uri_str.strip_prefix("sip:") {
         if let Some(user) = rest.split('@').next() {
             if !user.is_empty() {
                 return Some(user.to_string());
             }
+        }
+    }
+
+    // tel URI: extract phone number from tel:+number or tel:number
+    // Strip parameters (e.g. tel:+1234;phone-context=example.com)
+    if let Some(rest) = uri_str.strip_prefix("tel:") {
+        let number = rest.split(';').next().unwrap_or(rest).trim();
+        if !number.is_empty() {
+            return Some(number.to_string());
         }
     }
 
@@ -1752,6 +1788,36 @@ mod tests {
             .and_then(|rest| rest.split('@').next())
             .filter(|u| !u.is_empty());
         assert_eq!(user, Some("8001"));
+    }
+
+    #[test]
+    fn test_extract_room_number_tel_uri() {
+        // Verify tel: URI parsing logic directly
+        let tel = "tel:+18005551234";
+        let number = tel
+            .strip_prefix("tel:")
+            .and_then(|rest| rest.split(';').next())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        assert_eq!(number, Some("+18005551234"));
+
+        // tel: with phone-context parameter
+        let tel2 = "tel:1234;phone-context=example.com";
+        let number2 = tel2
+            .strip_prefix("tel:")
+            .and_then(|rest| rest.split(';').next())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        assert_eq!(number2, Some("1234"));
+
+        // Plain tel: local number
+        let tel3 = "tel:8001";
+        let number3 = tel3
+            .strip_prefix("tel:")
+            .and_then(|rest| rest.split(';').next())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        assert_eq!(number3, Some("8001"));
     }
 
     #[test]

@@ -341,6 +341,11 @@ pub struct ConferenceSection {
     /// Directory for pre-recorded announcement WAV files.
     #[serde(default = "default_announcements_dir")]
     pub announcements_dir: String,
+
+    /// Maximum time (seconds) a participant waits for a moderator before being disconnected.
+    /// Default: 300 (5 minutes). Set 0 for unlimited.
+    #[serde(default = "default_max_wait_for_moderator_secs")]
+    pub max_wait_for_moderator_secs: u64,
 }
 
 fn default_announcements_dir() -> String {
@@ -379,6 +384,10 @@ fn default_cache_ttl_secs() -> u64 {
     60
 }
 
+fn default_max_wait_for_moderator_secs() -> u64 {
+    300
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -397,6 +406,7 @@ impl Default for ConferenceSection {
             allowed_codecs: None,
             enable_srtp: false,
             announcements_dir: default_announcements_dir(),
+            max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
         }
     }
 }

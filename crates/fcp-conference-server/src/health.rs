@@ -740,8 +740,10 @@ async fn unmute_participant_handler(
 
 async fn lock_room_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let tenant_id = extract_tenant_id(&headers);
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.lock();
@@ -749,7 +751,7 @@ async fn lock_room_handler(
                 &state.event_bus,
                 ConferenceEvent::RoomLocked {
                     room_number: room_number.clone(),
-                    tenant_id: TenantId::nil(),
+                    tenant_id,
                     timestamp: SystemTime::now(),
                 },
             );
@@ -767,8 +769,10 @@ async fn lock_room_handler(
 
 async fn unlock_room_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let tenant_id = extract_tenant_id(&headers);
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.unlock();
@@ -776,7 +780,7 @@ async fn unlock_room_handler(
                 &state.event_bus,
                 ConferenceEvent::RoomUnlocked {
                     room_number: room_number.clone(),
-                    tenant_id: TenantId::nil(),
+                    tenant_id,
                     timestamp: SystemTime::now(),
                 },
             );
@@ -794,8 +798,10 @@ async fn unlock_room_handler(
 
 async fn start_recording_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let tenant_id = extract_tenant_id(&headers);
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             let recording_path = format!(
@@ -810,7 +816,7 @@ async fn start_recording_handler(
                         &state.event_bus,
                         ConferenceEvent::RecordingStarted {
                             room_number: room_number.clone(),
-                            tenant_id: TenantId::nil(),
+                            tenant_id,
                             timestamp: SystemTime::now(),
                         },
                     );
@@ -837,8 +843,10 @@ async fn start_recording_handler(
 
 async fn stop_recording_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    let tenant_id = extract_tenant_id(&headers);
     match state.bridge.get_room(&room_number) {
         Ok(room) => match room.stop_recording() {
             Ok(()) => {
@@ -846,7 +854,7 @@ async fn stop_recording_handler(
                     &state.event_bus,
                     ConferenceEvent::RecordingStopped {
                         room_number: room_number.clone(),
-                        tenant_id: TenantId::nil(),
+                        tenant_id,
                         timestamp: SystemTime::now(),
                     },
                 );
@@ -1108,8 +1116,8 @@ async fn list_recordings_handler(
 ) -> (StatusCode, Json<serde_json::Value>) {
     let recordings_dir = state.conference_handler.recordings_dir();
 
-    let entries = match std::fs::read_dir(recordings_dir) {
-        Ok(entries) => entries,
+    let mut read_dir = match tokio::fs::read_dir(&recordings_dir).await {
+        Ok(rd) => rd,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1119,7 +1127,7 @@ async fn list_recordings_handler(
     };
 
     let mut recordings = Vec::new();
-    for entry in entries.flatten() {
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("wav") {
             let filename = path
@@ -1127,7 +1135,7 @@ async fn list_recordings_handler(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let meta = entry.metadata().ok();
+            let meta = tokio::fs::metadata(&path).await.ok();
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
             let modified = meta
                 .as_ref()

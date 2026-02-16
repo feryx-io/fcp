@@ -37,6 +37,7 @@ fn test_minimal_config_defaults() {
     assert!(config.conference.allowed_codecs.is_none());
     assert!(!config.conference.enable_srtp);
     assert_eq!(config.conference.announcements_dir, "/var/fcp/conference/announcements");
+    assert_eq!(config.conference.max_wait_for_moderator_secs, 300);
     assert!(!config.ai.enabled);
     assert_eq!(config.ai.model, "gpt-4o-realtime-preview");
     assert_eq!(config.ai.voice, "alloy");
@@ -501,4 +502,36 @@ frame_size = 320
 "#,
     );
     assert!(fcp_conference_server::validate_config(&config).is_ok());
+}
+
+// =========================================================================
+// Wait-for-Moderator Timeout Config Tests
+// =========================================================================
+
+#[test]
+fn test_wait_for_moderator_default() {
+    let config = parse_config("");
+    assert_eq!(config.conference.max_wait_for_moderator_secs, 300);
+}
+
+#[test]
+fn test_wait_for_moderator_custom() {
+    let config = parse_config(
+        r#"
+[conference]
+max_wait_for_moderator_secs = 600
+"#,
+    );
+    assert_eq!(config.conference.max_wait_for_moderator_secs, 600);
+}
+
+#[test]
+fn test_wait_for_moderator_unlimited() {
+    let config = parse_config(
+        r#"
+[conference]
+max_wait_for_moderator_secs = 0
+"#,
+    );
+    assert_eq!(config.conference.max_wait_for_moderator_secs, 0);
 }
