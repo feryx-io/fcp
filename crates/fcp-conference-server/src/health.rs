@@ -181,8 +181,8 @@ pub async fn run_http_server(
 
     if let Some(rps) = state.rate_limit_rps {
         if rps > 0 {
-            info!(rps = rps, "HTTP API rate limiting enabled");
-            let rate_limiter = Arc::new(RateLimiter::new(rps));
+            info!(rps = rps, "HTTP API per-IP rate limiting enabled");
+            let rate_limiter = Arc::new(PerIpRateLimiter::new(rps));
             protected = protected.layer(middleware::from_fn(move |req, next| {
                 let limiter = Arc::clone(&rate_limiter);
                 rate_limit_middleware(limiter, req, next)
@@ -269,6 +269,7 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
     let audio = state.conference_handler.aggregate_audio_stats();
 
     let events_dropped = state.events_dropped.load(Ordering::Relaxed);
+    let latency = &state.conference_handler.handler_latency;
 
     let body = format!(
         "# HELP fcp_conference_active_rooms Number of active conference rooms\n\
@@ -306,7 +307,19 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
          fcp_conference_dtmf_events_total {}\n\
          # HELP fcp_conference_events_dropped_total Events dropped by circuit breaker\n\
          # TYPE fcp_conference_events_dropped_total counter\n\
-         fcp_conference_events_dropped_total {}\n",
+         fcp_conference_events_dropped_total {}\n\
+         # HELP fcp_conference_handler_invite_total INVITE handler invocations\n\
+         # TYPE fcp_conference_handler_invite_total counter\n\
+         fcp_conference_handler_invite_total {}\n\
+         # HELP fcp_conference_handler_invite_duration_us Total INVITE handler duration (microseconds)\n\
+         # TYPE fcp_conference_handler_invite_duration_us counter\n\
+         fcp_conference_handler_invite_duration_us {}\n\
+         # HELP fcp_conference_handler_reinvite_total re-INVITE handler invocations\n\
+         # TYPE fcp_conference_handler_reinvite_total counter\n\
+         fcp_conference_handler_reinvite_total {}\n\
+         # HELP fcp_conference_handler_bye_total BYE handler invocations\n\
+         # TYPE fcp_conference_handler_bye_total counter\n\
+         fcp_conference_handler_bye_total {}\n",
         active_rooms.len(),
         total_participants,
         active_sessions,
@@ -319,6 +332,10 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
         audio.encode_errors,
         audio.dtmf_events,
         events_dropped,
+        latency.invite_count.load(Ordering::Relaxed),
+        latency.invite_total_us.load(Ordering::Relaxed),
+        latency.reinvite_count.load(Ordering::Relaxed),
+        latency.bye_count.load(Ordering::Relaxed),
     );
 
     (StatusCode::OK, [("content-type", "text/plain; version=0.0.4; charset=utf-8")], body)
@@ -462,6 +479,7 @@ async fn create_meeting_handler(
 
     match state.storage.put_meeting(meeting.clone()).await {
         Ok(()) => {
+            info!(action = "create_meeting", room = %meeting.room_number, name = %meeting.name, "AUDIT: meeting created via API");
             publish_event(
                 &state.event_bus,
                 ConferenceEvent::MeetingCreated {
@@ -609,6 +627,7 @@ async fn update_meeting_handler(
 
     match state.storage.put_meeting(meeting.clone()).await {
         Ok(()) => {
+            info!(action = "update_meeting", room = %meeting.room_number, fields = ?changed_fields, "AUDIT: meeting updated via API");
             // Invalidate meeting cache
             state
                 .conference_handler
@@ -656,6 +675,7 @@ async fn delete_meeting_handler(
 
     match state.storage.delete_meeting(&meeting_id).await {
         Ok(()) => {
+            info!(action = "delete_meeting", meeting_id = %id, "AUDIT: meeting deleted via API");
             if let Some(ref meeting) = meeting_info {
                 // Invalidate meeting cache
                 state
@@ -738,14 +758,17 @@ async fn destroy_conference_handler(
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.destroy_conference(&room_number).await {
-        Ok(kicked) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "destroyed",
-                "room_number": room_number,
-                "participants_removed": kicked,
-            })),
-        ),
+        Ok(kicked) => {
+            info!(action = "destroy", room = %room_number, removed = kicked, "AUDIT: conference destroyed via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "destroyed",
+                    "room_number": room_number,
+                    "participants_removed": kicked,
+                })),
+            )
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -767,10 +790,13 @@ async fn kick_participant_handler(
 
     // Kick via conference handler: sends SIP BYE, aborts bridge, deallocates port
     match state.conference_handler.kick_participant(&pid).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "kicked", "participant": pid })),
-        ),
+        Ok(()) => {
+            info!(action = "kick", room = %room_number, participant = %pid, "AUDIT: participant kicked via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "kicked", "participant": pid })),
+            )
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -785,10 +811,13 @@ async fn mute_participant_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             match room.set_participant_state(&pid, forge_mixer::ParticipantState::Muted) {
-                Ok(()) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({ "status": "muted", "participant": pid })),
-                ),
+                Ok(()) => {
+                    info!(action = "mute", room = %room_number, participant = %pid, "AUDIT: participant muted via API");
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({ "status": "muted", "participant": pid })),
+                    )
+                }
                 Err(e) => (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -809,10 +838,13 @@ async fn unmute_participant_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             match room.set_participant_state(&pid, forge_mixer::ParticipantState::Active) {
-                Ok(()) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({ "status": "unmuted", "participant": pid })),
-                ),
+                Ok(()) => {
+                    info!(action = "unmute", room = %room_number, participant = %pid, "AUDIT: participant unmuted via API");
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({ "status": "unmuted", "participant": pid })),
+                    )
+                }
                 Err(e) => (
                     StatusCode::NOT_FOUND,
                     Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -835,6 +867,7 @@ async fn lock_room_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.lock();
+            info!(action = "lock", room = %room_number, "AUDIT: room locked via API");
             publish_event(
                 &state.event_bus,
                 ConferenceEvent::RoomLocked {
@@ -864,6 +897,7 @@ async fn unlock_room_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.unlock();
+            info!(action = "unlock", room = %room_number, "AUDIT: room unlocked via API");
             publish_event(
                 &state.event_bus,
                 ConferenceEvent::RoomUnlocked {
@@ -901,6 +935,7 @@ async fn start_recording_handler(
             );
             match room.start_recording(&recording_path, None).await {
                 Ok(()) => {
+                    info!(action = "start_recording", room = %room_number, path = %recording_path, "AUDIT: recording started via API");
                     publish_event(
                         &state.event_bus,
                         ConferenceEvent::RecordingStarted {
@@ -939,6 +974,7 @@ async fn stop_recording_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => match room.stop_recording() {
             Ok(()) => {
+                info!(action = "stop_recording", room = %room_number, "AUDIT: recording stopped via API");
                 publish_event(
                     &state.event_bus,
                     ConferenceEvent::RecordingStopped {
@@ -992,10 +1028,13 @@ async fn set_gain_handler(
     Json(payload): Json<SetGainRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.set_gain(&room_number, &pid, payload.gain) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "gain_set", "participant": pid, "gain": payload.gain })),
-        ),
+        Ok(()) => {
+            info!(action = "set_gain", room = %room_number, participant = %pid, gain = payload.gain, "AUDIT: participant gain set via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "gain_set", "participant": pid, "gain": payload.gain })),
+            )
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -1024,10 +1063,13 @@ async fn promote_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.promote_participant(&room_number, &pid) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "promoted", "participant": pid })),
-        ),
+        Ok(()) => {
+            info!(action = "promote", room = %room_number, participant = %pid, "AUDIT: participant promoted via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "promoted", "participant": pid })),
+            )
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -1120,10 +1162,13 @@ async fn admit_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.admit_waiting(&room_number, &pid) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "admitted", "participant": pid })),
-        ),
+        Ok(()) => {
+            info!(action = "admit", room = %room_number, participant = %pid, "AUDIT: waiting participant admitted via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "admitted", "participant": pid })),
+            )
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -1136,10 +1181,13 @@ async fn admit_all_handler(
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.admit_all_waiting(&room_number) {
-        Ok(count) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "admitted_all", "count": count })),
-        ),
+        Ok(count) => {
+            info!(action = "admit_all", room = %room_number, count = count, "AUDIT: all waiting participants admitted via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "admitted_all", "count": count })),
+            )
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -1156,10 +1204,13 @@ async fn attach_ai_handler(
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.attach_ai(&room_number).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "ai_attached", "room": room_number })),
-        ),
+        Ok(()) => {
+            info!(action = "attach_ai", room = %room_number, "AUDIT: AI participant attached via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "ai_attached", "room": room_number })),
+            )
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -1172,10 +1223,13 @@ async fn detach_ai_handler(
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     match state.conference_handler.detach_ai(&room_number).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({ "status": "ai_detached", "room": room_number })),
-        ),
+        Ok(()) => {
+            info!(action = "detach_ai", room = %room_number, "AUDIT: AI participant detached via API");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "ai_detached", "room": room_number })),
+            )
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{}", e) })),
@@ -1411,41 +1465,66 @@ async fn sse_events_handler(
 // Rate Limiting
 // =========================================================================
 
-/// Simple token-bucket rate limiter using atomic counters.
-struct RateLimiter {
+/// Per-IP token-bucket rate limiter using DashMap.
+///
+/// Tracks request counts per source IP within a 1-second sliding window.
+/// Evicts stale entries periodically to prevent unbounded memory growth.
+struct PerIpRateLimiter {
     max_rps: u32,
-    counter: AtomicU64,
-    window_start: parking_lot::Mutex<Instant>,
+    buckets: dashmap::DashMap<std::net::IpAddr, (u64, Instant)>,
 }
 
-impl RateLimiter {
+impl PerIpRateLimiter {
     fn new(max_rps: u32) -> Self {
         Self {
             max_rps,
-            counter: AtomicU64::new(0),
-            window_start: parking_lot::Mutex::new(Instant::now()),
+            buckets: dashmap::DashMap::new(),
         }
     }
 
-    fn check(&self) -> bool {
-        let mut start = self.window_start.lock();
-        if start.elapsed() >= std::time::Duration::from_secs(1) {
-            *start = Instant::now();
-            self.counter.store(1, Ordering::Relaxed);
+    fn check(&self, ip: std::net::IpAddr) -> bool {
+        let now = Instant::now();
+
+        // Periodic eviction: if map > 1000 entries, prune stale ones
+        if self.buckets.len() > 1000 {
+            self.buckets.retain(|_, (_, window)| now.duration_since(*window) < std::time::Duration::from_secs(60));
+        }
+
+        let mut entry = self.buckets.entry(ip).or_insert((0, now));
+        let (count, window_start) = entry.value_mut();
+        if now.duration_since(*window_start) >= std::time::Duration::from_secs(1) {
+            *count = 1;
+            *window_start = now;
+            true
+        } else if *count < self.max_rps as u64 {
+            *count += 1;
             true
         } else {
-            let count = self.counter.fetch_add(1, Ordering::Relaxed);
-            count < self.max_rps as u64
+            false
         }
     }
 }
 
 async fn rate_limit_middleware(
-    limiter: Arc<RateLimiter>,
+    limiter: Arc<PerIpRateLimiter>,
     req: axum::http::Request<Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    if !limiter.check() {
+    // Extract source IP from ConnectInfo or X-Forwarded-For, fallback to 0.0.0.0
+    let ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .or_else(|| {
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.trim().parse().ok())
+        })
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+    if !limiter.check(ip) {
         return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
     }
     next.run(req).await

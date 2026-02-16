@@ -20,7 +20,7 @@ use sip_core::{SipUri, Uri};
 use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use std::time::{Duration, Instant, SystemTime};
@@ -42,6 +42,42 @@ pub struct AggregatedAudioStats {
     pub packets_sent: u64,
     pub encode_errors: u64,
     pub dtmf_events: u64,
+}
+
+/// Latency telemetry for ConferenceHandler trait methods.
+pub struct HandlerLatency {
+    pub invite_count: AtomicU64,
+    pub invite_total_us: AtomicU64,
+    pub reinvite_count: AtomicU64,
+    pub reinvite_total_us: AtomicU64,
+    pub bye_count: AtomicU64,
+    pub bye_total_us: AtomicU64,
+    pub subscribe_count: AtomicU64,
+    pub subscribe_total_us: AtomicU64,
+    pub refer_count: AtomicU64,
+    pub refer_total_us: AtomicU64,
+}
+
+impl HandlerLatency {
+    pub fn new() -> Self {
+        Self {
+            invite_count: AtomicU64::new(0),
+            invite_total_us: AtomicU64::new(0),
+            reinvite_count: AtomicU64::new(0),
+            reinvite_total_us: AtomicU64::new(0),
+            bye_count: AtomicU64::new(0),
+            bye_total_us: AtomicU64::new(0),
+            subscribe_count: AtomicU64::new(0),
+            subscribe_total_us: AtomicU64::new(0),
+            refer_count: AtomicU64::new(0),
+            refer_total_us: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, count: &AtomicU64, total_us: &AtomicU64, elapsed: Duration) {
+        count.fetch_add(1, Ordering::Relaxed);
+        total_us.fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
 }
 
 /// Tracks a single participant's connection to a conference room.
@@ -103,6 +139,10 @@ pub struct ConferenceCallHandler {
     local_sip_uri: SipUri,
     /// Set to true during graceful shutdown to reject new INVITEs while draining existing sessions
     draining: std::sync::atomic::AtomicBool,
+    /// Secondary index: room_number → Vec<call_id> for O(1) room-to-session lookups.
+    room_sessions: DashMap<String, Vec<String>>,
+    /// Latency telemetry for trait methods (INVITE, re-INVITE, BYE, etc.)
+    pub handler_latency: HandlerLatency,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -155,6 +195,8 @@ impl ConferenceCallHandler {
             conference_subscriptions: DashMap::new(),
             local_sip_uri,
             draining: std::sync::atomic::AtomicBool::new(false),
+            room_sessions: DashMap::new(),
+            handler_latency: HandlerLatency::new(),
         }
     }
 
@@ -255,6 +297,14 @@ impl ConferenceCallHandler {
         self.sessions.contains_key(call_id)
     }
 
+    /// Get call IDs for a specific room (O(1) via secondary index).
+    pub fn sessions_for_room(&self, room_number: &str) -> Vec<String> {
+        self.room_sessions
+            .get(room_number)
+            .map(|ids| ids.clone())
+            .unwrap_or_default()
+    }
+
     /// Get the total number of active participant sessions.
     pub fn active_sessions(&self) -> usize {
         self.sessions.len()
@@ -330,6 +380,7 @@ impl ConferenceCallHandler {
             if let Some(ref cid) = session.caller_id {
                 json["caller_id"] = serde_json::json!(cid);
             }
+            let silence = session.stats.silence_frames.load(Ordering::Relaxed);
             json["stats"] = serde_json::json!({
                 "packets_received": session.stats.packets_received.load(Ordering::Relaxed),
                 "packets_decoded": session.stats.packets_decoded.load(Ordering::Relaxed),
@@ -337,7 +388,13 @@ impl ConferenceCallHandler {
                 "packets_sent": session.stats.packets_sent.load(Ordering::Relaxed),
                 "encode_errors": session.stats.encode_errors.load(Ordering::Relaxed),
                 "dtmf_events": session.stats.dtmf_events.load(Ordering::Relaxed),
+                "silence_frames": silence,
             });
+            if let Some(mos) = session.stats.estimated_mos() {
+                json["estimated_mos"] = serde_json::json!((mos * 100.0).round() / 100.0);
+            }
+            // VAD presence: inactive if >30s silence (1500 frames at 50fps)
+            json["is_inactive"] = serde_json::json!(session.stats.is_inactive(1500));
         }
 
         Ok(json)
@@ -429,6 +486,9 @@ impl ConferenceCallHandler {
                         "encode_errors": s.encode_errors.load(Ordering::Relaxed),
                         "dtmf_events": s.dtmf_events.load(Ordering::Relaxed),
                     });
+                    if let Some(mos) = s.estimated_mos() {
+                        p["estimated_mos"] = serde_json::json!((mos * 100.0).round() / 100.0);
+                    }
                 }
 
                 p
@@ -502,7 +562,22 @@ impl ConferenceCallHandler {
     }
 
     /// Play an audio announcement into a conference room.
+    ///
+    /// Validates file exists and does not exceed max_announcement_size_mb before playing.
     pub async fn play_announcement(&self, room_number: &str, audio_path: &str) -> Result<()> {
+        // Validate announcement file exists and is within size limits
+        let meta = std::fs::metadata(audio_path)
+            .map_err(|e| anyhow::anyhow!("Announcement file not found '{}': {}", audio_path, e))?;
+
+        let max_mb = self.conference_config.read().max_announcement_size_mb;
+        if max_mb > 0 && meta.len() > max_mb * 1024 * 1024 {
+            anyhow::bail!(
+                "Announcement file too large: {} MB (max: {} MB)",
+                meta.len() / (1024 * 1024),
+                max_mb
+            );
+        }
+
         let room = self
             .bridge
             .get_room(room_number)
@@ -646,13 +721,12 @@ impl ConferenceCallHandler {
             .get_room(room_number)
             .map_err(|_| anyhow::anyhow!("Conference room not active: {}", room_number))?;
 
-        // Collect call IDs for participants in this room
+        // Collect call IDs using room index for O(1) lookup
         let call_ids: Vec<String> = self
-            .sessions
-            .iter()
-            .filter(|entry| entry.value().room_number == room_number)
-            .map(|entry| entry.key().clone())
-            .collect();
+            .room_sessions
+            .get(room_number)
+            .map(|ids| ids.clone())
+            .unwrap_or_default();
 
         let kicked = call_ids.len();
 
@@ -729,17 +803,41 @@ impl ConferenceCallHandler {
         self.meeting_cache.clear();
         self.invite_rate.clear();
         self.conference_subscriptions.clear();
+        self.room_sessions.clear();
 
         info!("Conference shutdown complete");
     }
 
     /// Hot-reload safe configuration settings (conference section, AI config).
     /// Called by the config watcher when the config file changes.
+    ///
+    /// Reloadable settings: conference (cache_ttl, dtmf, rate limits, recordings,
+    /// jitter buffer, session timers, PIN settings, SRTP, max participants),
+    /// AI (enabled, model, voice, instructions, endpoint).
+    ///
+    /// NOT reloadable at runtime: SIP bind addresses, storage backend, HTTP bind,
+    /// media port range (require process restart).
     pub fn reload_config(&self, conference: ConferenceSection, ai: AiSection) {
+        let old_conf = self.conference_config.read().clone();
+        let old_ai = self.ai_config.read().clone();
+
+        let mut changes = Vec::new();
+        if old_conf.cache_ttl_secs != conference.cache_ttl_secs { changes.push("cache_ttl"); }
+        if old_conf.dtmf_enabled != conference.dtmf_enabled { changes.push("dtmf_enabled"); }
+        if old_conf.max_invite_rate_per_ip != conference.max_invite_rate_per_ip { changes.push("max_invite_rate"); }
+        if old_conf.session_expires_secs != conference.session_expires_secs { changes.push("session_expires"); }
+        if old_conf.max_participants_per_node != conference.max_participants_per_node { changes.push("max_participants_per_node"); }
+        if old_conf.enable_srtp != conference.enable_srtp { changes.push("enable_srtp"); }
+        if old_conf.jitter_buffer_ms != conference.jitter_buffer_ms { changes.push("jitter_buffer_ms"); }
+        if old_conf.max_announcement_size_mb != conference.max_announcement_size_mb { changes.push("max_announcement_size_mb"); }
+        if old_ai.enabled != ai.enabled { changes.push("ai.enabled"); }
+        if old_ai.model != ai.model { changes.push("ai.model"); }
+
         info!(
             cache_ttl = conference.cache_ttl_secs,
             dtmf = conference.dtmf_enabled,
             ai_enabled = ai.enabled,
+            changed_fields = ?changes,
             "Config hot-reload applied"
         );
         *self.conference_config.write() = conference;
@@ -948,6 +1046,14 @@ impl ConferenceCallHandler {
     /// Remove a participant by SIP call ID (called on BYE).
     fn remove_session(&self, call_id: &str) {
         if let Some((_, session)) = self.sessions.remove(call_id) {
+            // Update secondary room index
+            if let Some(mut ids) = self.room_sessions.get_mut(&session.room_number) {
+                ids.retain(|id| id != call_id);
+                if ids.is_empty() {
+                    drop(ids);
+                    self.room_sessions.remove(&session.room_number);
+                }
+            }
             info!(
                 call_id = %call_id,
                 room = %session.room_number,
@@ -1056,7 +1162,30 @@ impl ConferenceCallHandler {
     }
 
     /// Build a forge-conference RoomConfig from a Meeting's settings.
-    fn meeting_to_room_config(meeting: &Meeting) -> RoomConfig {
+    ///
+    /// Validates max_channels against the node-level participant limit to prevent
+    /// individual rooms from being configured beyond what the node can support.
+    fn meeting_to_room_config(&self, meeting: &Meeting) -> RoomConfig {
+        let max_per_node = self.conference_config.read().max_participants_per_node;
+        let mut max_channels = if meeting.max_participants > 0 {
+            Some(meeting.max_participants)
+        } else {
+            None
+        };
+
+        // Cap room max_channels at node limit (if both are set)
+        if let Some(room_max) = max_channels {
+            if max_per_node > 0 && room_max > max_per_node {
+                warn!(
+                    room = %meeting.room_number,
+                    room_max = room_max,
+                    node_max = max_per_node,
+                    "Room max_participants exceeds node limit, capping"
+                );
+                max_channels = Some(max_per_node);
+            }
+        }
+
         RoomConfig {
             guest_pin: meeting.guest_pin.clone(),
             host_pin: meeting.host_pin.clone(),
@@ -1065,7 +1194,7 @@ impl ConferenceCallHandler {
             default_locked: Some(meeting.default_locked),
             enable_dtmf: None,
             dtmf_commands: None,
-            max_channels: if meeting.max_participants > 0 { Some(meeting.max_participants) } else { None },
+            max_channels,
             wait_for_moderator: Some(meeting.wait_for_moderator),
             min_users: None,
             min_recording_participants: if meeting.auto_record { Some(1) } else { None },
@@ -1209,6 +1338,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         handle: &sip_transaction::ServerTransactionHandle,
         peer: SocketAddr,
     ) -> Result<()> {
+        let _invite_start = Instant::now();
+
         // 0. Reject new calls during shutdown draining
         if self.draining.load(Ordering::Relaxed) {
             info!(peer = %peer, "Rejecting INVITE during shutdown drain");
@@ -1333,6 +1464,23 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             srtp_sdp.as_ref(),
         );
 
+        // 7c. SDP answer-offer consistency check: verify answer codec was in the offer
+        let answer_codecs = parse_sdp_codecs(&sdp_answer);
+        for ac in &answer_codecs {
+            if !ac.encoding_name.eq_ignore_ascii_case("telephone-event")
+                && !offered_codecs.iter().any(|oc| {
+                    oc.encoding_name.eq_ignore_ascii_case(&ac.encoding_name)
+                        && oc.clock_rate == ac.clock_rate
+                })
+            {
+                warn!(
+                    room = %room_number,
+                    answer_codec = %ac.encoding_name,
+                    "SDP consistency: answer codec not found in offer"
+                );
+            }
+        }
+
         // 8. Create 200 OK with SDP answer using UAS
         let (mut response, dialog) = uas
             .accept_invite(request, Some(&sdp_answer))
@@ -1416,7 +1564,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .context("Failed to create conference room")?;
 
         // Wire room configuration from meeting → forge-conference
-        let room_config = Self::meeting_to_room_config(&meeting);
+        let room_config = self.meeting_to_room_config(&meeting);
         let global_config = ConferenceConfig::default();
         if let Err(e) = room.configure(room_config, &global_config) {
             warn!(room = %room_number, error = %e, "Failed to configure room (may already be configured)");
@@ -1589,10 +1737,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     room = %rn,
                                     participant = %pid,
                                     timeout_secs = max_wait_secs,
+                                    waited_secs = wait_start.elapsed().as_secs(),
                                     "Wait-for-moderator timeout, disconnecting participant"
                                 );
                                 // Remove from room (handles waiting list cleanup)
                                 let _ = bridge_room.remove_participant(&pid);
+
+                                // Publish leave event so downstream systems know about the timeout
+                                let timeout_event = PlatformEvent::Conference(
+                                    ConferenceEvent::ParticipantLeft {
+                                        room_number: rn.clone(),
+                                        participant_id: pid.clone(),
+                                        tenant_id,
+                                        timestamp: SystemTime::now(),
+                                    },
+                                );
+                                let _ = event_bus.publish(timeout_event).await;
                                 break;
                             }
                         }
@@ -1696,6 +1856,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 // Store session with the wait handle
                 let remote_addr = parse_remote_rtp_addr(sdp_offer)
                     .unwrap_or(UNKNOWN_REMOTE);
+                self.room_sessions.entry(room_number.clone()).or_default().push(call_id.clone());
                 self.sessions.insert(
                     call_id.clone(),
                     ParticipantSession {
@@ -1720,6 +1881,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     },
                 );
 
+                self.handler_latency.record(
+                    &self.handler_latency.invite_count,
+                    &self.handler_latency.invite_total_us,
+                    _invite_start.elapsed(),
+                );
                 return Ok(());
             }
             Err(e) => {
@@ -1828,6 +1994,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // 19. Store session
         let remote_addr = parse_remote_rtp_addr(sdp_offer)
             .unwrap_or(UNKNOWN_REMOTE);
+        self.room_sessions.entry(room_number.clone()).or_default().push(call_id.clone());
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -1852,10 +2019,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             },
         );
 
+        self.handler_latency.record(
+            &self.handler_latency.invite_count,
+            &self.handler_latency.invite_total_us,
+            _invite_start.elapsed(),
+        );
         Ok(())
     }
 
     fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        let reinvite_start = Instant::now();
         let call_id = extract_call_id(request);
         let conf = self.conference_config.read().clone();
 
@@ -2044,16 +2217,28 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let _ = response.headers_mut().push("Require", "timer");
         }
 
+        self.handler_latency.record(
+            &self.handler_latency.reinvite_count,
+            &self.handler_latency.reinvite_total_us,
+            reinvite_start.elapsed(),
+        );
         Ok(response)
     }
 
     fn handle_bye(&self, call_id: &str) -> Result<()> {
-        if self.sessions.contains_key(call_id) {
+        let bye_start = Instant::now();
+        let result = if self.sessions.contains_key(call_id) {
             self.remove_session(call_id);
             Ok(())
         } else {
             anyhow::bail!("No conference session for call_id: {}", call_id)
-        }
+        };
+        self.handler_latency.record(
+            &self.handler_latency.bye_count,
+            &self.handler_latency.bye_total_us,
+            bye_start.elapsed(),
+        );
+        result
     }
 
     fn handle_cancel(&self, call_id: &str) -> Result<bool> {
@@ -2351,12 +2536,32 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             anyhow::bail!("Conference room not active: {}", room_number);
         }
 
+        // Detect attended transfer: Refer-To URI contains a Replaces parameter
+        // e.g. <sip:conf@host?Replaces=callid%3Bto-tag%3D...%3Bfrom-tag%3D...>
+        let is_attended = refer_to_str.contains("Replaces=")
+            || refer_to_str.contains("replaces=");
+        let replaces_call_id = if is_attended {
+            // Extract the Replaces call-id from the Refer-To URI query
+            refer_to_str
+                .split("Replaces=").nth(1)
+                .or_else(|| refer_to_str.split("replaces=").nth(1))
+                .and_then(|r| {
+                    // URL-decode %3B → ; to parse call-id;to-tag=...;from-tag=...
+                    let decoded = r.replace("%3B", ";").replace("%3b", ";");
+                    decoded.split(';').next().map(|s| s.to_string())
+                })
+        } else {
+            None
+        };
+
         // Accept the REFER with 202 Accepted
-        // The actual transfer/join would be initiated by the referring party
-        // sending a new INVITE to the conference room
+        // For attended transfers: the referee will send a new INVITE with Replaces header
+        // For blind transfers: the referee will send a new INVITE to the conference room
         info!(
             room = %room_number,
             refer_to = %refer_to_str,
+            attended = is_attended,
+            replaces_call_id = ?replaces_call_id,
             "REFER accepted for conference room"
         );
 

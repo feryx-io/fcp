@@ -248,6 +248,17 @@ async fn main() -> Result<()> {
         info!(path = %config.conference.recordings_dir, "Recordings directory ready");
     }
 
+    // Ensure announcements directory exists (#24)
+    if let Err(e) = std::fs::create_dir_all(&config.conference.announcements_dir) {
+        warn!(
+            path = %config.conference.announcements_dir,
+            error = %e,
+            "Failed to create announcements directory"
+        );
+    } else {
+        info!(path = %config.conference.announcements_dir, "Announcements directory ready");
+    }
+
     let conference_handler = Arc::new(ConferenceCallHandler::new(
         Arc::clone(&bridge),
         Arc::clone(&dyn_storage),
@@ -753,18 +764,26 @@ fn init_tracing(config: &ConferenceServerConfig) {
 }
 
 /// Periodically delete recordings older than the retention period.
+/// Uses exponential backoff on directory read failure (1min → 2min → 4min → ... → 1hr cap).
 async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
     let retention = Duration::from_secs(retention_days as u64 * 86400);
-    // Run cleanup on startup, then every hour
+    let normal_interval = Duration::from_secs(3600);
+    let mut backoff = Duration::from_secs(60);
+    let max_backoff = Duration::from_secs(3600);
+
     loop {
         let dir = match std::fs::read_dir(&recordings_dir) {
             Ok(d) => d,
             Err(e) => {
-                warn!(error = %e, "Recording cleanup: cannot read directory");
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                warn!(error = %e, backoff_secs = backoff.as_secs(), "Recording cleanup: cannot read directory, backing off");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
                 continue;
             }
         };
+
+        // Success — reset backoff
+        backoff = Duration::from_secs(60);
 
         let mut deleted = 0u32;
         for entry in dir.flatten() {
@@ -796,7 +815,7 @@ async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
             );
         }
 
-        tokio::time::sleep(Duration::from_secs(3600)).await;
+        tokio::time::sleep(normal_interval).await;
     }
 }
 

@@ -378,6 +378,10 @@ pub struct ConferenceSection {
     /// Default: 500. Set 0 for no limit (not recommended for production).
     #[serde(default = "default_max_participants_per_node")]
     pub max_participants_per_node: usize,
+
+    /// Maximum announcement file size in megabytes. Default: 10 MB. Set 0 for no limit.
+    #[serde(default = "default_max_announcement_size_mb")]
+    pub max_announcement_size_mb: u64,
 }
 
 fn default_announcements_dir() -> String {
@@ -436,6 +440,10 @@ fn default_max_participants_per_node() -> usize {
     500
 }
 
+fn default_max_announcement_size_mb() -> u64 {
+    10
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -459,6 +467,7 @@ impl Default for ConferenceSection {
             session_expires_secs: default_session_expires_secs(),
             max_recording_size_mb: default_max_recording_size_mb(),
             max_participants_per_node: default_max_participants_per_node(),
+            max_announcement_size_mb: default_max_announcement_size_mb(),
         }
     }
 }

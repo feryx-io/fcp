@@ -8,7 +8,7 @@ use forge_dtmf::{DtmfDigit, DtmfEventType};
 use forge_rtp::{JitterBuffer, RtpPacket, RtpSocketPair, SrtpContext};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 
@@ -20,6 +20,9 @@ pub struct AudioStats {
     pub packets_sent: AtomicU64,
     pub encode_errors: AtomicU64,
     pub dtmf_events: AtomicU64,
+    /// Consecutive silent frames (PCM samples below threshold).
+    /// Reset to 0 when voice activity is detected. Used for presence detection.
+    pub silence_frames: AtomicU64,
 }
 
 impl AudioStats {
@@ -31,7 +34,35 @@ impl AudioStats {
             packets_sent: AtomicU64::new(0),
             encode_errors: AtomicU64::new(0),
             dtmf_events: AtomicU64::new(0),
+            silence_frames: AtomicU64::new(0),
         }
+    }
+
+    /// Returns true if the participant has been silent for more than the given
+    /// number of frames (at 50 frames/sec, 1500 = 30 seconds of silence).
+    pub fn is_inactive(&self, threshold_frames: u64) -> bool {
+        self.silence_frames.load(Ordering::Relaxed) > threshold_frames
+    }
+
+    /// Estimate MOS (Mean Opinion Score) from packet statistics.
+    ///
+    /// Uses a simplified E-model (ITU-T G.107) approximation:
+    /// - Starts at 4.4 (excellent G.711 baseline)
+    /// - Deducts for packet loss (decode_errors / packets_received)
+    /// - Clamps to [1.0, 4.5]
+    ///
+    /// Returns None if no packets have been received yet.
+    pub fn estimated_mos(&self) -> Option<f64> {
+        let rx = self.packets_received.load(Ordering::Relaxed);
+        if rx == 0 {
+            return None;
+        }
+        let errors = self.decode_errors.load(Ordering::Relaxed);
+        let loss_pct = (errors as f64 / rx as f64) * 100.0;
+
+        // Simplified: MOS = 4.4 - 0.1 * loss% - 0.01 * loss%^2
+        let mos = 4.4 - 0.1 * loss_pct - 0.01 * loss_pct * loss_pct;
+        Some(mos.clamp(1.0, 4.5))
     }
 }
 
@@ -176,6 +207,19 @@ pub async fn run_audio_bridge(
                             match decoder.decode(&payload_data) {
                                 Ok(pcm_samples) => {
                                     stats.packets_decoded.fetch_add(1, Ordering::Relaxed);
+
+                                    // VAD-based presence: check if audio is silence
+                                    // Threshold: RMS below ~100 (~-40 dBFS) is silence
+                                    let rms_sq: i64 = pcm_samples.iter()
+                                        .map(|&s| (s as i64) * (s as i64))
+                                        .sum::<i64>()
+                                        / pcm_samples.len().max(1) as i64;
+                                    if rms_sq < 10000 { // ~100 RMS threshold
+                                        stats.silence_frames.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        stats.silence_frames.store(0, Ordering::Relaxed);
+                                    }
+
                                     let _ = room.write_audio(&participant_id, &pcm_samples);
                                 }
                                 Err(e) => {
@@ -198,7 +242,19 @@ pub async fn run_audio_bridge(
 
             // Branch 2: 20ms tick → read mix-minus → encode → send RTP
             _ = interval.tick() => {
-                match room.mix_for_participant(&participant_id) {
+                let mix_start = Instant::now();
+                let mix_result = room.mix_for_participant(&participant_id);
+                let mix_elapsed = mix_start.elapsed();
+                // Deadlock detection: warn if mixing takes longer than 10ms
+                // (should normally be sub-millisecond for in-memory mixing)
+                if mix_elapsed > Duration::from_millis(10) {
+                    warn!(
+                        participant = %participant_id,
+                        elapsed_ms = mix_elapsed.as_millis() as u64,
+                        "Slow room mix operation — possible lock contention"
+                    );
+                }
+                match mix_result {
                     Ok(Some(mixed_pcm)) => {
                         match encoder.encode(&mixed_pcm) {
                             Ok(encoded) => {
