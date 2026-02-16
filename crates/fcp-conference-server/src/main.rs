@@ -411,7 +411,76 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 24. Spawn event forwarding task (if configured)
+    // 24a. Spawn session timer reaper (RFC 4028)
+    if config.conference.session_expires_secs > 0 {
+        let reaper_handler = Arc::clone(&conference_handler);
+        let reap_interval = config.conference.session_expires_secs;
+        tokio::spawn(supervise_task("session-reaper", async move {
+            // Check every half the session-expires interval
+            let interval = Duration::from_secs(reap_interval / 2).max(Duration::from_secs(30));
+            loop {
+                tokio::time::sleep(interval).await;
+                reaper_handler.reap_expired_sessions().await;
+            }
+        }));
+        info!(session_expires_secs = config.conference.session_expires_secs, "Session timer reaper started");
+    }
+
+    // 24b. Spawn recording size monitor
+    if config.conference.max_recording_size_mb > 0 {
+        let monitor_bridge = Arc::clone(&bridge);
+        let max_bytes = config.conference.max_recording_size_mb * 1024 * 1024;
+        let recordings_dir = config.conference.recordings_dir.clone();
+        let monitor_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>;
+        tokio::spawn(supervise_task("recording-size-monitor", async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                // Check each actively-recording room by scanning for .wav files
+                // that are currently being written (modified in the last 60s)
+                let mut dir = match tokio::fs::read_dir(&recordings_dir).await {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("wav") {
+                        continue;
+                    }
+                    if let Ok(meta) = tokio::fs::metadata(&path).await {
+                        if meta.len() <= max_bytes {
+                            continue;
+                        }
+                        // File exceeds limit — find the room by filename prefix and stop recording
+                        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        // Filename format: {room}-{timestamp}-{uuid} — extract room as first segment
+                        let room_id = filename.split('-').next().unwrap_or(filename);
+                        if let Ok(room) = monitor_bridge.get_room(room_id) {
+                            if room.is_recording() {
+                                warn!(
+                                    room = %room_id,
+                                    size_mb = meta.len() / (1024 * 1024),
+                                    max_mb = max_bytes / (1024 * 1024),
+                                    "Recording size limit reached, stopping"
+                                );
+                                let _ = room.stop_recording();
+                                let event = fcp_events::PlatformEvent::Conference(
+                                    fcp_events::ConferenceEvent::RecordingStopped {
+                                        room_number: room_id.to_string(),
+                                        tenant_id: fcp_core::TenantId::nil(),
+                                        timestamp: std::time::SystemTime::now(),
+                                    },
+                                );
+                                let _ = monitor_event_bus.publish(event).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }));
+        info!(max_mb = config.conference.max_recording_size_mb, "Recording size monitor started");
+    }
+
+    // 24c. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);

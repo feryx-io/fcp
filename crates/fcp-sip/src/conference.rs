@@ -52,4 +52,18 @@ pub trait ConferenceHandler: Send + Sync {
     /// cleaned up. Returns `Err` if the call_id is unknown (not a conference call),
     /// so the caller can fall through to normal B2BUA BYE handling.
     fn handle_bye(&self, call_id: &str) -> Result<()>;
+
+    /// Clean up when a CANCEL is received for a conference INVITE.
+    ///
+    /// Called with the SIP Call-ID. Removes any in-progress session that
+    /// was being set up (port allocation, PIN collection, audio bridge).
+    /// Returns `Ok(true)` if this call_id was a conference session and was cancelled.
+    /// Returns `Ok(false)` if unknown (not a conference call).
+    fn handle_cancel(&self, call_id: &str) -> Result<bool>;
+
+    /// Handle a mid-dialog UPDATE for a conference participant (RFC 3311).
+    ///
+    /// Processes session parameter changes (hold/resume, address updates).
+    /// Returns `Ok(Response)` on success, `Err` if call_id is unknown.
+    fn handle_update(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
 }

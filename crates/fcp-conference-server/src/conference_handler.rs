@@ -55,6 +55,8 @@ pub struct ParticipantSession {
     pub caller_id: Option<String>,
     /// SRTP context for encrypting/decrypting RTP packets (None = plain RTP)
     pub srtp_context: Option<Arc<tokio::sync::RwLock<SrtpContext>>>,
+    /// Last session refresh time (for RFC 4028 session timer reaping)
+    pub last_refreshed: Instant,
 }
 
 /// Handles SIP INVITEs for conference rooms.
@@ -653,6 +655,46 @@ impl ConferenceCallHandler {
     /// Get the number of active SIP sessions.
     pub fn session_count(&self) -> usize {
         self.sessions.len()
+    }
+
+    /// Reap expired sessions (RFC 4028 session timer).
+    ///
+    /// Walks all sessions and removes any that haven't been refreshed
+    /// (via re-INVITE or UPDATE) within `session_expires_secs`.
+    /// Sends BYE to the expired participants.
+    pub async fn reap_expired_sessions(&self) {
+        let session_expires_secs = self.conference_config.read().session_expires_secs;
+        if session_expires_secs == 0 {
+            return; // Session timers disabled
+        }
+        let max_age = Duration::from_secs(session_expires_secs);
+
+        let expired: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|entry| entry.value().last_refreshed.elapsed() > max_age)
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        for call_id in &expired {
+            if let Some(session) = self.sessions.get(call_id) {
+                warn!(
+                    call_id = %call_id,
+                    room = %session.room_number,
+                    elapsed_secs = session.last_refreshed.elapsed().as_secs(),
+                    "Session expired (no refresh), sending BYE"
+                );
+                if let Err(e) = self.uac.bye(&session.dialog).await {
+                    warn!(call_id = %call_id, error = %e, "Failed to send BYE for expired session");
+                }
+                drop(session);
+            }
+            self.remove_session(call_id);
+        }
+
+        if !expired.is_empty() {
+            info!(count = expired.len(), "Reaped expired conference sessions");
+        }
     }
 
     /// Check if a source IP has exceeded the INVITE rate limit.
@@ -1323,8 +1365,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                                 .unwrap_or_default()
                                                 .as_secs();
                                             let rec_path = format!(
-                                                "{}/{}-{}.wav",
-                                                recordings_dir, rn, ts
+                                                "{}/{}-{}-{}.wav",
+                                                recordings_dir, rn, ts, uuid::Uuid::new_v4().as_simple()
                                             );
                                             match bridge_room
                                                 .start_recording(&rec_path, None)
@@ -1403,6 +1445,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         display_name: display_name.clone(),
                         caller_id: caller_id.clone(),
                         srtp_context: srtp_context.clone(),
+                        last_refreshed: Instant::now(),
                     },
                 );
 
@@ -1457,8 +1500,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         .unwrap_or_default()
                         .as_secs();
                     let path = format!(
-                        "{}/{}-{}.wav",
-                        conf.recordings_dir, room_number, timestamp
+                        "{}/{}-{}-{}.wav",
+                        conf.recordings_dir, room_number, timestamp, uuid::Uuid::new_v4().as_simple()
                     );
                     match room.start_recording(&path, None).await {
                         Ok(()) => {
@@ -1534,6 +1577,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 display_name,
                 caller_id,
                 srtp_context,
+                last_refreshed: Instant::now(),
             },
         );
 
@@ -1637,6 +1681,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
+        // Refresh session timer (re-INVITE counts as a session refresh per RFC 4028)
+        session.last_refreshed = Instant::now();
+
         // Construct SDP answer with current local RTP port
         let sdp_answer = construct_answer_for_a_leg(
             sdp_offer,
@@ -1662,6 +1709,79 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         } else {
             anyhow::bail!("No conference session for call_id: {}", call_id)
         }
+    }
+
+    fn handle_cancel(&self, call_id: &str) -> Result<bool> {
+        if self.sessions.contains_key(call_id) {
+            info!(call_id = %call_id, "CANCEL received for conference participant");
+            self.remove_session(call_id);
+            Ok(true)
+        } else {
+            Ok(false) // Not a conference call — let B2BUA handle it
+        }
+    }
+
+    fn handle_update(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        let call_id = extract_call_id(request);
+
+        // Look up session — if not found, return Err so caller falls through to B2BUA
+        let mut session = self
+            .sessions
+            .get_mut(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
+
+        // Parse SDP if present (UPDATE may have no body for session refresh)
+        let body = request.body();
+        if !body.is_empty() {
+            let sdp_offer = std::str::from_utf8(&body[..])
+                .context("UPDATE SDP body is not valid UTF-8")?;
+
+            // Check for remote address change (e.g., hold/resume or IP migration)
+            if let Some(new_remote) = parse_remote_rtp_addr(sdp_offer) {
+                if new_remote != session.remote_addr {
+                    info!(
+                        call_id = %call_id,
+                        old = %session.remote_addr,
+                        new = %new_remote,
+                        "UPDATE: remote RTP address changed"
+                    );
+                    session.remote_addr = new_remote;
+                    let rtp_socket = Arc::clone(&session.rtp_socket);
+                    tokio::spawn(async move {
+                        rtp_socket
+                            .set_remote_endpoint(RemoteEndpoint {
+                                rtp_addr: new_remote,
+                                rtcp_addr: None,
+                            })
+                            .await;
+                    });
+                }
+            }
+        }
+
+        // Refresh session timer (UPDATE counts as a session refresh per RFC 4028)
+        session.last_refreshed = Instant::now();
+
+        // Build 200 OK response (with SDP answer if request had SDP)
+        let local_sip_uri = self.parse_local_sip_uri();
+        let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+
+        let response = if !body.is_empty() {
+            let sdp_offer = std::str::from_utf8(&body[..]).unwrap_or("");
+            let sdp_answer = construct_answer_for_a_leg(
+                sdp_offer,
+                &self.local_addr,
+                session.port_pair.rtp_port,
+                None,
+            );
+            uas.create_ok(request, Some(&sdp_answer))
+                .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for UPDATE: {}", e))?
+        } else {
+            uas.create_ok(request, None)
+                .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for UPDATE: {}", e))?
+        };
+
+        Ok(response)
     }
 }
 

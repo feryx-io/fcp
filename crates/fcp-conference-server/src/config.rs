@@ -361,6 +361,17 @@ pub struct ConferenceSection {
     /// Prevents brute-force PIN attacks and INVITE floods. Default: 10.
     #[serde(default = "default_max_invite_rate")]
     pub max_invite_rate_per_ip: u32,
+
+    /// Session timer interval in seconds (RFC 4028). Sessions not refreshed
+    /// within this period are considered dead and cleaned up. Default: 1800 (30 min).
+    /// Set 0 to disable session timers.
+    #[serde(default = "default_session_expires_secs")]
+    pub session_expires_secs: u64,
+
+    /// Maximum recording file size in megabytes. Recording stops automatically
+    /// when this limit is reached. Default: 500 (500 MB). Set 0 for no limit.
+    #[serde(default = "default_max_recording_size_mb")]
+    pub max_recording_size_mb: u64,
 }
 
 fn default_announcements_dir() -> String {
@@ -407,6 +418,14 @@ fn default_max_invite_rate() -> u32 {
     10
 }
 
+fn default_session_expires_secs() -> u64 {
+    1800
+}
+
+fn default_max_recording_size_mb() -> u64 {
+    500
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -427,6 +446,8 @@ impl Default for ConferenceSection {
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
             max_invite_rate_per_ip: default_max_invite_rate(),
+            session_expires_secs: default_session_expires_secs(),
+            max_recording_size_mb: default_max_recording_size_mb(),
         }
     }
 }

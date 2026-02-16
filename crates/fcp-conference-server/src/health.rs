@@ -815,10 +815,11 @@ async fn start_recording_handler(
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             let recording_path = format!(
-                "{}/{}-{}.wav",
+                "{}/{}-{}-{}.wav",
                 state.conference_handler.recordings_dir(),
                 room_number,
-                chrono_timestamp()
+                chrono_timestamp(),
+                uuid::Uuid::new_v4().as_simple()
             );
             match room.start_recording(&recording_path, None).await {
                 Ok(()) => {

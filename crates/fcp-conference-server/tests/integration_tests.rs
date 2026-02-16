@@ -38,6 +38,8 @@ fn test_minimal_config_defaults() {
     assert!(!config.conference.enable_srtp);
     assert_eq!(config.conference.announcements_dir, "/var/fcp/conference/announcements");
     assert_eq!(config.conference.max_wait_for_moderator_secs, 300);
+    assert_eq!(config.conference.session_expires_secs, 1800);
+    assert_eq!(config.conference.max_recording_size_mb, 500);
     assert!(!config.ai.enabled);
     assert_eq!(config.ai.model, "gpt-4o-realtime-preview");
     assert_eq!(config.ai.voice, "alloy");

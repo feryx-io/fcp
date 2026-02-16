@@ -839,6 +839,16 @@ impl SipMessageHandler {
         let ok = self.create_simple_response(request, 200, "OK");
         handle.send_final(ok).await;
 
+        // Check conference handler first — conference INVITEs don't use CallManager
+        if let Some(ref conf) = self.conference_handler {
+            if let Some(call_id_hdr) = sip_parse::header(request.headers(), "Call-ID") {
+                if let Ok(true) = conf.handle_cancel(call_id_hdr.as_str()) {
+                    debug!(call_id = %call_id_hdr, "Conference handler processed CANCEL");
+                    return Ok(());
+                }
+            }
+        }
+
         // Try to locate the related call via INVITE Call-ID and terminate it
         if let Some(call_id_hdr) = sip_parse::header(request.headers(), "Call-ID") {
             if let Some(call) = self
@@ -5376,6 +5386,14 @@ impl SipMessageHandler {
     /// Handle in-dialog UPDATE by forwarding to the opposite leg.
     async fn handle_update(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         debug!("Handling UPDATE");
+
+        // Check conference handler first — conference participants don't have B2BUA calls
+        if let Some(ref conf) = self.conference_handler {
+            if let Ok(resp) = conf.handle_update(request) {
+                return Ok(resp);
+            }
+        }
+
         let (call, is_a_leg) = self.lookup_call_for_in_dialog(request)?;
         let target_dialog = self.get_opposite_dialog(&call, is_a_leg)?;
         let mut target_dialog = target_dialog.clone();
