@@ -82,6 +82,8 @@ pub struct ConferenceCallHandler {
     /// Shared AI session manager (created once, reused for all rooms)
     ai_session_manager: Arc<AISessionManager>,
     pub ai_config: RwLock<AiSection>,
+    /// Per-source-IP INVITE rate limiter: IP → (count, window_start)
+    invite_rate: DashMap<std::net::IpAddr, (u32, Instant)>,
 }
 
 impl ConferenceCallHandler {
@@ -110,6 +112,7 @@ impl ConferenceCallHandler {
             meeting_cache: DashMap::new(),
             ai_session_manager: Arc::new(AISessionManager::new()),
             ai_config: RwLock::new(ai_config),
+            invite_rate: DashMap::new(),
         }
     }
 
@@ -628,6 +631,30 @@ impl ConferenceCallHandler {
         self.sessions.len()
     }
 
+    /// Check if a source IP has exceeded the INVITE rate limit.
+    ///
+    /// Uses a sliding window of 1 second. Returns `true` if the rate
+    /// is within limits (OK to proceed), `false` if rate exceeded.
+    fn check_invite_rate(&self, peer_ip: std::net::IpAddr, max_rate: u32) -> bool {
+        if max_rate == 0 {
+            return true; // 0 = unlimited
+        }
+        let now = Instant::now();
+        let mut entry = self.invite_rate.entry(peer_ip).or_insert((0, now));
+        let (count, window_start) = entry.value_mut();
+        if now.duration_since(*window_start) > Duration::from_secs(1) {
+            // New window
+            *count = 1;
+            *window_start = now;
+            true
+        } else if *count < max_rate {
+            *count += 1;
+            true
+        } else {
+            false // Rate exceeded
+        }
+    }
+
     /// Publish a conference event to the event bus.
     fn publish_event(&self, event: ConferenceEvent) {
         let event_bus = Arc::clone(&self.event_bus);
@@ -875,8 +902,17 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         &self,
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
-        _peer: SocketAddr,
+        peer: SocketAddr,
     ) -> Result<()> {
+        // 0. Per-IP INVITE rate limiting
+        let max_rate = self.conference_config.read().max_invite_rate_per_ip;
+        if !self.check_invite_rate(peer.ip(), max_rate) {
+            warn!(peer = %peer.ip(), max_rate, "INVITE rate limit exceeded");
+            let reject = UserAgentServer::create_response(request, 486, "Busy Here");
+            handle.send_final(reject).await;
+            return Ok(());
+        }
+
         // 1. Extract room number
         let room_number = extract_room_number(request)
             .context("Failed to extract room number from Request-URI")?;
@@ -1587,25 +1623,37 @@ pub fn extract_room_number(request: &sip_core::Request) -> Option<String> {
     let uri = request.uri();
     let uri_str = uri.to_string();
 
-    // SIP URI: extract user part from sip:user@host
-    if let Some(rest) = uri_str.strip_prefix("sip:") {
-        if let Some(user) = rest.split('@').next() {
-            if !user.is_empty() {
-                return Some(user.to_string());
-            }
-        }
-    }
-
-    // tel URI: extract phone number from tel:+number or tel:number
-    // Strip parameters (e.g. tel:+1234;phone-context=example.com)
-    if let Some(rest) = uri_str.strip_prefix("tel:") {
+    let candidate = if let Some(rest) = uri_str.strip_prefix("sip:") {
+        // SIP URI: extract user part from sip:user@host
+        rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+    } else if let Some(rest) = uri_str.strip_prefix("tel:") {
+        // tel URI: extract phone number from tel:+number or tel:number
+        // Strip parameters (e.g. tel:+1234;phone-context=example.com)
         let number = rest.split(';').next().unwrap_or(rest).trim();
         if !number.is_empty() {
-            return Some(number.to_string());
+            Some(number.to_string())
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
-    None
+    candidate.filter(|r| validate_room_number(r))
+}
+
+/// Validate a room number string for safe use.
+///
+/// Rules:
+/// - Max 64 characters
+/// - Only alphanumeric, `-`, `_`, `.`, `+`, `*`, `#`
+/// - No control characters, no whitespace, no path separators
+pub fn validate_room_number(room: &str) -> bool {
+    !room.is_empty()
+        && room.len() <= 64
+        && room
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.+*#".contains(c))
 }
 
 /// Extract tenant ID from the SIP request.
@@ -1818,6 +1866,28 @@ mod tests {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         assert_eq!(number3, Some("8001"));
+    }
+
+    #[test]
+    fn test_validate_room_number() {
+        // Valid room numbers
+        assert!(validate_room_number("8001"));
+        assert!(validate_room_number("room-1"));
+        assert!(validate_room_number("conf_room.2"));
+        assert!(validate_room_number("+18005551234"));
+        assert!(validate_room_number("*67"));
+        assert!(validate_room_number("#100"));
+        assert!(validate_room_number("a")); // min length 1
+
+        // Invalid room numbers
+        assert!(!validate_room_number("")); // empty
+        assert!(!validate_room_number("room 1")); // space
+        assert!(!validate_room_number("room/1")); // path separator
+        assert!(!validate_room_number("room\\1")); // backslash
+        assert!(!validate_room_number("room\x001")); // control char
+        assert!(!validate_room_number("room;drop")); // semicolon
+        assert!(!validate_room_number(&"x".repeat(65))); // too long
+        assert!(validate_room_number(&"x".repeat(64))); // exactly max
     }
 
     #[test]

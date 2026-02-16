@@ -374,20 +374,20 @@ async fn main() -> Result<()> {
         event_subscriber: Arc::clone(&event_bus),
     });
     let http_bind = config.http.bind_address;
-    tokio::spawn(async move {
+    tokio::spawn(supervise_task("http-server", async move {
         if let Err(e) = health::run_http_server(http_bind, conf_state).await {
             tracing::error!(%e, "HTTP API server exited");
         }
-    });
+    }));
 
     // 22. Spawn recording cleanup task (if retention configured)
     if let Some(days) = config.conference.recording_retention_days {
         if days > 0 {
             let recordings_dir = config.conference.recordings_dir.clone();
             let retention_days = days;
-            tokio::spawn(async move {
+            tokio::spawn(supervise_task("recording-cleanup", async move {
                 run_recording_cleanup(recordings_dir, retention_days).await;
-            });
+            }));
             info!(
                 retention_days = days,
                 "Recording cleanup task started"
@@ -404,9 +404,9 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from("fcp-conference-server.toml"));
         if config_path.exists() {
             let handler_ref = Arc::clone(&conference_handler);
-            tokio::spawn(async move {
+            tokio::spawn(supervise_task("config-watcher", async move {
                 run_config_watcher(config_path, handler_ref).await;
-            });
+            }));
             info!("Config hot-reload watcher started");
         }
     }
@@ -415,11 +415,11 @@ async fn main() -> Result<()> {
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);
-        tokio::spawn(async move {
+        tokio::spawn(supervise_task("event-forwarder", async move {
             if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
                 tracing::error!(%e, "Event forwarder task failed");
             }
-        });
+        }));
         info!(
             events_url = %config.events.server_url.as_deref().unwrap_or(""),
             "Event forwarding enabled"
@@ -450,9 +450,21 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 25. Graceful shutdown
-    info!("Shutting down conference sessions...");
-    conference_handler.shutdown().await;
+    // 25. Graceful shutdown with timeout
+    let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
+    info!(timeout_secs = config.service.shutdown_timeout_secs, "Shutting down conference sessions...");
+    if shutdown_timeout.is_zero() {
+        conference_handler.shutdown().await;
+    } else {
+        match tokio::time::timeout(shutdown_timeout, conference_handler.shutdown()).await {
+            Ok(()) => info!("All conference sessions shut down cleanly"),
+            Err(_) => warn!(
+                timeout_secs = config.service.shutdown_timeout_secs,
+                remaining_sessions = conference_handler.session_count(),
+                "Shutdown timeout reached, force-closing remaining sessions"
+            ),
+        }
+    }
 
     if let Some(tx) = trunk_shutdown_tx {
         let _ = tx.send(true);
@@ -714,6 +726,8 @@ async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
 }
 
 async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, AtomicBool};
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -726,24 +740,72 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
 
     info!(url = %events_url, "Event forwarder started");
 
-    let mut failed_events: u64 = 0;
+    // Circuit breaker state (shared with spawned delivery tasks)
+    let consecutive_failures = Arc::new(AtomicU64::new(0));
+    let circuit_open = Arc::new(AtomicBool::new(false));
+    let circuit_opened_at = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+    const FAILURE_THRESHOLD: u64 = 5;
+    const COOLDOWN: Duration = Duration::from_secs(30);
+
     let mut delivered_events: u64 = 0;
+    let mut dropped_events: u64 = 0;
 
     loop {
         match stream.next().await {
             Some(event) => {
+                // Circuit breaker check
+                if circuit_open.load(std::sync::atomic::Ordering::Relaxed) {
+                    let opened = *circuit_opened_at.lock().await;
+                    if opened.elapsed() < COOLDOWN {
+                        // Circuit open — drop event silently
+                        dropped_events += 1;
+                        if dropped_events % 100 == 1 {
+                            warn!(
+                                dropped = dropped_events,
+                                cooldown_remaining_secs = (COOLDOWN - opened.elapsed()).as_secs(),
+                                "Circuit breaker OPEN — dropping events"
+                            );
+                        }
+                        continue;
+                    }
+                    // Cooldown expired — transition to half-open (allow one probe)
+                    info!("Circuit breaker half-open, probing...");
+                    circuit_open.store(false, std::sync::atomic::Ordering::Relaxed);
+                    consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+                }
+
                 tracing::debug!(?event, "Forwarding event to events server");
                 let client = client.clone();
                 let url = events_url.to_string();
+                let failures = Arc::clone(&consecutive_failures);
+                let cb_open = Arc::clone(&circuit_open);
+                let cb_opened_at = Arc::clone(&circuit_opened_at);
                 tokio::spawn(async move {
-                    forward_event_with_retry(&client, &url, &event).await;
+                    if forward_event_with_retry(&client, &url, &event).await {
+                        // Success — reset failure counter
+                        failures.store(0, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        // Failure — increment and maybe trip circuit
+                        let prev = failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if prev + 1 >= FAILURE_THRESHOLD
+                            && !cb_open.load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            cb_open.store(true, std::sync::atomic::Ordering::Relaxed);
+                            *cb_opened_at.lock().await = Instant::now();
+                            tracing::error!(
+                                consecutive_failures = prev + 1,
+                                cooldown_secs = COOLDOWN.as_secs(),
+                                "Circuit breaker OPENED — event forwarding paused"
+                            );
+                        }
+                    }
                 });
                 delivered_events += 1;
             }
             None => {
                 warn!(
                     delivered = delivered_events,
-                    failed = failed_events,
+                    dropped = dropped_events,
                     "Event stream ended unexpectedly, resubscribing..."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -753,7 +815,6 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                         info!("Resubscribed to event bus");
                     }
                     Err(e) => {
-                        failed_events += 1;
                         warn!(%e, "Failed to resubscribe to event bus");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
@@ -764,11 +825,12 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
 }
 
 /// Forward a single event with exponential backoff retry (max 3 attempts).
+/// Returns `true` on success, `false` if all retries exhausted.
 async fn forward_event_with_retry(
     client: &reqwest::Client,
     url: &str,
     event: &fcp_events::PlatformEvent,
-) {
+) -> bool {
     let max_retries = 3u32;
     let mut delay = Duration::from_millis(200);
 
@@ -776,7 +838,7 @@ async fn forward_event_with_retry(
         match client.post(url).json(event).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    return; // Success
+                    return true;
                 }
                 tracing::warn!(
                     status = %resp.status(),
@@ -801,6 +863,26 @@ async fn forward_event_with_retry(
     }
 
     tracing::error!("Event dropped after {} failed attempts", max_retries);
+    false
+}
+
+/// Supervisor wrapper for long-running background tasks.
+///
+/// If the inner future panics, catches the panic, logs it, and does NOT restart
+/// (the task is considered dead). This prevents silent task disappearance.
+async fn supervise_task(name: &'static str, task: impl std::future::Future<Output = ()> + Send + 'static) {
+    match tokio::task::spawn(task).await {
+        Ok(()) => {
+            warn!(task = name, "Background task exited normally");
+        }
+        Err(e) => {
+            if e.is_panic() {
+                tracing::error!(task = name, "Background task PANICKED: {}", e);
+            } else {
+                tracing::error!(task = name, "Background task cancelled: {}", e);
+            }
+        }
+    }
 }
 
 /// Watch config file for changes and hot-reload conference/AI settings.

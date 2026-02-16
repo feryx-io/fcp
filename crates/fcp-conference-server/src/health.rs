@@ -348,6 +348,16 @@ async fn create_meeting_handler(
 
     let tenant_id = extract_tenant_id(&headers);
 
+    // Validate room number
+    if !crate::conference_handler::validate_room_number(&payload.room_number) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid room number: must be 1-64 chars, alphanumeric or -_.+*#"
+            })),
+        );
+    }
+
     // Check for duplicate room number
     match state
         .storage

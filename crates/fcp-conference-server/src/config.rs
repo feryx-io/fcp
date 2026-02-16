@@ -49,10 +49,19 @@ pub struct ServiceSection {
 
     #[serde(default = "default_node_id")]
     pub node_id: String,
+
+    /// Maximum time (seconds) to wait for graceful shutdown before force-closing sessions.
+    /// Default: 30. Set 0 for unlimited (not recommended).
+    #[serde(default = "default_shutdown_timeout_secs")]
+    pub shutdown_timeout_secs: u64,
 }
 
 fn default_service_type() -> String {
     "conference".to_string()
+}
+
+fn default_shutdown_timeout_secs() -> u64 {
+    30
 }
 
 fn default_node_id() -> String {
@@ -64,6 +73,7 @@ impl Default for ServiceSection {
         Self {
             service_type: default_service_type(),
             node_id: default_node_id(),
+            shutdown_timeout_secs: default_shutdown_timeout_secs(),
         }
     }
 }
@@ -346,6 +356,11 @@ pub struct ConferenceSection {
     /// Default: 300 (5 minutes). Set 0 for unlimited.
     #[serde(default = "default_max_wait_for_moderator_secs")]
     pub max_wait_for_moderator_secs: u64,
+
+    /// Maximum SIP INVITE rate per source IP per second. 0 = unlimited.
+    /// Prevents brute-force PIN attacks and INVITE floods. Default: 10.
+    #[serde(default = "default_max_invite_rate")]
+    pub max_invite_rate_per_ip: u32,
 }
 
 fn default_announcements_dir() -> String {
@@ -388,6 +403,10 @@ fn default_max_wait_for_moderator_secs() -> u64 {
     300
 }
 
+fn default_max_invite_rate() -> u32 {
+    10
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -407,6 +426,7 @@ impl Default for ConferenceSection {
             enable_srtp: false,
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
+            max_invite_rate_per_ip: default_max_invite_rate(),
         }
     }
 }
