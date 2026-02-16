@@ -414,3 +414,91 @@ announcements_dir = "/opt/sounds"
     );
     assert_eq!(config.conference.announcements_dir, "/opt/sounds");
 }
+
+// =========================================================================
+// Config Validation Tests
+// =========================================================================
+
+#[test]
+fn test_validate_default_config_passes() {
+    let config = parse_config("");
+    assert!(fcp_conference_server::validate_config(&config).is_ok());
+}
+
+#[test]
+fn test_validate_invalid_rtp_port_range() {
+    let config = parse_config(
+        r#"
+[media]
+rtp_port_start = 30000
+rtp_port_end = 20000
+"#,
+    );
+    let result = fcp_conference_server::validate_config(&config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("rtp_port_start"));
+}
+
+#[test]
+fn test_validate_equal_rtp_ports() {
+    let config = parse_config(
+        r#"
+[media]
+rtp_port_start = 20000
+rtp_port_end = 20000
+"#,
+    );
+    let result = fcp_conference_server::validate_config(&config);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_validate_invalid_sample_rate() {
+    let config = parse_config(
+        r#"
+[conference]
+sample_rate = 44100
+"#,
+    );
+    let result = fcp_conference_server::validate_config(&config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("sample_rate"));
+}
+
+#[test]
+fn test_validate_unknown_codec() {
+    let config = parse_config(
+        r#"
+[conference]
+allowed_codecs = ["PCMU", "INVALID_CODEC"]
+"#,
+    );
+    let result = fcp_conference_server::validate_config(&config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("INVALID_CODEC"));
+}
+
+#[test]
+fn test_validate_unknown_storage_backend() {
+    let config = parse_config(
+        r#"
+[storage]
+backend = "cassandra"
+"#,
+    );
+    let result = fcp_conference_server::validate_config(&config);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("cassandra"));
+}
+
+#[test]
+fn test_validate_valid_16khz_config() {
+    let config = parse_config(
+        r#"
+[conference]
+sample_rate = 16000
+frame_size = 320
+"#,
+    );
+    assert!(fcp_conference_server::validate_config(&config).is_ok());
+}

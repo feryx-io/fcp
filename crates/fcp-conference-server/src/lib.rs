@@ -4,4 +4,4 @@
 
 pub mod config;
 
-pub use config::{load_config, ConferenceServerConfig};
+pub use config::{load_config, validate_config, ConferenceServerConfig};

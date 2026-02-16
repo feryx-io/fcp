@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     middleware,
     response::{
@@ -12,6 +12,7 @@ use axum::{
 };
 use fcp_api_core::auth::{AuthConfig, validate_bearer_token};
 use fcp_b2bua_core::CallManager;
+use fcp_core::storage::ConferenceStore;
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{
     ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
@@ -189,7 +190,8 @@ pub async fn run_http_server(
 
     let app = public_router()
         .merge(protected)
-        .with_state(state);
+        .with_state(state)
+        .layer(DefaultBodyLimit::max(64 * 1024));
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
@@ -201,11 +203,40 @@ pub async fn run_http_server(
 // Health & Status
 // =========================================================================
 
-async fn health_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "status": "healthy",
-        "service": "fcp-conference"
-    }))
+async fn health_handler(
+    State(state): State<Arc<ConferenceState>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let mut checks = serde_json::Map::new();
+    let mut healthy = true;
+
+    // Snapshot config values before any awaits
+    let rec_dir = state.conference_handler.conference_config.read().recordings_dir.clone();
+
+    // Check database connectivity (use nil tenant for a lightweight probe)
+    let db_ok = state.storage.list_meetings(&TenantId::nil()).await.is_ok();
+    checks.insert("database".into(), serde_json::json!(if db_ok { "ok" } else { "error" }));
+    if !db_ok {
+        healthy = false;
+    }
+
+    // Check conference bridge status
+    let sessions = state.conference_handler.session_count();
+    let rooms = state.bridge.list_rooms();
+    checks.insert("active_rooms".into(), serde_json::json!(rooms.len()));
+    checks.insert("active_sessions".into(), serde_json::json!(sessions));
+
+    // Check recordings directory is accessible
+    let disk_ok = tokio::fs::metadata(&rec_dir).await.is_ok();
+    checks.insert("recordings_dir".into(), serde_json::json!(if disk_ok { "ok" } else { "missing" }));
+
+    let status = if healthy { "healthy" } else { "degraded" };
+    let code = if healthy { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+
+    (code, Json(serde_json::json!({
+        "status": status,
+        "service": "fcp-conference",
+        "checks": checks,
+    })))
 }
 
 async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde_json::Value> {
@@ -1118,21 +1149,48 @@ async fn list_recordings_handler(
     )
 }
 
+/// Resolve a recording filename to a safe, canonicalized path within recordings_dir.
+/// Returns None if the path escapes the recordings directory.
+fn safe_recording_path(recordings_dir: &str, filename: &str) -> Option<std::path::PathBuf> {
+    // Reject filenames with path separators, parent traversals, or null bytes
+    if filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains("..")
+        || filename.contains('\0')
+        || filename.is_empty()
+    {
+        return None;
+    }
+
+    let base = std::path::Path::new(recordings_dir);
+    let candidate = base.join(filename);
+
+    // Canonicalize both paths (resolves symlinks) and verify containment
+    let base_canon = base.canonicalize().ok()?;
+    let candidate_canon = candidate.canonicalize().ok()?;
+
+    if candidate_canon.starts_with(&base_canon) {
+        Some(candidate_canon)
+    } else {
+        None
+    }
+}
+
 async fn download_recording_handler(
     State(state): State<Arc<ConferenceState>>,
     Path(filename): Path<String>,
 ) -> impl IntoResponse {
-    // Prevent path traversal
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            [("content-type", "application/json")],
-            Body::from("{\"error\":\"Invalid filename\"}"),
-        );
-    }
-
     let recordings_dir = state.conference_handler.recordings_dir();
-    let path = std::path::Path::new(&recordings_dir).join(&filename);
+    let path = match safe_recording_path(&recordings_dir, &filename) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                [("content-type", "application/json")],
+                Body::from("{\"error\":\"Invalid filename\"}"),
+            );
+        }
+    };
 
     if !path.exists() {
         return (
@@ -1165,16 +1223,16 @@ async fn delete_recording_handler(
     State(state): State<Arc<ConferenceState>>,
     Path(filename): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // Prevent path traversal
-    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid filename" })),
-        );
-    }
-
     let recordings_dir = state.conference_handler.recordings_dir();
-    let path = std::path::Path::new(&recordings_dir).join(&filename);
+    let path = match safe_recording_path(&recordings_dir, &filename) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "Invalid filename" })),
+            );
+        }
+    };
 
     if !path.exists() {
         return (
@@ -1247,7 +1305,7 @@ async fn sse_events_handler(
 struct RateLimiter {
     max_rps: u32,
     counter: AtomicU64,
-    window_start: std::sync::Mutex<Instant>,
+    window_start: parking_lot::Mutex<Instant>,
 }
 
 impl RateLimiter {
@@ -1255,12 +1313,12 @@ impl RateLimiter {
         Self {
             max_rps,
             counter: AtomicU64::new(0),
-            window_start: std::sync::Mutex::new(Instant::now()),
+            window_start: parking_lot::Mutex::new(Instant::now()),
         }
     }
 
     fn check(&self) -> bool {
-        let mut start = self.window_start.lock().unwrap();
+        let mut start = self.window_start.lock();
         if start.elapsed() >= std::time::Duration::from_secs(1) {
             *start = Instant::now();
             self.counter.store(1, Ordering::Relaxed);

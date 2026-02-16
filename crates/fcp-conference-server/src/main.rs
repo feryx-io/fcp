@@ -90,6 +90,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    // 2b. Validate configuration
+    config::validate_config(&config)?;
+
     // 3. Initialize tracing
     init_tracing(&config);
 

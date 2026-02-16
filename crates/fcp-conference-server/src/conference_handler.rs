@@ -30,6 +30,9 @@ use tracing::{debug, info, warn};
 use crate::audio_bridge::{self, AudioStats};
 use crate::config::{AiSection, ConferenceSection};
 
+/// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
+const UNKNOWN_REMOTE: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+
 /// Tracks a single participant's connection to a conference room.
 pub struct ParticipantSession {
     pub call_id: String,
@@ -742,6 +745,18 @@ impl ConferenceCallHandler {
         }
     }
 
+    /// Parse the local SIP URI configured for this handler.
+    fn parse_local_sip_uri(&self) -> SipUri {
+        Uri::parse(&self.local_uri)
+            .ok()
+            .and_then(|u| u.as_sip().cloned())
+            .unwrap_or_else(|| {
+                // "sip:conference@localhost" is a valid literal; this cannot fail
+                SipUri::parse("sip:conference@localhost")
+                    .expect("static SIP URI literal")
+            })
+    }
+
     /// Check whether PIN authentication is required for a meeting.
     fn meeting_requires_pin(meeting: &Meeting) -> bool {
         meeting.require_guest_pin
@@ -918,10 +933,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         );
 
         // 5. Send 180 Ringing
-        let local_sip_uri = Uri::parse(&self.local_uri)
-            .ok()
-            .and_then(|u| u.as_sip().cloned())
-            .unwrap_or_else(|| SipUri::parse("sip:conference@localhost").unwrap());
+        let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri.clone());
         let ringing = uas.create_ringing(request);
         handle.send_provisional(ringing).await;
@@ -1260,7 +1272,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
                 // Store session with the wait handle
                 let remote_addr = parse_remote_rtp_addr(sdp_offer)
-                    .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
+                    .unwrap_or(UNKNOWN_REMOTE);
                 self.sessions.insert(
                     call_id.clone(),
                     ParticipantSession {
@@ -1391,7 +1403,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 19. Store session
         let remote_addr = parse_remote_rtp_addr(sdp_offer)
-            .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
+            .unwrap_or(UNKNOWN_REMOTE);
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -1524,10 +1536,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         );
 
         // Build 200 OK response with SDP answer
-        let local_sip_uri = Uri::parse(&self.local_uri)
-            .ok()
-            .and_then(|u| u.as_sip().cloned())
-            .unwrap_or_else(|| SipUri::parse("sip:conference@localhost").unwrap());
+        let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
         let response = uas
             .create_ok(request, Some(&sdp_answer))

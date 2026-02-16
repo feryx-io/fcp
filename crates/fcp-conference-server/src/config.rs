@@ -144,7 +144,7 @@ pub struct HttpSection {
 }
 
 fn default_http_bind() -> SocketAddr {
-    "0.0.0.0:8090".parse().unwrap()
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 8090)
 }
 
 impl Default for HttpSection {
@@ -399,6 +399,82 @@ impl Default for ConferenceSection {
             announcements_dir: default_announcements_dir(),
         }
     }
+}
+
+/// Validate configuration for logical consistency.
+/// Called at startup to fail fast on misconfigured values.
+pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
+    // RTP port range
+    if config.media.rtp_port_start >= config.media.rtp_port_end {
+        anyhow::bail!(
+            "media.rtp_port_start ({}) must be less than rtp_port_end ({})",
+            config.media.rtp_port_start,
+            config.media.rtp_port_end
+        );
+    }
+
+    // SIP bind addresses must be parseable as SocketAddr
+    config
+        .sip
+        .udp_bind
+        .parse::<std::net::SocketAddr>()
+        .with_context(|| format!("Invalid sip.udp_bind: '{}'", config.sip.udp_bind))?;
+    config
+        .sip
+        .tcp_bind
+        .parse::<std::net::SocketAddr>()
+        .with_context(|| format!("Invalid sip.tcp_bind: '{}'", config.sip.tcp_bind))?;
+
+    // Sample rate must be a standard telephony rate
+    match config.conference.sample_rate {
+        8000 | 16000 | 32000 | 48000 => {}
+        other => anyhow::bail!(
+            "conference.sample_rate {} is not a supported rate (8000, 16000, 32000, 48000)",
+            other
+        ),
+    }
+
+    // Frame size should be consistent with sample rate (expect 20ms frames)
+    let expected_frame_size = (config.conference.sample_rate / 50) as usize; // 20ms
+    if config.conference.frame_size != expected_frame_size {
+        tracing::warn!(
+            configured = config.conference.frame_size,
+            expected = expected_frame_size,
+            sample_rate = config.conference.sample_rate,
+            "conference.frame_size does not match 20ms at configured sample_rate"
+        );
+    }
+
+    // Allowed codecs (if set) must be recognized names
+    if let Some(ref codecs) = config.conference.allowed_codecs {
+        let known = ["PCMU", "PCMA", "G722", "G729", "OPUS", "L16"];
+        for codec in codecs {
+            let upper = codec.to_uppercase();
+            if !known.contains(&upper.as_str()) {
+                anyhow::bail!(
+                    "conference.allowed_codecs: unknown codec '{}' (known: {:?})",
+                    codec,
+                    known
+                );
+            }
+        }
+    }
+
+    // Auth enabled requires a token
+    if config.http.auth_enabled && config.http.auth_token.is_none() {
+        tracing::warn!("http.auth_enabled is true but no auth_token is configured");
+    }
+
+    // Storage backend must be recognized
+    match config.storage.backend.as_str() {
+        "sqlite" | "postgres" | "mysql" | "mongodb" => {}
+        other => anyhow::bail!(
+            "storage.backend '{}' is not supported (sqlite, postgres, mysql, mongodb)",
+            other
+        ),
+    }
+
+    Ok(())
 }
 
 /// Load configuration from file or use defaults.
