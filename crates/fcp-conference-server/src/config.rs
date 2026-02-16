@@ -137,6 +137,10 @@ pub struct HttpSection {
 
     /// Bearer token for API authentication (required when auth_enabled = true)
     pub auth_token: Option<String>,
+
+    /// Rate limit for API requests per second. None or 0 = unlimited.
+    #[serde(default)]
+    pub rate_limit_rps: Option<u32>,
 }
 
 fn default_http_bind() -> SocketAddr {
@@ -149,6 +153,7 @@ impl Default for HttpSection {
             bind_address: default_http_bind(),
             auth_enabled: false,
             auth_token: None,
+            rate_limit_rps: None,
         }
     }
 }

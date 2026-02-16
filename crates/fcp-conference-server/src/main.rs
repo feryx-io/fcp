@@ -366,6 +366,8 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         auth_enabled: config.http.auth_enabled,
         auth_token: config.http.auth_token.clone(),
+        rate_limit_rps: config.http.rate_limit_rps,
+        event_subscriber: Arc::clone(&event_bus),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {

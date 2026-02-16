@@ -302,9 +302,29 @@ fn execute_dtmf_command(
             }
             false
         }
-        DtmfCommand::EndConference | DtmfCommand::KickParticipant(_) => {
-            // Complex commands — log only for now
-            debug!(participant = %participant_id, command = ?command, "DTMF command not implemented yet");
+        DtmfCommand::EndConference => {
+            if is_host {
+                info!(participant = %participant_id, "DTMF host: ending conference");
+                room.lock();
+                // Remove all participants — their audio bridges will detect
+                // the mix error and stop, triggering cleanup in the handler.
+                for pid in room.participants() {
+                    let _ = room.remove_participant(&pid);
+                }
+            }
+            true // Host leaves too
+        }
+        DtmfCommand::KickParticipant(participant_num) => {
+            if is_host {
+                let participants = room.participants();
+                if participant_num > 0 && participant_num <= participants.len() {
+                    let target = &participants[participant_num - 1]; // 1-indexed
+                    info!(participant = %participant_id, target = %target, num = participant_num, "DTMF host: kicking participant");
+                    let _ = room.remove_participant(target);
+                } else {
+                    debug!(participant = %participant_id, num = participant_num, "DTMF kick: invalid participant number");
+                }
+            }
             false
         }
         DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin => {

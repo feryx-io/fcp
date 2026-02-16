@@ -598,6 +598,11 @@ impl ConferenceCallHandler {
         self.conference_config.read().recordings_dir.clone()
     }
 
+    /// Get the number of active SIP sessions.
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
     /// Publish a conference event to the event bus.
     fn publish_event(&self, event: ConferenceEvent) {
         let event_bus = Arc::clone(&self.event_bus);

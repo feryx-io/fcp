@@ -1,17 +1,27 @@
 use axum::{
+    body::Body,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     middleware,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{delete, get, post},
     Json, Router,
 };
 use fcp_api_core::auth::{AuthConfig, validate_bearer_token};
 use fcp_b2bua_core::CallManager;
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
-use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
+use fcp_events::{
+    ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
+};
 use forge_conference::ConferenceBridge;
+use futures::stream::Stream;
 use serde::Deserialize;
+use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 use tracing::{info, warn};
@@ -28,11 +38,15 @@ pub struct ConferenceState {
     pub start_time: Instant,
     pub auth_enabled: bool,
     pub auth_token: Option<String>,
+    pub rate_limit_rps: Option<u32>,
+    pub event_subscriber: Arc<InMemoryEventBus>,
 }
 
 /// Public routes (no auth required).
 fn public_router() -> Router<Arc<ConferenceState>> {
-    Router::new().route("/health", get(health_handler))
+    Router::new()
+        .route("/health", get(health_handler))
+        .route("/metrics", get(metrics_handler))
 }
 
 /// Protected routes (auth required when enabled).
@@ -131,9 +145,14 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/{room_number}/ai/status",
             get(ai_status_handler),
         )
+        // Server-Sent Events stream
+        .route("/events", get(sse_events_handler))
         // Recording management
         .route("/recordings", get(list_recordings_handler))
-        .route("/recordings/{filename}", delete(delete_recording_handler))
+        .route(
+            "/recordings/{filename}",
+            get(download_recording_handler).delete(delete_recording_handler),
+        )
 }
 
 /// Run the HTTP API server.
@@ -141,7 +160,7 @@ pub async fn run_http_server(
     bind_addr: SocketAddr,
     state: Arc<ConferenceState>,
 ) -> anyhow::Result<()> {
-    let protected = if state.auth_enabled {
+    let mut protected = if state.auth_enabled {
         if let Some(ref token) = state.auth_token {
             let auth_config = AuthConfig::new(token.clone());
             info!("HTTP API authentication enabled");
@@ -156,6 +175,17 @@ pub async fn run_http_server(
     } else {
         protected_router()
     };
+
+    if let Some(rps) = state.rate_limit_rps {
+        if rps > 0 {
+            info!(rps = rps, "HTTP API rate limiting enabled");
+            let rate_limiter = Arc::new(RateLimiter::new(rps));
+            protected = protected.layer(middleware::from_fn(move |req, next| {
+                let limiter = Arc::clone(&rate_limiter);
+                rate_limit_middleware(limiter, req, next)
+            }));
+        }
+    }
 
     let app = public_router()
         .merge(protected)
@@ -195,6 +225,39 @@ async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde
         "active_rooms": active_rooms.len(),
         "total_participants": total_participants,
     }))
+}
+
+async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl IntoResponse {
+    let uptime = state.start_time.elapsed();
+    let call_stats = state.call_manager.stats();
+    let active_rooms = state.conference_handler.active_rooms();
+    let total_participants: usize = active_rooms.iter().map(|(_, count)| count).sum();
+    let active_sessions = state.conference_handler.session_count();
+
+    let body = format!(
+        "# HELP fcp_conference_active_rooms Number of active conference rooms\n\
+         # TYPE fcp_conference_active_rooms gauge\n\
+         fcp_conference_active_rooms {}\n\
+         # HELP fcp_conference_active_participants Total participants across all rooms\n\
+         # TYPE fcp_conference_active_participants gauge\n\
+         fcp_conference_active_participants {}\n\
+         # HELP fcp_conference_active_sessions Number of active SIP sessions\n\
+         # TYPE fcp_conference_active_sessions gauge\n\
+         fcp_conference_active_sessions {}\n\
+         # HELP fcp_conference_calls_total Total calls since startup\n\
+         # TYPE fcp_conference_calls_total counter\n\
+         fcp_conference_calls_total {}\n\
+         # HELP fcp_conference_uptime_seconds Server uptime in seconds\n\
+         # TYPE fcp_conference_uptime_seconds gauge\n\
+         fcp_conference_uptime_seconds {}\n",
+        active_rooms.len(),
+        total_participants,
+        active_sessions,
+        call_stats.total,
+        uptime.as_secs(),
+    );
+
+    (StatusCode::OK, [("content-type", "text/plain; version=0.0.4; charset=utf-8")], body)
 }
 
 // =========================================================================
@@ -1046,6 +1109,49 @@ async fn list_recordings_handler(
     )
 }
 
+async fn download_recording_handler(
+    State(state): State<Arc<ConferenceState>>,
+    Path(filename): Path<String>,
+) -> impl IntoResponse {
+    // Prevent path traversal
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            [("content-type", "application/json")],
+            Body::from("{\"error\":\"Invalid filename\"}"),
+        );
+    }
+
+    let recordings_dir = state.conference_handler.recordings_dir();
+    let path = std::path::Path::new(&recordings_dir).join(&filename);
+
+    if !path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            Body::from("{\"error\":\"Recording not found\"}"),
+        );
+    }
+
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("content-type", "application/json")],
+                Body::from(format!("{{\"error\":\"Failed to open file: {}\"}}", e)),
+            );
+        }
+    };
+
+    let stream = tokio_util::io::ReaderStream::new(file);
+    (
+        StatusCode::OK,
+        [("content-type", "audio/wav")],
+        Body::from_stream(stream),
+    )
+}
+
 async fn delete_recording_handler(
     State(state): State<Arc<ConferenceState>>,
     Path(filename): Path<String>,
@@ -1081,6 +1187,91 @@ async fn delete_recording_handler(
             Json(serde_json::json!({ "error": format!("Failed to delete: {}", e) })),
         ),
     }
+}
+
+// =========================================================================
+// SSE Event Streaming
+// =========================================================================
+
+async fn sse_events_handler(
+    State(state): State<Arc<ConferenceState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let event_bus = Arc::clone(&state.event_subscriber);
+
+    let stream = async_stream::stream! {
+        let mut event_stream = match event_bus.subscribe(EventFilter::new()).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "Failed to subscribe for SSE stream");
+                return;
+            }
+        };
+
+        loop {
+            match event_stream.next().await {
+                Some(event) => {
+                    let data = match serde_json::to_string(&event) {
+                        Ok(json) => json,
+                        Err(_) => continue,
+                    };
+                    yield Ok(Event::default().data(data));
+                }
+                None => {
+                    // Stream ended, try to resubscribe
+                    match event_bus.subscribe(EventFilter::new()).await {
+                        Ok(s) => event_stream = s,
+                        Err(_) => return,
+                    }
+                }
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// =========================================================================
+// Rate Limiting
+// =========================================================================
+
+/// Simple token-bucket rate limiter using atomic counters.
+struct RateLimiter {
+    max_rps: u32,
+    counter: AtomicU64,
+    window_start: std::sync::Mutex<Instant>,
+}
+
+impl RateLimiter {
+    fn new(max_rps: u32) -> Self {
+        Self {
+            max_rps,
+            counter: AtomicU64::new(0),
+            window_start: std::sync::Mutex::new(Instant::now()),
+        }
+    }
+
+    fn check(&self) -> bool {
+        let mut start = self.window_start.lock().unwrap();
+        if start.elapsed() >= std::time::Duration::from_secs(1) {
+            *start = Instant::now();
+            self.counter.store(1, Ordering::Relaxed);
+            true
+        } else {
+            let count = self.counter.fetch_add(1, Ordering::Relaxed);
+            count < self.max_rps as u64
+        }
+    }
+}
+
+async fn rate_limit_middleware(
+    limiter: Arc<RateLimiter>,
+    req: axum::http::Request<Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !limiter.check() {
+        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
+    }
+    next.run(req).await
 }
 
 // =========================================================================

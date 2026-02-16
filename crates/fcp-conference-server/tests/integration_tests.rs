@@ -356,3 +356,17 @@ auth_token = "my-secret-token"
     assert!(config.http.auth_enabled);
     assert_eq!(config.http.auth_token.as_deref(), Some("my-secret-token"));
 }
+
+#[test]
+fn test_rate_limit_config() {
+    let config = parse_config("");
+    assert!(config.http.rate_limit_rps.is_none());
+
+    let config = parse_config(
+        r#"
+[http]
+rate_limit_rps = 100
+"#,
+    );
+    assert_eq!(config.http.rate_limit_rps, Some(100));
+}
