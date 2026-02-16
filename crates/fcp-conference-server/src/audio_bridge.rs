@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, info_span, trace, warn, Instrument};
 
 /// Audio quality statistics tracked per participant.
 pub struct AudioStats {
@@ -59,6 +59,14 @@ pub async fn run_audio_bridge(
     stats: Arc<AudioStats>,
     srtp_context: Option<Arc<RwLock<SrtpContext>>>,
 ) {
+    let span = info_span!(
+        "audio_bridge",
+        participant = %participant_id,
+        room = %room.id(),
+        codec = %encoder.name(),
+        srtp = srtp_context.is_some(),
+    );
+    async move {
     let mut seq: u16 = rand::random();
     let ssrc: u32 = rand::random();
     let mut timestamp: u32 = 0;
@@ -73,18 +81,13 @@ pub async fn run_audio_bridge(
     };
     let te_payload_type = te_pt.unwrap_or(101);
 
-    let srtp_enabled = srtp_context.is_some();
-
-    debug!(
-        participant = %participant_id,
-        room = room.id(),
+    info!(
         frame_size = frame_size,
         payload_type = payload_type,
-        codec = encoder.name(),
         jitter_buffer_ms = jitter_buffer_ms,
         te_pt = ?te_pt,
         dtmf_enabled = dtmf_handler.is_some(),
-        srtp = srtp_enabled,
+        is_host = is_host,
         "Audio bridge started"
     );
 
@@ -252,10 +255,17 @@ pub async fn run_audio_bridge(
         handler.clear_participant(&participant_id);
     }
 
-    debug!(
-        participant = %participant_id,
+    let rx = stats.packets_received.load(Ordering::Relaxed);
+    let tx = stats.packets_sent.load(Ordering::Relaxed);
+    let errs = stats.decode_errors.load(Ordering::Relaxed) + stats.encode_errors.load(Ordering::Relaxed);
+    info!(
+        packets_rx = rx,
+        packets_tx = tx,
+        errors = errs,
+        dtmf = stats.dtmf_events.load(Ordering::Relaxed),
         "Audio bridge stopped"
     );
+    }.instrument(span).await
 }
 
 /// Execute a DTMF command on the conference room.

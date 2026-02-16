@@ -97,6 +97,18 @@ pub struct ConferenceCallHandler {
     pub ai_config: RwLock<AiSection>,
     /// Per-source-IP INVITE rate limiter: IP → (count, window_start)
     invite_rate: DashMap<std::net::IpAddr, (u32, Instant)>,
+    /// RFC 4575 conference event subscribers: call_id → ConferenceSubscription
+    conference_subscriptions: DashMap<String, ConferenceSubscription>,
+}
+
+/// Tracks an active RFC 4575 conference event subscription.
+struct ConferenceSubscription {
+    /// The room number this subscription is for
+    room_number: String,
+    /// Contact URI of the subscriber (for sending NOTIFY)
+    contact_uri: SipUri,
+    /// When the subscription expires
+    expires_at: Instant,
 }
 
 impl ConferenceCallHandler {
@@ -126,6 +138,7 @@ impl ConferenceCallHandler {
             ai_session_manager: Arc::new(AISessionManager::new()),
             ai_config: RwLock::new(ai_config),
             invite_rate: DashMap::new(),
+            conference_subscriptions: DashMap::new(),
         }
     }
 
@@ -693,6 +706,7 @@ impl ConferenceCallHandler {
         self.dtmf_handlers.clear();
         self.meeting_cache.clear();
         self.invite_rate.clear();
+        self.conference_subscriptions.clear();
 
         info!("Conference shutdown complete");
     }
@@ -820,13 +834,91 @@ impl ConferenceCallHandler {
         }
     }
 
-    /// Publish a conference event to the event bus.
+    /// Publish a conference event to the event bus and notify RFC 4575 subscribers.
     fn publish_event(&self, event: ConferenceEvent) {
+        // Determine room number from the event for subscriber notification
+        let room_number = match &event {
+            ConferenceEvent::ParticipantJoined { room_number, .. }
+            | ConferenceEvent::ParticipantLeft { room_number, .. }
+            | ConferenceEvent::MeetingStarted { room_number, .. }
+            | ConferenceEvent::MeetingEnded { room_number, .. }
+            | ConferenceEvent::RoomDestroyed { room_number, .. }
+            | ConferenceEvent::RoomLocked { room_number, .. }
+            | ConferenceEvent::RoomUnlocked { room_number, .. }
+            | ConferenceEvent::RecordingStarted { room_number, .. }
+            | ConferenceEvent::RecordingStopped { room_number, .. }
+            | ConferenceEvent::PinFailed { room_number, .. }
+            | ConferenceEvent::MeetingCreated { room_number, .. }
+            | ConferenceEvent::MeetingUpdated { room_number, .. }
+            | ConferenceEvent::MeetingDeleted { room_number, .. } => {
+                Some(room_number.clone())
+            }
+        };
+
+        // Notify RFC 4575 subscribers for this room
+        if let Some(ref rn) = room_number {
+            self.notify_conference_subscribers(rn);
+        }
+
         let event_bus = Arc::clone(&self.event_bus);
         let platform_event = PlatformEvent::Conference(event);
         tokio::spawn(async move {
             if let Err(e) = event_bus.publish(platform_event).await {
                 warn!(error = %e, "Failed to publish conference event");
+            }
+        });
+    }
+
+    /// Send NOTIFY to all RFC 4575 subscribers for a given room.
+    fn notify_conference_subscribers(&self, room_number: &str) {
+        // Collect active subscribers for this room (and prune expired ones)
+        let now = Instant::now();
+        let mut expired = Vec::new();
+        let mut targets: Vec<SipUri> = Vec::new();
+
+        for entry in self.conference_subscriptions.iter() {
+            if entry.value().room_number == room_number {
+                if entry.value().expires_at <= now {
+                    expired.push(entry.key().clone());
+                } else {
+                    targets.push(entry.value().contact_uri.clone());
+                }
+            }
+        }
+
+        // Remove expired subscriptions
+        for call_id in expired {
+            self.conference_subscriptions.remove(&call_id);
+        }
+
+        if targets.is_empty() {
+            return;
+        }
+
+        // Build conference state XML
+        let state_xml = if let Ok(room) = self.bridge.get_room(room_number) {
+            build_conference_state_xml(room_number, &room)
+        } else {
+            // Room was destroyed, send empty state
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                 <conference-info xmlns=\"urn:ietf:params:xml:ns:conference-info\"\n  \
+                   entity=\"sip:{}@conference\" state=\"full\" version=\"1\">\n  \
+                   <users count=\"0\"/>\n\
+                 </conference-info>\n",
+                room_number,
+            )
+        };
+
+        let uac = Arc::clone(&self.uac);
+        tokio::spawn(async move {
+            for target_uri in targets {
+                let _ = uac.send_unsolicited_notify(
+                    &target_uri,
+                    "conference",
+                    "application/conference-info+xml",
+                    &state_xml,
+                ).await;
             }
         });
     }
@@ -844,10 +936,17 @@ impl ConferenceCallHandler {
             // Abort the audio bridge task
             session.audio_bridge_handle.abort();
 
-            // Deallocate the RTP port pair (async, fire-and-forget)
+            // Deallocate the RTP port pair (async)
             let port_pool = Arc::clone(&self.port_pool);
             let port_pair = session.port_pair;
+            let dealloc_call_id = call_id.to_string();
             tokio::spawn(async move {
+                debug!(
+                    call_id = %dealloc_call_id,
+                    rtp_port = port_pair.rtp_port,
+                    rtcp_port = port_pair.rtcp_port,
+                    "Deallocating RTP port pair"
+                );
                 port_pool.deallocate(port_pair).await;
             });
 
@@ -1941,6 +2040,164 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         Ok(response)
     }
+
+    async fn handle_subscribe(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()> {
+        // Only handle Event: conference subscriptions
+        let event_header = sip_parse::header(request.headers(), "Event")
+            .ok_or_else(|| anyhow::anyhow!("No Event header in SUBSCRIBE"))?;
+        if !event_header.as_str().starts_with("conference") {
+            anyhow::bail!("Not a conference event SUBSCRIBE");
+        }
+
+        // Extract room number from Request-URI
+        let room_number = extract_room_number(request)
+            .ok_or_else(|| anyhow::anyhow!("Cannot extract room number from SUBSCRIBE URI"))?;
+
+        // Verify room exists (either active or configured)
+        let room_active = self.bridge.get_room(&room_number).is_ok();
+        let tenant_id = extract_tenant(request);
+        let meeting_exists = self.lookup_meeting(&tenant_id, &room_number).await?.is_some();
+        if !room_active && !meeting_exists {
+            let response = UserAgentServer::create_response(request, 404, "Conference Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        }
+
+        // Parse Expires header (default 3600)
+        let expires_secs: u64 = sip_parse::header(request.headers(), "Expires")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+
+        let call_id = extract_call_id(request);
+
+        // If Expires=0, this is an unsubscribe
+        if expires_secs == 0 {
+            self.conference_subscriptions.remove(&call_id);
+            info!(call_id = %call_id, room = %room_number, "Conference subscription terminated");
+            let mut response = UserAgentServer::create_response(request, 200, "OK");
+            let _ = response.headers_mut().push("Expires", "0");
+            handle.send_final(response).await;
+            return Ok(());
+        }
+
+        // Extract subscriber Contact URI for NOTIFY delivery
+        let contact_uri = sip_parse::header(request.headers(), "Contact")
+            .and_then(|c| {
+                let s = c.as_str();
+                // Strip angle brackets if present
+                let uri_str = if let Some(inner) = s.strip_prefix('<') {
+                    inner.split('>').next().unwrap_or(s)
+                } else {
+                    s.split(';').next().unwrap_or(s)
+                };
+                SipUri::parse(uri_str).ok()
+            })
+            .unwrap_or_else(|| self.parse_local_sip_uri());
+
+        // Create/refresh subscription
+        self.conference_subscriptions.insert(call_id.clone(), ConferenceSubscription {
+            room_number: room_number.clone(),
+            contact_uri: contact_uri.clone(),
+            expires_at: Instant::now() + Duration::from_secs(expires_secs),
+        });
+
+        info!(
+            call_id = %call_id,
+            room = %room_number,
+            expires = expires_secs,
+            "Conference event subscription created"
+        );
+
+        // Send 200 OK with Expires
+        let mut response = UserAgentServer::create_response(request, 200, "OK");
+        let _ = response.headers_mut().push("Expires", expires_secs.to_string());
+        handle.send_final(response).await;
+
+        // Send initial NOTIFY with current conference state
+        if room_active {
+            if let Ok(room) = self.bridge.get_room(&room_number) {
+                let state_xml = build_conference_state_xml(&room_number, &room);
+                let _ = self.uac.send_unsolicited_notify(
+                    &contact_uri,
+                    "conference",
+                    "application/conference-info+xml",
+                    &state_xml,
+                ).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_refer(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        // Extract Refer-To header to determine target
+        let refer_to = sip_parse::header(request.headers(), "Refer-To")
+            .ok_or_else(|| anyhow::anyhow!("No Refer-To header in REFER"))?;
+
+        // Parse the Refer-To URI to extract room number
+        let refer_to_str = refer_to.as_str();
+        let room_number = if let Some(rest) = refer_to_str.strip_prefix("sip:") {
+            rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+        } else if let Some(rest) = refer_to_str.strip_prefix("<sip:") {
+            rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+        } else {
+            None
+        };
+
+        let room_number = room_number
+            .filter(|r| validate_room_number(r))
+            .ok_or_else(|| anyhow::anyhow!("Refer-To does not target a conference room"))?;
+
+        // Check if this room exists
+        if self.bridge.get_room(&room_number).is_err() {
+            anyhow::bail!("Conference room not active: {}", room_number);
+        }
+
+        // Accept the REFER with 202 Accepted
+        // The actual transfer/join would be initiated by the referring party
+        // sending a new INVITE to the conference room
+        info!(
+            room = %room_number,
+            refer_to = %refer_to_str,
+            "REFER accepted for conference room"
+        );
+
+        let local_sip_uri = self.parse_local_sip_uri();
+        let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+        let response = uas
+            .create_ok(request, None)
+            .map_err(|e| anyhow::anyhow!("Failed to create 202 for REFER: {}", e))?;
+
+        Ok(response)
+    }
+}
+
+/// Build a minimal RFC 4575 conference-info XML document for a room.
+fn build_conference_state_xml(room_number: &str, room: &forge_conference::ConferenceRoom) -> String {
+    let participants = room.participants();
+    let mut users_xml = String::new();
+    for pid in &participants {
+        users_xml.push_str(&format!(
+            "    <user entity=\"sip:{}@conference\">\n      <display-text>{}</display-text>\n      <endpoint entity=\"sip:{}@conference\">\n        <status>connected</status>\n      </endpoint>\n    </user>\n",
+            pid, pid, pid,
+        ));
+    }
+
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <conference-info xmlns=\"urn:ietf:params:xml:ns:conference-info\"\n  \
+           entity=\"sip:{}@conference\" state=\"full\" version=\"1\">\n  \
+           <conference-description>\n    <display-text>Conference {}</display-text>\n  \
+           </conference-description>\n  \
+           <users count=\"{}\">\n{}\
+           </users>\n\
+         </conference-info>\n",
+        room_number, room_number, participants.len(), users_xml,
+    )
 }
 
 /// Extract the room number from a SIP Request-URI user part.

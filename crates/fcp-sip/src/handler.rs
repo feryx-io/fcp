@@ -799,10 +799,23 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Refer => {
+                // Check conference handler first
+                if let Some(ref conf) = self.conference_handler {
+                    if let Ok(resp) = conf.handle_refer(request) {
+                        handle.send_final(resp).await;
+                        return Ok(());
+                    }
+                }
                 let response = self.handle_refer(request).await?;
                 handle.send_final(response).await;
             }
             Method::Subscribe => {
+                // Check conference handler first (RFC 4575 conference event package)
+                if let Some(ref conf) = self.conference_handler {
+                    if let Ok(()) = conf.handle_subscribe(request, handle).await {
+                        return Ok(());
+                    }
+                }
                 let response = self.handle_subscribe(request).await?;
                 handle.send_final(response).await;
             }

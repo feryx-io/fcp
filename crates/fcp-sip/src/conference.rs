@@ -73,4 +73,22 @@ pub trait ConferenceHandler: Send + Sync {
     /// to the conference DTMF handler. Returns `Ok(Response)` (200 OK) on
     /// success, `Err` if call_id is unknown.
     fn handle_info(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
+
+    /// Handle a SIP SUBSCRIBE for the conference event package (RFC 4575).
+    ///
+    /// Processes subscriptions to `Event: conference` for a specific room.
+    /// Returns `Ok(Response)` (200 OK) if the request targets a conference room,
+    /// `Err` if the request is not for a conference (falls through to B2BUA).
+    async fn handle_subscribe(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()>;
+
+    /// Handle a SIP REFER targeting a conference room.
+    ///
+    /// Accepts a REFER with Refer-To pointing to a conference room number.
+    /// The handler should set up the referred party as a new conference participant.
+    /// Returns `Ok(Response)` if handled, `Err` if not a conference REFER.
+    fn handle_refer(&self, request: &sip_core::Request) -> Result<sip_core::Response>;
 }
