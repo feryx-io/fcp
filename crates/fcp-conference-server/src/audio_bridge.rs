@@ -376,12 +376,15 @@ fn execute_dtmf_command(
         DtmfCommand::KickParticipant(participant_num) => {
             if is_host {
                 let participants = room.participants();
-                if participant_num > 0 && participant_num <= participants.len() {
-                    let target = &participants[participant_num - 1]; // 1-indexed
-                    info!(participant = %participant_id, target = %target, num = participant_num, "DTMF host: kicking participant");
-                    let _ = room.remove_participant(target);
-                } else {
-                    debug!(participant = %participant_id, num = participant_num, "DTMF kick: invalid participant number");
+                // Safe bounds check — participant list may have changed since DTMF was entered
+                match participants.get(participant_num.wrapping_sub(1)) {
+                    Some(target) => {
+                        info!(participant = %participant_id, target = %target, num = participant_num, "DTMF host: kicking participant");
+                        let _ = room.remove_participant(target);
+                    }
+                    None => {
+                        debug!(participant = %participant_id, num = participant_num, count = participants.len(), "DTMF kick: invalid participant number");
+                    }
                 }
             }
             false

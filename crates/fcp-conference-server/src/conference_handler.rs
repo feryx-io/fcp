@@ -101,6 +101,8 @@ pub struct ConferenceCallHandler {
     conference_subscriptions: DashMap<String, ConferenceSubscription>,
     /// Cached parsed SipUri from local_uri (parsed once at construction, never panics at runtime)
     local_sip_uri: SipUri,
+    /// Set to true during graceful shutdown to reject new INVITEs while draining existing sessions
+    draining: std::sync::atomic::AtomicBool,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -152,7 +154,14 @@ impl ConferenceCallHandler {
             invite_rate: DashMap::new(),
             conference_subscriptions: DashMap::new(),
             local_sip_uri,
+            draining: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Signal that this handler should reject new INVITEs (graceful shutdown draining).
+    pub fn start_draining(&self) {
+        self.draining.store(true, Ordering::Relaxed);
+        info!("Conference handler entering drain mode — rejecting new INVITEs");
     }
 
     /// Maximum number of entries in the meeting cache.
@@ -1200,7 +1209,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         handle: &sip_transaction::ServerTransactionHandle,
         peer: SocketAddr,
     ) -> Result<()> {
-        // 0. Per-IP INVITE rate limiting
+        // 0. Reject new calls during shutdown draining
+        if self.draining.load(Ordering::Relaxed) {
+            info!(peer = %peer, "Rejecting INVITE during shutdown drain");
+            let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
+            handle.send_final(reject).await;
+            return Ok(());
+        }
+
+        // 0a. Per-IP INVITE rate limiting
         let max_rate = self.conference_config.read().max_invite_rate_per_ip;
         if !self.check_invite_rate(peer.ip(), max_rate) {
             warn!(peer = %peer.ip(), max_rate, "INVITE rate limit exceeded");
@@ -1317,18 +1334,52 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         );
 
         // 8. Create 200 OK with SDP answer using UAS
-        let (response, dialog) = uas
+        let (mut response, dialog) = uas
             .accept_invite(request, Some(&sdp_answer))
             .context("Failed to create 200 OK")?;
+
+        // 8b. RFC 4028: Add Session-Expires and Min-SE headers if session timers are enabled
+        if conf.session_expires_secs > 0 {
+            // Check if client requested a Session-Expires (from their INVITE)
+            let client_se = sip_parse::header(request.headers(), "Session-Expires")
+                .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
+            let min_se: u64 = 90; // RFC 4028 minimum
+
+            let negotiated_se = match client_se {
+                Some(requested) if requested < min_se => {
+                    // Client's value is too small — but we already sent 200 OK;
+                    // use our configured value (proper 422 would require intercepting earlier)
+                    conf.session_expires_secs
+                }
+                Some(requested) => requested.min(conf.session_expires_secs),
+                None => conf.session_expires_secs,
+            };
+
+            let _ = response.headers_mut().push(
+                "Session-Expires",
+                format!("{};refresher=uac", negotiated_se),
+            );
+            let _ = response.headers_mut().push("Min-SE", min_se.to_string());
+            let _ = response.headers_mut().push("Require", "timer");
+        }
 
         // 9. Send 200 OK
         handle.send_final(response).await;
 
-        // 10. Create RTP socket pair
-        let rtp_socket = RtpSocketPair::new(port_pair, RtpSocketConfig::default())
-            .await
-            .context("Failed to create RTP socket pair")?;
-        let rtp_socket = Arc::new(rtp_socket);
+        // 10. Create RTP socket pair (deallocate port on failure to prevent leak)
+        let rtp_socket = match RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                warn!(
+                    rtp_port = port_pair.rtp_port,
+                    error = %e,
+                    "Failed to create RTP socket pair, deallocating port"
+                );
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                return Err(anyhow::anyhow!("Failed to create RTP socket pair: {}", e));
+            }
+        };
 
         // 11. Parse remote RTP address from SDP offer
         if let Some(remote_addr) = parse_remote_rtp_addr(sdp_offer) {
@@ -1388,6 +1439,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 );
 
                 match Self::collect_pin_dtmf(&rtp_socket, te_pt, pin_timeout).await {
+                    Some(ref pin) if pin.is_empty() => {
+                        // Empty PIN (user pressed # immediately) — treat as incorrect
+                        warn!(room = %room_number, participant = %participant_id, attempt, "Empty PIN submitted");
+                        continue;
+                    }
                     Some(pin) => {
                         let result = room.authenticate_participant(&participant_id, &pin);
                         match result {
@@ -1809,6 +1865,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .get_mut(&call_id)
             .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
 
+        // Rate-limit re-INVITEs using the participant's known remote IP
+        if !self.check_invite_rate(session.remote_addr.ip(), conf.max_invite_rate_per_ip) {
+            warn!(call_id = %call_id, peer = %session.remote_addr.ip(), "re-INVITE rate limit exceeded");
+            return Ok(UserAgentServer::create_response(request, 486, "Busy Here"));
+        }
+
         // Parse new SDP body
         let body = request.body();
         let sdp_offer = std::str::from_utf8(&body[..])
@@ -1836,10 +1898,20 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
-        // Check for codec change
+        // Check for codec change — reject if re-INVITE offers no supported codec
         let offered_codecs = parse_sdp_codecs(sdp_offer);
         let allowed = conf.allowed_codecs.as_deref();
-        if let Some((new_codec, new_pt, new_frame_size)) = pick_codec(&offered_codecs, allowed) {
+        let codec_pick = pick_codec(&offered_codecs, allowed);
+        if codec_pick.is_none() && !offered_codecs.is_empty() {
+            // re-INVITE offered codecs but none are supported — reject
+            warn!(
+                call_id = %call_id,
+                offered = ?offered_codecs.iter().map(|c| &c.encoding_name).collect::<Vec<_>>(),
+                "re-INVITE: no supported codec in offer, rejecting with 488"
+            );
+            return Ok(UserAgentServer::create_response(request, 488, "Not Acceptable Here"));
+        }
+        if let Some((new_codec, new_pt, new_frame_size)) = codec_pick {
             if new_codec != session.codec_name {
                 info!(
                     call_id = %call_id,
@@ -1953,9 +2025,24 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Build 200 OK response with SDP answer
         let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
-        let response = uas
+        let mut response = uas
             .create_ok(request, Some(&sdp_answer))
             .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for re-INVITE: {}", e))?;
+
+        // RFC 4028: Add Session-Expires and Min-SE headers on re-INVITE 200 OK
+        if conf.session_expires_secs > 0 {
+            let client_se = sip_parse::header(request.headers(), "Session-Expires")
+                .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
+            let min_se: u64 = 90;
+            let negotiated_se = match client_se {
+                Some(requested) if requested < min_se => conf.session_expires_secs,
+                Some(requested) => requested.min(conf.session_expires_secs),
+                None => conf.session_expires_secs,
+            };
+            let _ = response.headers_mut().push("Session-Expires", format!("{};refresher=uac", negotiated_se));
+            let _ = response.headers_mut().push("Min-SE", min_se.to_string());
+            let _ = response.headers_mut().push("Require", "timer");
+        }
 
         Ok(response)
     }
@@ -2020,11 +2107,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Refresh session timer (UPDATE counts as a session refresh per RFC 4028)
         session.last_refreshed = Instant::now();
 
+        let conf = self.conference_config.read().clone();
+
         // Build 200 OK response (with SDP answer if request had SDP)
         let local_sip_uri = self.parse_local_sip_uri();
         let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
 
-        let response = if !body.is_empty() {
+        let mut response = if !body.is_empty() {
             let sdp_offer = std::str::from_utf8(&body[..]).unwrap_or("");
             let sdp_answer = construct_answer_for_a_leg(
                 sdp_offer,
@@ -2038,6 +2127,21 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             uas.create_ok(request, None)
                 .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for UPDATE: {}", e))?
         };
+
+        // RFC 4028: Add Session-Expires and Min-SE headers on UPDATE 200 OK
+        if conf.session_expires_secs > 0 {
+            let client_se = sip_parse::header(request.headers(), "Session-Expires")
+                .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
+            let min_se: u64 = 90;
+            let negotiated_se = match client_se {
+                Some(requested) if requested < min_se => conf.session_expires_secs,
+                Some(requested) => requested.min(conf.session_expires_secs),
+                None => conf.session_expires_secs,
+            };
+            let _ = response.headers_mut().push("Session-Expires", format!("{};refresher=uac", negotiated_se));
+            let _ = response.headers_mut().push("Min-SE", min_se.to_string());
+            let _ = response.headers_mut().push("Require", "timer");
+        }
 
         Ok(response)
     }
@@ -2097,6 +2201,17 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
+        // Rate-limit SUBSCRIBEs — extract source from Via header
+        let conf = self.conference_config.read().clone();
+        if let Some(via_ip) = extract_via_ip(request) {
+            if !self.check_invite_rate(via_ip, conf.max_invite_rate_per_ip) {
+                warn!(peer = %via_ip, "SUBSCRIBE rate limit exceeded");
+                let reject = UserAgentServer::create_response(request, 486, "Busy Here");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        }
+
         // Only handle Event: conference subscriptions
         let event_header = sip_parse::header(request.headers(), "Event")
             .ok_or_else(|| anyhow::anyhow!("No Event header in SUBSCRIBE"))?;
@@ -2114,6 +2229,25 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let meeting_exists = self.lookup_meeting(&tenant_id, &room_number).await?.is_some();
         if !room_active && !meeting_exists {
             let response = UserAgentServer::create_response(request, 404, "Conference Not Found");
+            handle.send_final(response).await;
+            return Ok(());
+        }
+
+        // Authorization: subscriber must be an active participant in this room.
+        // This prevents arbitrary SIP endpoints from subscribing to conference state.
+        let call_id_sub = extract_call_id(request);
+        let is_participant = self.sessions.iter().any(|entry| {
+            entry.value().room_number == room_number
+        });
+        // Also allow if the subscriber's Call-ID matches an existing session
+        let is_session = self.sessions.contains_key(&call_id_sub);
+        if !is_participant && !is_session {
+            warn!(
+                room = %room_number,
+                call_id = %call_id_sub,
+                "SUBSCRIBE rejected: subscriber is not a conference participant"
+            );
+            let response = UserAgentServer::create_response(request, 403, "Forbidden");
             handle.send_final(response).await;
             return Ok(());
         }
@@ -2185,6 +2319,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     }
 
     fn handle_refer(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        // Rate-limit REFERs
+        let conf = self.conference_config.read().clone();
+        if let Some(via_ip) = extract_via_ip(request) {
+            if !self.check_invite_rate(via_ip, conf.max_invite_rate_per_ip) {
+                warn!(peer = %via_ip, "REFER rate limit exceeded");
+                return Ok(UserAgentServer::create_response(request, 486, "Busy Here"));
+            }
+        }
+
         // Extract Refer-To header to determine target
         let refer_to = sip_parse::header(request.headers(), "Refer-To")
             .ok_or_else(|| anyhow::anyhow!("No Refer-To header in REFER"))?;
@@ -2304,6 +2447,24 @@ fn extract_tenant(request: &sip_core::Request) -> TenantId {
         }
     }
     TenantId::nil()
+}
+
+/// Extract source IP from the top Via header's sent-by address.
+///
+/// Used for rate-limiting methods that don't receive the peer SocketAddr directly.
+fn extract_via_ip(request: &sip_core::Request) -> Option<std::net::IpAddr> {
+    sip_parse::header(request.headers(), "Via")
+        .and_then(|v| {
+            // Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK...
+            let after_proto = v.as_str().split_whitespace().nth(1)?;
+            let host_port = after_proto.split(';').next()?;
+            // Try parsing as ip:port first, then just ip
+            if let Ok(addr) = host_port.parse::<std::net::SocketAddr>() {
+                Some(addr.ip())
+            } else {
+                host_port.split(':').next()?.parse().ok()
+            }
+        })
 }
 
 /// Extract Call-ID from a SIP request.

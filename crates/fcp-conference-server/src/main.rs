@@ -523,6 +523,9 @@ async fn main() -> Result<()> {
     }
 
     // 25. Graceful shutdown with timeout
+    // First, stop accepting new INVITEs (drain mode)
+    conference_handler.start_draining();
+
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     info!(timeout_secs = config.service.shutdown_timeout_secs, "Shutting down conference sessions...");
     if shutdown_timeout.is_zero() {
