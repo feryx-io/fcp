@@ -41,6 +41,8 @@ pub struct ConferenceState {
     pub auth_token: Option<String>,
     pub rate_limit_rps: Option<u32>,
     pub event_subscriber: Arc<InMemoryEventBus>,
+    /// Counter for events dropped by the circuit breaker (exposed via /metrics)
+    pub events_dropped: Arc<AtomicU64>,
 }
 
 /// Public routes (no auth required).
@@ -266,6 +268,8 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
     let active_sessions = state.conference_handler.session_count();
     let audio = state.conference_handler.aggregate_audio_stats();
 
+    let events_dropped = state.events_dropped.load(Ordering::Relaxed);
+
     let body = format!(
         "# HELP fcp_conference_active_rooms Number of active conference rooms\n\
          # TYPE fcp_conference_active_rooms gauge\n\
@@ -299,7 +303,10 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
          fcp_conference_rtp_encode_errors_total {}\n\
          # HELP fcp_conference_dtmf_events_total DTMF events detected across all sessions\n\
          # TYPE fcp_conference_dtmf_events_total counter\n\
-         fcp_conference_dtmf_events_total {}\n",
+         fcp_conference_dtmf_events_total {}\n\
+         # HELP fcp_conference_events_dropped_total Events dropped by circuit breaker\n\
+         # TYPE fcp_conference_events_dropped_total counter\n\
+         fcp_conference_events_dropped_total {}\n",
         active_rooms.len(),
         total_participants,
         active_sessions,
@@ -311,6 +318,7 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
         audio.packets_sent,
         audio.encode_errors,
         audio.dtmf_events,
+        events_dropped,
     );
 
     (StatusCode::OK, [("content-type", "text/plain; version=0.0.4; charset=utf-8")], body)

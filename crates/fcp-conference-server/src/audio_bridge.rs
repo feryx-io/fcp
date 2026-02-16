@@ -99,9 +99,13 @@ pub async fn run_audio_bridge(
                     Ok((raw_data, _addr)) => {
                         stats.packets_received.fetch_add(1, Ordering::Relaxed);
 
-                        // SRTP: decrypt if enabled
+                        // SRTP: decrypt if enabled (acquire and release lock before continuing)
                         let plain_data = if let Some(ref ctx) = srtp_context {
-                            match ctx.write().await.unprotect_rtp(&raw_data) {
+                            let result = {
+                                let mut guard = ctx.write().await;
+                                guard.unprotect_rtp(&raw_data)
+                            }; // guard dropped here — lock released before any further awaits
+                            match result {
                                 Ok(d) => Bytes::from(d),
                                 Err(e) => {
                                     trace!(participant = %participant_id, error = %e, "SRTP unprotect error");
@@ -207,9 +211,14 @@ pub async fn run_audio_bridge(
                                     false,
                                 );
                                 // SRTP: encrypt if enabled, otherwise send plain
+                                // Lock is scoped to just the crypto operation — not held during network I/O
                                 let send_result = if let Some(ref ctx) = srtp_context {
                                     let packet_bytes = packet.to_bytes();
-                                    match ctx.write().await.protect_rtp(&packet_bytes) {
+                                    let protect_result = {
+                                        let mut guard = ctx.write().await;
+                                        guard.protect_rtp(&packet_bytes)
+                                    }; // guard dropped here — lock released before send
+                                    match protect_result {
                                         Ok(protected) => rtp_socket.send_rtp_raw(&protected).await,
                                         Err(e) => {
                                             trace!(participant = %participant_id, error = %e, "SRTP protect error");

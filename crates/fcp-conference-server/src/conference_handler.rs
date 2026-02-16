@@ -99,6 +99,8 @@ pub struct ConferenceCallHandler {
     invite_rate: DashMap<std::net::IpAddr, (u32, Instant)>,
     /// RFC 4575 conference event subscribers: call_id → ConferenceSubscription
     conference_subscriptions: DashMap<String, ConferenceSubscription>,
+    /// Cached parsed SipUri from local_uri (parsed once at construction, never panics at runtime)
+    local_sip_uri: SipUri,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -123,6 +125,16 @@ impl ConferenceCallHandler {
         uac: Arc<SipUserAgentClient>,
         ai_config: AiSection,
     ) -> Self {
+        // Parse the local SIP URI once at construction time — avoids runtime .expect()
+        let local_sip_uri = Uri::parse(&local_uri)
+            .ok()
+            .and_then(|u| u.as_sip().cloned())
+            .unwrap_or_else(|| {
+                warn!(uri = %local_uri, "Failed to parse local SIP URI at construction, using fallback");
+                SipUri::parse("sip:conference@localhost")
+                    .unwrap_or_else(|_| SipUri::parse("sip:x@127.0.0.1").unwrap())
+            });
+
         Self {
             bridge,
             storage,
@@ -139,6 +151,7 @@ impl ConferenceCallHandler {
             ai_config: RwLock::new(ai_config),
             invite_rate: DashMap::new(),
             conference_subscriptions: DashMap::new(),
+            local_sip_uri,
         }
     }
 
@@ -933,14 +946,33 @@ impl ConferenceCallHandler {
                 "Participant left conference"
             );
 
-            // Abort the audio bridge task
+            // Abort the audio bridge task and validate it actually stops
             session.audio_bridge_handle.abort();
+            let abort_handle = session.audio_bridge_handle;
 
-            // Deallocate the RTP port pair (async)
+            // Deallocate the RTP port pair after confirming bridge abort (async)
             let port_pool = Arc::clone(&self.port_pool);
             let port_pair = session.port_pair;
             let dealloc_call_id = call_id.to_string();
             tokio::spawn(async move {
+                // Wait up to 5s for the audio bridge to actually stop
+                match tokio::time::timeout(Duration::from_secs(5), abort_handle).await {
+                    Ok(Ok(())) => {} // Normal exit
+                    Ok(Err(e)) if e.is_cancelled() => {} // Aborted successfully
+                    Ok(Err(e)) => {
+                        warn!(
+                            call_id = %dealloc_call_id,
+                            error = %e,
+                            "Audio bridge task panicked during abort"
+                        );
+                    }
+                    Err(_) => {
+                        warn!(
+                            call_id = %dealloc_call_id,
+                            "Audio bridge task did not stop within 5s after abort — possible orphan"
+                        );
+                    }
+                }
                 debug!(
                     call_id = %dealloc_call_id,
                     rtp_port = port_pair.rtp_port,
@@ -1043,16 +1075,9 @@ impl ConferenceCallHandler {
         }
     }
 
-    /// Parse the local SIP URI configured for this handler.
+    /// Return the cached local SIP URI (parsed once at construction — no runtime panics).
     fn parse_local_sip_uri(&self) -> SipUri {
-        Uri::parse(&self.local_uri)
-            .ok()
-            .and_then(|u| u.as_sip().cloned())
-            .unwrap_or_else(|| {
-                // "sip:conference@localhost" is a valid literal; this cannot fail
-                SipUri::parse("sip:conference@localhost")
-                    .expect("static SIP URI literal")
-            })
+        self.local_sip_uri.clone()
     }
 
     /// Check whether PIN authentication is required for a meeting.
@@ -1180,6 +1205,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         if !self.check_invite_rate(peer.ip(), max_rate) {
             warn!(peer = %peer.ip(), max_rate, "INVITE rate limit exceeded");
             let reject = UserAgentServer::create_response(request, 486, "Busy Here");
+            handle.send_final(reject).await;
+            return Ok(());
+        }
+
+        // 0b. Per-node participant limit (OOM protection)
+        let max_per_node = self.conference_config.read().max_participants_per_node;
+        if max_per_node > 0 && self.sessions.len() >= max_per_node {
+            warn!(
+                current = self.sessions.len(),
+                max = max_per_node,
+                "Node participant limit reached, rejecting INVITE"
+            );
+            let reject = UserAgentServer::create_response(request, 503, "Service Unavailable");
             handle.send_final(reject).await;
             return Ok(());
         }
@@ -1810,8 +1848,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     "re-INVITE: codec changed, restarting audio bridge"
                 );
 
-                // Abort old audio bridge
-                session.audio_bridge_handle.abort();
+                // Abort old audio bridge — take ownership of the handle
+                let old_handle = std::mem::replace(
+                    &mut session.audio_bridge_handle,
+                    tokio::spawn(async {}), // temporary placeholder
+                );
+                old_handle.abort();
 
                 // Create new codec instances
                 let encoder = create_codec_instance(&new_codec)?;
@@ -1823,7 +1865,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     .get_room(&session.room_number)
                     .map_err(|e| anyhow::anyhow!("Room not found: {}", e))?;
 
-                // Spawn new audio bridge (reuse existing DTMF handler and stats)
+                // Spawn new audio bridge that waits for old bridge to stop first
+                // This prevents the race where both bridges access the mixer simultaneously
                 let bridge_room = Arc::clone(&room);
                 let bridge_participant = session.participant_id.clone();
                 let bridge_socket = Arc::clone(&session.rtp_socket);
@@ -1837,21 +1880,29 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_is_host = session.is_host;
                 let reinvite_te_pt = session.te_pt;
                 let reinvite_srtp = session.srtp_context.clone();
-                let new_handle = tokio::spawn(audio_bridge::run_audio_bridge(
-                    bridge_room,
-                    bridge_participant,
-                    bridge_socket,
-                    encoder,
-                    decoder,
-                    new_pt,
-                    new_frame_size,
-                    jitter_buffer_ms,
-                    reinvite_te_pt,
-                    reinvite_dtmf,
-                    reinvite_is_host,
-                    reinvite_stats,
-                    reinvite_srtp,
-                ));
+                let new_handle = tokio::spawn(async move {
+                    // Wait for old bridge to actually stop (with timeout) before starting new one
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(500),
+                        old_handle,
+                    ).await;
+
+                    audio_bridge::run_audio_bridge(
+                        bridge_room,
+                        bridge_participant,
+                        bridge_socket,
+                        encoder,
+                        decoder,
+                        new_pt,
+                        new_frame_size,
+                        jitter_buffer_ms,
+                        reinvite_te_pt,
+                        reinvite_dtmf,
+                        reinvite_is_host,
+                        reinvite_stats,
+                        reinvite_srtp,
+                    ).await;
+                });
 
                 session.audio_bridge_handle = new_handle;
                 session.codec_name = new_codec;

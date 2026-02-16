@@ -361,6 +361,7 @@ async fn main() -> Result<()> {
     });
 
     // 21. Spawn HTTP server (conference API)
+    let events_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let conf_state = Arc::new(health::ConferenceState {
         bridge: Arc::clone(&bridge),
         storage: Arc::clone(&dyn_storage),
@@ -372,6 +373,7 @@ async fn main() -> Result<()> {
         auth_token: config.http.auth_token.clone(),
         rate_limit_rps: config.http.rate_limit_rps,
         event_subscriber: Arc::clone(&event_bus),
+        events_dropped: Arc::clone(&events_dropped),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(supervise_task("http-server", async move {
@@ -484,8 +486,9 @@ async fn main() -> Result<()> {
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
         let event_bus_clone = Arc::clone(&event_bus);
+        let dropped_counter = Arc::clone(&events_dropped);
         tokio::spawn(supervise_task("event-forwarder", async move {
-            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
+            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url, dropped_counter).await {
                 tracing::error!(%e, "Event forwarder task failed");
             }
         }));
@@ -794,7 +797,11 @@ async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
     }
 }
 
-async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str) -> Result<()> {
+async fn run_event_forwarder(
+    event_bus: Arc<InMemoryEventBus>,
+    events_url: &str,
+    dropped_metric: Arc<std::sync::atomic::AtomicU64>,
+) -> Result<()> {
     use std::sync::atomic::{AtomicU64, AtomicBool};
 
     let client = reqwest::Client::builder()
@@ -820,7 +827,6 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
     let semaphore = Arc::new(tokio::sync::Semaphore::new(50));
 
     let mut delivered_events: u64 = 0;
-    let mut dropped_events: u64 = 0;
 
     loop {
         match stream.next().await {
@@ -829,11 +835,11 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 if circuit_open.load(std::sync::atomic::Ordering::Relaxed) {
                     let opened = *circuit_opened_at.lock().await;
                     if opened.elapsed() < COOLDOWN {
-                        // Circuit open — drop event silently
-                        dropped_events += 1;
-                        if dropped_events % 100 == 1 {
+                        // Circuit open — increment shared dropped metric (visible via /metrics)
+                        let total_dropped = dropped_metric.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        if total_dropped % 100 == 1 {
                             warn!(
-                                dropped = dropped_events,
+                                dropped = total_dropped,
                                 cooldown_remaining_secs = (COOLDOWN - opened.elapsed()).as_secs(),
                                 "Circuit breaker OPEN — dropping events"
                             );
@@ -853,6 +859,7 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 let cb_open = Arc::clone(&circuit_open);
                 let cb_opened_at = Arc::clone(&circuit_opened_at);
                 let permit = Arc::clone(&semaphore);
+                let drop_counter = Arc::clone(&dropped_metric);
                 tokio::spawn(async move {
                     // Acquire semaphore permit to bound concurrency
                     let _permit = match permit.acquire().await {
@@ -863,7 +870,8 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                         // Success — reset failure counter
                         failures.store(0, std::sync::atomic::Ordering::Relaxed);
                     } else {
-                        // Failure — increment and maybe trip circuit
+                        // Failure — increment dropped metric and maybe trip circuit
+                        drop_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let prev = failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if prev + 1 >= FAILURE_THRESHOLD
                             && !cb_open.load(std::sync::atomic::Ordering::Relaxed)
@@ -883,7 +891,7 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
             None => {
                 warn!(
                     delivered = delivered_events,
-                    dropped = dropped_events,
+                    dropped = dropped_metric.load(std::sync::atomic::Ordering::Relaxed),
                     "Event stream ended unexpectedly, resubscribing..."
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;

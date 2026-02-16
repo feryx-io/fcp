@@ -372,6 +372,12 @@ pub struct ConferenceSection {
     /// when this limit is reached. Default: 500 (500 MB). Set 0 for no limit.
     #[serde(default = "default_max_recording_size_mb")]
     pub max_recording_size_mb: u64,
+
+    /// Maximum total participants across all rooms on this node.
+    /// Prevents OOM when many large conferences are hosted on a single node.
+    /// Default: 500. Set 0 for no limit (not recommended for production).
+    #[serde(default = "default_max_participants_per_node")]
+    pub max_participants_per_node: usize,
 }
 
 fn default_announcements_dir() -> String {
@@ -426,6 +432,10 @@ fn default_max_recording_size_mb() -> u64 {
     500
 }
 
+fn default_max_participants_per_node() -> usize {
+    500
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -448,6 +458,7 @@ impl Default for ConferenceSection {
             max_invite_rate_per_ip: default_max_invite_rate(),
             session_expires_secs: default_session_expires_secs(),
             max_recording_size_mb: default_max_recording_size_mb(),
+            max_participants_per_node: default_max_participants_per_node(),
         }
     }
 }
