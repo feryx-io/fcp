@@ -1,10 +1,15 @@
 //! HTTP health/status/calls API for fcp-call-manager.
 
-use axum::{extract::Query, extract::State, routing::get, Json, Router};
+use axum::{
+    extract::{Path, Query, State},
+    routing::{get, post},
+    Json, Router,
+};
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
 use fcp_core::{CallId, DynStorage};
 use fcp_media::MediaManager;
+use fcp_queue::QueueManager;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,6 +21,7 @@ pub struct AppState {
     pub call_manager: Arc<CallManager>,
     pub storage: Arc<DynStorage>,
     pub media_manager: Arc<MediaManager>,
+    pub queue_manager: Option<Arc<QueueManager>>,
     pub start_time: Instant,
 }
 
@@ -29,6 +35,16 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/cdrs", get(cdrs_handler))
         .route("/media-sessions", get(media_sessions_handler))
         .route("/transcoding", get(transcoding_handler))
+        // Queue/Agent management endpoints
+        .route("/queues", get(list_queues_handler))
+        .route("/queues/{name}", get(get_queue_handler))
+        .route("/agents", get(list_agents_handler))
+        .route("/agents/{id}", get(get_agent_handler))
+        .route("/agents/{id}/pause", post(pause_agent_handler))
+        .route("/agents/{id}/unpause", post(unpause_agent_handler))
+        .route("/agents/{id}/kick", post(kick_agent_handler))
+        .route("/agents/{id}/login", post(login_agent_handler))
+        .route("/agents/{id}/logout", post(logout_agent_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -381,4 +397,198 @@ async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
         "codec_pairs": codec_pairs,
         "sessions": transcoding_details,
     }))
+}
+
+// ---- Queue/Agent Management Endpoints ----
+
+/// List all queues with stats.
+async fn list_queues_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled", "queues": []}));
+    };
+    let stats = qm.all_queue_stats();
+    Json(serde_json::json!({ "queues": stats }))
+}
+
+/// Get a single queue's stats + waiting calls.
+async fn get_queue_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.queue_stats(&name) {
+        Some(stats) => {
+            let agents = qm.list_agents_for_queue(&name);
+            let agent_list: Vec<serde_json::Value> = agents
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "id": a.id,
+                        "extension": a.extension,
+                        "state": a.state.to_string(),
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "queue": stats,
+                "agents": agent_list,
+            }))
+        }
+        None => Json(serde_json::json!({"error": format!("Queue '{}' not found", name)})),
+    }
+}
+
+/// List all agents with stats.
+async fn list_agents_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled", "agents": []}));
+    };
+    let stats = qm.all_agent_stats();
+    Json(serde_json::json!({ "agents": stats }))
+}
+
+/// Get a single agent's stats.
+async fn get_agent_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.agent_stats(&id) {
+        Some(stats) => Json(serde_json::json!({ "agent": stats })),
+        None => Json(serde_json::json!({"error": format!("Agent '{}' not found", id)})),
+    }
+}
+
+#[derive(Deserialize)]
+struct PauseBody {
+    duration_secs: Option<u32>,
+}
+
+/// Pause an agent.
+async fn pause_agent_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<PauseBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.pause_agent(&id, body.duration_secs).await {
+        Ok(()) => Json(serde_json::json!({"status": "paused", "agent_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Unpause an agent.
+async fn unpause_agent_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.unpause_agent(&id).await {
+        Ok(()) => Json(serde_json::json!({"status": "available", "agent_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+#[derive(Deserialize)]
+struct KickBody {
+    reason: Option<String>,
+}
+
+/// Kick (force-logout) an agent.
+async fn kick_agent_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<KickBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    let reason = body.reason.as_deref().unwrap_or("admin_kick");
+    match qm.kick_agent(&id, reason).await {
+        Ok(()) => Json(serde_json::json!({"status": "kicked", "agent_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    extension: Option<String>,
+    queues: Option<Vec<String>>,
+    skills: Option<Vec<String>>,
+}
+
+/// Log an agent in via REST API.
+async fn login_agent_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<LoginBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    let extension = body.extension.as_deref().unwrap_or(&id);
+    let queues = body.queues.unwrap_or_default();
+    let skills = body.skills.unwrap_or_default();
+    let tenant_id = fcp_core::TenantId::nil();
+
+    if queues.is_empty() {
+        // Auto-discover queues from config (same as feature code login)
+        let config = qm.get_system_config();
+        let auto_queues: Vec<String> = config
+            .queues
+            .iter()
+            .filter(|(_, qc)| qc.agents.contains(&extension.to_string()))
+            .map(|(name, _)| name.clone())
+            .collect();
+        if auto_queues.is_empty() {
+            return Json(serde_json::json!({
+                "error": format!("Extension '{}' is not configured in any queue", extension)
+            }));
+        }
+        match qm
+            .agent_login(&id, extension, &auto_queues, tenant_id, skills)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({
+                "status": "logged_in",
+                "agent_id": id,
+                "queues": auto_queues,
+            })),
+            Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        }
+    } else {
+        match qm
+            .agent_login(&id, extension, &queues, tenant_id, skills)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({
+                "status": "logged_in",
+                "agent_id": id,
+                "queues": queues,
+            })),
+            Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+        }
+    }
+}
+
+/// Log an agent out via REST API.
+async fn logout_agent_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.agent_logout(&id).await {
+        Ok(()) => Json(serde_json::json!({"status": "logged_out", "agent_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
 }

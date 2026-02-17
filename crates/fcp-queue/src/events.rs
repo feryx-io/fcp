@@ -168,6 +168,25 @@ pub async fn agent_state_changed(
     .await;
 }
 
+/// Publish an AgentKicked event (admin forced logout).
+pub async fn agent_kicked(
+    events: &Option<Arc<dyn EventPublisher>>,
+    agent_id: &str,
+    reason: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::AgentKicked {
+            agent_id: agent_id.to_string(),
+            reason: reason.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a CallbackInitiated event (caller requested virtual queueing).
 pub async fn callback_initiated(
     events: &Option<Arc<dyn EventPublisher>>,

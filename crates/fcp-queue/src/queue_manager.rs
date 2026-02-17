@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use crate::config::{QueueConfig, QueueSystemConfig};
 use crate::distribution::{self, DistributionPlan};
 use crate::events;
-use crate::types::{Agent, AgentState, Queue, QueueStats, QueuedCall};
+use crate::types::{Agent, AgentState, AgentStats, Queue, QueueStats, QueuedCall};
 
 /// Central manager for all queues, agents, and call distribution.
 ///
@@ -124,6 +124,16 @@ impl QueueManager {
         agent.skills = skills;
         agent.state = AgentState::Available;
         agent.state_changed_at = Instant::now();
+        agent.logged_in_at = Some(Instant::now());
+
+        // Populate per-queue priority overrides from queue configs
+        for q_name in queues {
+            if let Some(queue) = self.queues.get(q_name) {
+                if let Some(&prio) = queue.config.agent_priorities.get(agent_id) {
+                    agent.queue_priorities.insert(q_name.clone(), prio);
+                }
+            }
+        }
 
         self.agents.insert(agent_id.to_string(), agent);
 
@@ -182,6 +192,10 @@ impl QueueManager {
         let new_state = state.to_string();
         agent.state = state;
         agent.state_changed_at = Instant::now();
+        // Reset consecutive no-answer counter when manually set to Available
+        if state == AgentState::Available {
+            agent.consecutive_no_answers = 0;
+        }
         let tenant_id = agent.tenant_id.clone();
         drop(agent);
 
@@ -212,6 +226,7 @@ impl QueueManager {
                     skills: a.skills.clone(),
                     priority: a.priority,
                     state: a.state.to_string(),
+                    queue_priorities: a.queue_priorities.clone(),
                 })
                 .collect();
             tokio::spawn(async move {
@@ -228,6 +243,10 @@ impl QueueManager {
         let wrap_up_secs = self.config.read().wrap_up_time_secs;
 
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
+            // Track talk time before transitioning
+            let on_call_duration = agent.state_changed_at.elapsed().as_secs();
+            agent.total_talk_time_secs += on_call_duration;
+
             agent.state = AgentState::WrapUp;
             agent.state_changed_at = Instant::now();
             agent.last_call_ended = Some(Instant::now());
@@ -241,6 +260,7 @@ impl QueueManager {
                 tokio::time::sleep(std::time::Duration::from_secs(wrap_up_secs as u64)).await;
                 if let Some(mut agent) = agents.get_mut(&agent_id) {
                     if agent.state == AgentState::WrapUp {
+                        agent.total_wrap_up_time_secs += agent.state_changed_at.elapsed().as_secs();
                         agent.state = AgentState::Available;
                         agent.state_changed_at = Instant::now();
                         debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
@@ -371,8 +391,12 @@ impl QueueManager {
             }
         }
 
-        // Sort by priority (lower = higher priority), then by ID for deterministic order
-        available_agents.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.id.cmp(&b.id)));
+        // Sort by per-queue priority (lower = higher priority), then by ID for deterministic order
+        available_agents.sort_by(|a, b| {
+            let a_prio = a.queue_priorities.get(queue_name).copied().unwrap_or(a.priority);
+            let b_prio = b.queue_priorities.get(queue_name).copied().unwrap_or(b.priority);
+            a_prio.cmp(&b_prio).then(a.id.cmp(&b.id))
+        });
 
         let refs: Vec<&Agent> = available_agents.iter().collect();
 
@@ -408,6 +432,7 @@ impl QueueManager {
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
             agent.state = AgentState::OnCall;
             agent.state_changed_at = Instant::now();
+            agent.consecutive_no_answers = 0;
             let tenant_id = agent.tenant_id.clone();
             drop(agent);
 
@@ -462,10 +487,36 @@ impl QueueManager {
 
     /// Agent didn't answer — return call to queue or overflow.
     pub async fn agent_no_answer(&self, agent_id: &str, call_id: &str) {
-        // Make agent available again
+        let max_no_answer = self.config.read().max_no_answer;
+
+        // Update agent state: increment no-answer counter, auto-away if threshold reached
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
-            agent.state = AgentState::Available;
-            agent.state_changed_at = Instant::now();
+            agent.consecutive_no_answers += 1;
+            if max_no_answer > 0 && agent.consecutive_no_answers >= max_no_answer {
+                let old_state = agent.state.to_string();
+                agent.state = AgentState::Away;
+                agent.state_changed_at = Instant::now();
+                let tenant_id = agent.tenant_id.clone();
+                drop(agent);
+                warn!(
+                    agent_id = %agent_id,
+                    consecutive_no_answers = max_no_answer,
+                    "Agent auto-set to Away after max consecutive no-answers"
+                );
+                events::agent_state_changed(
+                    &self.events,
+                    agent_id,
+                    &old_state,
+                    "away",
+                    &tenant_id,
+                )
+                .await;
+                self.persist_agent_change(&tenant_id);
+            } else {
+                agent.state = AgentState::Available;
+                agent.state_changed_at = Instant::now();
+                drop(agent);
+            }
         }
 
         // The call should still be in the queue (not dequeued yet for no-answer).
@@ -516,6 +567,169 @@ impl QueueManager {
                 return;
             }
         }
+    }
+
+    // ---- Pause / Kick ----
+
+    /// Pause an agent with optional auto-resume duration.
+    pub async fn pause_agent(&self, agent_id: &str, duration_secs: Option<u32>) -> Result<()> {
+        let mut agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))?;
+
+        let old_state = agent.state.to_string();
+        agent.state = AgentState::Paused;
+        agent.state_changed_at = Instant::now();
+
+        let effective_duration = duration_secs
+            .or_else(|| {
+                let d = self.config.read().auto_pause_resume_secs;
+                if d > 0 { Some(d) } else { None }
+            });
+
+        if let Some(secs) = effective_duration {
+            agent.pause_resume_at = Some(Instant::now() + Duration::from_secs(secs as u64));
+        } else {
+            agent.pause_resume_at = None;
+        }
+
+        let tenant_id = agent.tenant_id.clone();
+        drop(agent);
+
+        info!(agent_id = %agent_id, duration_secs = ?effective_duration, "Agent paused");
+
+        events::agent_state_changed(&self.events, agent_id, &old_state, "paused", &tenant_id)
+            .await;
+        self.persist_agent_change(&tenant_id);
+
+        // Spawn auto-resume task if duration was provided
+        if let Some(secs) = effective_duration {
+            let agents = Arc::clone(&self.agents);
+            let events = self.events.clone();
+            let agent_id_owned = agent_id.to_string();
+            let tid = tenant_id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(secs as u64)).await;
+                if let Some(mut agent) = agents.get_mut(&agent_id_owned) {
+                    if agent.state == AgentState::Paused {
+                        agent.state = AgentState::Available;
+                        agent.state_changed_at = Instant::now();
+                        agent.pause_resume_at = None;
+                        drop(agent);
+                        debug!(agent_id = %agent_id_owned, "Pause auto-resumed, agent now available");
+                        events::agent_state_changed(
+                            &events,
+                            &agent_id_owned,
+                            "paused",
+                            "available",
+                            &tid,
+                        )
+                        .await;
+                    }
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Unpause an agent, returning them to Available.
+    pub async fn unpause_agent(&self, agent_id: &str) -> Result<()> {
+        let mut agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))?;
+
+        if agent.state != AgentState::Paused {
+            bail!("Agent '{}' is not paused (state: {})", agent_id, agent.state);
+        }
+
+        agent.state = AgentState::Available;
+        agent.state_changed_at = Instant::now();
+        agent.pause_resume_at = None;
+        agent.consecutive_no_answers = 0;
+        let tenant_id = agent.tenant_id.clone();
+        drop(agent);
+
+        info!(agent_id = %agent_id, "Agent unpaused");
+
+        events::agent_state_changed(&self.events, agent_id, "paused", "available", &tenant_id)
+            .await;
+        self.persist_agent_change(&tenant_id);
+
+        Ok(())
+    }
+
+    /// Force-logout (kick) an agent from the queue system.
+    pub async fn kick_agent(&self, agent_id: &str, reason: &str) -> Result<()> {
+        let mut agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))?;
+
+        let old_state = agent.state.to_string();
+        agent.state = AgentState::LoggedOut;
+        agent.state_changed_at = Instant::now();
+        let tenant_id = agent.tenant_id.clone();
+        let agent_queues = agent.queues.clone();
+        drop(agent);
+
+        info!(agent_id = %agent_id, reason = %reason, "Agent kicked");
+
+        events::agent_kicked(&self.events, agent_id, reason, &tenant_id).await;
+        for q in &agent_queues {
+            events::agent_logged_out(&self.events, q, agent_id, &tenant_id).await;
+        }
+        events::agent_state_changed(
+            &self.events,
+            agent_id,
+            &old_state,
+            "logged_out",
+            &tenant_id,
+        )
+        .await;
+
+        self.persist_agent_change(&tenant_id);
+
+        Ok(())
+    }
+
+    // ---- Agent Statistics ----
+
+    /// Get per-agent statistics.
+    pub fn agent_stats(&self, agent_id: &str) -> Option<AgentStats> {
+        let agent = self.agents.get(agent_id)?;
+        let logged_in_duration = agent
+            .logged_in_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(1);
+        let busy_time = agent.total_talk_time_secs + agent.total_wrap_up_time_secs;
+        let occupancy = if logged_in_duration > 0 {
+            (busy_time as f64 / logged_in_duration as f64) * 100.0
+        } else {
+            0.0
+        };
+        Some(AgentStats {
+            agent_id: agent.id.clone(),
+            state: agent.state.to_string(),
+            extension: agent.extension.clone(),
+            queues: agent.queues.clone(),
+            calls_handled: agent.calls_handled,
+            consecutive_no_answers: agent.consecutive_no_answers,
+            total_talk_time_secs: agent.total_talk_time_secs,
+            total_wrap_up_time_secs: agent.total_wrap_up_time_secs,
+            occupancy_pct: occupancy,
+            time_in_current_state_secs: agent.state_changed_at.elapsed().as_secs(),
+        })
+    }
+
+    /// Get statistics for all agents.
+    pub fn all_agent_stats(&self) -> Vec<AgentStats> {
+        self.agents
+            .iter()
+            .filter_map(|entry| self.agent_stats(entry.key()))
+            .collect()
     }
 
     // ---- Query Methods ----
@@ -783,6 +997,7 @@ impl QueueManager {
             let state = match sa.state.as_str() {
                 "available" => AgentState::Available,
                 "away" => AgentState::Away,
+                "paused" => AgentState::Paused,
                 _ => {
                     debug!(agent_id = %sa.id, state = %sa.state, "Skipping agent with non-active state");
                     continue;
@@ -793,8 +1008,10 @@ impl QueueManager {
             agent.queues = valid_queues;
             agent.skills = sa.skills;
             agent.priority = sa.priority;
+            agent.queue_priorities = sa.queue_priorities;
             agent.state = state;
             agent.state_changed_at = Instant::now();
+            agent.logged_in_at = Some(Instant::now());
 
             info!(agent_id = %sa.id, "Restored agent from storage");
             self.agents.insert(sa.id, agent);
@@ -836,6 +1053,7 @@ mod tests {
                 dtmf_exit_options: HashMap::new(),
                 callback_enabled: false,
                 callback_digit: None,
+                agent_priorities: HashMap::new(),
             },
         );
         QueueSystemConfig {
@@ -846,6 +1064,8 @@ mod tests {
             max_ring_time_secs: 20,
             queue_audio_dir: None,
             stats_publish_interval_secs: 5,
+            auto_pause_resume_secs: 0,
+            max_no_answer: 3,
         }
     }
 

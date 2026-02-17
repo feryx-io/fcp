@@ -1106,8 +1106,11 @@ pub struct StoredAgent {
     pub queues: Vec<String>,
     pub skills: Vec<String>,
     pub priority: u32,
-    /// Agent state: "available", "away", "logged_out"
+    /// Agent state: "available", "away", "paused", "logged_out"
     pub state: String,
+    /// Per-queue priority overrides (queue_name → priority).
+    #[serde(default)]
+    pub queue_priorities: HashMap<String, u32>,
 }
 
 /// Persistence for ACD queue agent state.

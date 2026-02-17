@@ -27,4 +27,4 @@ pub mod types;
 pub use config::{DistributionStrategy, QueueConfig, QueueSystemConfig};
 pub use distribution::DistributionPlan;
 pub use queue_manager::QueueManager;
-pub use types::{Agent, AgentState, Queue, QueueStats, QueuedCall};
+pub use types::{Agent, AgentState, AgentStats, Queue, QueueStats, QueuedCall};

@@ -473,6 +473,7 @@ async fn main() -> Result<()> {
         call_manager: Arc::clone(&call_manager),
         storage: Arc::clone(&dyn_storage),
         media_manager: Arc::clone(&media_manager),
+        queue_manager: queue_manager.clone(),
         start_time: Instant::now(),
     });
     let http_bind = config.http.bind_address;

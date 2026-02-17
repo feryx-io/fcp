@@ -36,6 +36,14 @@ pub struct QueueSystemConfig {
     /// Set to 0 to disable. Default: 5.
     #[serde(default = "default_stats_publish_interval")]
     pub stats_publish_interval_secs: u64,
+
+    /// Default pause duration (seconds). 0 = no auto-resume (manual unpause only).
+    #[serde(default)]
+    pub auto_pause_resume_secs: u32,
+
+    /// Max consecutive no-answers before auto-away. 0 = disabled.
+    #[serde(default = "default_max_no_answer")]
+    pub max_no_answer: u32,
 }
 
 impl Default for QueueSystemConfig {
@@ -48,6 +56,8 @@ impl Default for QueueSystemConfig {
             max_ring_time_secs: default_max_ring_time(),
             queue_audio_dir: None,
             stats_publish_interval_secs: default_stats_publish_interval(),
+            auto_pause_resume_secs: 0,
+            max_no_answer: default_max_no_answer(),
         }
     }
 }
@@ -126,6 +136,11 @@ pub struct QueueConfig {
     /// DTMF digit to request callback (e.g., "2").
     #[serde(default)]
     pub callback_digit: Option<String>,
+
+    /// Per-agent priority overrides within this queue.
+    /// Maps agent_id → priority. Agents not listed use the global agent priority.
+    #[serde(default)]
+    pub agent_priorities: HashMap<String, u32>,
 }
 
 /// Distribution strategy for selecting which agent receives the next call.
@@ -182,6 +197,10 @@ fn default_announce_interval() -> u32 {
 
 fn default_stats_publish_interval() -> u64 {
     5
+}
+
+fn default_max_no_answer() -> u32 {
+    3
 }
 
 #[cfg(test)]

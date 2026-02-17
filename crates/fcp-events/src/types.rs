@@ -631,6 +631,15 @@ pub enum QueueEvent {
         timestamp: SystemTime,
     },
 
+    /// Agent forcefully kicked from the queue system (admin action)
+    AgentKicked {
+        agent_id: String,
+        reason: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Caller requested a callback (virtual queueing)
     CallbackInitiated {
         queue_name: String,
@@ -978,6 +987,7 @@ impl QueueEvent {
             | QueueEvent::AgentLoggedIn { timestamp, .. }
             | QueueEvent::AgentLoggedOut { timestamp, .. }
             | QueueEvent::AgentStateChanged { timestamp, .. }
+            | QueueEvent::AgentKicked { timestamp, .. }
             | QueueEvent::StatsSnapshot { timestamp, .. } => *timestamp,
         }
     }

@@ -2,6 +2,7 @@
 
 use fcp_core::TenantId;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::config::QueueConfig;
@@ -20,6 +21,8 @@ pub enum AgentState {
     WrapUp,
     /// Manually marked as away (break, etc.).
     Away,
+    /// Temporarily paused (timed break — auto-resumes after timeout).
+    Paused,
 }
 
 impl std::fmt::Display for AgentState {
@@ -30,6 +33,7 @@ impl std::fmt::Display for AgentState {
             AgentState::OnCall => write!(f, "on_call"),
             AgentState::WrapUp => write!(f, "wrap_up"),
             AgentState::Away => write!(f, "away"),
+            AgentState::Paused => write!(f, "paused"),
         }
     }
 }
@@ -51,12 +55,25 @@ pub struct Agent {
     pub skills: Vec<String>,
     /// Agent priority (lower = higher priority).
     pub priority: u32,
+    /// Per-queue priority overrides (queue_name → priority).
+    /// Falls back to `priority` (global default) if a queue isn't listed.
+    pub queue_priorities: HashMap<String, u32>,
     /// Total calls handled (for fewest-calls strategy).
     pub calls_handled: u64,
     /// When the agent's last call ended (for longest-idle strategy).
     pub last_call_ended: Option<Instant>,
     /// When the agent's state last changed.
     pub state_changed_at: Instant,
+    /// Consecutive no-answer count (reset on answer or manual Available).
+    pub consecutive_no_answers: u32,
+    /// When this agent should auto-resume from Paused state (if paused with a timeout).
+    pub pause_resume_at: Option<Instant>,
+    /// Cumulative time spent in OnCall state since login (seconds).
+    pub total_talk_time_secs: u64,
+    /// Cumulative time spent in WrapUp state since login (seconds).
+    pub total_wrap_up_time_secs: u64,
+    /// Time when the agent logged in (for occupancy calculation).
+    pub logged_in_at: Option<Instant>,
 }
 
 impl Agent {
@@ -70,9 +87,15 @@ impl Agent {
             queues: Vec::new(),
             skills: Vec::new(),
             priority: 0,
+            queue_priorities: HashMap::new(),
             calls_handled: 0,
             last_call_ended: None,
             state_changed_at: Instant::now(),
+            consecutive_no_answers: 0,
+            pause_resume_at: None,
+            total_talk_time_secs: 0,
+            total_wrap_up_time_secs: 0,
+            logged_in_at: None,
         }
     }
 
@@ -215,6 +238,21 @@ pub struct QueueStats {
     pub service_level_pct: f64,
 }
 
+/// Per-agent statistics for admin dashboards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStats {
+    pub agent_id: String,
+    pub state: String,
+    pub extension: String,
+    pub queues: Vec<String>,
+    pub calls_handled: u64,
+    pub consecutive_no_answers: u32,
+    pub total_talk_time_secs: u64,
+    pub total_wrap_up_time_secs: u64,
+    pub occupancy_pct: f64,
+    pub time_in_current_state_secs: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +282,7 @@ mod tests {
             dtmf_exit_options: HashMap::new(),
             callback_enabled: false,
             callback_digit: None,
+            agent_priorities: HashMap::new(),
         }
     }
 
@@ -348,5 +387,6 @@ mod tests {
         assert_eq!(AgentState::OnCall.to_string(), "on_call");
         assert_eq!(AgentState::WrapUp.to_string(), "wrap_up");
         assert_eq!(AgentState::Away.to_string(), "away");
+        assert_eq!(AgentState::Paused.to_string(), "paused");
     }
 }

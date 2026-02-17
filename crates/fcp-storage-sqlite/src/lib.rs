@@ -3372,6 +3372,7 @@ impl QueueStore for SqliteStorage {
                 skills,
                 priority: priority as u32,
                 state,
+                queue_priorities: HashMap::new(),
             });
         }
 
