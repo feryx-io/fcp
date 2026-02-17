@@ -385,6 +385,7 @@ async fn main() -> Result<()> {
         rate_limit_rps: config.http.rate_limit_rps,
         event_subscriber: Arc::clone(&event_bus),
         events_dropped: Arc::clone(&events_dropped),
+        max_body_size_bytes: config.http.max_body_size_kb * 1024,
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(supervise_task("http-server", async move {
@@ -398,8 +399,9 @@ async fn main() -> Result<()> {
         if days > 0 {
             let recordings_dir = config.conference.recordings_dir.clone();
             let retention_days = days;
+            let cleanup_interval_secs = config.conference.recording_cleanup_interval_secs;
             tokio::spawn(supervise_task("recording-cleanup", async move {
-                run_recording_cleanup(recordings_dir, retention_days).await;
+                run_recording_cleanup(recordings_dir, retention_days, cleanup_interval_secs).await;
             }));
             info!(
                 retention_days = days,
@@ -417,8 +419,9 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from("fcp-conference-server.toml"));
         if config_path.exists() {
             let handler_ref = Arc::clone(&conference_handler);
+            let reload_interval = config.service.config_reload_interval_secs;
             tokio::spawn(supervise_task("config-watcher", async move {
-                run_config_watcher(config_path, handler_ref).await;
+                run_config_watcher(config_path, handler_ref, reload_interval).await;
             }));
             info!("Config hot-reload watcher started");
         }
@@ -445,9 +448,10 @@ async fn main() -> Result<()> {
         let max_bytes = config.conference.max_recording_size_mb * 1024 * 1024;
         let recordings_dir = config.conference.recordings_dir.clone();
         let monitor_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>;
+        let size_check_interval = Duration::from_secs(config.conference.recording_size_check_interval_secs);
         tokio::spawn(supervise_task("recording-size-monitor", async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                tokio::time::sleep(size_check_interval).await;
                 // Check each actively-recording room by scanning for .wav files
                 // that are currently being written (modified in the last 60s)
                 let mut dir = match tokio::fs::read_dir(&recordings_dir).await {
@@ -502,10 +506,11 @@ async fn main() -> Result<()> {
     // 24c. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
+        let events_config = config.events.clone();
         let event_bus_clone = Arc::clone(&event_bus);
         let dropped_counter = Arc::clone(&events_dropped);
         tokio::spawn(supervise_task("event-forwarder", async move {
-            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url, dropped_counter).await {
+            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url, &events_config, dropped_counter).await {
                 tracing::error!(%e, "Event forwarder task failed");
             }
         }));
@@ -771,9 +776,9 @@ fn init_tracing(config: &ConferenceServerConfig) {
 
 /// Periodically delete recordings older than the retention period.
 /// Uses exponential backoff on directory read failure (1min → 2min → 4min → ... → 1hr cap).
-async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
+async fn run_recording_cleanup(recordings_dir: String, retention_days: u32, cleanup_interval_secs: u64) {
     let retention = Duration::from_secs(retention_days as u64 * 86400);
-    let normal_interval = Duration::from_secs(3600);
+    let normal_interval = Duration::from_secs(cleanup_interval_secs);
     let mut backoff = Duration::from_secs(60);
     let max_backoff = Duration::from_secs(3600);
 
@@ -828,12 +833,13 @@ async fn run_recording_cleanup(recordings_dir: String, retention_days: u32) {
 async fn run_event_forwarder(
     event_bus: Arc<InMemoryEventBus>,
     events_url: &str,
+    events_config: &config::EventsSection,
     dropped_metric: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<()> {
     use std::sync::atomic::{AtomicU64, AtomicBool};
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(events_config.timeout_secs))
         .build()
         .context("Failed to create HTTP client for event forwarding")?;
 
@@ -848,11 +854,12 @@ async fn run_event_forwarder(
     let consecutive_failures = Arc::new(AtomicU64::new(0));
     let circuit_open = Arc::new(AtomicBool::new(false));
     let circuit_opened_at = Arc::new(tokio::sync::Mutex::new(Instant::now()));
-    const FAILURE_THRESHOLD: u64 = 5;
-    const COOLDOWN: Duration = Duration::from_secs(30);
+    let failure_threshold = events_config.circuit_breaker_threshold;
+    let cooldown = Duration::from_secs(events_config.circuit_breaker_cooldown_secs);
 
-    // Concurrency limiter: max 50 in-flight HTTP POST tasks
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(50));
+    // Concurrency limiter
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(events_config.max_concurrent));
+    let max_retries = events_config.max_retries;
 
     let mut delivered_events: u64 = 0;
 
@@ -862,13 +869,13 @@ async fn run_event_forwarder(
                 // Circuit breaker check
                 if circuit_open.load(std::sync::atomic::Ordering::Relaxed) {
                     let opened = *circuit_opened_at.lock().await;
-                    if opened.elapsed() < COOLDOWN {
+                    if opened.elapsed() < cooldown {
                         // Circuit open — increment shared dropped metric (visible via /metrics)
                         let total_dropped = dropped_metric.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         if total_dropped % 100 == 1 {
                             warn!(
                                 dropped = total_dropped,
-                                cooldown_remaining_secs = (COOLDOWN - opened.elapsed()).as_secs(),
+                                cooldown_remaining_secs = (cooldown - opened.elapsed()).as_secs(),
                                 "Circuit breaker OPEN — dropping events"
                             );
                         }
@@ -894,21 +901,21 @@ async fn run_event_forwarder(
                         Ok(p) => p,
                         Err(_) => return, // Semaphore closed (shutdown)
                     };
-                    if forward_event_with_retry(&client, &url, &event).await {
+                    if forward_event_with_retry(&client, &url, &event, max_retries).await {
                         // Success — reset failure counter
                         failures.store(0, std::sync::atomic::Ordering::Relaxed);
                     } else {
                         // Failure — increment dropped metric and maybe trip circuit
                         drop_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let prev = failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if prev + 1 >= FAILURE_THRESHOLD
+                        if prev + 1 >= failure_threshold
                             && !cb_open.load(std::sync::atomic::Ordering::Relaxed)
                         {
                             cb_open.store(true, std::sync::atomic::Ordering::Relaxed);
                             *cb_opened_at.lock().await = Instant::now();
                             tracing::error!(
                                 consecutive_failures = prev + 1,
-                                cooldown_secs = COOLDOWN.as_secs(),
+                                cooldown_secs = cooldown.as_secs(),
                                 "Circuit breaker OPENED — event forwarding paused"
                             );
                         }
@@ -938,14 +945,14 @@ async fn run_event_forwarder(
     }
 }
 
-/// Forward a single event with exponential backoff retry (max 3 attempts).
+/// Forward a single event with exponential backoff retry.
 /// Returns `true` on success, `false` if all retries exhausted.
 async fn forward_event_with_retry(
     client: &reqwest::Client,
     url: &str,
     event: &fcp_events::PlatformEvent,
+    max_retries: u32,
 ) -> bool {
-    let max_retries = 3u32;
     let mut delay = Duration::from_millis(200);
 
     for attempt in 1..=max_retries {
@@ -1000,17 +1007,18 @@ async fn supervise_task(name: &'static str, task: impl std::future::Future<Outpu
 }
 
 /// Watch config file for changes and hot-reload conference/AI settings.
-/// Polls file mtime every 10 seconds. Only reloads [conference] and [ai] sections.
+/// Polls file mtime at a configurable interval. Only reloads [conference] and [ai] sections.
 async fn run_config_watcher(
     config_path: std::path::PathBuf,
     handler: Arc<ConferenceCallHandler>,
+    poll_interval_secs: u64,
 ) {
     let mut last_mtime = std::fs::metadata(&config_path)
         .and_then(|m| m.modified())
         .ok();
 
     loop {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(poll_interval_secs)).await;
 
         let current_mtime = match std::fs::metadata(&config_path).and_then(|m| m.modified()) {
             Ok(t) => t,

@@ -43,6 +43,8 @@ pub struct ConferenceState {
     pub event_subscriber: Arc<InMemoryEventBus>,
     /// Counter for events dropped by the circuit breaker (exposed via /metrics)
     pub events_dropped: Arc<AtomicU64>,
+    /// Maximum HTTP request body size in bytes (from config).
+    pub max_body_size_bytes: usize,
 }
 
 /// Public routes (no auth required).
@@ -190,10 +192,11 @@ pub async fn run_http_server(
         }
     }
 
+    let max_body_size = state.max_body_size_bytes;
     let app = public_router()
         .merge(protected)
         .with_state(state)
-        .layer(DefaultBodyLimit::max(64 * 1024));
+        .layer(DefaultBodyLimit::max(max_body_size));
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
@@ -1031,10 +1034,10 @@ async fn set_gain_handler(
     Path((room_number, pid)): Path<(String, String)>,
     Json(payload): Json<SetGainRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    if !payload.gain.is_finite() || payload.gain < 0.0 || payload.gain > 10.0 {
+    if !payload.gain.is_finite() || payload.gain < 0.0 || payload.gain > crate::audio_bridge::MAX_GAIN {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "gain must be finite and in range [0.0, 10.0]" })),
+            Json(serde_json::json!({ "error": format!("gain must be finite and in range [0.0, {}]", crate::audio_bridge::MAX_GAIN) })),
         );
     }
     match state.conference_handler.set_gain(&room_number, &pid, payload.gain) {
@@ -1143,10 +1146,13 @@ async fn announce_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<AnnounceRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    // Reject path traversal attempts (same pattern as safe_recording_path)
+    // Reject path traversal, absolute paths, null bytes, and excessive length
     if payload.audio_path.contains("..")
         || payload.audio_path.contains('\0')
         || payload.audio_path.is_empty()
+        || payload.audio_path.len() > 255
+        || payload.audio_path.starts_with('/')
+        || payload.audio_path.starts_with('\\')
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -1531,7 +1537,7 @@ async fn rate_limit_middleware(
     req: axum::http::Request<Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    // Extract source IP from ConnectInfo or X-Forwarded-For, fallback to 0.0.0.0
+    // Extract source IP from ConnectInfo or X-Forwarded-For
     let ip = req
         .extensions()
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
@@ -1543,7 +1549,10 @@ async fn rate_limit_middleware(
                 .and_then(|s| s.split(',').next())
                 .and_then(|s| s.trim().parse().ok())
         })
-        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        .unwrap_or_else(|| {
+            warn!("Rate limiter: unable to determine client IP, using 0.0.0.0");
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        });
 
     if !limiter.check(ip) {
         return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
@@ -1554,6 +1563,16 @@ async fn rate_limit_middleware(
 // =========================================================================
 // Helpers
 // =========================================================================
+
+/// Validate a participant or room ID from URL path parameters.
+/// Rejects empty, excessively long, or control-character-containing IDs.
+fn is_valid_identifier(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().all(|b| b > 0x1F && b != b'\x7F')
+        && !id.contains('/')
+        && !id.contains('\\')
+}
 
 /// Extract tenant ID from request headers.
 /// Checks X-Tenant-ID header first, falls back to TenantId::nil().

@@ -206,8 +206,10 @@ impl ConferenceCallHandler {
         info!("Conference handler entering drain mode — rejecting new INVITEs");
     }
 
-    /// Maximum number of entries in the meeting cache.
-    const MAX_MEETING_CACHE_SIZE: usize = 10_000;
+    /// Maximum number of entries in the meeting cache (from config).
+    fn max_meeting_cache_size(&self) -> usize {
+        self.conference_config.read().meeting_cache_max_size
+    }
 
     /// Look up a meeting by room number, with in-memory cache and DB fallback.
     ///
@@ -245,12 +247,12 @@ impl ConferenceCallHandler {
             Ok(Some(meeting)) => {
                 if ttl > Duration::ZERO {
                     // Evict expired entries if cache is at capacity
-                    if self.meeting_cache.len() >= Self::MAX_MEETING_CACHE_SIZE {
+                    if self.meeting_cache.len() >= self.max_meeting_cache_size() {
                         self.meeting_cache.retain(|_, (_, cached_at)| {
                             cached_at.elapsed() < ttl
                         });
                         // If still over limit after TTL eviction, drop oldest half
-                        if self.meeting_cache.len() >= Self::MAX_MEETING_CACHE_SIZE {
+                        if self.meeting_cache.len() >= self.max_meeting_cache_size() {
                             let mut count = 0;
                             let to_remove = self.meeting_cache.len() / 2;
                             self.meeting_cache.retain(|_, _| {
@@ -442,8 +444,8 @@ impl ConferenceCallHandler {
     ///
     /// Gain must be a finite value between 0.0 and 10.0 (inclusive).
     pub fn set_gain(&self, room_number: &str, participant_id: &str, gain: f32) -> Result<()> {
-        if !gain.is_finite() || gain < 0.0 || gain > 10.0 {
-            anyhow::bail!("gain must be finite and in range [0.0, 10.0], got {}", gain);
+        if !gain.is_finite() || gain < 0.0 || gain > audio_bridge::MAX_GAIN {
+            anyhow::bail!("gain must be finite and in range [0.0, {}], got {}", audio_bridge::MAX_GAIN, gain);
         }
         let room = self
             .bridge
@@ -1273,10 +1275,11 @@ impl ConferenceCallHandler {
     async fn collect_pin_dtmf(
         rtp_socket: &RtpSocketPair,
         te_pt: Option<u8>,
+        dtmf_clock_rate: u32,
         timeout: Duration,
     ) -> Option<String> {
-        let te_payload_type = te_pt.unwrap_or(101); // common default
-        let mut detector = Rfc2833Detector::new(8000);
+        let te_payload_type = te_pt.unwrap_or(audio_bridge::DEFAULT_TE_PAYLOAD_TYPE);
+        let mut detector = Rfc2833Detector::new(dtmf_clock_rate);
         let mut digits = String::new();
         let max_digits = 20;
         let deadline = tokio::time::Instant::now() + timeout;
@@ -1505,7 +1508,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Check if client requested a Session-Expires (from their INVITE)
             let client_se = sip_parse::header(request.headers(), "Session-Expires")
                 .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
-            let min_se: u64 = 90; // RFC 4028 minimum
+            let min_se: u64 = conf.min_session_expires_secs;
 
             let negotiated_se = match client_se {
                 Some(requested) if requested < min_se => {
@@ -1600,7 +1603,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     "Waiting for PIN entry via DTMF"
                 );
 
-                match Self::collect_pin_dtmf(&rtp_socket, te_pt, pin_timeout).await {
+                match Self::collect_pin_dtmf(&rtp_socket, te_pt, dtmf_clock_rate, pin_timeout).await {
                     Some(ref pin) if pin.is_empty() => {
                         // Empty PIN (user pressed # immediately) — treat as incorrect
                         warn!(room = %room_number, participant = %participant_id, attempt, "Empty PIN submitted");
@@ -2238,7 +2241,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         if conf.session_expires_secs > 0 {
             let client_se = sip_parse::header(request.headers(), "Session-Expires")
                 .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
-            let min_se: u64 = 90;
+            let min_se: u64 = conf.min_session_expires_secs;
             let negotiated_se = match client_se {
                 Some(requested) if requested < min_se => conf.session_expires_secs,
                 Some(requested) => requested.min(conf.session_expires_secs),
@@ -2349,7 +2352,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         if conf.session_expires_secs > 0 {
             let client_se = sip_parse::header(request.headers(), "Session-Expires")
                 .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
-            let min_se: u64 = 90;
+            let min_se: u64 = conf.min_session_expires_secs;
             let negotiated_se = match client_se {
                 Some(requested) if requested < min_se => conf.session_expires_secs,
                 Some(requested) => requested.min(conf.session_expires_secs),
@@ -2854,7 +2857,12 @@ fn find_telephone_event_pt(codecs: &[fcp_media::SdpCodecInfo], sdp: &str) -> Opt
     None
 }
 
-/// Convert a DtmfDigit to its character representation.
+/// Convert a DtmfDigit to its character representation for DTMF command processing.
+///
+/// Returns `None` for Hash because `#` is used as a command terminator in conference
+/// DTMF menus (e.g. `*1#` = mute toggle). This intentionally differs from
+/// `audio_bridge::dtmf_digit_to_char` which returns `Some('#')` for general
+/// audio bridge event reporting.
 fn dtmf_digit_to_char(digit: &DtmfDigit) -> Option<char> {
     match digit {
         DtmfDigit::Zero => Some('0'),
@@ -2868,7 +2876,7 @@ fn dtmf_digit_to_char(digit: &DtmfDigit) -> Option<char> {
         DtmfDigit::Eight => Some('8'),
         DtmfDigit::Nine => Some('9'),
         DtmfDigit::Star => Some('*'),
-        DtmfDigit::Hash => None, // '#' used as terminator
+        DtmfDigit::Hash => None, // '#' used as terminator — see doc comment above
         DtmfDigit::A => Some('A'),
         DtmfDigit::B => Some('B'),
         DtmfDigit::C => Some('C'),

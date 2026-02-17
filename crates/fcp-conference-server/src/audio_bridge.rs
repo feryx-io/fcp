@@ -12,6 +12,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 
+/// Maximum gain multiplier for participant audio (shared between DTMF and API).
+pub const MAX_GAIN: f32 = 10.0;
+
+/// Gain adjustment step per DTMF volume up/down press.
+const DTMF_GAIN_STEP: f32 = 0.1;
+
+/// VAD silence threshold: RMS² below this value is considered silence (~-40 dBFS, ~100 RMS).
+const VAD_SILENCE_THRESHOLD: i64 = 10_000;
+
+/// Default telephone-event payload type (RFC 4733 standard assignment).
+pub const DEFAULT_TE_PAYLOAD_TYPE: u8 = 101;
+
 /// Audio quality statistics tracked per participant.
 pub struct AudioStats {
     pub packets_received: AtomicU64,
@@ -111,7 +123,7 @@ pub async fn run_audio_bridge(
     } else {
         None
     };
-    let te_payload_type = te_pt.unwrap_or(101);
+    let te_payload_type = te_pt.unwrap_or(DEFAULT_TE_PAYLOAD_TYPE);
 
     info!(
         frame_size = frame_size,
@@ -220,7 +232,7 @@ pub async fn run_audio_bridge(
                                         .map(|&s| (s as i64) * (s as i64))
                                         .sum::<i64>()
                                         / pcm_samples.len().max(1) as i64;
-                                    if rms_sq < 10000 { // ~100 RMS threshold
+                                    if rms_sq < VAD_SILENCE_THRESHOLD {
                                         stats.silence_frames.fetch_add(1, Ordering::Relaxed);
                                     } else {
                                         stats.silence_frames.store(0, Ordering::Relaxed);
@@ -374,7 +386,7 @@ fn execute_dtmf_command(
         }
         DtmfCommand::VolumeUp => {
             if let Ok(meta) = room.get_participant_metadata(participant_id) {
-                let new_gain = (meta.gain + 0.1).min(2.0);
+                let new_gain = (meta.gain + DTMF_GAIN_STEP).min(MAX_GAIN);
                 let _ = room.set_participant_gain(participant_id, new_gain);
                 debug!(participant = %participant_id, gain = new_gain, "DTMF volume up");
             }
@@ -382,7 +394,7 @@ fn execute_dtmf_command(
         }
         DtmfCommand::VolumeDown => {
             if let Ok(meta) = room.get_participant_metadata(participant_id) {
-                let new_gain = (meta.gain - 0.1).max(0.0);
+                let new_gain = (meta.gain - DTMF_GAIN_STEP).max(0.0);
                 let _ = room.set_participant_gain(participant_id, new_gain);
                 debug!(participant = %participant_id, gain = new_gain, "DTMF volume down");
             }

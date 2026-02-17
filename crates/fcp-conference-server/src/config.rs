@@ -54,6 +54,10 @@ pub struct ServiceSection {
     /// Default: 30. Set 0 for unlimited (not recommended).
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
+
+    /// Interval in seconds for polling config file changes (hot-reload). Default: 10.
+    #[serde(default = "default_config_reload_interval_secs")]
+    pub config_reload_interval_secs: u64,
 }
 
 fn default_service_type() -> String {
@@ -62,6 +66,10 @@ fn default_service_type() -> String {
 
 fn default_shutdown_timeout_secs() -> u64 {
     30
+}
+
+fn default_config_reload_interval_secs() -> u64 {
+    10
 }
 
 fn default_node_id() -> String {
@@ -74,6 +82,7 @@ impl Default for ServiceSection {
             service_type: default_service_type(),
             node_id: default_node_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+            config_reload_interval_secs: default_config_reload_interval_secs(),
         }
     }
 }
@@ -151,10 +160,18 @@ pub struct HttpSection {
     /// Rate limit for API requests per second. None or 0 = unlimited.
     #[serde(default)]
     pub rate_limit_rps: Option<u32>,
+
+    /// Maximum HTTP request body size in kilobytes (default: 64 KB).
+    #[serde(default = "default_max_body_size_kb")]
+    pub max_body_size_kb: usize,
 }
 
 fn default_http_bind() -> SocketAddr {
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 8090)
+}
+
+fn default_max_body_size_kb() -> usize {
+    64
 }
 
 impl Default for HttpSection {
@@ -164,6 +181,7 @@ impl Default for HttpSection {
             auth_enabled: false,
             auth_token: None,
             rate_limit_rps: None,
+            max_body_size_kb: default_max_body_size_kb(),
         }
     }
 }
@@ -234,11 +252,44 @@ impl Default for MediaSection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EventsSection {
     pub server_url: Option<String>,
+
+    /// HTTP timeout for event forwarding requests (default: 5s).
+    #[serde(default = "default_events_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Max retry attempts for failed event delivery (default: 3).
+    #[serde(default = "default_events_max_retries")]
+    pub max_retries: u32,
+
+    /// Circuit breaker: consecutive failures before opening (default: 5).
+    #[serde(default = "default_events_cb_threshold")]
+    pub circuit_breaker_threshold: u64,
+
+    /// Circuit breaker: cooldown seconds before half-open probe (default: 30).
+    #[serde(default = "default_events_cb_cooldown_secs")]
+    pub circuit_breaker_cooldown_secs: u64,
+
+    /// Max concurrent in-flight event forwarding requests (default: 50).
+    #[serde(default = "default_events_max_concurrent")]
+    pub max_concurrent: usize,
 }
+
+fn default_events_timeout_secs() -> u64 { 5 }
+fn default_events_max_retries() -> u32 { 3 }
+fn default_events_cb_threshold() -> u64 { 5 }
+fn default_events_cb_cooldown_secs() -> u64 { 30 }
+fn default_events_max_concurrent() -> usize { 50 }
 
 impl Default for EventsSection {
     fn default() -> Self {
-        Self { server_url: None }
+        Self {
+            server_url: None,
+            timeout_secs: default_events_timeout_secs(),
+            max_retries: default_events_max_retries(),
+            circuit_breaker_threshold: default_events_cb_threshold(),
+            circuit_breaker_cooldown_secs: default_events_cb_cooldown_secs(),
+            max_concurrent: default_events_max_concurrent(),
+        }
     }
 }
 
@@ -382,6 +433,22 @@ pub struct ConferenceSection {
     /// Maximum announcement file size in megabytes. Default: 10 MB. Set 0 for no limit.
     #[serde(default = "default_max_announcement_size_mb")]
     pub max_announcement_size_mb: u64,
+
+    /// RFC 4028 minimum session expiry in seconds (default: 90).
+    #[serde(default = "default_min_session_expires_secs")]
+    pub min_session_expires_secs: u64,
+
+    /// Maximum entries in the in-memory meeting cache (default: 10000).
+    #[serde(default = "default_meeting_cache_max_size")]
+    pub meeting_cache_max_size: usize,
+
+    /// Interval in seconds between recording cleanup runs (default: 3600 = 1 hour).
+    #[serde(default = "default_recording_cleanup_interval_secs")]
+    pub recording_cleanup_interval_secs: u64,
+
+    /// Interval in seconds between recording size limit checks (default: 30).
+    #[serde(default = "default_recording_size_check_interval_secs")]
+    pub recording_size_check_interval_secs: u64,
 }
 
 fn default_announcements_dir() -> String {
@@ -444,6 +511,22 @@ fn default_max_announcement_size_mb() -> u64 {
     10
 }
 
+fn default_min_session_expires_secs() -> u64 {
+    90
+}
+
+fn default_meeting_cache_max_size() -> usize {
+    10_000
+}
+
+fn default_recording_cleanup_interval_secs() -> u64 {
+    3600
+}
+
+fn default_recording_size_check_interval_secs() -> u64 {
+    30
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -468,6 +551,10 @@ impl Default for ConferenceSection {
             max_recording_size_mb: default_max_recording_size_mb(),
             max_participants_per_node: default_max_participants_per_node(),
             max_announcement_size_mb: default_max_announcement_size_mb(),
+            min_session_expires_secs: default_min_session_expires_secs(),
+            meeting_cache_max_size: default_meeting_cache_max_size(),
+            recording_cleanup_interval_secs: default_recording_cleanup_interval_secs(),
+            recording_size_check_interval_secs: default_recording_size_check_interval_secs(),
         }
     }
 }
