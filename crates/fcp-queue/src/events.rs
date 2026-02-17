@@ -269,6 +269,79 @@ pub async fn supervisor_left(
     .await;
 }
 
+/// Publish a CallbackAttempted event (callback recipient did not answer).
+pub async fn callback_attempted(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    call_id: &str,
+    callback_uri: &str,
+    attempt: u32,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CallbackAttempted {
+            queue_name: queue_name.to_string(),
+            call_id: call_id.to_string(),
+            callback_uri: callback_uri.to_string(),
+            attempt,
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a CallbackCompleted event (callback recipient answered and bridged).
+pub async fn callback_completed(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    call_id: &str,
+    callback_uri: &str,
+    agent_id: &str,
+    attempts: u32,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CallbackCompleted {
+            queue_name: queue_name.to_string(),
+            call_id: call_id.to_string(),
+            callback_uri: callback_uri.to_string(),
+            agent_id: agent_id.to_string(),
+            attempts,
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a CallbackFailed event (max attempts exceeded or cancelled).
+pub async fn callback_failed(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    call_id: &str,
+    callback_uri: &str,
+    reason: &str,
+    attempts: u32,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CallbackFailed {
+            queue_name: queue_name.to_string(),
+            call_id: call_id.to_string(),
+            callback_uri: callback_uri.to_string(),
+            reason: reason.to_string(),
+            attempts,
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a StatsSnapshot event for wallboard consumers.
 pub async fn stats_snapshot(
     events: &Option<Arc<dyn EventPublisher>>,

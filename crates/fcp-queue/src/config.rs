@@ -188,6 +188,14 @@ pub struct QueueConfig {
     /// Recording format: "wav" or "opus". Default: "wav".
     #[serde(default = "default_recording_format")]
     pub recording_format: String,
+
+    /// Maximum callback attempts before abandoning. 0 = unlimited. Default: 3.
+    #[serde(default = "default_callback_max_attempts")]
+    pub callback_max_attempts: u32,
+
+    /// Seconds to wait between callback attempts. Default: 60.
+    #[serde(default = "default_callback_retry_delay")]
+    pub callback_retry_delay_secs: u32,
 }
 
 /// A time-of-day schedule entry for queue business hours.
@@ -271,6 +279,14 @@ fn default_timezone() -> String {
 
 fn default_recording_format() -> String {
     "wav".to_string()
+}
+
+fn default_callback_max_attempts() -> u32 {
+    3
+}
+
+fn default_callback_retry_delay() -> u32 {
+    60
 }
 
 #[cfg(test)]

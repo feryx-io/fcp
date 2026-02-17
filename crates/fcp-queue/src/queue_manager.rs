@@ -1109,6 +1109,142 @@ impl QueueManager {
         }
     }
 
+    /// Get callback calls that are ready to be attempted (cooldown expired).
+    /// Filters by: is_callback, has callback_uri, and last_callback_attempt
+    /// is either None or older than the queue's callback_retry_delay_secs.
+    /// Returns (call_id, callback_uri) pairs.
+    pub fn get_ready_callbacks(&self, queue_name: &str) -> Vec<(String, String)> {
+        if let Some(queue) = self.queues.get(queue_name) {
+            let delay = Duration::from_secs(queue.config.callback_retry_delay_secs as u64);
+            queue
+                .waiting_calls
+                .iter()
+                .filter(|c| c.is_callback && c.callback_uri.is_some())
+                .filter(|c| match c.last_callback_attempt {
+                    None => true,
+                    Some(last) => last.elapsed() >= delay,
+                })
+                .filter_map(|c| {
+                    c.callback_uri
+                        .as_ref()
+                        .map(|uri| (c.call_id.clone(), uri.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Increment the callback attempt counter for a call and set last_callback_attempt.
+    /// Returns the new attempt count, or None if call not found.
+    pub fn increment_callback_attempts(&self, call_id: &str) -> Option<u32> {
+        for mut queue in self.queues.iter_mut() {
+            if let Some(call) = queue.waiting_calls.iter_mut().find(|c| c.call_id == call_id) {
+                call.callback_attempts += 1;
+                call.last_callback_attempt = Some(Instant::now());
+                return Some(call.callback_attempts);
+            }
+        }
+        None
+    }
+
+    /// Cancel a pending callback by removing it from the queue.
+    /// Returns true if the callback was found and removed.
+    pub fn cancel_callback(&self, call_id: &str) -> bool {
+        for mut queue in self.queues.iter_mut() {
+            if let Some(idx) = queue
+                .waiting_calls
+                .iter()
+                .position(|c| c.call_id == call_id && c.is_callback)
+            {
+                queue.waiting_calls.remove(idx);
+                queue.recompute_positions();
+                info!(call_id = %call_id, queue = %queue.name, "Callback cancelled");
+                return true;
+            }
+        }
+        false
+    }
+
+    /// List all pending callbacks across all queues for the REST API.
+    pub fn list_all_callbacks(&self) -> Vec<crate::types::CallbackInfo> {
+        let now = Instant::now();
+        let mut result = Vec::new();
+        for queue in self.queues.iter() {
+            for call in &queue.waiting_calls {
+                if call.is_callback {
+                    if let Some(ref uri) = call.callback_uri {
+                        result.push(crate::types::CallbackInfo {
+                            call_id: call.call_id.clone(),
+                            queue_name: queue.name.clone(),
+                            callback_uri: uri.clone(),
+                            caller_display: call.caller_display.clone(),
+                            attempts: call.callback_attempts,
+                            enqueued_at_secs_ago: now
+                                .duration_since(call.enqueued_at)
+                                .as_secs(),
+                            last_attempt_secs_ago: call
+                                .last_callback_attempt
+                                .map(|t| now.duration_since(t).as_secs()),
+                        });
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Remove callbacks that have exceeded callback_max_attempts.
+    /// Returns removed calls for event publishing.
+    pub fn remove_expired_callbacks(&self, queue_name: &str) -> Vec<QueuedCall> {
+        let mut expired = Vec::new();
+        if let Some(mut queue) = self.queues.get_mut(queue_name) {
+            let max_attempts = queue.config.callback_max_attempts;
+            if max_attempts == 0 {
+                return expired; // Unlimited attempts
+            }
+            let mut i = 0;
+            while i < queue.waiting_calls.len() {
+                if queue.waiting_calls[i].is_callback
+                    && queue.waiting_calls[i].callback_attempts >= max_attempts
+                {
+                    let call = queue.waiting_calls.remove(i);
+                    info!(
+                        call_id = %call.call_id,
+                        queue = %queue_name,
+                        attempts = call.callback_attempts,
+                        max = max_attempts,
+                        "Callback expired after max attempts"
+                    );
+                    expired.push(call);
+                } else {
+                    i += 1;
+                }
+            }
+            if !expired.is_empty() {
+                queue.recompute_positions();
+            }
+        }
+        expired
+    }
+
+    /// Handle callback recipient failure (no-answer/reject/timeout).
+    /// Unlike agent_no_answer(), this does NOT penalize the agent's no-answer counter.
+    /// Instead, it makes the agent available again and increments callback attempts.
+    pub async fn agent_callback_recipient_failed(&self, agent_id: &str, call_id: &str) {
+        // Make agent available without penalizing
+        if let Some(mut agent) = self.agents.get_mut(agent_id) {
+            agent.current_calls = agent.current_calls.saturating_sub(1);
+            if agent.current_calls == 0 {
+                agent.state = AgentState::Available;
+                agent.state_changed_at = Instant::now();
+            }
+        }
+
+        // Increment callback attempt counter
+        self.increment_callback_attempts(call_id);
+    }
+
     /// Restore agent state from persistent storage after a service restart.
     /// Returns the number of agents restored.
     pub async fn restore_agents(
@@ -1202,6 +1338,8 @@ mod tests {
                 connect_prompt: None,
                 record_calls: false,
                 recording_format: "wav".to_string(),
+                callback_max_attempts: 3,
+                callback_retry_delay_secs: 60,
             },
         );
         QueueSystemConfig {
@@ -1234,6 +1372,8 @@ mod tests {
             is_callback: false,
             callback_uri: None,
             original_priority: 0,
+            callback_attempts: 0,
+            last_callback_attempt: None,
         }
     }
 

@@ -144,6 +144,22 @@ pub struct QueuedCall {
     pub is_callback: bool,
     /// URI to call back if `is_callback` is true.
     pub callback_uri: Option<String>,
+    /// Number of outbound callback attempts made so far.
+    pub callback_attempts: u32,
+    /// When the last callback attempt was made (for cooldown enforcement).
+    pub last_callback_attempt: Option<Instant>,
+}
+
+/// Information about a pending callback for the REST API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallbackInfo {
+    pub call_id: String,
+    pub queue_name: String,
+    pub callback_uri: String,
+    pub caller_display: Option<String>,
+    pub attempts: u32,
+    pub enqueued_at_secs_ago: u64,
+    pub last_attempt_secs_ago: Option<u64>,
 }
 
 /// Runtime state for a single queue instance.
@@ -241,7 +257,7 @@ impl Queue {
         }
     }
 
-    fn recompute_positions(&mut self) {
+    pub(crate) fn recompute_positions(&mut self) {
         for (i, call) in self.waiting_calls.iter_mut().enumerate() {
             call.position = i + 1;
         }
@@ -328,6 +344,8 @@ mod tests {
             connect_prompt: None,
             record_calls: false,
             recording_format: "wav".to_string(),
+            callback_max_attempts: 3,
+            callback_retry_delay_secs: 60,
         }
     }
 
@@ -346,6 +364,8 @@ mod tests {
             attempts: 0,
             is_callback: false,
             callback_uri: None,
+            callback_attempts: 0,
+            last_callback_attempt: None,
         }
     }
 

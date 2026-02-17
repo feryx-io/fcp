@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use fcp_b2bua_core::CallManager;
@@ -47,6 +47,9 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/agents/{id}/kick", post(kick_agent_handler))
         .route("/agents/{id}/login", post(login_agent_handler))
         .route("/agents/{id}/logout", post(logout_agent_handler))
+        // Callback endpoints
+        .route("/callbacks", get(list_callbacks_handler))
+        .route("/callbacks/{call_id}", delete(cancel_callback_handler))
         // Supervisor endpoints
         .route("/calls/{id}/monitor", post(monitor_call_handler))
         .route("/calls/{id}/whisper", post(whisper_call_handler))
@@ -681,5 +684,36 @@ async fn supervisor_leave_handler(
             "call_id": call_id,
         })),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+// ---- Callback Endpoints ----
+
+/// List all pending callbacks across all queues.
+async fn list_callbacks_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled", "callbacks": []}));
+    };
+    let callbacks = qm.list_all_callbacks();
+    Json(serde_json::json!({ "callbacks": callbacks }))
+}
+
+/// Cancel a pending callback by call_id.
+async fn cancel_callback_handler(
+    State(state): State<Arc<AppState>>,
+    Path(call_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    if qm.cancel_callback(&call_id) {
+        Json(serde_json::json!({
+            "status": "cancelled",
+            "call_id": call_id,
+        }))
+    } else {
+        Json(serde_json::json!({
+            "error": format!("Callback '{}' not found", call_id),
+        }))
     }
 }

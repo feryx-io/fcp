@@ -611,9 +611,25 @@ impl QueueCallHandler {
                     .map(|entry| entry.key().clone())
                     .collect();
 
+                // Prune callbacks that exceeded max attempts
+                let expired_callbacks = queue_manager.remove_expired_callbacks(&queue_name);
+                for expired in &expired_callbacks {
+                    let cb_uri = expired.callback_uri.as_deref().unwrap_or("");
+                    fcp_queue::events::callback_failed(
+                        &Some(Arc::clone(&event_bus)),
+                        &queue_name,
+                        &expired.call_id,
+                        cb_uri,
+                        "max_attempts_exceeded",
+                        expired.callback_attempts,
+                        &expired.tenant_id,
+                    ).await;
+                }
+
                 // Also collect callback call_ids (in QueueManager queue but no session)
+                // Using get_ready_callbacks() which enforces cooldown between attempts
                 let callback_call_ids: Vec<(String, String)> = queue_manager
-                    .get_callback_calls(&queue_name)
+                    .get_ready_callbacks(&queue_name)
                     .into_iter()
                     .filter(|(call_id, _)| !sessions.contains_key(call_id))
                     .collect();
@@ -694,6 +710,7 @@ impl QueueCallHandler {
                         local_uri.clone(),
                         Arc::clone(&uac),
                         Arc::clone(&event_bus),
+                        queue_name.clone(),
                     );
                 }
             }
@@ -1661,6 +1678,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             attempts: 0,
             is_callback: false,
             callback_uri: None,
+            callback_attempts: 0,
+            last_callback_attempt: None,
         };
 
         match self.queue_manager.enqueue_call(queued_call).await {
@@ -2363,13 +2382,21 @@ fn spawn_callback_ring(
     local_addr: String,
     local_uri: String,
     uac: Arc<SipUserAgentClient>,
-    _event_bus: Arc<dyn EventPublisher>,
+    event_bus: Arc<dyn EventPublisher>,
+    queue_name: String,
 ) {
     tokio::spawn(async move {
         let agent_id = plan.agent_id.clone();
         let agent_extension = plan.agent_extension.clone();
         let ring_timeout = Duration::from_secs(ring_timeout_secs as u64);
         let domain = extract_domain(&local_uri);
+        let events = Some(Arc::clone(&event_bus));
+
+        // Look up tenant_id from the queued call
+        let tenant_id = queue_manager
+            .get_queued_call(&call_id)
+            .map(|c| c.tenant_id.clone())
+            .unwrap_or_else(fcp_core::TenantId::nil);
 
         // 1. Allocate agent B-leg RTP ports
         let agent_port_pair = match port_pool.allocate().await {
@@ -2395,7 +2422,7 @@ fn spawn_callback_ring(
             }
         };
 
-        // 3. Wait for agent to answer
+        // 3. Wait for agent to answer (Stage 1 — agent no-answer IS the agent's fault)
         let agent_result = tokio::time::timeout(ring_timeout, agent_handle.await_final()).await;
 
         let agent_response = match agent_result {
@@ -2422,7 +2449,7 @@ fn spawn_callback_ring(
                 warn!(call_id = %call_id, error = %e, "Callback: failed to create agent RTP socket");
                 port_pool.deallocate(agent_port_pair).await;
                 let _ = uac.bye(&agent_handle.dialog.read().await.clone()).await;
-                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
                 return;
             }
         };
@@ -2448,7 +2475,7 @@ fn spawn_callback_ring(
                 warn!(call_id = %call_id, error = %e, "Callback: failed to allocate callback RTP port");
                 let _ = uac.bye(&agent_dialog).await;
                 port_pool.deallocate(agent_port_pair).await;
-                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
                 return;
             }
         };
@@ -2464,12 +2491,18 @@ fn spawn_callback_ring(
                 let _ = uac.bye(&agent_dialog).await;
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
-                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                // Stage 2 failure — don't penalize agent
+                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
+                let attempts = queue_manager.get_queued_call(&call_id)
+                    .map(|c| c.callback_attempts).unwrap_or(0);
+                fcp_queue::events::callback_attempted(
+                    &events, &queue_name, &call_id, &callback_uri, attempts, &tenant_id,
+                ).await;
                 return;
             }
         };
 
-        // 6. Wait for callback recipient to answer
+        // 6. Wait for callback recipient to answer (Stage 2 — NOT the agent's fault)
         let cb_result = tokio::time::timeout(Duration::from_secs(30), cb_handle.await_final()).await;
 
         let cb_response = match cb_result {
@@ -2479,7 +2512,13 @@ fn spawn_callback_ring(
                 let _ = uac.bye(&agent_dialog).await;
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
-                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                // Stage 2 failure — don't penalize agent
+                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
+                let attempts = queue_manager.get_queued_call(&call_id)
+                    .map(|c| c.callback_attempts).unwrap_or(0);
+                fcp_queue::events::callback_attempted(
+                    &events, &queue_name, &call_id, &callback_uri, attempts, &tenant_id,
+                ).await;
                 return;
             }
             Err(_) => {
@@ -2487,7 +2526,13 @@ fn spawn_callback_ring(
                 let _ = uac.bye(&agent_dialog).await;
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
-                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                // Stage 2 timeout — don't penalize agent
+                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
+                let attempts = queue_manager.get_queued_call(&call_id)
+                    .map(|c| c.callback_attempts).unwrap_or(0);
+                fcp_queue::events::callback_attempted(
+                    &events, &queue_name, &call_id, &callback_uri, attempts, &tenant_id,
+                ).await;
                 return;
             }
         };
@@ -2523,7 +2568,15 @@ fn spawn_callback_ring(
         let cb_dialog = cb_handle.dialog.read().await.clone();
 
         // 7. Dequeue the call and update agent state
+        let cb_attempts = queue_manager.get_queued_call(&call_id)
+            .map(|c| c.callback_attempts).unwrap_or(0);
         queue_manager.agent_answered(&agent_id, &call_id).await;
+
+        // Publish CallbackCompleted event
+        fcp_queue::events::callback_completed(
+            &events, &queue_name, &call_id, &callback_uri,
+            &agent_id, cb_attempts + 1, &tenant_id,
+        ).await;
 
         // 8. Bridge agent ↔ callback RTP
         let (bridge_a_to_b, bridge_b_to_a) =

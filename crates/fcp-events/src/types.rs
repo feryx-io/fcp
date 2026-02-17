@@ -686,6 +686,41 @@ pub enum QueueEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// A callback attempt was made (recipient did not answer)
+    CallbackAttempted {
+        queue_name: String,
+        call_id: String,
+        callback_uri: String,
+        attempt: u32,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Callback completed successfully (recipient answered and bridged to agent)
+    CallbackCompleted {
+        queue_name: String,
+        call_id: String,
+        callback_uri: String,
+        agent_id: String,
+        attempts: u32,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Callback failed permanently (max attempts exceeded or cancelled)
+    CallbackFailed {
+        queue_name: String,
+        call_id: String,
+        callback_uri: String,
+        reason: String,
+        attempts: u32,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Queue statistics snapshot for event publishing.
@@ -1020,7 +1055,10 @@ impl QueueEvent {
             | QueueEvent::StatsSnapshot { timestamp, .. }
             | QueueEvent::CallerTransferred { timestamp, .. }
             | QueueEvent::SupervisorJoined { timestamp, .. }
-            | QueueEvent::SupervisorLeft { timestamp, .. } => *timestamp,
+            | QueueEvent::SupervisorLeft { timestamp, .. }
+            | QueueEvent::CallbackAttempted { timestamp, .. }
+            | QueueEvent::CallbackCompleted { timestamp, .. }
+            | QueueEvent::CallbackFailed { timestamp, .. } => *timestamp,
         }
     }
 }
