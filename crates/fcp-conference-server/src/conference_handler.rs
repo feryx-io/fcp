@@ -439,7 +439,12 @@ impl ConferenceCallHandler {
     }
 
     /// Set participant audio gain.
+    ///
+    /// Gain must be a finite value between 0.0 and 10.0 (inclusive).
     pub fn set_gain(&self, room_number: &str, participant_id: &str, gain: f32) -> Result<()> {
+        if !gain.is_finite() || gain < 0.0 || gain > 10.0 {
+            anyhow::bail!("gain must be finite and in range [0.0, 10.0], got {}", gain);
+        }
         let room = self
             .bridge
             .get_room(room_number)
@@ -1134,6 +1139,14 @@ impl ConferenceCallHandler {
 
                     tokio::spawn(async move {
                         use fcp_core::storage::ConferenceStore;
+                        // Re-check participant count — a new participant may have joined
+                        // between our check and this task executing
+                        if let Ok(room) = bridge.get_room(&room_number) {
+                            if room.participant_count() > 0 {
+                                debug!(room = %room_number, "Skipping auto-destroy: room is no longer empty");
+                                return;
+                            }
+                        }
                         let should_destroy = match storage
                             .get_meeting_by_room_number(&tenant_id, &room_number)
                             .await
@@ -1414,8 +1427,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         };
 
-        // Also look for telephone-event payload type for DTMF
+        // Also look for telephone-event payload type and clock rate for DTMF
         let te_pt = find_telephone_event_pt(&offered_codecs, sdp_offer);
+        let dtmf_clock_rate = find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
 
         debug!(
             room = %room_number,
@@ -1718,6 +1732,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let wait_stats_clone = Arc::clone(&wait_stats);
                 let wait_srtp = srtp_context.clone();
                 let max_wait_secs = conf.max_wait_for_moderator_secs;
+                let wait_uac = Arc::clone(&self.uac);
+                let wait_dialog = dialog.clone();
 
                 let wait_handle = tokio::spawn(async move {
                     // Poll every 500ms waiting to be released into the mixer
@@ -1742,6 +1758,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 );
                                 // Remove from room (handles waiting list cleanup)
                                 let _ = bridge_room.remove_participant(&pid);
+
+                                // Send BYE to disconnect the SIP call
+                                if let Err(e) = wait_uac.bye(&wait_dialog).await {
+                                    warn!(error = %e, "Failed to send BYE after wait-for-moderator timeout");
+                                }
 
                                 // Publish leave event so downstream systems know about the timeout
                                 let timeout_event = PlatformEvent::Conference(
@@ -1841,6 +1862,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     frame_size,
                                     jitter_buffer_ms,
                                     te_pt,
+                                    dtmf_clock_rate,
                                     dtmf_handler,
                                     false, // waiting participants are not hosts
                                     wait_stats_clone,
@@ -1908,13 +1930,21 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             "Participant joined conference"
         );
 
-        // Publish MeetingStarted if this is the first participant
-        if room.participant_count() == 1 {
-            self.publish_event(ConferenceEvent::MeetingStarted {
-                room_number: room_number.clone(),
-                tenant_id,
-                timestamp: SystemTime::now(),
-            });
+        // Insert into room_sessions index first (atomically check if we're the first)
+        {
+            let mut entry = self.room_sessions.entry(room_number.clone()).or_default();
+            let is_first = entry.is_empty();
+            entry.push(call_id.clone());
+            drop(entry); // release DashMap lock before publishing events
+
+            // Publish MeetingStarted if this is the first session for this room
+            if is_first {
+                self.publish_event(ConferenceEvent::MeetingStarted {
+                    room_number: room_number.clone(),
+                    tenant_id,
+                    timestamp: SystemTime::now(),
+                });
+            }
         }
 
         // Publish join event
@@ -1985,16 +2015,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             frame_size,
             conf.jitter_buffer_ms,
             te_pt,
+            dtmf_clock_rate,
             dtmf_handler,
             is_host,
             stats_clone,
             bridge_srtp,
         ));
 
-        // 19. Store session
+        // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
         let remote_addr = parse_remote_rtp_addr(sdp_offer)
             .unwrap_or(UNKNOWN_REMOTE);
-        self.room_sessions.entry(room_number.clone()).or_default().push(call_id.clone());
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -2124,6 +2154,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_stats = Arc::clone(&session.stats);
                 let reinvite_is_host = session.is_host;
                 let reinvite_te_pt = session.te_pt;
+                let reinvite_dtmf_clock_rate = find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
                 let reinvite_srtp = session.srtp_context.clone();
                 let new_handle = tokio::spawn(async move {
                     // Wait for old bridge to actually stop (with timeout) before starting new one
@@ -2142,6 +2173,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         new_frame_size,
                         jitter_buffer_ms,
                         reinvite_te_pt,
+                        reinvite_dtmf_clock_rate,
                         reinvite_dtmf,
                         reinvite_is_host,
                         reinvite_stats,
@@ -2763,6 +2795,32 @@ fn pick_codec(
         }
     }
     None
+}
+
+/// Extract the telephone-event clock rate from SDP codecs.
+///
+/// Returns the clock rate from the telephone-event codec entry (typically 8000),
+/// falling back to 8000 if not found. This ensures the DTMF detector uses the
+/// correct sample rate rather than assuming 8000 Hz.
+fn find_telephone_event_clock_rate(codecs: &[fcp_media::SdpCodecInfo], sdp: &str) -> u32 {
+    for codec in codecs {
+        if codec.encoding_name.eq_ignore_ascii_case("telephone-event") {
+            return codec.clock_rate;
+        }
+    }
+    // Fallback: parse SDP lines manually for clock rate
+    for line in sdp.lines() {
+        let line = line.trim();
+        // a=rtpmap:101 telephone-event/8000
+        if line.starts_with("a=rtpmap:") && line.contains("telephone-event") {
+            if let Some(slash_pos) = line.rfind('/') {
+                if let Ok(rate) = line[slash_pos + 1..].parse::<u32>() {
+                    return rate;
+                }
+            }
+        }
+    }
+    8000 // default
 }
 
 /// Find telephone-event payload type from the SDP.

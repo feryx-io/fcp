@@ -197,7 +197,11 @@ pub async fn run_http_server(
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1027,6 +1031,12 @@ async fn set_gain_handler(
     Path((room_number, pid)): Path<(String, String)>,
     Json(payload): Json<SetGainRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    if !payload.gain.is_finite() || payload.gain < 0.0 || payload.gain > 10.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "gain must be finite and in range [0.0, 10.0]" })),
+        );
+    }
     match state.conference_handler.set_gain(&room_number, &pid, payload.gain) {
         Ok(()) => {
             info!(action = "set_gain", room = %room_number, participant = %pid, gain = payload.gain, "AUDIT: participant gain set via API");
@@ -1133,6 +1143,17 @@ async fn announce_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<AnnounceRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
+    // Reject path traversal attempts (same pattern as safe_recording_path)
+    if payload.audio_path.contains("..")
+        || payload.audio_path.contains('\0')
+        || payload.audio_path.is_empty()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid audio_path" })),
+        );
+    }
+
     // If the path doesn't contain a separator, treat it as a filename in announcements_dir
     let audio_path = if payload.audio_path.contains('/') || payload.audio_path.contains('\\') {
         payload.audio_path.clone()

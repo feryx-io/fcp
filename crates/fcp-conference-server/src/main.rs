@@ -465,8 +465,14 @@ async fn main() -> Result<()> {
                         }
                         // File exceeds limit — find the room by filename prefix and stop recording
                         let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                        // Filename format: {room}-{timestamp}-{uuid} — extract room as first segment
-                        let room_id = filename.split('-').next().unwrap_or(filename);
+                        // Filename format: {room}-{timestamp}-{uuid_simple} — extract room by
+                        // stripping the last two segments (uuid is 32 hex chars, timestamp is digits).
+                        // Parse from right to handle dashed room names (e.g. "conf-room-1-1707000-abc123def").
+                        let room_id = filename
+                            .rfind('-')
+                            .and_then(|i| filename[..i].rfind('-'))
+                            .map(|i| &filename[..i])
+                            .unwrap_or(filename);
                         if let Ok(room) = monitor_bridge.get_room(room_id) {
                             if room.is_recording() {
                                 warn!(
@@ -522,7 +528,7 @@ async fn main() -> Result<()> {
 
     // 24. Wait for shutdown signal
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("Failed to register SIGTERM handler");
+        .context("Failed to register SIGTERM handler")?;
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {

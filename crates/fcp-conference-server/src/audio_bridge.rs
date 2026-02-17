@@ -85,6 +85,7 @@ pub async fn run_audio_bridge(
     frame_size: usize,
     jitter_buffer_ms: u64,
     te_pt: Option<u8>,
+    dtmf_clock_rate: u32,
     dtmf_handler: Option<Arc<DtmfCommandHandler>>,
     is_host: bool,
     stats: Arc<AudioStats>,
@@ -106,7 +107,7 @@ pub async fn run_audio_bridge(
 
     // DTMF detector for telephone-event packets
     let mut dtmf_detector = if te_pt.is_some() {
-        Some(Rfc2833Detector::new(8000))
+        Some(Rfc2833Detector::new(dtmf_clock_rate))
     } else {
         None
     };
@@ -159,10 +160,11 @@ pub async fn run_audio_bridge(
                         // Check if this is a telephone-event (DTMF) packet
                         if packet.header.payload_type() == te_payload_type {
                             if let Some(ref mut detector) = dtmf_detector {
-                                if let Ok(events) = detector.process_with_timestamp(
+                                match detector.process_with_timestamp(
                                     &packet.payload[..],
                                     packet.header.timestamp,
                                 ) {
+                                Ok(events) => {
                                     for event in events {
                                         if event.event_type == DtmfEventType::End {
                                             if let Some(ch) = dtmf_digit_to_char(&event.digit) {
@@ -190,6 +192,10 @@ pub async fn run_audio_bridge(
                                             }
                                         }
                                     }
+                                }
+                                Err(e) => {
+                                    trace!(participant = %participant_id, error = %e, "DTMF detection error");
+                                }
                                 }
                             }
                             continue; // Don't decode telephone-event as audio
@@ -220,7 +226,9 @@ pub async fn run_audio_bridge(
                                         stats.silence_frames.store(0, Ordering::Relaxed);
                                     }
 
-                                    let _ = room.write_audio(&participant_id, &pcm_samples);
+                                    if let Err(e) = room.write_audio(&participant_id, &pcm_samples) {
+                                        warn!(participant = %participant_id, error = %e, "write_audio failed");
+                                    }
                                 }
                                 Err(e) => {
                                     stats.decode_errors.fetch_add(1, Ordering::Relaxed);
@@ -284,10 +292,14 @@ pub async fn run_audio_bridge(
                                 } else {
                                     rtp_socket.send_rtp(&packet).await
                                 };
-                                if let Err(e) = send_result {
-                                    trace!(participant = %participant_id, error = %e, "RTP send error");
+                                match send_result {
+                                    Ok(_) => {
+                                        stats.packets_sent.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    Err(e) => {
+                                        trace!(participant = %participant_id, error = %e, "RTP send error");
+                                    }
                                 }
-                                stats.packets_sent.fetch_add(1, Ordering::Relaxed);
                                 seq = seq.wrapping_add(1);
                                 timestamp = timestamp.wrapping_add(frame_size as u32);
                             }

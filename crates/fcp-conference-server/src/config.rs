@@ -533,7 +533,7 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
 
     // Auth enabled requires a token
     if config.http.auth_enabled && config.http.auth_token.is_none() {
-        tracing::warn!("http.auth_enabled is true but no auth_token is configured");
+        anyhow::bail!("http.auth_enabled is true but no auth_token is configured — either set auth_token or disable auth");
     }
 
     // Storage backend must be recognized
