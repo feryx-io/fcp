@@ -78,6 +78,8 @@ pub struct Agent {
     pub max_concurrent_calls: u32,
     /// Number of calls currently active for this agent.
     pub current_calls: u32,
+    /// Reason for the current Away/Paused state (e.g., "lunch", "meeting", "bathroom").
+    pub pause_reason: Option<String>,
 }
 
 impl Agent {
@@ -102,6 +104,7 @@ impl Agent {
             logged_in_at: None,
             max_concurrent_calls: 1,
             current_calls: 0,
+            pause_reason: None,
         }
     }
 
@@ -304,6 +307,9 @@ pub struct AgentStats {
     pub time_in_current_state_secs: u64,
     pub current_calls: u32,
     pub max_concurrent_calls: u32,
+    /// Reason for Away/Paused state (e.g., "lunch", "meeting").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -346,6 +352,7 @@ mod tests {
             recording_format: "wav".to_string(),
             callback_max_attempts: 3,
             callback_retry_delay_secs: 60,
+            sla_warning_threshold_pct: 0.0,
         }
     }
 

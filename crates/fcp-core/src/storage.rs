@@ -1120,6 +1120,23 @@ fn default_max_concurrent() -> u32 {
     1
 }
 
+/// A timestamped snapshot of queue statistics for historical analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredQueueSnapshot {
+    pub queue_name: String,
+    /// Unix timestamp (seconds since epoch).
+    pub timestamp_epoch: u64,
+    pub calls_waiting: usize,
+    pub agents_available: usize,
+    pub agents_on_call: usize,
+    pub agents_total: usize,
+    pub avg_wait_time_secs: f64,
+    pub longest_wait_secs: u64,
+    pub calls_handled_today: u64,
+    pub calls_abandoned_today: u64,
+    pub service_level_pct: f64,
+}
+
 /// Persistence for ACD queue agent state.
 #[async_trait]
 pub trait QueueStore: Send + Sync {
@@ -1135,6 +1152,29 @@ pub trait QueueStore: Send + Sync {
 
     /// Clear all agent records for a tenant.
     async fn clear_agents(&self, tenant_id: &crate::TenantId) -> Result<()>;
+
+    /// Save a queue stats snapshot for historical analysis.
+    /// Default implementation is a no-op for stores that don't support it.
+    async fn save_stats_snapshot(
+        &self,
+        _tenant_id: &crate::TenantId,
+        _snapshot: StoredQueueSnapshot,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Query historical stats snapshots for a queue within a time range.
+    /// Returns snapshots ordered by timestamp ascending.
+    async fn query_stats_snapshots(
+        &self,
+        _tenant_id: &crate::TenantId,
+        _queue_name: &str,
+        _from_epoch: Option<u64>,
+        _to_epoch: Option<u64>,
+        _limit: usize,
+    ) -> Result<Vec<StoredQueueSnapshot>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Storage backend for conference meetings.

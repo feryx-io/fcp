@@ -196,6 +196,11 @@ pub struct QueueConfig {
     /// Seconds to wait between callback attempts. Default: 60.
     #[serde(default = "default_callback_retry_delay")]
     pub callback_retry_delay_secs: u32,
+
+    /// SLA warning threshold percentage. When service level drops below this
+    /// value, a `ServiceLevelWarning` event is emitted. 0 = disabled. Default: 0.
+    #[serde(default)]
+    pub sla_warning_threshold_pct: f64,
 }
 
 /// A time-of-day schedule entry for queue business hours.

@@ -626,6 +626,8 @@ pub enum QueueEvent {
         agent_id: String,
         old_state: String,
         new_state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -705,6 +707,18 @@ pub enum QueueEvent {
         callback_uri: String,
         agent_id: String,
         attempts: u32,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Service level dropped below configured warning threshold
+    ServiceLevelWarning {
+        queue_name: String,
+        current_pct: f64,
+        threshold_pct: f64,
+        calls_offered: u64,
+        calls_within_sl: u64,
         tenant_id: TenantId,
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
@@ -1058,7 +1072,8 @@ impl QueueEvent {
             | QueueEvent::SupervisorLeft { timestamp, .. }
             | QueueEvent::CallbackAttempted { timestamp, .. }
             | QueueEvent::CallbackCompleted { timestamp, .. }
-            | QueueEvent::CallbackFailed { timestamp, .. } => *timestamp,
+            | QueueEvent::CallbackFailed { timestamp, .. }
+            | QueueEvent::ServiceLevelWarning { timestamp, .. } => *timestamp,
         }
     }
 }

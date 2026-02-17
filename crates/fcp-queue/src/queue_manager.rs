@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use chrono::Datelike;
 use dashmap::DashMap;
-use fcp_core::storage::{QueueStore, StoredAgent};
+use std::collections::VecDeque;
+
+use fcp_core::storage::{QueueStore, StoredAgent, StoredQueueSnapshot};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 use tokio::task::JoinHandle;
@@ -42,6 +44,8 @@ pub struct QueueManager {
     calls_offered_today: Arc<DashMap<String, u64>>,
     /// Optional persistent store for agent state.
     queue_store: Option<Arc<dyn QueueStore>>,
+    /// In-memory ring buffer of stats snapshots per queue (max 1440 = 24h at 1-min intervals).
+    stats_history: Arc<DashMap<String, VecDeque<StoredQueueSnapshot>>>,
 }
 
 impl QueueManager {
@@ -83,6 +87,7 @@ impl QueueManager {
             calls_within_sl,
             calls_offered_today,
             queue_store: None,
+            stats_history: Arc::new(DashMap::new()),
         }
     }
 
@@ -286,6 +291,7 @@ impl QueueManager {
             agent_id,
             &old_state,
             "logged_out",
+            None,
             &tenant_id,
         )
         .await;
@@ -306,16 +312,17 @@ impl QueueManager {
         let new_state = state.to_string();
         agent.state = state;
         agent.state_changed_at = Instant::now();
-        // Reset consecutive no-answer counter when manually set to Available
+        // Reset consecutive no-answer counter and clear pause reason when manually set to Available
         if state == AgentState::Available {
             agent.consecutive_no_answers = 0;
+            agent.pause_reason = None;
         }
         let tenant_id = agent.tenant_id.clone();
         drop(agent);
 
         debug!(agent_id = %agent_id, old_state = %old_state, new_state = %new_state, "Agent state changed");
 
-        events::agent_state_changed(&self.events, agent_id, &old_state, &new_state, &tenant_id)
+        events::agent_state_changed(&self.events, agent_id, &old_state, &new_state, None, &tenant_id)
             .await;
 
         self.persist_agent_change(&tenant_id);
@@ -631,6 +638,7 @@ impl QueueManager {
                 let old_state = agent.state.to_string();
                 agent.state = AgentState::Away;
                 agent.state_changed_at = Instant::now();
+                agent.pause_reason = Some("auto_away_no_answer".to_string());
                 let tenant_id = agent.tenant_id.clone();
                 drop(agent);
                 warn!(
@@ -643,6 +651,7 @@ impl QueueManager {
                     agent_id,
                     &old_state,
                     "away",
+                    Some("auto_away_no_answer"),
                     &tenant_id,
                 )
                 .await;
@@ -708,8 +717,13 @@ impl QueueManager {
 
     // ---- Pause / Kick ----
 
-    /// Pause an agent with optional auto-resume duration.
-    pub async fn pause_agent(&self, agent_id: &str, duration_secs: Option<u32>) -> Result<()> {
+    /// Pause an agent with optional auto-resume duration and reason.
+    pub async fn pause_agent(
+        &self,
+        agent_id: &str,
+        duration_secs: Option<u32>,
+        reason: Option<String>,
+    ) -> Result<()> {
         let mut agent = self
             .agents
             .get_mut(agent_id)
@@ -718,6 +732,7 @@ impl QueueManager {
         let old_state = agent.state.to_string();
         agent.state = AgentState::Paused;
         agent.state_changed_at = Instant::now();
+        agent.pause_reason = reason.clone();
 
         let effective_duration = duration_secs
             .or_else(|| {
@@ -736,7 +751,7 @@ impl QueueManager {
 
         info!(agent_id = %agent_id, duration_secs = ?effective_duration, "Agent paused");
 
-        events::agent_state_changed(&self.events, agent_id, &old_state, "paused", &tenant_id)
+        events::agent_state_changed(&self.events, agent_id, &old_state, "paused", reason.as_deref(), &tenant_id)
             .await;
         self.persist_agent_change(&tenant_id);
 
@@ -753,6 +768,7 @@ impl QueueManager {
                         agent.state = AgentState::Available;
                         agent.state_changed_at = Instant::now();
                         agent.pause_resume_at = None;
+                        agent.pause_reason = None;
                         drop(agent);
                         debug!(agent_id = %agent_id_owned, "Pause auto-resumed, agent now available");
                         events::agent_state_changed(
@@ -760,6 +776,7 @@ impl QueueManager {
                             &agent_id_owned,
                             "paused",
                             "available",
+                            None,
                             &tid,
                         )
                         .await;
@@ -785,13 +802,14 @@ impl QueueManager {
         agent.state = AgentState::Available;
         agent.state_changed_at = Instant::now();
         agent.pause_resume_at = None;
+        agent.pause_reason = None;
         agent.consecutive_no_answers = 0;
         let tenant_id = agent.tenant_id.clone();
         drop(agent);
 
         info!(agent_id = %agent_id, "Agent unpaused");
 
-        events::agent_state_changed(&self.events, agent_id, "paused", "available", &tenant_id)
+        events::agent_state_changed(&self.events, agent_id, "paused", "available", None, &tenant_id)
             .await;
         self.persist_agent_change(&tenant_id);
 
@@ -823,6 +841,7 @@ impl QueueManager {
             agent_id,
             &old_state,
             "logged_out",
+            Some(reason),
             &tenant_id,
         )
         .await;
@@ -860,6 +879,7 @@ impl QueueManager {
             time_in_current_state_secs: agent.state_changed_at.elapsed().as_secs(),
             current_calls: agent.current_calls,
             max_concurrent_calls: agent.max_concurrent_calls,
+            pause_reason: agent.pause_reason.clone(),
         })
     }
 
@@ -872,6 +892,103 @@ impl QueueManager {
     }
 
     // ---- Query Methods ----
+
+    // ---- Dynamic Queue Provisioning ----
+
+    /// Create a new queue at runtime.
+    pub fn create_queue(
+        &self,
+        key: String,
+        queue_config: QueueConfig,
+        tenant_id: TenantId,
+    ) -> Result<()> {
+        if self.queues.contains_key(&key) {
+            bail!("Queue '{}' already exists", key);
+        }
+        let queue = Queue::new(key.clone(), tenant_id, queue_config.clone());
+        self.extension_map
+            .insert(queue_config.extension.clone(), key.clone());
+        self.round_robin_counters
+            .insert(key.clone(), AtomicUsize::new(0));
+        self.calls_handled_today.insert(key.clone(), 0);
+        self.calls_abandoned_today.insert(key.clone(), 0);
+        self.calls_within_sl.insert(key.clone(), 0);
+        self.calls_offered_today.insert(key.clone(), 0);
+        self.queues.insert(key.clone(), queue);
+
+        // Update the system config
+        self.config.write().queues.insert(key.clone(), queue_config);
+
+        info!(queue = %key, "Queue created dynamically");
+        Ok(())
+    }
+
+    /// Update an existing queue's configuration at runtime.
+    /// Preserves waiting calls and agent memberships.
+    pub fn update_queue(&self, key: &str, queue_config: QueueConfig) -> Result<()> {
+        let mut queue = self
+            .queues
+            .get_mut(key)
+            .ok_or_else(|| anyhow::anyhow!("Queue '{}' not found", key))?;
+
+        // Update extension mapping if it changed
+        let old_extension = queue.config.extension.clone();
+        if old_extension != queue_config.extension {
+            self.extension_map.remove(&old_extension);
+            self.extension_map
+                .insert(queue_config.extension.clone(), key.to_string());
+        }
+
+        queue.config = queue_config.clone();
+        drop(queue);
+
+        // Update system config
+        self.config
+            .write()
+            .queues
+            .insert(key.to_string(), queue_config);
+
+        info!(queue = %key, "Queue configuration updated");
+        Ok(())
+    }
+
+    /// Delete a queue at runtime. Fails if there are waiting calls.
+    pub fn delete_queue(&self, key: &str) -> Result<()> {
+        let queue = self
+            .queues
+            .get(key)
+            .ok_or_else(|| anyhow::anyhow!("Queue '{}' not found", key))?;
+
+        if !queue.waiting_calls.is_empty() {
+            bail!(
+                "Cannot delete queue '{}': {} calls still waiting",
+                key,
+                queue.waiting_calls.len()
+            );
+        }
+
+        let extension = queue.config.extension.clone();
+        drop(queue);
+
+        self.queues.remove(key);
+        self.extension_map.remove(&extension);
+        self.round_robin_counters.remove(key);
+        self.calls_handled_today.remove(key);
+        self.calls_abandoned_today.remove(key);
+        self.calls_within_sl.remove(key);
+        self.calls_offered_today.remove(key);
+
+        // Remove agents' membership in this queue
+        for mut agent in self.agents.iter_mut() {
+            agent.queues.retain(|q| q != key);
+        }
+
+        // Update system config
+        self.config.write().queues.remove(key);
+
+        info!(queue = %key, "Queue deleted");
+        Ok(())
+    }
 
     /// List all configured queue names.
     pub fn list_queue_names(&self) -> Vec<String> {
@@ -1015,6 +1132,121 @@ impl QueueManager {
         None
     }
 
+    /// Check SLA thresholds for all queues and emit warnings for any below threshold.
+    pub async fn check_sla_warnings(&self, tenant_id: &TenantId) {
+        for queue in self.queues.iter() {
+            let threshold = queue.config.sla_warning_threshold_pct;
+            if threshold <= 0.0 {
+                continue;
+            }
+            let queue_name = queue.name.clone();
+            drop(queue);
+
+            let offered = self
+                .calls_offered_today
+                .get(&queue_name)
+                .map(|v| *v)
+                .unwrap_or(0);
+            let within_sl = self
+                .calls_within_sl
+                .get(&queue_name)
+                .map(|v| *v)
+                .unwrap_or(0);
+
+            if offered == 0 {
+                continue; // No calls yet, skip
+            }
+
+            let current_pct = (within_sl as f64 / offered as f64) * 100.0;
+            if current_pct < threshold {
+                warn!(
+                    queue = %queue_name,
+                    current_pct = %format!("{:.1}", current_pct),
+                    threshold_pct = %format!("{:.1}", threshold),
+                    "Service level below warning threshold"
+                );
+                events::service_level_warning(
+                    &self.events,
+                    &queue_name,
+                    current_pct,
+                    threshold,
+                    offered,
+                    within_sl,
+                    tenant_id,
+                )
+                .await;
+            }
+        }
+    }
+
+    /// Record stats snapshots to the in-memory ring buffer (and persistent store if available).
+    async fn record_stats_snapshots(&self, stats: &[QueueStats], tenant_id: &TenantId) {
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        for s in stats {
+            let snapshot = StoredQueueSnapshot {
+                queue_name: s.queue_name.clone(),
+                timestamp_epoch: now_epoch,
+                calls_waiting: s.calls_waiting,
+                agents_available: s.agents_available,
+                agents_on_call: s.agents_on_call,
+                agents_total: s.agents_total,
+                avg_wait_time_secs: s.avg_wait_time_secs,
+                longest_wait_secs: s.longest_wait_secs,
+                calls_handled_today: s.calls_handled_today,
+                calls_abandoned_today: s.calls_abandoned_today,
+                service_level_pct: s.service_level_pct,
+            };
+
+            // Save to in-memory ring buffer (max 1440 entries = 24h at 1-min intervals)
+            let mut buffer = self
+                .stats_history
+                .entry(s.queue_name.clone())
+                .or_insert_with(VecDeque::new);
+            if buffer.len() >= 1440 {
+                buffer.pop_front();
+            }
+            buffer.push_back(snapshot.clone());
+            drop(buffer);
+
+            // Persist to storage if available
+            if let Some(ref store) = self.queue_store {
+                let store = Arc::clone(store);
+                let tid = tenant_id.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = store.save_stats_snapshot(&tid, snapshot).await {
+                        warn!(error = %e, "Failed to persist stats snapshot");
+                    }
+                });
+            }
+        }
+    }
+
+    /// Query historical stats snapshots from in-memory buffer.
+    /// Returns snapshots filtered by time range, ordered by timestamp ascending.
+    pub fn query_stats_history(
+        &self,
+        queue_name: &str,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+        limit: usize,
+    ) -> Vec<StoredQueueSnapshot> {
+        if let Some(buffer) = self.stats_history.get(queue_name) {
+            buffer
+                .iter()
+                .filter(|s| from_epoch.map_or(true, |from| s.timestamp_epoch >= from))
+                .filter(|s| to_epoch.map_or(true, |to| s.timestamp_epoch <= to))
+                .take(limit)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Spawn a periodic task that publishes queue stats snapshots to the event bus.
     pub fn start_stats_publisher(
         self: &Arc<Self>,
@@ -1029,8 +1261,10 @@ impl QueueManager {
                 interval.tick().await;
                 let stats = this.all_queue_stats();
                 if !stats.is_empty() {
-                    events::stats_snapshot(&this.events, stats, &tenant_id).await;
+                    events::stats_snapshot(&this.events, stats.clone(), &tenant_id).await;
+                    this.record_stats_snapshots(&stats, &tenant_id).await;
                 }
+                this.check_sla_warnings(&tenant_id).await;
             }
         })
     }
@@ -1340,6 +1574,7 @@ mod tests {
                 recording_format: "wav".to_string(),
                 callback_max_attempts: 3,
                 callback_retry_delay_secs: 60,
+                sla_warning_threshold_pct: 0.0,
             },
         );
         QueueSystemConfig {

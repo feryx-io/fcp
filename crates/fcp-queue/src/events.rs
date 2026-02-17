@@ -153,6 +153,7 @@ pub async fn agent_state_changed(
     agent_id: &str,
     old_state: &str,
     new_state: &str,
+    reason: Option<&str>,
     tenant_id: &TenantId,
 ) {
     publish(
@@ -161,6 +162,7 @@ pub async fn agent_state_changed(
             agent_id: agent_id.to_string(),
             old_state: old_state.to_string(),
             new_state: new_state.to_string(),
+            reason: reason.map(|s| s.to_string()),
             tenant_id: tenant_id.clone(),
             timestamp: SystemTime::now(),
         },
@@ -335,6 +337,31 @@ pub async fn callback_failed(
             callback_uri: callback_uri.to_string(),
             reason: reason.to_string(),
             attempts,
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a ServiceLevelWarning event when SL drops below threshold.
+pub async fn service_level_warning(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    current_pct: f64,
+    threshold_pct: f64,
+    calls_offered: u64,
+    calls_within_sl: u64,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::ServiceLevelWarning {
+            queue_name: queue_name.to_string(),
+            current_pct,
+            threshold_pct,
+            calls_offered,
+            calls_within_sl,
             tenant_id: tenant_id.clone(),
             timestamp: SystemTime::now(),
         },

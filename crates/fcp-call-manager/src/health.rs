@@ -43,8 +43,9 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/media-sessions", get(media_sessions_handler))
         .route("/transcoding", get(transcoding_handler))
         // Queue/Agent management endpoints
-        .route("/queues", get(list_queues_handler))
-        .route("/queues/{name}", get(get_queue_handler))
+        .route("/queues", get(list_queues_handler).post(create_queue_handler))
+        .route("/queues/{name}", get(get_queue_handler).put(update_queue_handler).delete(delete_queue_handler))
+        .route("/queues/{name}/history", get(queue_history_handler))
         .route("/agents", get(list_agents_handler))
         .route("/agents/{id}", get(get_agent_handler))
         .route("/agents/{id}/pause", post(pause_agent_handler))
@@ -457,6 +458,66 @@ async fn get_queue_handler(
     }
 }
 
+/// Create a new queue at runtime.
+async fn create_queue_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateQueueBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    let tenant_id = fcp_core::TenantId::nil();
+    match qm.create_queue(body.key.clone(), body.config, tenant_id) {
+        Ok(()) => Json(serde_json::json!({
+            "status": "created",
+            "queue": body.key,
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Update a queue's configuration at runtime.
+async fn update_queue_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(config): Json<fcp_queue::QueueConfig>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.update_queue(&name, config) {
+        Ok(()) => Json(serde_json::json!({
+            "status": "updated",
+            "queue": name,
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Delete a queue at runtime.
+async fn delete_queue_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.delete_queue(&name) {
+        Ok(()) => Json(serde_json::json!({
+            "status": "deleted",
+            "queue": name,
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateQueueBody {
+    key: String,
+    #[serde(flatten)]
+    config: fcp_queue::QueueConfig,
+}
+
 /// List all agents with stats.
 async fn list_agents_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let Some(ref qm) = state.queue_manager else {
@@ -483,6 +544,7 @@ async fn get_agent_handler(
 #[derive(Deserialize)]
 struct PauseBody {
     duration_secs: Option<u32>,
+    reason: Option<String>,
 }
 
 /// Pause an agent.
@@ -494,8 +556,12 @@ async fn pause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.pause_agent(&id, body.duration_secs).await {
-        Ok(()) => Json(serde_json::json!({"status": "paused", "agent_id": id})),
+    match qm.pause_agent(&id, body.duration_secs, body.reason.clone()).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "paused",
+            "agent_id": id,
+            "reason": body.reason,
+        })),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
 }
@@ -692,6 +758,33 @@ async fn supervisor_leave_handler(
         })),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
+}
+
+// ---- Queue History Endpoint ----
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    from: Option<u64>,
+    to: Option<u64>,
+    limit: Option<usize>,
+}
+
+/// Get historical stats snapshots for a queue.
+async fn queue_history_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(query): Query<HistoryQuery>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    let limit = query.limit.unwrap_or(500).min(1440);
+    let snapshots = qm.query_stats_history(&name, query.from, query.to, limit);
+    Json(serde_json::json!({
+        "queue": name,
+        "snapshots": snapshots,
+        "count": snapshots.len(),
+    }))
 }
 
 // ---- Callback Endpoints ----
