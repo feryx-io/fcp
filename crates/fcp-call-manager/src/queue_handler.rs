@@ -3,12 +3,13 @@
 //! Wires together QueueManager (distribution logic), RTP (media),
 //! and SIP signaling (UAC/UAS) to handle queue-bound INVITE calls.
 
-use crate::queue_audio::AnnouncementCache;
+use crate::queue_audio::{AnnouncementCache, MohCache};
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
-use fcp_media::{construct_answer_for_a_leg, parse_sdp_codecs};
+use fcp_media::{construct_answer_for_a_leg, extract_telephone_event_pt, parse_sdp_codecs};
+use forge_dtmf::Rfc2833Detector;
 use fcp_queue::{QueueManager, QueueSystemConfig, QueuedCall};
 use fcp_sip::prelude::SipUserAgentClient;
 use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
@@ -51,6 +52,8 @@ struct QueueSession {
 
     // --- MOH task (aborted when agent connects or caller leaves) ---
     moh_handle: Option<JoinHandle<()>>,
+    /// Pre-encoded MOH frames for this session's codec+class (if available).
+    moh_frames: Option<Arc<Vec<Vec<u8>>>>,
 
     // --- Agent B-leg (populated when agent answers) ---
     agent_port_pair: Option<PortPair>,
@@ -58,6 +61,9 @@ struct QueueSession {
     agent_dialog: Option<sip_dialog::Dialog>,
     bridge_a_to_b: Option<JoinHandle<()>>,
     bridge_b_to_a: Option<JoinHandle<()>>,
+
+    // --- DTMF listener (for exit options / callback) ---
+    dtmf_listener_handle: Option<JoinHandle<()>>,
 
     // --- State tracking ---
     state: QueueCallState,
@@ -106,6 +112,7 @@ pub struct QueueCallHandler {
     event_bus: Arc<dyn EventPublisher>,
     uac: Arc<SipUserAgentClient>,
     announcement_cache: Option<Arc<AnnouncementCache>>,
+    moh_cache: Option<Arc<MohCache>>,
 }
 
 impl QueueCallHandler {
@@ -140,6 +147,22 @@ impl QueueCallHandler {
             })
             .flatten();
 
+        // Load MOH audio if configured
+        let moh_cache = config
+            .queue_audio_dir
+            .as_ref()
+            .map(|dir| {
+                let cache = MohCache::load(std::path::Path::new(dir));
+                if cache.is_empty() {
+                    info!("MOH cache is empty (no audio files found)");
+                    None
+                } else {
+                    info!(dir = %dir, "MOH audio loaded");
+                    Some(Arc::new(cache))
+                }
+            })
+            .flatten();
+
         let handler = Self {
             queue_manager,
             config: config.clone(),
@@ -150,12 +173,16 @@ impl QueueCallHandler {
             event_bus,
             uac,
             announcement_cache,
+            moh_cache,
         };
 
         // Spawn distribution loops for each configured queue
         for (queue_name, _queue_config) in &config.queues {
             handler.spawn_distribution_loop(queue_name.clone(), config.max_ring_time_secs);
         }
+
+        // Start daily stats reset scheduler
+        handler.queue_manager.start_daily_reset();
 
         handler
     }
@@ -184,6 +211,19 @@ impl QueueCallHandler {
             interval_secs: interval,
             queue_manager: Arc::clone(&self.queue_manager),
         })
+    }
+
+    /// Resolve MOH frames for a given queue and codec.
+    /// Looks up the queue's `moh_class` (defaulting to `"default"`) in the MOH cache.
+    fn resolve_moh_frames(&self, queue_name: &str, codec_name: &str) -> Option<Arc<Vec<Vec<u8>>>> {
+        let cache = self.moh_cache.as_ref()?;
+        let moh_class = self
+            .queue_manager
+            .get_queue_config(queue_name)
+            .and_then(|c| c.moh_class.clone())
+            .unwrap_or_else(|| "default".to_string());
+        let frames = cache.get_frames(&moh_class, codec_name)?;
+        Some(Arc::new(frames.to_vec()))
     }
 
     /// Parse the local SIP URI.
@@ -294,15 +334,17 @@ impl QueueCallHandler {
         None
     }
 
-    /// Spawn a MOH (Music On Hold) playback task that sends encoded silence
-    /// RTP packets to the caller at 20ms intervals, with periodic position
-    /// announcements if configured.
+    /// Spawn a MOH (Music On Hold) playback task that sends RTP packets
+    /// to the caller at 20ms intervals. If `moh_frames` is provided,
+    /// plays real MOH audio looping through the frames; otherwise sends
+    /// silence. Periodic position announcements interrupt MOH if configured.
     fn spawn_moh(
         rtp_socket: Arc<RtpSocketPair>,
         codec_name: &str,
         payload_type: u8,
         call_id: String,
         announce: Option<AnnounceConfig>,
+        moh_frames: Option<Arc<Vec<Vec<u8>>>>,
     ) -> JoinHandle<()> {
         let silence_frame: Vec<u8> = match codec_name {
             "PCMU" => vec![0xFFu8; 160],        // G.711 μ-law silence
@@ -321,6 +363,7 @@ impl QueueCallHandler {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(20));
             let mut last_announcement = Instant::now();
+            let mut moh_index: usize = 0;
 
             loop {
                 interval.tick().await;
@@ -362,24 +405,36 @@ impl QueueCallHandler {
                                     tokio::time::sleep(Duration::from_millis(20)).await;
                                 }
 
-                                // Skip the regular silence tick since we just played audio
+                                // Skip the regular MOH tick since we just played audio
                                 continue;
                             }
                         }
                     }
                 }
 
-                // Send silence frame (normal MOH)
+                // Select the frame to send: real MOH or silence
+                let frame = if let Some(ref frames) = moh_frames {
+                    if !frames.is_empty() {
+                        let f = &frames[moh_index % frames.len()];
+                        moh_index += 1;
+                        f.as_slice()
+                    } else {
+                        silence_frame.as_slice()
+                    }
+                } else {
+                    silence_frame.as_slice()
+                };
+
                 let sequence = seq.fetch_add(1, Ordering::Relaxed);
                 let timestamp = ts.fetch_add(160, Ordering::Relaxed);
 
-                let mut packet = Vec::with_capacity(12 + silence_frame.len());
+                let mut packet = Vec::with_capacity(12 + frame.len());
                 packet.push(0x80);
                 packet.push(pt);
                 packet.extend_from_slice(&sequence.to_be_bytes());
                 packet.extend_from_slice(&timestamp.to_be_bytes());
                 packet.extend_from_slice(&ssrc.to_be_bytes());
-                packet.extend_from_slice(&silence_frame);
+                packet.extend_from_slice(frame);
 
                 if let Err(e) = rtp_socket.send_rtp_raw(&packet).await {
                     debug!(error = %e, "MOH send failed (caller may have hung up)");
@@ -484,6 +539,14 @@ impl QueueCallHandler {
                     .map(|entry| entry.key().clone())
                     .collect();
 
+                // Also collect callback call_ids (in QueueManager queue but no session)
+                let callback_call_ids: Vec<(String, String)> = queue_manager
+                    .get_callback_calls(&queue_name)
+                    .into_iter()
+                    .filter(|(call_id, _)| !sessions.contains_key(call_id))
+                    .collect();
+
+                // Process normal waiting calls first
                 for call_id in waiting_call_ids {
                     // Try to select an agent for this call
                     let plan = match queue_manager.select_agent(&queue_name) {
@@ -499,9 +562,12 @@ impl QueueCallHandler {
                         session.state = QueueCallState::RingingAgent;
                         session.ringing_agent = Some(plan.agent_id.clone());
 
-                        // Stop MOH while ringing agent
+                        // Stop MOH and DTMF listener while ringing agent
                         if let Some(moh) = session.moh_handle.take() {
                             moh.abort();
+                        }
+                        if let Some(dtmf) = session.dtmf_listener_handle.take() {
+                            dtmf.abort();
                         }
                     } else {
                         continue;
@@ -531,6 +597,30 @@ impl QueueCallHandler {
                         session.ring_task_handle = Some(ring_handle);
                         session.ring_cancel_tx = Some(cancel_tx);
                     }
+                }
+
+                // Process callback calls
+                for (call_id, callback_uri) in callback_call_ids {
+                    let plan = match queue_manager.select_agent(&queue_name) {
+                        Some(p) => p,
+                        None => break,
+                    };
+
+                    queue_manager.mark_agent_ringing(&plan.agent_id, &call_id).await;
+
+                    spawn_callback_ring(
+                        call_id,
+                        callback_uri,
+                        plan,
+                        ring_timeout_secs,
+                        Arc::clone(&sessions),
+                        queue_manager.clone(),
+                        Arc::clone(&port_pool),
+                        local_addr.clone(),
+                        local_uri.clone(),
+                        Arc::clone(&uac),
+                        Arc::clone(&event_bus),
+                    );
                 }
             }
         });
@@ -728,12 +818,14 @@ impl QueueCallHandler {
             session.ring_task_handle = None;
 
             // Restart MOH
+            let moh_frames = session.moh_frames.clone();
             let moh = Self::spawn_moh(
                 Arc::clone(&session.rtp_socket),
                 &session.codec_name,
                 session.payload_type,
                 call_id.to_string(),
                 announce,
+                moh_frames,
             );
             session.moh_handle = Some(moh);
         }
@@ -752,6 +844,11 @@ impl QueueCallHandler {
             // Abort MOH if running
             if let Some(moh) = session.moh_handle {
                 moh.abort();
+            }
+
+            // Abort DTMF listener if running
+            if let Some(dtmf) = session.dtmf_listener_handle {
+                dtmf.abort();
             }
 
             // Send cancel signal to ring task (triggers SIP CANCEL to agent)
@@ -1077,12 +1174,14 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         }
 
         // 11. Start MOH playback (with position announcements if configured)
+        let moh_frames = self.resolve_moh_frames(&queue_name, &codec_name);
         let moh_handle = Self::spawn_moh(
             Arc::clone(&rtp_socket),
             &codec_name,
             payload_type,
             call_id.clone(),
             self.build_announce_config(),
+            moh_frames.clone(),
         );
 
         // 12. Enqueue call in QueueManager
@@ -1097,6 +1196,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             enqueued_at: Instant::now(),
             position: 0,
             attempts: 0,
+            is_callback: false,
+            callback_uri: None,
         };
 
         match self.queue_manager.enqueue_call(queued_call).await {
@@ -1139,6 +1240,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                             _frame_size: frame_size,
                             dialog,
                             moh_handle: Some(moh_handle),
+                            moh_frames: moh_frames.clone(),
+                            dtmf_listener_handle: None,
                             agent_port_pair: None,
                             agent_rtp_socket: None,
                             agent_dialog: None,
@@ -1182,7 +1285,38 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             }
         }
 
-        // 13. Store session
+        // 13. Spawn DTMF listener if the queue has exit options or callback
+        let queue_config = self.queue_manager.get_queue_config(&queue_name);
+        let has_dtmf = queue_config
+            .as_ref()
+            .map(|c| !c.dtmf_exit_options.is_empty() || (c.callback_enabled && c.callback_digit.is_some()))
+            .unwrap_or(false);
+
+        let dtmf_listener_handle = if has_dtmf {
+            let te_pt = extract_telephone_event_pt(sdp_offer).unwrap_or(101);
+            let qc = queue_config.unwrap();
+            Some(spawn_dtmf_listener(
+                call_id.clone(),
+                Arc::clone(&rtp_socket),
+                te_pt,
+                qc.dtmf_exit_options.clone(),
+                qc.callback_enabled,
+                qc.callback_digit.clone(),
+                caller_uri.clone(),
+                queue_name.clone(),
+                Arc::clone(&self.sessions),
+                self.queue_manager.clone(),
+                Arc::clone(&self.uac),
+                Arc::clone(&self.port_pool),
+                self.local_addr.clone(),
+                self.local_uri.clone(),
+                Arc::clone(&self.event_bus),
+            ))
+        } else {
+            None
+        };
+
+        // 14. Store session
         self.sessions.insert(
             call_id.clone(),
             QueueSession {
@@ -1198,6 +1332,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 _frame_size: frame_size,
                 dialog,
                 moh_handle: Some(moh_handle),
+                moh_frames,
+                dtmf_listener_handle,
                 agent_port_pair: None,
                 agent_rtp_socket: None,
                 agent_dialog: None,
@@ -1371,6 +1507,362 @@ fn parse_overflow_destination(dest: &str, local_domain: &str) -> String {
             .unwrap_or(ext);
         format!("sip:{}@{}", ext, local_domain)
     }
+}
+
+/// Spawn a callback ring task — two-stage B2BUA.
+///
+/// 1. INVITE the agent
+/// 2. Agent answers → INVITE the callback URI (original caller)
+/// 3. Callback answers → bridge agent ↔ callback RTP
+/// If either fails, return the call to the queue and make the agent available.
+fn spawn_callback_ring(
+    call_id: String,
+    callback_uri: String,
+    plan: fcp_queue::DistributionPlan,
+    ring_timeout_secs: u32,
+    sessions: Arc<DashMap<String, QueueSession>>,
+    queue_manager: Arc<QueueManager>,
+    port_pool: Arc<PortPool>,
+    local_addr: String,
+    local_uri: String,
+    uac: Arc<SipUserAgentClient>,
+    _event_bus: Arc<dyn EventPublisher>,
+) {
+    tokio::spawn(async move {
+        let agent_id = plan.agent_id.clone();
+        let agent_extension = plan.agent_extension.clone();
+        let ring_timeout = Duration::from_secs(ring_timeout_secs as u64);
+        let domain = extract_domain(&local_uri);
+
+        // 1. Allocate agent B-leg RTP ports
+        let agent_port_pair = match port_pool.allocate().await {
+            Ok(pp) => pp,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Callback: failed to allocate agent RTP port");
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        // 2. INVITE the agent
+        let agent_uri = format!("sip:{}@{}", agent_extension, domain);
+        let sdp_offer = build_sdp_offer(&local_addr, agent_port_pair.rtp_port, "PCMU");
+
+        let agent_handle = match uac.invite(&agent_uri, Some(&sdp_offer)).await {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Callback: failed to INVITE agent");
+                port_pool.deallocate(agent_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        // 3. Wait for agent to answer
+        let agent_result = tokio::time::timeout(ring_timeout, agent_handle.await_final()).await;
+
+        let agent_response = match agent_result {
+            Ok(Ok(resp)) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => resp,
+            Ok(Ok(_)) | Ok(Err(_)) => {
+                port_pool.deallocate(agent_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+            Err(_) => {
+                let _ = agent_handle.cancel().await;
+                port_pool.deallocate(agent_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        info!(call_id = %call_id, agent = %agent_id, "Callback: agent answered, calling back caller");
+
+        // Create agent RTP socket
+        let agent_rtp_socket = match RtpSocketPair::new(agent_port_pair, RtpSocketConfig::default()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Callback: failed to create agent RTP socket");
+                port_pool.deallocate(agent_port_pair).await;
+                let _ = uac.bye(&agent_handle.dialog.read().await.clone()).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        // Set agent remote endpoint
+        let agent_body = agent_response.body();
+        let agent_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
+        if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(agent_sdp) {
+            agent_rtp_socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote_addr,
+                    rtcp_addr: None,
+                })
+                .await;
+        }
+
+        let agent_dialog = agent_handle.dialog.read().await.clone();
+
+        // 4. Allocate callback C-leg RTP ports
+        let callback_port_pair = match port_pool.allocate().await {
+            Ok(pp) => pp,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Callback: failed to allocate callback RTP port");
+                let _ = uac.bye(&agent_dialog).await;
+                port_pool.deallocate(agent_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        // 5. INVITE the callback URI (original caller)
+        let cb_sdp = build_sdp_offer(&local_addr, callback_port_pair.rtp_port, "PCMU");
+        let cb_dest = parse_overflow_destination(&callback_uri, &domain);
+
+        let cb_handle = match uac.invite(&cb_dest, Some(&cb_sdp)).await {
+            Ok(h) => h,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Callback: failed to INVITE callback URI");
+                let _ = uac.bye(&agent_dialog).await;
+                port_pool.deallocate(agent_port_pair).await;
+                port_pool.deallocate(callback_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        // 6. Wait for callback recipient to answer
+        let cb_result = tokio::time::timeout(Duration::from_secs(30), cb_handle.await_final()).await;
+
+        let cb_response = match cb_result {
+            Ok(Ok(resp)) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => resp,
+            Ok(Ok(_)) | Ok(Err(_)) => {
+                warn!(call_id = %call_id, "Callback: recipient did not answer");
+                let _ = uac.bye(&agent_dialog).await;
+                port_pool.deallocate(agent_port_pair).await;
+                port_pool.deallocate(callback_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+            Err(_) => {
+                let _ = cb_handle.cancel().await;
+                let _ = uac.bye(&agent_dialog).await;
+                port_pool.deallocate(agent_port_pair).await;
+                port_pool.deallocate(callback_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        info!(call_id = %call_id, callback_uri = %callback_uri, "Callback: recipient answered, bridging");
+
+        // Create callback RTP socket
+        let cb_rtp_socket = match RtpSocketPair::new(callback_port_pair, RtpSocketConfig::default()).await {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Callback: failed to create callback RTP socket");
+                let _ = uac.bye(&agent_dialog).await;
+                let _ = uac.bye(&cb_handle.dialog.read().await.clone()).await;
+                port_pool.deallocate(agent_port_pair).await;
+                port_pool.deallocate(callback_port_pair).await;
+                queue_manager.agent_no_answer(&agent_id, &call_id).await;
+                return;
+            }
+        };
+
+        // Set callback remote endpoint
+        let cb_body = cb_response.body();
+        let cb_sdp_answer = std::str::from_utf8(&cb_body[..]).unwrap_or("");
+        if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(cb_sdp_answer) {
+            cb_rtp_socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote_addr,
+                    rtcp_addr: None,
+                })
+                .await;
+        }
+
+        let cb_dialog = cb_handle.dialog.read().await.clone();
+
+        // 7. Dequeue the call and update agent state
+        queue_manager.agent_answered(&agent_id, &call_id).await;
+
+        // 8. Bridge agent ↔ callback RTP
+        let (bridge_a_to_b, bridge_b_to_a) =
+            spawn_rtp_bridge(Arc::clone(&agent_rtp_socket), Arc::clone(&cb_rtp_socket));
+
+        // 9. Create a session to track this bridged call for cleanup on BYE
+        sessions.insert(
+            call_id.clone(),
+            QueueSession {
+                call_id: call_id.clone(),
+                queue_name: String::new(), // No longer in a queue
+                tenant_id: fcp_core::TenantId::nil(),
+                caller_uri: callback_uri,
+                caller_display: None,
+                port_pair: callback_port_pair,
+                rtp_socket: cb_rtp_socket,
+                codec_name: "PCMU".to_string(),
+                payload_type: 0,
+                _frame_size: 160,
+                dialog: cb_dialog,
+                moh_handle: None,
+                moh_frames: None,
+                dtmf_listener_handle: None,
+                agent_port_pair: Some(agent_port_pair),
+                agent_rtp_socket: Some(agent_rtp_socket),
+                agent_dialog: Some(agent_dialog),
+                bridge_a_to_b: Some(bridge_a_to_b),
+                bridge_b_to_a: Some(bridge_b_to_a),
+                state: QueueCallState::Connected,
+                ringing_agent: Some(agent_id),
+                ring_task_handle: None,
+                ring_cancel_tx: None,
+                enqueued_at: Instant::now(),
+            },
+        );
+    });
+}
+
+/// Spawn a DTMF listener task that monitors the caller's RTP stream for
+/// RFC 2833 telephone-event packets. When a digit matching `exit_options`
+/// is detected, the call is routed to the configured destination.
+/// When callback is enabled and the callback digit is pressed, the call
+/// is converted to a callback request.
+fn spawn_dtmf_listener(
+    call_id: String,
+    rtp_socket: Arc<RtpSocketPair>,
+    te_pt: u8,
+    exit_options: std::collections::HashMap<String, String>,
+    callback_enabled: bool,
+    callback_digit: Option<String>,
+    caller_uri: String,
+    queue_name: String,
+    sessions: Arc<DashMap<String, QueueSession>>,
+    queue_manager: Arc<QueueManager>,
+    uac: Arc<SipUserAgentClient>,
+    port_pool: Arc<PortPool>,
+    local_addr: String,
+    local_uri: String,
+    event_bus: Arc<dyn EventPublisher>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut detector = Rfc2833Detector::new(8000);
+
+        loop {
+            let (data, _addr) = match rtp_socket.recv_rtp_raw().await {
+                Ok(d) => d,
+                Err(_) => break,
+            };
+
+            // Minimum RTP packet: 12-byte header + payload
+            if data.len() < 13 {
+                continue;
+            }
+
+            // Check payload type (lower 7 bits of byte 1)
+            let pt = data[1] & 0x7F;
+            if pt != te_pt {
+                continue;
+            }
+
+            // Extract RTP timestamp (bytes 4-7)
+            let timestamp = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+
+            // Feed RFC 2833 payload (after 12-byte RTP header) to detector
+            let payload = &data[12..];
+            let events = match detector.process_with_timestamp(payload, timestamp) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for event in events {
+                if event.event_type != forge_dtmf::DtmfEventType::End {
+                    continue;
+                }
+
+                let digit_str = event.digit.to_string();
+                debug!(
+                    call_id = %call_id,
+                    digit = %digit_str,
+                    "DTMF digit detected in queue"
+                );
+
+                // Check callback digit first
+                if callback_enabled {
+                    if let Some(ref cb_digit) = callback_digit {
+                        if digit_str == *cb_digit {
+                            info!(
+                                call_id = %call_id,
+                                callback_uri = %caller_uri,
+                                "Callback requested via DTMF"
+                            );
+
+                            // Mark call as callback in QueueManager (stays in queue)
+                            queue_manager.mark_callback(&call_id, &caller_uri);
+
+                            // Send BYE to caller and clean up session resources
+                            if let Some((_, session)) = sessions.remove(&call_id) {
+                                if let Some(moh) = session.moh_handle {
+                                    moh.abort();
+                                }
+                                let bye_uac = Arc::clone(&uac);
+                                let bye_dialog = session.dialog.clone();
+                                tokio::spawn(async move {
+                                    let _ = bye_uac.bye(&bye_dialog).await;
+                                });
+                                let pool = Arc::clone(&port_pool);
+                                let pp = session.port_pair;
+                                tokio::spawn(async move { pool.deallocate(pp).await });
+                            }
+
+                            // Publish callback event
+                            fcp_queue::events::callback_initiated(
+                                &Some(Arc::clone(&event_bus)),
+                                &queue_name,
+                                &call_id,
+                                &caller_uri,
+                                &queue_manager
+                                    .get_queued_call(&call_id)
+                                    .map(|c| c.tenant_id)
+                                    .unwrap_or_else(fcp_core::TenantId::nil),
+                            )
+                            .await;
+
+                            return;
+                        }
+                    }
+                }
+
+                // Check DTMF exit options
+                if let Some(destination) = exit_options.get(&digit_str) {
+                    info!(
+                        call_id = %call_id,
+                        digit = %digit_str,
+                        destination = %destination,
+                        "DTMF exit from queue"
+                    );
+
+                    overflow_expired_call(
+                        &call_id,
+                        destination,
+                        &queue_name,
+                        &sessions,
+                        &queue_manager,
+                        &uac,
+                        &port_pool,
+                        &local_addr,
+                        &local_uri,
+                        &event_bus,
+                    )
+                    .await;
+
+                    return;
+                }
+            }
+        }
+    })
 }
 
 /// Route an expired call to the overflow destination from a spawned distribution loop.

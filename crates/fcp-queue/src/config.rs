@@ -113,6 +113,19 @@ pub struct QueueConfig {
     /// Skills assigned to static agents (maps agent extension → skills list).
     #[serde(default)]
     pub agent_skills: HashMap<String, Vec<String>>,
+
+    /// DTMF exit options: digit → destination.
+    /// e.g., {"1": "voicemail:6000", "0": "extension:100"}
+    #[serde(default)]
+    pub dtmf_exit_options: HashMap<String, String>,
+
+    /// Enable callback / virtual queueing.
+    #[serde(default)]
+    pub callback_enabled: bool,
+
+    /// DTMF digit to request callback (e.g., "2").
+    #[serde(default)]
+    pub callback_digit: Option<String>,
 }
 
 /// Distribution strategy for selecting which agent receives the next call.

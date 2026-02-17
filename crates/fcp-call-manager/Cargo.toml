@@ -36,6 +36,7 @@ fcp-queue = { path = "../fcp-queue" }
 # Forge media crates
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs" }
+forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
 
 # Storage backends (optional)
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }

@@ -168,6 +168,27 @@ pub async fn agent_state_changed(
     .await;
 }
 
+/// Publish a CallbackInitiated event (caller requested virtual queueing).
+pub async fn callback_initiated(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    call_id: &str,
+    callback_uri: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CallbackInitiated {
+            queue_name: queue_name.to_string(),
+            call_id: call_id.to_string(),
+            callback_uri: callback_uri.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a StatsSnapshot event for wallboard consumers.
 pub async fn stats_snapshot(
     events: &Option<Arc<dyn EventPublisher>>,

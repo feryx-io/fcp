@@ -2,13 +2,14 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use dashmap::DashMap;
 use fcp_core::storage::{QueueStore, StoredAgent};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::config::{QueueConfig, QueueSystemConfig};
@@ -681,6 +682,80 @@ impl QueueManager {
         })
     }
 
+    /// Reset all daily statistics counters to zero (UTC midnight reset).
+    pub fn reset_daily_stats(&self) {
+        for mut entry in self.calls_handled_today.iter_mut() {
+            *entry = 0;
+        }
+        for mut entry in self.calls_abandoned_today.iter_mut() {
+            *entry = 0;
+        }
+        for mut entry in self.calls_within_sl.iter_mut() {
+            *entry = 0;
+        }
+        for mut entry in self.calls_offered_today.iter_mut() {
+            *entry = 0;
+        }
+        info!("Daily queue stats reset");
+    }
+
+    /// Spawn a background task that resets daily stats at UTC midnight.
+    pub fn start_daily_reset(self: &Arc<Self>) -> JoinHandle<()> {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                let now = std::time::SystemTime::now();
+                let since_epoch = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+                let secs_today = since_epoch.as_secs() % 86400;
+                let secs_until_midnight = 86400 - secs_today;
+                tokio::time::sleep(Duration::from_secs(secs_until_midnight)).await;
+                this.reset_daily_stats();
+            }
+        })
+    }
+
+    /// Look up a queued call by its SIP Call-ID without removing it.
+    pub fn get_queued_call(&self, call_id: &str) -> Option<QueuedCall> {
+        for queue in self.queues.iter() {
+            if let Some(call) = queue.waiting_calls.iter().find(|c| c.call_id == call_id) {
+                return Some(call.clone());
+            }
+        }
+        None
+    }
+
+    /// Mark a queued call as a callback request. The call stays in the queue
+    /// but will be handled as an outbound callback when an agent becomes available.
+    pub fn mark_callback(&self, call_id: &str, callback_uri: &str) -> bool {
+        for mut queue in self.queues.iter_mut() {
+            if let Some(call) = queue.waiting_calls.iter_mut().find(|c| c.call_id == call_id) {
+                call.is_callback = true;
+                call.callback_uri = Some(callback_uri.to_string());
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get all callback calls in a specific queue.
+    /// Returns a list of (call_id, callback_uri) pairs.
+    pub fn get_callback_calls(&self, queue_name: &str) -> Vec<(String, String)> {
+        if let Some(queue) = self.queues.get(queue_name) {
+            queue
+                .waiting_calls
+                .iter()
+                .filter(|c| c.is_callback)
+                .filter_map(|c| {
+                    c.callback_uri
+                        .as_ref()
+                        .map(|uri| (c.call_id.clone(), uri.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Restore agent state from persistent storage after a service restart.
     /// Returns the number of agents restored.
     pub async fn restore_agents(
@@ -758,6 +833,9 @@ mod tests {
                 priority: 0,
                 required_skills: Vec::new(),
                 agent_skills: HashMap::new(),
+                dtmf_exit_options: HashMap::new(),
+                callback_enabled: false,
+                callback_digit: None,
             },
         );
         QueueSystemConfig {
@@ -783,6 +861,8 @@ mod tests {
             enqueued_at: Instant::now(),
             position: 0,
             attempts: 0,
+            is_callback: false,
+            callback_uri: None,
         }
     }
 

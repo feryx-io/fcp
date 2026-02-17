@@ -105,6 +105,10 @@ pub struct QueuedCall {
     pub position: usize,
     /// How many agent ring attempts have been made.
     pub attempts: u32,
+    /// Whether this caller has requested a callback (virtual queueing).
+    pub is_callback: bool,
+    /// URI to call back if `is_callback` is true.
+    pub callback_uri: Option<String>,
 }
 
 /// Runtime state for a single queue instance.
@@ -237,6 +241,9 @@ mod tests {
             priority: 0,
             required_skills: Vec::new(),
             agent_skills: HashMap::new(),
+            dtmf_exit_options: HashMap::new(),
+            callback_enabled: false,
+            callback_digit: None,
         }
     }
 
@@ -252,6 +259,8 @@ mod tests {
             enqueued_at: Instant::now(),
             position: 0,
             attempts: 0,
+            is_callback: false,
+            callback_uri: None,
         }
     }
 

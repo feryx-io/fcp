@@ -6,7 +6,7 @@
 //! without any encoding latency.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use forge_codecs::g711;
 use tracing::{debug, info, warn};
@@ -223,6 +223,113 @@ fn encode_pcma_frames(pcm: &[i16]) -> Vec<Vec<u8>> {
     pcm.chunks(NB_FRAME_SAMPLES)
         .map(|chunk| chunk.iter().map(|&s| g711::encode_alaw(s)).collect())
         .collect()
+}
+
+/// Pre-encoded MOH (Music On Hold) audio cache.
+///
+/// Loads WAV files from `{audio_dir}/moh/{class_name}/` subdirectories,
+/// concatenates all WAVs in each class, and pre-encodes per codec.
+pub struct MohCache {
+    /// class_name → codec_name → Vec<frames>
+    classes: HashMap<String, HashMap<String, Vec<Vec<u8>>>>,
+}
+
+impl MohCache {
+    /// Load MOH audio from `{audio_dir}/moh/` directory.
+    ///
+    /// Each subdirectory name is a MOH class (e.g., `default/`, `jazz/`).
+    /// Within each, all `*.wav` files are loaded in alphabetical order,
+    /// concatenated, and pre-encoded for each codec.
+    pub fn load(audio_dir: &Path) -> Self {
+        let moh_dir = audio_dir.join("moh");
+        let mut classes = HashMap::new();
+
+        if !moh_dir.exists() {
+            debug!(path = %moh_dir.display(), "No MOH directory found");
+            return Self { classes };
+        }
+
+        let mut class_dirs: Vec<PathBuf> = match std::fs::read_dir(&moh_dir) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.path())
+                .collect(),
+            Err(e) => {
+                warn!(error = %e, "Failed to read MOH directory");
+                return Self { classes };
+            }
+        };
+        class_dirs.sort();
+
+        for class_path in class_dirs {
+            let class_name = class_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("default")
+                .to_string();
+
+            // Collect and sort WAV files in this class directory
+            let mut wav_files: Vec<PathBuf> = match std::fs::read_dir(&class_path) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension()
+                            .map(|ext| ext.eq_ignore_ascii_case("wav"))
+                            .unwrap_or(false)
+                    })
+                    .collect(),
+                Err(_) => continue,
+            };
+            wav_files.sort();
+
+            if wav_files.is_empty() {
+                continue;
+            }
+
+            // Concatenate all WAV PCM data
+            let mut combined_pcm: Vec<i16> = Vec::new();
+            for wav_path in &wav_files {
+                if let Some(samples) = load_wav_pcm(wav_path) {
+                    combined_pcm.extend_from_slice(&samples);
+                }
+            }
+
+            if combined_pcm.is_empty() {
+                continue;
+            }
+
+            let mut codec_map = HashMap::new();
+            codec_map.insert("PCMU".to_string(), encode_pcmu_frames(&combined_pcm));
+            codec_map.insert("PCMA".to_string(), encode_pcma_frames(&combined_pcm));
+            codec_map.insert("G722".to_string(), encode_g722_frames(&combined_pcm));
+
+            info!(
+                class = %class_name,
+                wav_files = wav_files.len(),
+                duration_ms = combined_pcm.len() * 1000 / 8000,
+                "Loaded MOH class"
+            );
+
+            classes.insert(class_name, codec_map);
+        }
+
+        Self { classes }
+    }
+
+    /// Get the pre-encoded frames for a MOH class and codec.
+    pub fn get_frames(&self, class: &str, codec: &str) -> Option<&[Vec<u8>]> {
+        self.classes
+            .get(class)
+            .and_then(|codecs| codecs.get(codec))
+            .map(|v| v.as_slice())
+    }
+
+    /// Returns true if no MOH classes were loaded.
+    pub fn is_empty(&self) -> bool {
+        self.classes.is_empty()
+    }
 }
 
 /// Encode PCM samples into G.722 RTP-payload frames.

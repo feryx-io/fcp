@@ -631,6 +631,16 @@ pub enum QueueEvent {
         timestamp: SystemTime,
     },
 
+    /// Caller requested a callback (virtual queueing)
+    CallbackInitiated {
+        queue_name: String,
+        call_id: String,
+        callback_uri: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// Periodic stats snapshot for wallboard consumers
     StatsSnapshot {
         stats: Vec<QueueStatsSnapshot>,
@@ -964,6 +974,7 @@ impl QueueEvent {
             | QueueEvent::CallerDequeued { timestamp, .. }
             | QueueEvent::CallerAbandoned { timestamp, .. }
             | QueueEvent::CallerOverflowed { timestamp, .. }
+            | QueueEvent::CallbackInitiated { timestamp, .. }
             | QueueEvent::AgentLoggedIn { timestamp, .. }
             | QueueEvent::AgentLoggedOut { timestamp, .. }
             | QueueEvent::AgentStateChanged { timestamp, .. }
