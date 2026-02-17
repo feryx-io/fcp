@@ -1110,12 +1110,11 @@ spec:
 
 ### Next: v1.0 Reference Architecture
 - Complete Kubernetes deployment examples
-- Conference binary (`fcp-conference`)
 - Service discovery (Redis-based registry)
 
-## Current Status (v0.14.33)
+## Current Status (v0.14.58)
 
-The multi-binary architecture is **fully implemented** (except conference):
+The multi-binary architecture is **fully implemented**:
 
 | Binary | Status |
 |--------|--------|
@@ -1131,8 +1130,8 @@ The multi-binary architecture is **fully implemented** (except conference):
 | `fcp-events-server` | ✅ Done — multi-node event aggregation |
 | `fcp-jobs` | ✅ Done — background CDR/job processing |
 | `fcp-cli` | ✅ Done — CLI + TUI for administration |
-| `fcp-conference` | ❌ TODO — forge-conference exists, needs FCP wrapper |
-| `fcp-media` (standalone) | ❌ TODO — currently embedded in call-manager |
+| `fcp-conference` | ✅ Done — SIP conference bridge, PIN auth, recording, events |
+| `fcp-media` (standalone) | ✅ Done — wraps forge-api, REST media engine |
 
 Library extractions completed:
 - ✅ `fcp-b2bua-core` — shared by SBC, call-manager, PBX
@@ -1141,10 +1140,8 @@ Library extractions completed:
 
 ## Remaining Next Steps
 
-1. **Build `fcp-conference`** — wrapper around forge-conference/forge-mixer
-2. **Standalone `fcp-media`** — extract from embedded mode for independent media scaling
-3. **Kubernetes manifests** — deployment examples for distributed mode
-4. **Service discovery** — Redis-based registry for dynamic topology
+1. **Kubernetes manifests** — deployment examples for distributed mode
+2. **Service discovery** — Redis-based registry for dynamic topology
 
 ## Questions to Answer
 
@@ -1156,5 +1153,5 @@ Library extractions completed:
 
 ---
 
-**Status:** Mostly Implemented (v0.14.33)
-**Remaining:** Conference binary, standalone media, Kubernetes deployment
+**Status:** Fully Implemented (v0.14.58)
+**Remaining:** Kubernetes deployment, service discovery

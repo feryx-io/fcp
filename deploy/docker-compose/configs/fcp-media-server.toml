@@ -1,0 +1,29 @@
+# fcp-media-server Docker configuration
+
+[service]
+service_type = "media"
+node_id = "media-01"
+shutdown_timeout_secs = 30
+
+[http]
+bind_address = "0.0.0.0:8080"
+# enable_cors = false
+# allowed_origins = ["https://app.example.com"]
+
+[media]
+rtp_port_start = 10000
+rtp_port_end = 20000
+# public_ip — set via FCP_MEDIA_PUBLIC_IP env var
+
+[recording]
+base_dir = "/var/lib/fcp/media/recordings"
+root_jail = "/var/lib/fcp/media"
+prompts_dir = "/var/lib/fcp/media/prompts"
+
+[auth]
+# Set tokens for production use
+tokens = ["change-me-in-production"]
+
+[logging]
+level = "info"
+format = "json"

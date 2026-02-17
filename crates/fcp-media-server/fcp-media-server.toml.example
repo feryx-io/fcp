@@ -1,0 +1,47 @@
+# fcp-media-server configuration
+#
+# Standalone REST media processing server for FCP.
+# Wraps forge-api with session management, conferencing, WebRTC,
+# AI integration, Prometheus metrics, auth, rate limiting, and TLS.
+
+[service]
+service_type = "media"
+node_id = "media-01"
+# shutdown_timeout_secs = 30
+
+[http]
+bind_address = "0.0.0.0:8080"
+# enable_cors = false
+# allowed_origins = ["https://app.example.com"]
+# rate_limit_requests = 120
+# rate_limit_window_secs = 60
+
+[media]
+rtp_port_start = 10000
+rtp_port_end = 20000
+# public_ip = "203.0.113.10"  # Set for NAT traversal / Docker
+# xdp_enabled = false
+# xdp_interface = "eth0"
+# xdp_mode = "native"
+# mixer_max_buffer_frames = 50
+
+[recording]
+base_dir = "/var/lib/fcp/media/recordings"
+root_jail = "/var/lib/fcp/media"
+prompts_dir = "/var/lib/fcp/media/prompts"
+
+[tls]
+# enabled = true
+# cert = "/etc/fcp/tls/cert.pem"
+# key = "/etc/fcp/tls/key.pem"
+
+[auth]
+# disable_auth = false
+# tokens = ["change-me-in-production"]
+
+[ai]
+# allowed_endpoints = ["https://api.openai.com", "https://api.anthropic.com"]
+
+[logging]
+level = "info"
+format = "json"

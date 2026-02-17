@@ -145,6 +145,30 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # fcp-media - Standalone media processing server
+  fcp-media:
+    build:
+      context: ../..
+      dockerfile: deploy/docker-compose/Dockerfile.media
+    container_name: fcp-media
+    # Use host networking for proper UDP/RTP handling
+    network_mode: host
+    volumes:
+      - ./configs/fcp-media-server.toml:/app/fcp-media-server.toml:ro
+      - fcp-media-recordings:/var/lib/fcp/media/recordings
+      - fcp-media-prompts:/var/lib/fcp/media/prompts
+    environment:
+      - RUST_LOG=info
+      - FCP_MEDIA_LOG_FORMAT=pretty
+      - FCP_MEDIA_PUBLIC_IP=${HOST_IP:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
   # fcp-jobs - Async job processing workers
   fcp-jobs:
     build:
@@ -172,6 +196,10 @@ volumes:
   redis-data:
     driver: local
   fcp-recordings:
+    driver: local
+  fcp-media-recordings:
+    driver: local
+  fcp-media-prompts:
     driver: local
   fcp_shared-data:
     external: true  # Created by main docker-compose.yml

@@ -357,6 +357,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "fs-err",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "hyper 1.8.1",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls 0.23.36",
+ "rustls-pemfile 2.2.0",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tower-service",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -981,6 +1003,16 @@ dependencies = [
 
 [[package]]
 name = "darling"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
+dependencies = [
+ "darling_core 0.20.11",
+ "darling_macro 0.20.11",
+]
+
+[[package]]
+name = "darling"
 version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
@@ -997,6 +1029,20 @@ checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
 dependencies = [
  "darling_core 0.23.0",
  "darling_macro 0.23.0",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.114",
 ]
 
 [[package]]
@@ -1023,6 +1069,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
+ "syn 2.0.114",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
+dependencies = [
+ "darling_core 0.20.11",
+ "quote",
  "syn 2.0.114",
 ]
 
@@ -1555,7 +1612,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1584,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "axum",
@@ -1605,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "axum",
@@ -1633,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1655,7 +1712,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1683,7 +1740,7 @@ dependencies = [
  "sip-dialog",
  "sip-dns",
  "sip-observe",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "sip-uac",
@@ -1697,7 +1754,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1730,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1768,7 +1825,7 @@ dependencies = [
  "sip-dns",
  "sip-observe",
  "sip-parse",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "sip-uac",
@@ -1804,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1821,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "axum",
@@ -1868,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1895,7 +1952,7 @@ dependencies = [
  "sip-dialog",
  "sip-dns",
  "sip-observe",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "sip-uac",
@@ -1909,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "axum",
@@ -1955,7 +2012,7 @@ dependencies = [
  "sha2",
  "sip-core",
  "sip-dialog",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -1965,8 +2022,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fcp-media-server"
+version = "0.14.59"
+dependencies = [
+ "anyhow",
+ "clap",
+ "forge-api",
+ "forge-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "fcp-pbx"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -1983,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2038,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2069,7 +2143,7 @@ dependencies = [
  "sip-parse",
  "sip-ratelimit",
  "sip-registrar",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "sip-uac",
@@ -2086,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2139,7 +2213,7 @@ dependencies = [
  "sip-dns",
  "sip-parse",
  "sip-registrar",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-testkit",
  "sip-transaction",
  "sip-transport",
@@ -2159,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2178,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2196,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2214,7 +2288,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2249,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.14.58"
+version = "0.14.59"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2277,7 +2351,7 @@ dependencies = [
  "sip-dialog",
  "sip-dns",
  "sip-observe",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "sip-uac",
@@ -2415,6 +2489,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-api"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "axum-server",
+ "chrono",
+ "dashmap 5.5.3",
+ "forge-ai-stream",
+ "forge-conference",
+ "forge-core",
+ "forge-engine",
+ "forge-ice",
+ "forge-mixer",
+ "forge-rtp",
+ "forge-sdp",
+ "forge-siprec",
+ "forge-storage",
+ "forge-webrtc",
+ "lazy_static",
+ "metrics 0.21.1",
+ "metrics-exporter-prometheus",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.4.13",
+ "tower-http 0.5.2",
+ "tracing",
+ "url",
+ "uuid",
+ "validator",
+]
+
+[[package]]
 name = "forge-codecs"
 version = "0.2.0"
 dependencies = [
@@ -2435,7 +2543,7 @@ dependencies = [
  "forge-mixer",
  "forge-recorder",
  "hound",
- "metrics",
+ "metrics 0.21.1",
  "parking_lot 0.12.5",
  "serde",
  "thiserror 1.0.69",
@@ -2486,7 +2594,7 @@ dependencies = [
  "forge-recorder",
  "forge-rtp",
  "forge-transcoder",
- "metrics",
+ "metrics 0.21.1",
  "parking_lot 0.12.5",
  "rand 0.8.5",
  "serde",
@@ -2495,6 +2603,25 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "forge-ice"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "forge-core",
+ "futures",
+ "hex",
+ "hmac",
+ "if-addrs",
+ "rand 0.8.5",
+ "serde",
+ "sha1",
+ "socket2 0.5.10",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2550,15 +2677,62 @@ dependencies = [
  "aes",
  "aes-gcm",
  "bytes",
+ "foreign-types",
  "forge-core",
  "hmac",
  "libc",
- "metrics",
+ "metrics 0.21.1",
+ "openssl",
+ "openssl-sys",
  "rand 0.8.5",
  "sha1",
  "sha2",
  "socket2 0.5.10",
  "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "forge-sdp"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "forge-core",
+ "forge-ice",
+ "sip-sdp 0.1.0",
+ "smol_str",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "forge-siprec"
+version = "0.2.0"
+dependencies = [
+ "base64 0.21.7",
+ "bytes",
+ "chrono",
+ "dashmap 5.5.3",
+ "forge-core",
+ "forge-recorder",
+ "forge-rtp",
+ "quick-xml",
+ "rand 0.8.5",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "forge-storage"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2577,6 +2751,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-webrtc"
+version = "0.2.0"
+dependencies = [
+ "dashmap 5.5.3",
+ "forge-core",
+ "forge-ice",
+ "forge-rtp",
+ "forge-sdp",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2590,6 +2780,16 @@ name = "fragile"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dd6caf6059519a65843af8fe2a3ae298b14b80179855aeb4adc2c1934ee619"
+
+[[package]]
+name = "fs-err"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73fde052dbfc920003cfd2c8e2c6e6d4cc7c1091538c3a24226cec0665ab08c0"
+dependencies = [
+ "autocfg",
+ "tokio",
+]
 
 [[package]]
 name = "fs_extra"
@@ -2846,6 +3046,9 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash",
+]
 
 [[package]]
 name = "hashbrown"
@@ -3321,6 +3524,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3792,6 +4005,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "metrics"
+version = "0.22.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56d05972e8cbac2671e85aa9d04d9160d193f8bebd1a5c1a2f4542c62e65d1d0"
+dependencies = [
+ "ahash",
+ "portable-atomic",
+]
+
+[[package]]
+name = "metrics-exporter-prometheus"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bf4e7146e30ad172c42c39b3246864bd2d3c6396780711a1baf749cfe423e21"
+dependencies = [
+ "base64 0.21.7",
+ "hyper 0.14.32",
+ "hyper-tls 0.5.0",
+ "indexmap 2.13.0",
+ "ipnet",
+ "metrics 0.22.4",
+ "metrics-util",
+ "quanta",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "metrics-macros"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3800,6 +4042,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "metrics-util"
+version = "0.16.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b07a5eb561b8cbc16be2d216faf7757f9baf3bfb94dbb0fae3df8387a5bb47f"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "metrics 0.22.4",
+ "num_cpus",
+ "quanta",
+ "sketches-ddsketch",
 ]
 
 [[package]]
@@ -4257,6 +4514,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
+name = "openssl-src"
+version = "300.5.5+3.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f1787d533e03597a7934fd0a765f0d28e94ecc5fb7789f8053b1e699a56f709"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.111"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4264,6 +4530,7 @@ checksum = "82cab2d520aa75e3c58898289429321eb788c3106963d0dc886ec7a5f4adc321"
 dependencies = [
  "cc",
  "libc",
+ "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -4638,6 +4905,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-error-attr2"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "proc-macro-error2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
+dependencies = [
+ "proc-macro-error-attr2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4673,6 +4962,16 @@ dependencies = [
  "wasi",
  "web-sys",
  "winapi",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+dependencies = [
+ "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -5824,6 +6123,14 @@ dependencies = [
 
 [[package]]
 name = "sip-sdp"
+version = "0.1.0"
+dependencies = [
+ "nom",
+ "smol_str",
+]
+
+[[package]]
+name = "sip-sdp"
 version = "0.2.0"
 dependencies = [
  "nom",
@@ -5890,7 +6197,7 @@ dependencies = [
  "sip-dialog",
  "sip-dns",
  "sip-parse",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "smol_str",
@@ -5911,7 +6218,7 @@ dependencies = [
  "sip-core",
  "sip-dialog",
  "sip-parse",
- "sip-sdp",
+ "sip-sdp 0.2.0",
  "sip-transaction",
  "sip-transport",
  "smol_str",
@@ -5924,6 +6231,12 @@ name = "siphasher"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
+
+[[package]]
+name = "sketches-ddsketch"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85636c14b73d81f541e525f585c0a2109e6744e1565b5c1668e31c70c10ed65c"
 
 [[package]]
 name = "slab"
@@ -7404,6 +7717,36 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validator"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43fb22e1a008ece370ce08a3e9e4447a910e92621bb49b85d6e48a45397e7cfa"
+dependencies = [
+ "idna 1.1.0",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "url",
+ "validator_derive",
+]
+
+[[package]]
+name = "validator_derive"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7df16e474ef958526d1205f6dda359fdfab79d9aa6d54bafcb92dcd07673dca"
+dependencies = [
+ "darling 0.20.11",
+ "once_cell",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]
