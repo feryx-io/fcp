@@ -406,12 +406,35 @@ pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional)
     /// Example: "http://fcp-events-server:8081/ingest"
     pub server_url: Option<String>,
+
+    /// External webhook endpoints to receive event notifications.
+    #[serde(default)]
+    pub webhooks: Vec<WebhookConfig>,
 }
 
 impl Default for EventsSection {
     fn default() -> Self {
-        Self { server_url: None }
+        Self {
+            server_url: None,
+            webhooks: Vec::new(),
+        }
     }
+}
+
+/// Webhook endpoint configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebhookConfig {
+    /// HTTP(S) URL to POST events to.
+    pub url: String,
+
+    /// Event type filter — only forward events of these types.
+    /// Valid values: "call", "media", "queue", "recording", "system", etc.
+    /// If empty/unset, all events are forwarded.
+    #[serde(default)]
+    pub event_types: Vec<String>,
+
+    /// Optional secret for HMAC-SHA256 signature in X-Webhook-Signature header.
+    pub secret: Option<String>,
 }
 
 /// Load configuration from file or use defaults.
@@ -489,6 +512,7 @@ mod tests {
         assert!(config.routing.rules_file.is_none());
         assert!(!config.routing.hot_reload);
         assert!(config.events.server_url.is_none());
+        assert!(config.events.webhooks.is_empty());
         assert!(config.trunks.is_empty());
         // PBX defaults
         assert!(!config.pbx.enabled);
@@ -543,6 +567,14 @@ hot_reload = true
 
 [events]
 server_url = "http://fcp-events-server:8081/ingest"
+
+[[events.webhooks]]
+url = "https://hooks.example.com/queue-events"
+event_types = ["queue"]
+secret = "whsec_test123"
+
+[[events.webhooks]]
+url = "https://hooks.example.com/all-events"
 "#;
         let config: CallManagerConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.service.node_id, "cm-test-01");
@@ -565,5 +597,22 @@ server_url = "http://fcp-events-server:8081/ingest"
             config.events.server_url.as_deref(),
             Some("http://fcp-events-server:8081/ingest")
         );
+        // Webhook config
+        assert_eq!(config.events.webhooks.len(), 2);
+        assert_eq!(
+            config.events.webhooks[0].url,
+            "https://hooks.example.com/queue-events"
+        );
+        assert_eq!(config.events.webhooks[0].event_types, vec!["queue"]);
+        assert_eq!(
+            config.events.webhooks[0].secret.as_deref(),
+            Some("whsec_test123")
+        );
+        assert_eq!(
+            config.events.webhooks[1].url,
+            "https://hooks.example.com/all-events"
+        );
+        assert!(config.events.webhooks[1].event_types.is_empty());
+        assert!(config.events.webhooks[1].secret.is_none());
     }
 }

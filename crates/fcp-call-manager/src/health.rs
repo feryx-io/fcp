@@ -2,12 +2,16 @@
 
 use axum::{
     extract::{Path, Query, State},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
 use fcp_core::{CallId, DynStorage};
+use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus, PlatformEvent};
+use fcp_events::filter::EventType;
 use fcp_media::MediaManager;
 use fcp_queue::QueueManager;
 use crate::queue_handler::{QueueCallHandler, SupervisorMode};
@@ -15,7 +19,7 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Shared state for the HTTP API.
 pub struct AppState {
@@ -24,6 +28,7 @@ pub struct AppState {
     pub media_manager: Arc<MediaManager>,
     pub queue_manager: Option<Arc<QueueManager>>,
     pub queue_handler: Option<Arc<QueueCallHandler>>,
+    pub event_bus: Arc<InMemoryEventBus>,
     pub start_time: Instant,
 }
 
@@ -50,6 +55,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // Callback endpoints
         .route("/callbacks", get(list_callbacks_handler))
         .route("/callbacks/{call_id}", delete(cancel_callback_handler))
+        // WebSocket wallboard (real-time queue stats)
+        .route("/ws/wallboard", get(wallboard_ws_handler))
         // Supervisor endpoints
         .route("/calls/{id}/monitor", post(monitor_call_handler))
         .route("/calls/{id}/whisper", post(whisper_call_handler))
@@ -715,5 +722,81 @@ async fn cancel_callback_handler(
         Json(serde_json::json!({
             "error": format!("Callback '{}' not found", call_id),
         }))
+    }
+}
+
+// ---- WebSocket Wallboard Endpoint ----
+
+/// WebSocket upgrade handler for real-time wallboard stats.
+///
+/// Subscribes to `QueueEvent::StatsSnapshot` on the event bus and streams
+/// each snapshot as JSON to the connected WebSocket client.
+async fn wallboard_ws_handler(
+    State(state): State<Arc<AppState>>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| wallboard_ws_session(socket, state))
+}
+
+/// Run a wallboard WebSocket session.
+async fn wallboard_ws_session(mut socket: WebSocket, state: Arc<AppState>) {
+    // Subscribe to Queue events only
+    let filter = EventFilter::new().types(vec![EventType::Queue]);
+    let mut stream = match state.event_bus.subscribe(filter).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "Failed to subscribe to event bus for wallboard");
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    info!("Wallboard WebSocket client connected");
+
+    loop {
+        tokio::select! {
+            // Receive events from the bus
+            event = stream.next() => {
+                match event {
+                    Some(PlatformEvent::Queue(fcp_events::QueueEvent::StatsSnapshot { stats, .. })) => {
+                        let json = serde_json::json!({
+                            "type": "stats_snapshot",
+                            "stats": stats,
+                        });
+                        if let Err(e) = socket.send(Message::Text(json.to_string())).await {
+                            warn!(error = %e, "Wallboard WebSocket send failed, closing");
+                            break;
+                        }
+                    }
+                    Some(_) => {
+                        // Non-StatsSnapshot queue event — skip
+                    }
+                    None => {
+                        // Event stream ended
+                        warn!("Wallboard event stream ended unexpectedly");
+                        break;
+                    }
+                }
+            }
+            // Handle incoming WebSocket messages (ping/pong/close)
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => {
+                        info!("Wallboard WebSocket client disconnected");
+                        break;
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        if socket.send(Message::Pong(data)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {} // Ignore text/binary from client
+                    Some(Err(e)) => {
+                        warn!(error = %e, "Wallboard WebSocket recv error");
+                        break;
+                    }
+                }
+            }
+        }
     }
 }

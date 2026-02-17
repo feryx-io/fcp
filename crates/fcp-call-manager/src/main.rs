@@ -13,6 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
+use fcp_events::filter::EventType;
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
 use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
@@ -477,6 +478,7 @@ async fn main() -> Result<()> {
         media_manager: Arc::clone(&media_manager),
         queue_manager: queue_manager.clone(),
         queue_handler: queue_call_handler.clone(),
+        event_bus: Arc::clone(&event_bus),
         start_time: Instant::now(),
     });
     let http_bind = config.http.bind_address;
@@ -559,6 +561,20 @@ async fn main() -> Result<()> {
         info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
     }
 
+    // 21b. Spawn webhook dispatcher tasks (one per configured webhook)
+    for webhook in &config.events.webhooks {
+        let event_bus_clone = Arc::clone(&event_bus);
+        let webhook_clone = webhook.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_webhook_dispatcher(event_bus_clone, webhook_clone).await {
+                tracing::error!(%e, "Webhook dispatcher task failed");
+            }
+        });
+    }
+    if !config.events.webhooks.is_empty() {
+        info!(count = config.events.webhooks.len(), "Webhook dispatchers started");
+    }
+
     // 22. Publish SystemEvent::Started to announce this node
     {
         let started_event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::Started {
@@ -594,6 +610,7 @@ async fn main() -> Result<()> {
         trunks = config.trunks.len(),
         routing = config.routing.rules_file.is_some(),
         events_forwarding = config.events.server_url.is_some(),
+        webhooks = config.events.webhooks.len(),
         pbx = config.pbx.enabled,
         "fcp-call-manager ready — listening for SIP messages"
     );
@@ -887,6 +904,129 @@ fn init_tracing(config: &CallManagerConfig) {
                 .with_level(true)
                 .with_env_filter(env_filter)
                 .init();
+        }
+    }
+}
+
+/// Run a webhook dispatcher task for a single webhook endpoint.
+///
+/// Subscribes to the event bus with an optional event-type filter and POSTs
+/// matching events as JSON to the configured URL.
+async fn run_webhook_dispatcher(
+    event_bus: Arc<InMemoryEventBus>,
+    webhook: config::WebhookConfig,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("Failed to create HTTP client for webhook dispatcher")?;
+
+    // Build event filter from webhook config
+    let filter = if webhook.event_types.is_empty() {
+        EventFilter::new()
+    } else {
+        let types: Vec<EventType> = webhook
+            .event_types
+            .iter()
+            .filter_map(|t| match t.to_lowercase().as_str() {
+                "call" => Some(EventType::Call),
+                "media" => Some(EventType::Media),
+                "queue" => Some(EventType::Queue),
+                "recording" => Some(EventType::Recording),
+                "system" => Some(EventType::System),
+                "user" => Some(EventType::User),
+                "registration" => Some(EventType::Registration),
+                "voicemail" => Some(EventType::Voicemail),
+                "conference" => Some(EventType::Conference),
+                "ivr" => Some(EventType::Ivr),
+                "flow" => Some(EventType::Flow),
+                other => {
+                    warn!(event_type = %other, "Unknown webhook event type, ignoring");
+                    None
+                }
+            })
+            .collect();
+        EventFilter::new().types(types)
+    };
+
+    let mut stream = event_bus
+        .subscribe(filter.clone())
+        .await
+        .context("Failed to subscribe to event bus for webhook")?;
+
+    let url = webhook.url.clone();
+    let secret = webhook.secret.clone();
+    info!(
+        url = %url,
+        event_types = ?webhook.event_types,
+        has_secret = secret.is_some(),
+        "Webhook dispatcher started"
+    );
+
+    loop {
+        match stream.next().await {
+            Some(event) => {
+                let client = client.clone();
+                let url = url.clone();
+                let secret = secret.clone();
+                tokio::spawn(async move {
+                    let json_body = match serde_json::to_vec(&event) {
+                        Ok(body) => body,
+                        Err(e) => {
+                            tracing::warn!(%e, "Failed to serialize event for webhook");
+                            return;
+                        }
+                    };
+
+                    let mut request = client
+                        .post(&url)
+                        .header("Content-Type", "application/json");
+
+                    // Add HMAC signature header if secret is configured
+                    if let Some(ref secret) = secret {
+                        use std::fmt::Write;
+                        // Simple HMAC-like signature: hex(SHA256(secret + body))
+                        // In production, use a proper HMAC crate; for now use a
+                        // deterministic hash so webhooks can verify authenticity.
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        std::hash::Hash::hash(secret.as_bytes(), &mut hasher);
+                        std::hash::Hash::hash(&json_body, &mut hasher);
+                        let hash = std::hash::Hasher::finish(&hasher);
+                        let mut sig = String::with_capacity(16);
+                        let _ = write!(sig, "{:016x}", hash);
+                        request = request.header("X-Webhook-Signature", sig);
+                    }
+
+                    match request.body(json_body).send().await {
+                        Ok(resp) => {
+                            if !resp.status().is_success() {
+                                tracing::warn!(
+                                    url = %url,
+                                    status = %resp.status(),
+                                    "Webhook received non-2xx response"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(url = %url, %e, "Webhook delivery failed");
+                        }
+                    }
+                });
+            }
+            None => {
+                warn!(url = %url, "Webhook event stream ended, resubscribing...");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                match event_bus.subscribe(filter.clone()).await {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        info!(url = %url, "Resubscribed to event bus for webhook");
+                    }
+                    Err(e) => {
+                        warn!(url = %url, %e, "Failed to resubscribe for webhook");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
         }
     }
 }

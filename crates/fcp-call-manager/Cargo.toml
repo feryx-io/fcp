@@ -59,7 +59,7 @@ sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
 sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 
 # HTTP API
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }
