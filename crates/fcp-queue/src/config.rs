@@ -96,8 +96,15 @@ pub struct QueueConfig {
 
     /// Where to send calls when the queue overflows or max wait time is reached.
     /// e.g., "voicemail:6000" or another extension.
+    /// If `overflow_destinations` is also set, this is prepended to that list.
     #[serde(default)]
     pub overflow_destination: Option<String>,
+
+    /// Ordered list of overflow destinations to try in sequence.
+    /// Each entry is tried in order; if it fails, the next is attempted.
+    /// e.g., ["queue:support", "voicemail:6000", "sip:operator@example.com"]
+    #[serde(default)]
+    pub overflow_destinations: Vec<String>,
 
     /// Music-on-hold class name. Uses the default MOH if None.
     #[serde(default)]
@@ -110,6 +117,12 @@ pub struct QueueConfig {
     /// Interval between position announcements (seconds).
     #[serde(default = "default_announce_interval")]
     pub announce_interval_secs: u32,
+
+    /// Whether to announce estimated wait time along with position.
+    /// Requires `announce_position = true`. Uses average handle time
+    /// and available agent count to estimate wait.
+    #[serde(default)]
+    pub announce_eta: bool,
 
     /// Whether to return the caller to the queue when an agent doesn't answer
     /// (instead of abandoning the attempt).
@@ -151,6 +164,12 @@ pub struct QueueConfig {
     /// Maps agent_id → priority. Agents not listed use the global agent priority.
     #[serde(default)]
     pub agent_priorities: HashMap<String, u32>,
+
+    /// Per-agent weight for the `Weighted` distribution strategy.
+    /// Maps agent_id → weight (e.g., senior=40, junior=20). Default weight is 1.
+    /// Higher weight = proportionally more calls.
+    #[serde(default)]
+    pub agent_weights: HashMap<String, u32>,
 
     /// Seconds between automatic priority escalations. 0 = disabled.
     /// A call's priority decreases (higher urgency) by 1 per interval elapsed.
@@ -203,6 +222,26 @@ pub struct QueueConfig {
     pub sla_warning_threshold_pct: f64,
 }
 
+impl QueueConfig {
+    /// Returns the merged overflow destination list.
+    /// If `overflow_destination` (legacy single field) is set, it's prepended
+    /// to the `overflow_destinations` list. De-duplicated.
+    pub fn effective_overflow_destinations(&self) -> Vec<String> {
+        let mut dests = Vec::new();
+        if let Some(ref d) = self.overflow_destination {
+            if !d.is_empty() {
+                dests.push(d.clone());
+            }
+        }
+        for d in &self.overflow_destinations {
+            if !dests.contains(d) {
+                dests.push(d.clone());
+            }
+        }
+        dests
+    }
+}
+
 /// A time-of-day schedule entry for queue business hours.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScheduleEntry {
@@ -236,6 +275,10 @@ pub enum DistributionStrategy {
 
     /// Select an agent who has all required skills, using longest-idle as tiebreaker.
     SkillsBased,
+
+    /// Select agents proportional to configured weight. Higher weight = more calls.
+    /// Uses a running counter approach for smooth distribution.
+    Weighted,
 }
 
 fn default_wrap_up_time() -> u32 {
@@ -361,6 +404,66 @@ agents = ["200", "201"]
     }
 
     #[test]
+    fn test_effective_overflow_destinations() {
+        let toml_str = r#"
+enabled = true
+
+[queues.sales]
+name = "Sales"
+extension = "6000"
+overflow_destination = "queue:support"
+overflow_destinations = ["voicemail:6000", "sip:operator@example.com"]
+agents = ["100"]
+
+[queues.support]
+name = "Support"
+extension = "6001"
+overflow_destination = "voicemail:6001"
+agents = ["200"]
+
+[queues.minimal]
+name = "Minimal"
+extension = "6002"
+agents = ["300"]
+"#;
+        let config: QueueSystemConfig = toml::from_str(toml_str).unwrap();
+
+        // Sales: legacy + list merged, legacy first
+        let sales = &config.queues["sales"];
+        let dests = sales.effective_overflow_destinations();
+        assert_eq!(dests, vec!["queue:support", "voicemail:6000", "sip:operator@example.com"]);
+
+        // Support: legacy only
+        let support = &config.queues["support"];
+        let dests = support.effective_overflow_destinations();
+        assert_eq!(dests, vec!["voicemail:6001"]);
+
+        // Minimal: no overflow
+        let minimal = &config.queues["minimal"];
+        let dests = minimal.effective_overflow_destinations();
+        assert!(dests.is_empty());
+    }
+
+    #[test]
+    fn test_effective_overflow_deduplication() {
+        let toml_str = r#"
+enabled = true
+
+[queues.test]
+name = "Test"
+extension = "6000"
+overflow_destination = "voicemail:6000"
+overflow_destinations = ["voicemail:6000", "sip:op@example.com"]
+agents = ["100"]
+"#;
+        let config: QueueSystemConfig = toml::from_str(toml_str).unwrap();
+        let test_q = &config.queues["test"];
+        let dests = test_q.effective_overflow_destinations();
+        // "voicemail:6000" should appear only once
+        assert_eq!(dests, vec!["voicemail:6000", "sip:op@example.com"]);
+    }
+
+    #[test]
     fn test_strategy_serde_roundtrip() {
         let strategies = vec![
             DistributionStrategy::RoundRobin,
@@ -369,6 +472,7 @@ agents = ["200", "201"]
             DistributionStrategy::Random,
             DistributionStrategy::Linear,
             DistributionStrategy::SkillsBased,
+            DistributionStrategy::Weighted,
         ];
         for strategy in strategies {
             let json = serde_json::to_string(&strategy).unwrap();

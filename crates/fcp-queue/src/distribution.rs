@@ -1,5 +1,7 @@
 //! Distribution engine for selecting agents based on queue strategy.
 
+use std::collections::HashMap;
+
 use crate::config::DistributionStrategy;
 use crate::types::Agent;
 
@@ -29,9 +31,11 @@ pub fn filter_by_skills<'a>(agents: &[&'a Agent], required: &[String]) -> Vec<&'
 /// Select an agent from the given list of available agents based on the strategy.
 ///
 /// `round_robin_index` is the current round-robin counter for the queue (only used
-/// for `RoundRobin` strategy). Returns the selected agent index and updated counter.
+/// for `RoundRobin` and `Weighted` strategies). Returns the selected agent and updated counter.
 ///
 /// `required_skills` filters agents to only those possessing all listed skills.
+///
+/// `agent_weights` maps agent_id → weight for the `Weighted` strategy. Default weight is 1.
 ///
 /// Returns `None` if no agents are available.
 pub fn select_agent(
@@ -40,6 +44,25 @@ pub fn select_agent(
     round_robin_index: usize,
     ring_timeout_secs: u32,
     required_skills: &[String],
+) -> Option<(DistributionPlan, usize)> {
+    select_agent_weighted(
+        strategy,
+        available_agents,
+        round_robin_index,
+        ring_timeout_secs,
+        required_skills,
+        &HashMap::new(),
+    )
+}
+
+/// Select an agent with optional weight support for the `Weighted` strategy.
+pub fn select_agent_weighted(
+    strategy: DistributionStrategy,
+    available_agents: &[&Agent],
+    round_robin_index: usize,
+    ring_timeout_secs: u32,
+    required_skills: &[String],
+    agent_weights: &HashMap<String, u32>,
 ) -> Option<(DistributionPlan, usize)> {
     let eligible = filter_by_skills(available_agents, required_skills);
     if eligible.is_empty() {
@@ -95,6 +118,23 @@ pub fn select_agent(
         DistributionStrategy::Linear => {
             // Agents should be ordered by their config order; pick the first available.
             (eligible[0], round_robin_index)
+        }
+
+        DistributionStrategy::Weighted => {
+            // Weighted round-robin: each agent gets calls proportional to their weight.
+            // Build a virtual slot list: agent with weight 3 gets 3 slots, weight 1 gets 1 slot.
+            let mut slots: Vec<&Agent> = Vec::new();
+            for agent in &eligible {
+                let weight = agent_weights.get(&agent.id).copied().unwrap_or(1).max(1);
+                for _ in 0..weight {
+                    slots.push(agent);
+                }
+            }
+            if slots.is_empty() {
+                return None;
+            }
+            let idx = round_robin_index % slots.len();
+            (slots[idx], round_robin_index + 1)
         }
     };
 
@@ -268,5 +308,55 @@ mod tests {
         let (plan, _) = select_agent(DistributionStrategy::SkillsBased, &refs, 0, 20, &[]).unwrap();
         // Should pick one (both eligible, longest idle tiebreaker — both never took a call, so either works)
         assert!(!plan.agent_id.is_empty());
+    }
+
+    #[test]
+    fn test_weighted_distribution() {
+        let agents = vec![
+            make_agent("100", 0, None),
+            make_agent("101", 0, None),
+        ];
+        let refs: Vec<&Agent> = agents.iter().collect();
+
+        // Agent 100 has weight 3, agent 101 has weight 1 → 4 slots total
+        let mut weights = HashMap::new();
+        weights.insert("100".to_string(), 3u32);
+        weights.insert("101".to_string(), 1u32);
+
+        // Slots: [100, 100, 100, 101] — cycling through
+        let mut counts = HashMap::new();
+        let mut rr = 0;
+        for _ in 0..8 {
+            let (plan, new_rr) =
+                select_agent_weighted(DistributionStrategy::Weighted, &refs, rr, 20, &[], &weights)
+                    .unwrap();
+            *counts.entry(plan.agent_id).or_insert(0u32) += 1;
+            rr = new_rr;
+        }
+        // Over 8 calls (2 full cycles): agent 100 should get 6, agent 101 should get 2
+        assert_eq!(counts["100"], 6);
+        assert_eq!(counts["101"], 2);
+    }
+
+    #[test]
+    fn test_weighted_default_weight() {
+        let agents = vec![
+            make_agent("100", 0, None),
+            make_agent("101", 0, None),
+        ];
+        let refs: Vec<&Agent> = agents.iter().collect();
+
+        // No weights configured — all default to 1, so equal distribution like round-robin
+        let weights = HashMap::new();
+        let mut rr = 0;
+        let mut ids = Vec::new();
+        for _ in 0..4 {
+            let (plan, new_rr) =
+                select_agent_weighted(DistributionStrategy::Weighted, &refs, rr, 20, &[], &weights)
+                    .unwrap();
+            ids.push(plan.agent_id);
+            rr = new_rr;
+        }
+        assert_eq!(ids, vec!["100", "101", "100", "101"]);
     }
 }

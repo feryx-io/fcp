@@ -330,9 +330,11 @@ mod tests {
             max_wait_time_secs: 300,
             max_queue_depth: 50,
             overflow_destination: None,
+            overflow_destinations: Vec::new(),
             moh_class: None,
             announce_position: true,
             announce_interval_secs: 30,
+            announce_eta: false,
             retry_on_no_answer: true,
             agents: vec!["100".to_string(), "101".to_string()],
             priority: 0,
@@ -353,6 +355,7 @@ mod tests {
             callback_max_attempts: 3,
             callback_retry_delay_secs: 60,
             sla_warning_threshold_pct: 0.0,
+            agent_weights: HashMap::new(),
         }
     }
 

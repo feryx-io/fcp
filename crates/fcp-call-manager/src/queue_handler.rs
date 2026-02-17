@@ -133,6 +133,8 @@ struct AnnounceConfig {
     cache: Arc<AnnouncementCache>,
     interval_secs: u32,
     queue_manager: Arc<QueueManager>,
+    /// Whether to announce estimated wait time after position.
+    announce_eta: bool,
 }
 
 pub struct QueueCallHandler {
@@ -265,18 +267,20 @@ impl QueueCallHandler {
 
         // Find announce_position and interval from the first queue config that has it enabled
         // (all queues share the same cache, but each queue can individually enable announcements)
-        let interval = self
+        let queue_cfg = self
             .config
             .queues
             .values()
-            .find(|qc| qc.announce_position)
-            .map(|qc| qc.announce_interval_secs)
-            .unwrap_or(30);
+            .find(|qc| qc.announce_position)?;
+
+        let interval = queue_cfg.announce_interval_secs;
+        let announce_eta = queue_cfg.announce_eta && cache.has_eta();
 
         Some(AnnounceConfig {
             cache: Arc::clone(cache),
             interval_secs: interval,
             queue_manager: Arc::clone(&self.queue_manager),
+            announce_eta,
         })
     }
 
@@ -442,16 +446,46 @@ impl QueueCallHandler {
                         last_announcement = Instant::now();
 
                         if let Some(position) = ac.queue_manager.get_caller_position(&call_id) {
-                            if let Some(frames) = ac.cache.get_position_frames(position, &codec) {
+                            // Collect all announcement frames: position + optional ETA
+                            let mut all_frames: Vec<&[u8]> = Vec::new();
+
+                            if let Some(pos_frames) = ac.cache.get_position_frames(position, &codec) {
+                                for f in pos_frames {
+                                    all_frames.push(f);
+                                }
+                            }
+
+                            // Add ETA frames if enabled
+                            if ac.announce_eta {
+                                if let Some(eta_secs) = ac.queue_manager.estimate_wait_secs(&call_id) {
+                                    let eta_mins = ((eta_secs + 30) / 60).max(1) as usize; // Round to nearest minute, minimum 1
+                                    if eta_mins <= 60 {
+                                        // Small gap between position and ETA (200ms = 10 silence frames at 20ms)
+                                        // We'll handle this by adding silence in between
+                                        if let Some(eta_frames) = ac.cache.get_eta_frames(eta_mins, &codec) {
+                                            debug!(
+                                                call_id = %call_id,
+                                                eta_mins = eta_mins,
+                                                "Including ETA in announcement"
+                                            );
+                                            for f in eta_frames {
+                                                all_frames.push(f);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !all_frames.is_empty() {
                                 debug!(
                                     call_id = %call_id,
                                     position = position,
-                                    frames = frames.len(),
+                                    frames = all_frames.len(),
                                     "Playing position announcement"
                                 );
 
-                                // Play announcement frames
-                                for frame in frames {
+                                // Play all announcement frames
+                                for frame in &all_frames {
                                     let sequence = seq.fetch_add(1, Ordering::Relaxed);
                                     let timestamp = ts.fetch_add(160, Ordering::Relaxed);
 
@@ -552,16 +586,17 @@ impl QueueCallHandler {
                             .collect();
 
                         for call_id in expired {
-                            if let Some(ref overflow_dest) = config.overflow_destination {
+                            let overflow_dests = config.effective_overflow_destinations();
+                            if !overflow_dests.is_empty() {
                                 info!(
                                     call_id = %call_id,
                                     queue = %queue_name,
-                                    dest = %overflow_dest,
+                                    destinations = ?overflow_dests,
                                     "Max wait time exceeded, routing to overflow"
                                 );
-                                overflow_expired_call(
+                                overflow_expired_call_multi(
                                     &call_id,
-                                    overflow_dest,
+                                    &overflow_dests,
                                     &queue_name,
                                     &sessions,
                                     &queue_manager,
@@ -1484,6 +1519,45 @@ impl QueueCallHandler {
             }
         }
     }
+
+    /// Try a list of overflow destinations in order. Returns Ok on first success.
+    /// If all fail, sends BYE to the caller and cleans up the session.
+    async fn overflow_call_multi(
+        &self,
+        call_id: &str,
+        destinations: &[String],
+        reason: &str,
+    ) {
+        for (i, dest) in destinations.iter().enumerate() {
+            info!(
+                call_id = %call_id,
+                dest = %dest,
+                attempt = i + 1,
+                total = destinations.len(),
+                reason = %reason,
+                "Trying overflow destination"
+            );
+            match self.overflow_call(call_id, dest, reason).await {
+                Ok(()) => return,
+                Err(e) => {
+                    warn!(
+                        call_id = %call_id,
+                        dest = %dest,
+                        error = %e,
+                        remaining = destinations.len() - i - 1,
+                        "Overflow destination failed, trying next"
+                    );
+                }
+            }
+        }
+        // All destinations exhausted — BYE the caller
+        warn!(
+            call_id = %call_id,
+            reason = %reason,
+            "All overflow destinations exhausted, sending BYE"
+        );
+        self.remove_session(call_id);
+    }
 }
 
 #[async_trait::async_trait]
@@ -1692,18 +1766,17 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 );
             }
             Err(e) => {
-                // Queue full — try overflow destination before disconnecting
-                let overflow_dest = self
+                // Queue full — try overflow destinations before disconnecting
+                let overflow_dests = self
                     .queue_manager
-                    .get_queue_config(&queue_name)
-                    .and_then(|c| c.overflow_destination.clone());
+                    .get_overflow_destinations(&queue_name);
 
-                if let Some(ref dest) = overflow_dest {
+                if !overflow_dests.is_empty() {
                     info!(
                         call_id = %call_id,
                         queue = %queue_name,
-                        dest = %dest,
-                        "Queue full, routing to overflow destination"
+                        destinations = ?overflow_dests,
+                        "Queue full, routing to overflow destinations"
                     );
 
                     // Store session so overflow_call can access it
@@ -1745,16 +1818,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                         },
                     );
 
-                    if let Err(overflow_err) =
-                        self.overflow_call(&call_id, dest, "queue_full").await
-                    {
-                        warn!(
-                            call_id = %call_id,
-                            error = %overflow_err,
-                            "Overflow routing failed, sending BYE"
-                        );
-                        self.remove_session(&call_id);
-                    }
+                    self.overflow_call_multi(&call_id, &overflow_dests, "queue_full").await;
                 } else {
                     warn!(
                         call_id = %call_id,
@@ -2742,7 +2806,7 @@ fn spawn_dtmf_listener(
                         "DTMF exit from queue"
                     );
 
-                    overflow_expired_call(
+                    if !overflow_expired_call_single(
                         &call_id,
                         destination,
                         &queue_name,
@@ -2754,7 +2818,13 @@ fn spawn_dtmf_listener(
                         &local_uri,
                         &event_bus,
                     )
-                    .await;
+                    .await
+                    {
+                        bye_and_cleanup(
+                            &call_id, &sessions, &uac, &port_pool, &queue_manager,
+                        )
+                        .await;
+                    }
 
                     return;
                 }
@@ -2763,9 +2833,54 @@ fn spawn_dtmf_listener(
     })
 }
 
-/// Route an expired call to the overflow destination from a spawned distribution loop.
-/// This is a standalone async function because the distribution loop doesn't have `&self`.
-async fn overflow_expired_call(
+/// Try a list of overflow destinations in order for an expired call.
+/// On first success, stops. If all fail, sends BYE and cleans up.
+async fn overflow_expired_call_multi(
+    call_id: &str,
+    destinations: &[String],
+    queue_name: &str,
+    sessions: &Arc<DashMap<String, QueueSession>>,
+    queue_manager: &Arc<QueueManager>,
+    uac: &Arc<SipUserAgentClient>,
+    port_pool: &Arc<PortPool>,
+    local_addr: &str,
+    local_uri: &str,
+    event_bus: &Arc<dyn EventPublisher>,
+) {
+    for (i, dest) in destinations.iter().enumerate() {
+        info!(
+            call_id = %call_id,
+            dest = %dest,
+            attempt = i + 1,
+            total = destinations.len(),
+            "Trying overflow destination for expired call"
+        );
+        if overflow_expired_call_single(
+            call_id, dest, queue_name, sessions, queue_manager, uac, port_pool,
+            local_addr, local_uri, event_bus,
+        )
+        .await
+        {
+            return; // Success
+        }
+        warn!(
+            call_id = %call_id,
+            dest = %dest,
+            remaining = destinations.len() - i - 1,
+            "Overflow destination failed, trying next"
+        );
+    }
+    // All destinations exhausted — BYE the caller
+    warn!(
+        call_id = %call_id,
+        "All overflow destinations exhausted, sending BYE"
+    );
+    bye_and_cleanup(call_id, sessions, uac, port_pool, queue_manager).await;
+}
+
+/// Route an expired call to a single overflow destination.
+/// Returns `true` on success, `false` if this destination failed (caller still alive for retry).
+async fn overflow_expired_call_single(
     call_id: &str,
     overflow_dest: &str,
     queue_name: &str,
@@ -2776,7 +2891,7 @@ async fn overflow_expired_call(
     local_addr: &str,
     local_uri: &str,
     event_bus: &Arc<dyn EventPublisher>,
-) {
+) -> bool {
     // Queue chaining: if destination is "queue:<name>", transfer to another queue
     if let Some(target_queue) = overflow_dest.strip_prefix("queue:") {
         match queue_manager
@@ -2795,34 +2910,23 @@ async fn overflow_expired_call(
                     position = position,
                     "Expired call transferred to another queue"
                 );
+                return true;
             }
             Err(e) => {
                 warn!(
                     call_id = %call_id,
                     error = %e,
-                    "Failed to transfer expired call to queue, sending BYE"
+                    "Failed to transfer expired call to queue"
                 );
-                if let Some((_, session)) = sessions.remove(call_id) {
-                    if let Some(moh) = session.moh_handle {
-                        moh.abort();
-                    }
-                    let bye_uac = Arc::clone(uac);
-                    let bye_dialog = session.dialog.clone();
-                    tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
-                    let pool = Arc::clone(port_pool);
-                    let pp = session.port_pair;
-                    tokio::spawn(async move { pool.deallocate(pp).await; });
-                }
-                queue_manager.dequeue_call(call_id);
+                return false;
             }
         }
-        return;
     }
 
     let (codec_name, caller_rtp, tenant_id) = {
         let session = match sessions.get(call_id) {
             Some(s) => s,
-            None => return,
+            None => return false,
         };
         (
             session.codec_name.clone(),
@@ -2839,20 +2943,7 @@ async fn overflow_expired_call(
         Ok(pp) => pp,
         Err(e) => {
             warn!(call_id = %call_id, error = %e, "Failed to allocate overflow RTP port");
-            // Fall back to BYE
-            if let Some((_, session)) = sessions.remove(call_id) {
-                if let Some(moh) = session.moh_handle {
-                    moh.abort();
-                }
-                let bye_uac = Arc::clone(uac);
-                let bye_dialog = session.dialog.clone();
-                tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
-                let pool = Arc::clone(port_pool);
-                let pp = session.port_pair;
-                tokio::spawn(async move { pool.deallocate(pp).await; });
-            }
-            queue_manager.dequeue_call(call_id);
-            return;
+            return false;
         }
     };
 
@@ -2864,20 +2955,7 @@ async fn overflow_expired_call(
         Err(e) => {
             warn!(call_id = %call_id, error = %e, "Failed to INVITE overflow dest");
             port_pool.deallocate(b_port_pair).await;
-            // Fall back to BYE
-            if let Some((_, session)) = sessions.remove(call_id) {
-                if let Some(moh) = session.moh_handle {
-                    moh.abort();
-                }
-                let bye_uac = Arc::clone(uac);
-                let bye_dialog = session.dialog.clone();
-                tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
-                let pool = Arc::clone(port_pool);
-                let pp = session.port_pair;
-                tokio::spawn(async move { pool.deallocate(pp).await; });
-            }
-            queue_manager.dequeue_call(call_id);
-            return;
+            return false;
         }
     };
 
@@ -2902,19 +2980,7 @@ async fn overflow_expired_call(
                     Err(e) => {
                         warn!(call_id = %call_id, error = %e, "Failed to create overflow RTP socket");
                         port_pool.deallocate(b_port_pair).await;
-                        if let Some((_, session)) = sessions.remove(call_id) {
-                            if let Some(moh) = session.moh_handle {
-                                moh.abort();
-                            }
-                            let bye_uac = Arc::clone(uac);
-                            let bye_dialog = session.dialog.clone();
-                            tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
-                            let pool = Arc::clone(port_pool);
-                            let pp = session.port_pair;
-                            tokio::spawn(async move { pool.deallocate(pp).await; });
-                        }
-                        queue_manager.dequeue_call(call_id);
-                        return;
+                        return false;
                     }
                 };
 
@@ -2958,29 +3024,42 @@ async fn overflow_expired_call(
                 &tenant_id,
             )
             .await;
+
+            true
         }
         _ => {
-            // Overflow target rejected or timed out — BYE the caller
+            // Overflow target rejected or timed out
             warn!(
                 call_id = %call_id,
                 dest = %dest_uri,
-                "Overflow dest did not answer, sending BYE"
+                "Overflow dest did not answer"
             );
             port_pool.deallocate(b_port_pair).await;
-            if let Some((_, session)) = sessions.remove(call_id) {
-                if let Some(moh) = session.moh_handle {
-                    moh.abort();
-                }
-                let bye_uac = Arc::clone(uac);
-                let bye_dialog = session.dialog.clone();
-                tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
-                let pool = Arc::clone(port_pool);
-                let pp = session.port_pair;
-                tokio::spawn(async move { pool.deallocate(pp).await; });
-            }
-            queue_manager.dequeue_call(call_id);
+            false
         }
     }
+}
+
+/// Send BYE to a caller and clean up their session and queue entry.
+async fn bye_and_cleanup(
+    call_id: &str,
+    sessions: &Arc<DashMap<String, QueueSession>>,
+    uac: &Arc<SipUserAgentClient>,
+    port_pool: &Arc<PortPool>,
+    queue_manager: &Arc<QueueManager>,
+) {
+    if let Some((_, session)) = sessions.remove(call_id) {
+        if let Some(moh) = session.moh_handle {
+            moh.abort();
+        }
+        let bye_uac = Arc::clone(uac);
+        let bye_dialog = session.dialog.clone();
+        tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+        let pool = Arc::clone(port_pool);
+        let pp = session.port_pair;
+        tokio::spawn(async move { pool.deallocate(pp).await; });
+    }
+    queue_manager.dequeue_call(call_id);
 }
 
 /// Extract domain part from a SIP URI string.

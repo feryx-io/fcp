@@ -516,6 +516,7 @@ impl QueueManager {
         let queue = self.queues.get(queue_name)?;
         let strategy = queue.config.strategy;
         let required_skills = queue.config.required_skills.clone();
+        let agent_weights = queue.config.agent_weights.clone();
         let ring_timeout = self.config.read().max_ring_time_secs;
         drop(queue);
 
@@ -543,7 +544,7 @@ impl QueueManager {
             .unwrap_or(0);
 
         let (plan, new_rr) =
-            distribution::select_agent(strategy, &refs, rr_index, ring_timeout, &required_skills)?;
+            distribution::select_agent_weighted(strategy, &refs, rr_index, ring_timeout, &required_skills, &agent_weights)?;
 
         // Update round-robin counter
         if let Some(counter) = self.round_robin_counters.get(queue_name) {
@@ -1000,6 +1001,14 @@ impl QueueManager {
         self.queues.get(name).map(|q| q.config.clone())
     }
 
+    /// Get the merged overflow destinations for a queue (legacy single + list).
+    pub fn get_overflow_destinations(&self, queue_name: &str) -> Vec<String> {
+        self.queues
+            .get(queue_name)
+            .map(|q| q.config.effective_overflow_destinations())
+            .unwrap_or_default()
+    }
+
     /// List all agents that are members of a specific queue.
     pub fn list_agents_for_queue(&self, queue_name: &str) -> Vec<Agent> {
         self.agents
@@ -1119,6 +1128,53 @@ impl QueueManager {
             .iter()
             .filter_map(|entry| self.queue_stats(entry.key()))
             .collect()
+    }
+
+    /// Estimate wait time in seconds for a caller based on their queue position,
+    /// average handle time of agents, and number of available agents.
+    /// Returns None if the caller is not found or no data is available.
+    pub fn estimate_wait_secs(&self, call_id: &str) -> Option<u64> {
+        // Find the caller's queue and position
+        let (queue_name, position) = {
+            let mut found = None;
+            for queue in self.queues.iter() {
+                if let Some(call) = queue.waiting_calls.iter().find(|c| c.call_id == call_id) {
+                    found = Some((queue.name.clone(), call.position));
+                    break;
+                }
+            }
+            found?
+        };
+
+        // Count available agents and compute average handle time for this queue
+        let mut agents_available = 0u64;
+        let mut total_handle_time = 0u64;
+        let mut total_calls = 0u64;
+
+        for entry in self.agents.iter() {
+            let agent = entry.value();
+            if agent.queues.contains(&queue_name) && agent.state != AgentState::LoggedOut {
+                if agent.state == AgentState::Available {
+                    agents_available += 1;
+                }
+                total_handle_time += agent.total_talk_time_secs;
+                total_calls += agent.calls_handled;
+            }
+        }
+
+        if agents_available == 0 || total_calls == 0 {
+            return None;
+        }
+
+        // Average handle time per call
+        let avg_handle = total_handle_time as f64 / total_calls as f64;
+        // Add wrap-up time
+        let wrap_up = self.config.read().wrap_up_time_secs as f64;
+        let avg_cycle = avg_handle + wrap_up;
+
+        // ETA = position * avg_cycle / agents_available
+        let eta = (position as f64 * avg_cycle) / agents_available as f64;
+        Some(eta.ceil() as u64)
     }
 
     /// Get the current position of a caller in any queue.
@@ -1552,9 +1608,11 @@ mod tests {
                 max_wait_time_secs: 300,
                 max_queue_depth: 5,
                 overflow_destination: Some("voicemail:6000".to_string()),
+                overflow_destinations: Vec::new(),
                 moh_class: None,
                 announce_position: true,
                 announce_interval_secs: 30,
+                announce_eta: false,
                 retry_on_no_answer: true,
                 agents: vec!["100".to_string(), "101".to_string()],
                 priority: 0,
@@ -1564,6 +1622,7 @@ mod tests {
                 callback_enabled: false,
                 callback_digit: None,
                 agent_priorities: HashMap::new(),
+                agent_weights: HashMap::new(),
                 priority_escalation_secs: 0,
                 schedule: Vec::new(),
                 closed_destination: None,

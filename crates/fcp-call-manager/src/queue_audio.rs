@@ -16,7 +16,7 @@ const NB_FRAME_SAMPLES: usize = 160;
 /// Frame size in samples for G.722 (16kHz input, 20ms).
 const G722_FRAME_SAMPLES: usize = 320;
 
-/// Pre-encoded position announcements for each codec type.
+/// Pre-encoded position and ETA announcements for each codec type.
 pub struct AnnouncementCache {
     /// Position number → pre-encoded RTP-payload frames (PCMU).
     pcmu: HashMap<usize, Vec<Vec<u8>>>,
@@ -24,6 +24,12 @@ pub struct AnnouncementCache {
     pcma: HashMap<usize, Vec<Vec<u8>>>,
     /// Position number → pre-encoded RTP-payload frames (G.722).
     g722: HashMap<usize, Vec<Vec<u8>>>,
+    /// ETA minutes → pre-encoded RTP-payload frames (PCMU).
+    eta_pcmu: HashMap<usize, Vec<Vec<u8>>>,
+    /// ETA minutes → pre-encoded RTP-payload frames (PCMA).
+    eta_pcma: HashMap<usize, Vec<Vec<u8>>>,
+    /// ETA minutes → pre-encoded RTP-payload frames (G.722).
+    eta_g722: HashMap<usize, Vec<Vec<u8>>>,
 }
 
 impl AnnouncementCache {
@@ -40,10 +46,22 @@ impl AnnouncementCache {
         let mut pcmu = HashMap::new();
         let mut pcma = HashMap::new();
         let mut g722 = HashMap::new();
+        let mut eta_pcmu = HashMap::new();
+        let mut eta_pcma = HashMap::new();
+        let mut eta_g722 = HashMap::new();
+
+        let empty = Self {
+            pcmu: HashMap::new(),
+            pcma: HashMap::new(),
+            g722: HashMap::new(),
+            eta_pcmu: HashMap::new(),
+            eta_pcma: HashMap::new(),
+            eta_g722: HashMap::new(),
+        };
 
         if !audio_dir.exists() {
             warn!(path = %audio_dir.display(), "Queue audio directory not found; announcements disabled");
-            return Self { pcmu, pcma, g722 };
+            return empty;
         }
 
         // Load the "you are caller number" prefix
@@ -52,7 +70,7 @@ impl AnnouncementCache {
             Some(samples) => samples,
             None => {
                 warn!("position.wav not found; announcements disabled");
-                return Self { pcmu, pcma, g722 };
+                return empty;
             }
         };
 
@@ -60,7 +78,7 @@ impl AnnouncementCache {
         let mut digit_pcm: HashMap<usize, Vec<i16>> = HashMap::new();
         let digits_dir = audio_dir.join("digits");
         if digits_dir.exists() {
-            for n in (1..=20).chain([30, 40, 50].iter().copied()) {
+            for n in (1..=20).chain([30, 40, 50, 60].iter().copied()) {
                 let path = digits_dir.join(format!("{}.wav", n));
                 if let Some(samples) = load_wav_pcm(&path) {
                     digit_pcm.insert(n, samples);
@@ -97,7 +115,48 @@ impl AnnouncementCache {
             "Pre-encoded position announcements"
         );
 
-        Self { pcmu, pcma, g722 }
+        // Load ETA audio: "estimated wait time is" prefix and "minutes" suffix
+        let eta_prefix_path = audio_dir.join("eta.wav");
+        let minutes_path = audio_dir.join("minutes.wav");
+        let eta_prefix_pcm = load_wav_pcm(&eta_prefix_path);
+        let minutes_pcm = load_wav_pcm(&minutes_path);
+
+        if let (Some(eta_prefix), Some(minutes_suffix)) = (eta_prefix_pcm, minutes_pcm) {
+            // Build ETA announcements for 1..60 minutes
+            for mins in 1..=60 {
+                let number_samples = compose_number_pcm(mins, &digit_pcm);
+                if number_samples.is_empty() {
+                    continue;
+                }
+
+                // Concatenate: "estimated wait time is" + number + "minutes"
+                let mut full_pcm = eta_prefix.clone();
+                full_pcm.extend_from_slice(&[0i16; 800]); // 100ms gap
+                full_pcm.extend_from_slice(&number_samples);
+                full_pcm.extend_from_slice(&[0i16; 400]); // 50ms gap
+                full_pcm.extend_from_slice(&minutes_suffix);
+
+                eta_pcmu.insert(mins, encode_pcmu_frames(&full_pcm));
+                eta_pcma.insert(mins, encode_pcma_frames(&full_pcm));
+                eta_g722.insert(mins, encode_g722_frames(&full_pcm));
+            }
+
+            debug!(
+                eta_entries = eta_pcmu.len(),
+                "Pre-encoded ETA announcements"
+            );
+        } else {
+            debug!("eta.wav or minutes.wav not found; ETA announcements disabled");
+        }
+
+        Self {
+            pcmu,
+            pcma,
+            g722,
+            eta_pcmu,
+            eta_pcma,
+            eta_g722,
+        }
     }
 
     /// Get pre-encoded frames for a position number and codec.
@@ -112,6 +171,23 @@ impl AnnouncementCache {
         map.get(&position).map(|v| v.as_slice())
     }
 
+    /// Get pre-encoded ETA frames for a given number of minutes and codec.
+    /// Returns None if no ETA audio is available or minutes is out of range.
+    pub fn get_eta_frames(&self, minutes: usize, codec_name: &str) -> Option<&[Vec<u8>]> {
+        let map = match codec_name {
+            "PCMU" => &self.eta_pcmu,
+            "PCMA" => &self.eta_pcma,
+            "G722" => &self.eta_g722,
+            _ => return None,
+        };
+        map.get(&minutes).map(|v| v.as_slice())
+    }
+
+    /// Check if ETA announcements are available.
+    pub fn has_eta(&self) -> bool {
+        !self.eta_pcmu.is_empty()
+    }
+
     /// Check if announcements are available.
     pub fn is_empty(&self) -> bool {
         self.pcmu.is_empty()
@@ -120,7 +196,7 @@ impl AnnouncementCache {
 
 /// Compose the PCM samples for a number (1-50) by concatenating digit files.
 fn compose_number_pcm(n: usize, digits: &HashMap<usize, Vec<i16>>) -> Vec<i16> {
-    if n == 0 || n > 50 {
+    if n == 0 || n > 60 {
         return Vec::new();
     }
 
