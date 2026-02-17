@@ -281,24 +281,34 @@ async fn main() -> Result<()> {
         .or_else(|| config.media.public_ip.clone())
         .unwrap_or_else(|| derive_local_ip(&config.sip.udp_bind));
 
-    // 17a. Create QueueCallHandler (if queue system is enabled)
+    // 17a. Create QueueManager and QueueCallHandler (if queue system is enabled)
+    let queue_manager: Option<Arc<fcp_queue::QueueManager>> = if config.queue.enabled {
+        let tenant_id = fcp_core::TenantId::nil(); // Default tenant for single-node
+        Some(Arc::new(fcp_queue::QueueManager::new(
+            config.queue.clone(),
+            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+            tenant_id,
+        )))
+    } else {
+        None
+    };
+
     let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> =
-        if config.queue.enabled {
+        if let Some(ref qm) = queue_manager {
             let port_pool_config = forge_rtp::PortPoolConfig::new(
                 config.media.rtp_port_start,
                 config.media.rtp_port_end,
             )
             .context("Invalid RTP port pool configuration for queue handler")?;
             let queue_port_pool = Arc::new(forge_rtp::PortPool::new(port_pool_config));
-            let tenant_id = fcp_core::TenantId::nil(); // Default tenant for single-node
             let handler = queue_handler::QueueCallHandler::new(
+                Arc::clone(qm),
                 config.queue.clone(),
                 local_uri.as_str().to_string(),
                 local_addr.clone(),
                 queue_port_pool,
                 Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
                 Arc::clone(&uac),
-                tenant_id,
             );
             info!(
                 queues = config.queue.queues.len(),

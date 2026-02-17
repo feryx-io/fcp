@@ -36,6 +36,9 @@ pub struct ApiState {
     /// Event bus for real-time event streaming
     pub event_bus: Arc<dyn EventBus>,
 
+    /// Queue manager for ACD queue operations (optional)
+    pub queue_manager: Option<Arc<fcp_queue::QueueManager>>,
+
     /// SIP realm for authentication
     pub realm: String,
 
@@ -56,6 +59,7 @@ impl ApiState {
         handler: Arc<SipMessageHandler>,
         media_manager: Option<Arc<MediaManager>>,
         event_bus: Arc<dyn EventBus>,
+        queue_manager: Option<Arc<fcp_queue::QueueManager>>,
         realm: String,
         default_tenant_id: fcp_core::TenantId,
     ) -> Self {
@@ -68,6 +72,7 @@ impl ApiState {
             handler,
             media_manager,
             event_bus,
+            queue_manager,
             realm,
             default_tenant_id,
             start_time: std::time::Instant::now(),

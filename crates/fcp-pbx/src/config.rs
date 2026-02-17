@@ -61,6 +61,14 @@ pub struct FeatureCodeConfig {
     /// Two-way intercom prefix (e.g., "*81" followed by extension).
     #[serde(default = "default_intercom_twoway")]
     pub intercom_twoway: String,
+
+    /// Agent queue login code (e.g., "*50").
+    #[serde(default = "default_agent_login")]
+    pub agent_login: String,
+
+    /// Agent queue logout code (e.g., "*51").
+    #[serde(default = "default_agent_logout")]
+    pub agent_logout: String,
 }
 
 fn default_group_pickup() -> String {
@@ -81,6 +89,12 @@ fn default_intercom_oneway() -> String {
 fn default_intercom_twoway() -> String {
     "*81".to_string()
 }
+fn default_agent_login() -> String {
+    "*50".to_string()
+}
+fn default_agent_logout() -> String {
+    "*51".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -91,6 +105,8 @@ impl Default for FeatureCodeConfig {
             retrieve: default_retrieve(),
             intercom_oneway: default_intercom_oneway(),
             intercom_twoway: default_intercom_twoway(),
+            agent_login: default_agent_login(),
+            agent_logout: default_agent_logout(),
         }
     }
 }

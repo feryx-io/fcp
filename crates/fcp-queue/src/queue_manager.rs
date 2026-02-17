@@ -10,7 +10,7 @@ use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 use tracing::{debug, info, warn};
 
-use crate::config::QueueSystemConfig;
+use crate::config::{QueueConfig, QueueSystemConfig};
 use crate::distribution::{self, DistributionPlan};
 use crate::events;
 use crate::types::{Agent, AgentState, Queue, QueueStats, QueuedCall};
@@ -464,6 +464,45 @@ impl QueueManager {
                 return;
             }
         }
+    }
+
+    // ---- Query Methods ----
+
+    /// List all configured queue names.
+    pub fn list_queue_names(&self) -> Vec<String> {
+        self.queues.iter().map(|entry| entry.key().clone()).collect()
+    }
+
+    /// Get the configuration for a specific queue.
+    pub fn get_queue_config(&self, name: &str) -> Option<QueueConfig> {
+        self.queues.get(name).map(|q| q.config.clone())
+    }
+
+    /// List all agents that are members of a specific queue.
+    pub fn list_agents_for_queue(&self, queue_name: &str) -> Vec<Agent> {
+        self.agents
+            .iter()
+            .filter(|entry| entry.value().queues.contains(&queue_name.to_string()))
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// Get a specific agent by ID.
+    pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
+        self.agents.get(agent_id).map(|a| a.clone())
+    }
+
+    /// Get the number of callers waiting in a specific queue.
+    pub fn get_queue_waiting_count(&self, queue_name: &str) -> usize {
+        self.queues
+            .get(queue_name)
+            .map(|q| q.waiting_calls.len())
+            .unwrap_or(0)
+    }
+
+    /// Get the system config (for looking up which queues an agent belongs to).
+    pub fn get_system_config(&self) -> QueueSystemConfig {
+        self.config.read().clone()
     }
 
     // ---- Statistics ----

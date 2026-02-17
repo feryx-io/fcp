@@ -7072,6 +7072,12 @@ impl SipMessageHandler {
             fcp_pbx::FeatureCodeAction::IntercomTwoWay { extension } => {
                 self.handle_intercom(request, handle, call_id, &extension, fcp_pbx::IntercomMode::TwoWay).await
             }
+            fcp_pbx::FeatureCodeAction::AgentLogin => {
+                self.handle_agent_login(request, handle, call_id).await
+            }
+            fcp_pbx::FeatureCodeAction::AgentLogout => {
+                self.handle_agent_logout(request, handle, call_id).await
+            }
         }
     }
 
@@ -7706,6 +7712,82 @@ impl SipMessageHandler {
         let response = self.create_simple_response(request, 501, "Intercom Not Yet Implemented");
         handle.send_final(response).await;
         let _ = self.call_manager.terminate_call(call_id, Some("Intercom not yet fully implemented".to_string()));
+        Ok(())
+    }
+
+    /// Handle agent login feature code (*50).
+    async fn handle_agent_login(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Result<()> {
+        let queue_handler = match self.queue_handler.as_ref() {
+            Some(q) => q,
+            None => {
+                let response = self.create_simple_response(request, 500, "Queue Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
+
+        let caller_ext = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+
+        let tenant_id = fcp_core::TenantId::nil();
+
+        match queue_handler.agent_login(&caller_ext, &tenant_id).await {
+            Ok(()) => {
+                info!(call_id = %call_id, extension = %caller_ext, "Agent logged in via feature code");
+                let response = self.create_simple_response(request, 200, "OK");
+                handle.send_final(response).await;
+            }
+            Err(e) => {
+                warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent login failed");
+                let response = self.create_simple_response(request, 404, "Agent Not Found");
+                handle.send_final(response).await;
+            }
+        }
+
+        let _ = self.call_manager.terminate_call(call_id, Some("Agent login feature code".to_string()));
+        Ok(())
+    }
+
+    /// Handle agent logout feature code (*51).
+    async fn handle_agent_logout(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Result<()> {
+        let queue_handler = match self.queue_handler.as_ref() {
+            Some(q) => q,
+            None => {
+                let response = self.create_simple_response(request, 500, "Queue Not Configured");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
+
+        let caller_ext = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+
+        match queue_handler.agent_logout(&caller_ext).await {
+            Ok(()) => {
+                info!(call_id = %call_id, extension = %caller_ext, "Agent logged out via feature code");
+                let response = self.create_simple_response(request, 200, "OK");
+                handle.send_final(response).await;
+            }
+            Err(e) => {
+                warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent logout failed");
+                let response = self.create_simple_response(request, 404, "Agent Not Found");
+                handle.send_final(response).await;
+            }
+        }
+
+        let _ = self.call_manager.terminate_call(call_id, Some("Agent logout feature code".to_string()));
         Ok(())
     }
 

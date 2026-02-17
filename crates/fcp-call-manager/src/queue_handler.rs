@@ -84,7 +84,7 @@ enum QueueCallState {
 /// Implements `fcp_sip::queue::QueueHandler` and is plugged into
 /// `SipMessageHandler` to intercept INVITEs destined for queue extensions.
 pub struct QueueCallHandler {
-    queue_manager: QueueManager,
+    queue_manager: Arc<QueueManager>,
     sessions: Arc<DashMap<String, QueueSession>>,
     local_uri: String,
     local_addr: String,
@@ -96,24 +96,19 @@ pub struct QueueCallHandler {
 impl QueueCallHandler {
     /// Create a new QueueCallHandler.
     ///
-    /// Initializes the QueueManager from config and spawns per-queue
-    /// distribution loops that periodically try to match waiting callers
-    /// with available agents.
+    /// Accepts a shared `Arc<QueueManager>` so the same instance can be
+    /// shared with the REST API for agent management and stats queries.
+    /// Spawns per-queue distribution loops that periodically try to match
+    /// waiting callers with available agents.
     pub fn new(
+        queue_manager: Arc<QueueManager>,
         config: QueueSystemConfig,
         local_uri: String,
         local_addr: String,
         port_pool: Arc<PortPool>,
         event_bus: Arc<dyn EventPublisher>,
         uac: Arc<SipUserAgentClient>,
-        tenant_id: TenantId,
     ) -> Self {
-        let queue_manager = QueueManager::new(
-            config.clone(),
-            Some(Arc::clone(&event_bus)),
-            tenant_id,
-        );
-
         let handler = Self {
             queue_manager,
             sessions: Arc::new(DashMap::new()),
@@ -133,7 +128,7 @@ impl QueueCallHandler {
     }
 
     /// Expose the QueueManager for agent login/logout via REST API.
-    pub fn queue_manager(&self) -> &QueueManager {
+    pub fn queue_manager(&self) -> &Arc<QueueManager> {
         &self.queue_manager
     }
 
@@ -380,7 +375,7 @@ impl QueueCallHandler {
         plan: fcp_queue::DistributionPlan,
         ring_timeout_secs: u32,
         sessions: Arc<DashMap<String, QueueSession>>,
-        queue_manager: QueueManager,
+        queue_manager: Arc<QueueManager>,
         port_pool: Arc<PortPool>,
         local_addr: String,
         local_uri: String,
@@ -853,6 +848,39 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         } else {
             Ok(false)
         }
+    }
+
+    async fn agent_login(&self, extension: &str, tenant_id: &TenantId) -> Result<()> {
+        // Find which queues this extension belongs to from config
+        let config = self.queue_manager.get_system_config();
+        let queue_names: Vec<String> = config
+            .queues
+            .iter()
+            .filter(|(_, qc)| qc.agents.contains(&extension.to_string()))
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        if queue_names.is_empty() {
+            anyhow::bail!(
+                "Extension '{}' is not configured as an agent in any queue",
+                extension
+            );
+        }
+
+        info!(
+            extension = %extension,
+            queues = ?queue_names,
+            "Agent logging in via feature code"
+        );
+
+        self.queue_manager
+            .agent_login(extension, extension, &queue_names, tenant_id.clone())
+            .await
+    }
+
+    async fn agent_logout(&self, extension: &str) -> Result<()> {
+        info!(extension = %extension, "Agent logging out via feature code");
+        self.queue_manager.agent_logout(extension).await
     }
 }
 

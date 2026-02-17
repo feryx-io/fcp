@@ -10,6 +10,7 @@ pub mod line_bindings;
 pub mod media;
 pub mod metrics;
 pub mod phone_numbers;
+pub mod queues;
 pub mod registrations;
 pub mod system;
 pub mod tenants;
@@ -143,6 +144,19 @@ pub fn router() -> Router<ApiState> {
             get(devices::get_device)
                 .patch(devices::update_device)
                 .delete(devices::delete_device),
+        )
+        // Queues / ACD
+        .route("/queues", get(queues::list_queues))
+        .route("/queues/stats", get(queues::get_all_queue_stats))
+        .route("/queues/:name", get(queues::get_queue))
+        .route("/queues/:name/stats", get(queues::get_queue_stats))
+        .route(
+            "/queues/:name/agents",
+            get(queues::list_queue_agents).post(queues::agent_login),
+        )
+        .route(
+            "/queues/:name/agents/:id",
+            delete(queues::agent_logout).patch(queues::update_agent_state),
         )
         // Voicemail
         .route(

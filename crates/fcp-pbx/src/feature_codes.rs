@@ -25,6 +25,12 @@ pub enum FeatureCodeAction {
 
     /// Two-way intercom (full duplex auto-answer).
     IntercomTwoWay { extension: String },
+
+    /// Agent login to queue(s).
+    AgentLogin,
+
+    /// Agent logout from queue(s).
+    AgentLogout,
 }
 
 /// Extract the user-part from a SIP URI or raw dialed string.
@@ -89,9 +95,15 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
         }
     }
 
-    // Group pickup is exact match (no suffix)
+    // Exact-match codes (no suffix)
     if user == config.group_pickup {
         return Some(FeatureCodeAction::GroupPickup);
+    }
+    if user == config.agent_login {
+        return Some(FeatureCodeAction::AgentLogin);
+    }
+    if user == config.agent_logout {
+        return Some(FeatureCodeAction::AgentLogout);
     }
 
     None
@@ -174,6 +186,26 @@ mod tests {
         let cfg = default_config();
         assert_eq!(parse("1001", &cfg), None);
         assert_eq!(parse("sip:1001@10.0.0.1", &cfg), None);
+    }
+
+    #[test]
+    fn test_agent_login() {
+        let cfg = default_config();
+        assert_eq!(parse("*50", &cfg), Some(FeatureCodeAction::AgentLogin));
+        assert_eq!(
+            parse("sip:*50@10.0.0.1", &cfg),
+            Some(FeatureCodeAction::AgentLogin)
+        );
+    }
+
+    #[test]
+    fn test_agent_logout() {
+        let cfg = default_config();
+        assert_eq!(parse("*51", &cfg), Some(FeatureCodeAction::AgentLogout));
+        assert_eq!(
+            parse("sip:*51@10.0.0.1", &cfg),
+            Some(FeatureCodeAction::AgentLogout)
+        );
     }
 
     #[test]

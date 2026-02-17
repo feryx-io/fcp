@@ -48,4 +48,13 @@ pub trait QueueHandler: Send + Sync {
     /// Returns `Ok(true)` if this call_id was a queue session and was cancelled.
     /// Returns `Ok(false)` if unknown (not a queue call).
     fn handle_cancel(&self, call_id: &str) -> Result<bool>;
+
+    /// Log an agent into their configured queue(s) via feature code.
+    ///
+    /// The extension is looked up in queue configs to find which queues
+    /// include this extension in their agents list.
+    async fn agent_login(&self, extension: &str, tenant_id: &fcp_core::TenantId) -> Result<()>;
+
+    /// Log an agent out of all queues via feature code.
+    async fn agent_logout(&self, extension: &str) -> Result<()>;
 }
