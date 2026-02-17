@@ -968,8 +968,21 @@ async fn forward_event_with_retry(
 ) -> bool {
     let mut delay = Duration::from_millis(200);
 
+    let json_body = match serde_json::to_vec(event) {
+        Ok(body) => body,
+        Err(e) => {
+            warn!(error = %e, "Failed to serialize event for forwarding");
+            return false;
+        }
+    };
+
     for attempt in 1..=max_retries {
-        match client.post(url).json(event).send().await {
+        match client.post(url)
+            .header("content-type", "application/json")
+            .body(json_body.clone())
+            .send()
+            .await
+        {
             Ok(resp) => {
                 if resp.status().is_success() {
                     return true;

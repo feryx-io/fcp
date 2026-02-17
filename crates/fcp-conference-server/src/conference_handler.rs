@@ -120,6 +120,7 @@ pub struct ConferenceCallHandler {
     pub storage: Arc<DynStorage>,
     pub conference_config: RwLock<ConferenceSection>,
     sessions: DashMap<String, ParticipantSession>,
+    #[allow(dead_code)]
     pub local_uri: String,
     pub local_addr: String,
     port_pool: Arc<PortPool>,
@@ -295,11 +296,13 @@ impl ConferenceCallHandler {
     }
 
     /// Check if a call ID belongs to an active conference session.
+    #[allow(dead_code)]
     pub fn has_session(&self, call_id: &str) -> bool {
         self.sessions.contains_key(call_id)
     }
 
     /// Get call IDs for a specific room (O(1) via secondary index).
+    #[allow(dead_code)]
     pub fn sessions_for_room(&self, room_number: &str) -> Vec<String> {
         self.room_sessions
             .get(room_number)
@@ -308,6 +311,7 @@ impl ConferenceCallHandler {
     }
 
     /// Get the total number of active participant sessions.
+    #[allow(dead_code)]
     pub fn active_sessions(&self) -> usize {
         self.sessions.len()
     }
@@ -332,6 +336,7 @@ impl ConferenceCallHandler {
     }
 
     /// Get participant list for a specific room.
+    #[allow(dead_code)]
     pub fn room_participants(&self, room_number: &str) -> Option<Vec<String>> {
         self.bridge
             .get_room(room_number)
@@ -533,9 +538,12 @@ impl ConferenceCallHandler {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        // Truncate identifiers to keep total filename under filesystem limits (255 bytes)
+        let safe_room = truncate_for_filename(room_number, 40);
+        let safe_pid = truncate_for_filename(participant_id, 40);
         let path = format!(
             "{}/{}-{}-{}.wav",
-            self.conference_config.read().recordings_dir, room_number, participant_id, timestamp
+            self.conference_config.read().recordings_dir, safe_room, safe_pid, timestamp
         );
 
         room.start_participant_recording(participant_id, &path)
@@ -2428,6 +2436,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
+        let subscribe_start = Instant::now();
         // Rate-limit SUBSCRIBEs — extract source from Via header
         let conf = self.conference_config.read().clone();
         if let Some(via_ip) = extract_via_ip(request) {
@@ -2558,10 +2567,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
+        self.handler_latency.record(
+            &self.handler_latency.subscribe_count,
+            &self.handler_latency.subscribe_total_us,
+            subscribe_start.elapsed(),
+        );
         Ok(())
     }
 
     fn handle_refer(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
+        let refer_start = Instant::now();
         // Rate-limit REFERs
         let conf = self.conference_config.read().clone();
         if let Some(via_ip) = extract_via_ip(request) {
@@ -2629,8 +2644,27 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .create_ok(request, None)
             .map_err(|e| anyhow::anyhow!("Failed to create 202 for REFER: {}", e))?;
 
+        self.handler_latency.record(
+            &self.handler_latency.refer_count,
+            &self.handler_latency.refer_total_us,
+            refer_start.elapsed(),
+        );
         Ok(response)
     }
+}
+
+/// Truncate a string to `max_len` bytes for use in filenames,
+/// ensuring we don't cut in the middle of a UTF-8 character.
+fn truncate_for_filename(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len {
+        return s;
+    }
+    // Find the last valid char boundary at or before max_len
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// XML-escape a string for safe embedding in XML attributes and text nodes.

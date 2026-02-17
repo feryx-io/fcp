@@ -327,6 +327,12 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
          # HELP fcp_conference_handler_bye_total BYE handler invocations\n\
          # TYPE fcp_conference_handler_bye_total counter\n\
          fcp_conference_handler_bye_total {}\n\
+         # HELP fcp_conference_handler_subscribe_total SUBSCRIBE handler invocations\n\
+         # TYPE fcp_conference_handler_subscribe_total counter\n\
+         fcp_conference_handler_subscribe_total {}\n\
+         # HELP fcp_conference_handler_refer_total REFER handler invocations\n\
+         # TYPE fcp_conference_handler_refer_total counter\n\
+         fcp_conference_handler_refer_total {}\n\
          # HELP fcp_conference_active_subscriptions Active RFC 4575 event subscriptions\n\
          # TYPE fcp_conference_active_subscriptions gauge\n\
          fcp_conference_active_subscriptions {}\n",
@@ -346,6 +352,8 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
         latency.invite_total_us.load(Ordering::Relaxed),
         latency.reinvite_count.load(Ordering::Relaxed),
         latency.bye_count.load(Ordering::Relaxed),
+        latency.subscribe_count.load(Ordering::Relaxed),
+        latency.refer_count.load(Ordering::Relaxed),
         state.conference_handler.subscription_count(),
     );
 
