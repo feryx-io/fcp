@@ -1,0 +1,51 @@
+//! Queue/ACD handler trait for routing SIP INVITEs to ACD queues.
+//!
+//! This trait is implemented by `fcp-call-manager`'s `QueueCallHandler`
+//! and plugged into `SipMessageHandler` to intercept INVITEs destined for
+//! queue extensions before the normal flow / B2BUA routing takes over.
+
+use anyhow::Result;
+use std::net::SocketAddr;
+
+/// Trait for handling queue-bound SIP calls.
+///
+/// Implementors check whether an incoming INVITE targets a queue extension
+/// and, if so, handle the full lifecycle (answer, MOH, enqueue, distribute).
+#[async_trait::async_trait]
+pub trait QueueHandler: Send + Sync {
+    /// Returns `true` if this request should be handled as a queue call
+    /// (i.e., the Request-URI user part matches a configured queue extension).
+    async fn can_handle(&self, request: &sip_core::Request) -> bool;
+
+    /// Handle an INVITE for a queue extension.
+    ///
+    /// The implementor is responsible for:
+    /// - Looking up the queue configuration
+    /// - Sending provisional/final SIP responses via `handle`
+    /// - Setting up RTP and MOH playback
+    /// - Enqueuing the call and starting the distribution loop
+    async fn handle_invite(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+        peer: SocketAddr,
+    ) -> Result<()>;
+
+    /// Clean up when a BYE is received for a queued caller or agent.
+    ///
+    /// Called with the SIP Call-ID so the handler can remove the caller from
+    /// the queue, stop MOH, and deallocate RTP resources.
+    ///
+    /// Returns `Ok(())` if this call_id belonged to a queue session and was
+    /// cleaned up. Returns `Err` if the call_id is unknown (not a queue call),
+    /// so the caller can fall through to normal B2BUA BYE handling.
+    fn handle_bye(&self, call_id: &str) -> Result<()>;
+
+    /// Clean up when a CANCEL is received for a caller entering a queue.
+    ///
+    /// Called with the SIP Call-ID. Removes any in-progress queue session
+    /// (MOH, RTP, queue position).
+    /// Returns `Ok(true)` if this call_id was a queue session and was cancelled.
+    /// Returns `Ok(false)` if unknown (not a queue call).
+    fn handle_cancel(&self, call_id: &str) -> Result<bool>;
+}

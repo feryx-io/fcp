@@ -12,6 +12,7 @@ pub mod adapters;
 pub mod auth;
 pub mod conference;
 pub mod exports;
+pub mod queue;
 pub mod flow;
 pub mod flow_handler;
 pub mod handler;

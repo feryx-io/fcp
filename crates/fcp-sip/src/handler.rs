@@ -322,6 +322,9 @@ pub struct SipMessageHandler {
     /// Conference call handler for routing INVITEs to conference rooms
     conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
 
+    /// Queue/ACD handler for routing INVITEs to ACD queues
+    queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
+
     /// Optional outbound route provider for trunk routing fallback.
     /// When the registrar has no binding for the destination, this provider
     /// is consulted before returning 480 Temporarily Unavailable.
@@ -456,6 +459,7 @@ impl SipMessageHandler {
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
         conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
+        queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
     ) -> anyhow::Result<Self> {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -478,6 +482,7 @@ impl SipMessageHandler {
             outbound_route_provider,
             pbx_handler,
             conference_handler,
+            queue_handler,
         )
     }
 
@@ -501,6 +506,7 @@ impl SipMessageHandler {
         outbound_route_provider: Option<Arc<dyn OutboundRouteProvider>>,
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
         conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
+        queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
     ) -> anyhow::Result<Self> {
         // Validate settings early to catch configuration errors at startup
         settings.validate().map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
@@ -633,6 +639,7 @@ impl SipMessageHandler {
             rate_limits: Arc::new(dashmap::DashMap::new()),
             flow_handler,
             conference_handler,
+            queue_handler,
             outbound_route_provider,
             pbx_handler,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
@@ -864,6 +871,16 @@ impl SipMessageHandler {
             if let Some(call_id_hdr) = sip_parse::header(request.headers(), "Call-ID") {
                 if let Ok(true) = conf.handle_cancel(call_id_hdr.as_str()) {
                     debug!(call_id = %call_id_hdr, "Conference handler processed CANCEL");
+                    return Ok(());
+                }
+            }
+        }
+
+        // Check queue handler — queue INVITEs don't use CallManager
+        if let Some(ref queue) = self.queue_handler {
+            if let Some(call_id_hdr) = sip_parse::header(request.headers(), "Call-ID") {
+                if let Ok(true) = queue.handle_cancel(call_id_hdr.as_str()) {
+                    debug!(call_id = %call_id_hdr, "Queue handler processed CANCEL");
                     return Ok(());
                 }
             }
@@ -1154,6 +1171,14 @@ impl SipMessageHandler {
             if conf_handler.can_handle(request).await {
                 debug!(call_id = %call_id, "Routing to conference handler");
                 return conf_handler.handle_invite(request, handle, peer).await;
+            }
+        }
+
+        // Check if a queue handler wants this call (before flow routing)
+        if let Some(queue_handler) = &self.queue_handler {
+            if queue_handler.can_handle(request).await {
+                debug!(call_id = %call_id, "Routing to queue handler");
+                return queue_handler.handle_invite(request, handle, peer).await;
             }
         }
 
@@ -4506,6 +4531,14 @@ impl SipMessageHandler {
             // and we fall through to normal B2BUA handling.
             if conf_handler.handle_bye(dialog_call_id.as_str()).is_ok() {
                 debug!(call_id = %dialog_call_id, "Conference handler processed BYE");
+                return Ok(self.create_simple_response(request, 200, "OK"));
+            }
+        }
+
+        // Check if queue handler owns this call
+        if let Some(queue_handler) = &self.queue_handler {
+            if queue_handler.handle_bye(dialog_call_id.as_str()).is_ok() {
+                debug!(call_id = %dialog_call_id, "Queue handler processed BYE");
                 return Ok(self.create_simple_response(request, 200, "OK"));
             }
         }
@@ -9361,6 +9394,7 @@ mod tests {
             None, // No outbound route provider
             None, // No PBX handler
             None, // No conference handler
+            None, // No queue handler
         ).unwrap();
 
         // Create a REGISTER request
@@ -9428,6 +9462,7 @@ mod tests {
             None, // No outbound route provider
             None, // No PBX handler
             None, // No conference handler
+            None, // No queue handler
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9495,6 +9530,7 @@ mod tests {
             None, // No outbound route provider
             None, // No PBX handler
             None, // No conference handler
+            None, // No queue handler
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9665,6 +9701,7 @@ mod tests {
             None, // No outbound route provider
             None, // No PBX handler
             None, // No conference handler
+            None, // No queue handler
         ).unwrap();
 
         // Create a REGISTER request

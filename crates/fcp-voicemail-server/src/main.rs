@@ -336,6 +336,7 @@ async fn main() -> Result<()> {
         outbound_route_provider,
         None, // No PBX handler
         None, // No conference handler
+        None, // No queue handler
     )?);
 
     // 20. Create and start TransportListener

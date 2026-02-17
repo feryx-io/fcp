@@ -1,0 +1,23 @@
+[package]
+name = "fcp-queue"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ACD/Queue service for automatic call distribution"
+
+[dependencies]
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+fcp-b2bua-core = { path = "../fcp-b2bua-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+dashmap = "6"
+uuid = { workspace = true }
+rand = "0.8"
+parking_lot = "0.12"
+toml = "0.8"

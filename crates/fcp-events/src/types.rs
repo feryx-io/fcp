@@ -38,6 +38,9 @@ pub enum PlatformEvent {
 
     /// Conference event
     Conference(ConferenceEvent),
+
+    /// Queue/ACD event
+    Queue(QueueEvent),
 }
 
 /// Call lifecycle events.
@@ -552,6 +555,83 @@ pub enum ConferenceEvent {
     },
 }
 
+/// Queue/ACD-related events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum QueueEvent {
+    /// Caller entered a queue
+    CallerEnqueued {
+        queue_name: String,
+        call_id: String,
+        caller: String,
+        position: usize,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Caller was connected to an agent (dequeued)
+    CallerDequeued {
+        queue_name: String,
+        call_id: String,
+        agent_id: String,
+        wait_time_secs: u64,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Caller hung up while waiting in the queue
+    CallerAbandoned {
+        queue_name: String,
+        call_id: String,
+        wait_time_secs: u64,
+        position: usize,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Caller was sent to overflow destination (queue full or max wait exceeded)
+    CallerOverflowed {
+        queue_name: String,
+        call_id: String,
+        destination: String,
+        reason: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Agent logged into a queue
+    AgentLoggedIn {
+        queue_name: String,
+        agent_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Agent logged out of a queue
+    AgentLoggedOut {
+        queue_name: String,
+        agent_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Agent state changed (e.g., available → on_call)
+    AgentStateChanged {
+        agent_id: String,
+        old_state: String,
+        new_state: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
 /// Voicemail-related events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -651,6 +731,7 @@ impl PlatformEvent {
             PlatformEvent::Registration(_) => None,
             PlatformEvent::Voicemail(event) => event.call_id(),
             PlatformEvent::Conference(_) => None,
+            PlatformEvent::Queue(_) => None,
         }
     }
 
@@ -667,6 +748,7 @@ impl PlatformEvent {
             PlatformEvent::Registration(event) => event.timestamp(),
             PlatformEvent::Voicemail(event) => event.timestamp(),
             PlatformEvent::Conference(event) => event.timestamp(),
+            PlatformEvent::Queue(event) => event.timestamp(),
         }
     }
 }
@@ -848,6 +930,20 @@ impl ConferenceEvent {
             | ConferenceEvent::MeetingDeleted { timestamp, .. }
             | ConferenceEvent::MeetingStarted { timestamp, .. }
             | ConferenceEvent::MeetingEnded { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl QueueEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            QueueEvent::CallerEnqueued { timestamp, .. }
+            | QueueEvent::CallerDequeued { timestamp, .. }
+            | QueueEvent::CallerAbandoned { timestamp, .. }
+            | QueueEvent::CallerOverflowed { timestamp, .. }
+            | QueueEvent::AgentLoggedIn { timestamp, .. }
+            | QueueEvent::AgentLoggedOut { timestamp, .. }
+            | QueueEvent::AgentStateChanged { timestamp, .. } => *timestamp,
         }
     }
 }

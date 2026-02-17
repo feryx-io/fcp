@@ -306,6 +306,7 @@ async fn main() -> Result<()> {
         outbound_route_provider,
         pbx_handler.clone(),
         None, // No conference handler
+        None, // No queue handler
     )?);
 
     // 16. Create and start TransportListener
