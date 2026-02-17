@@ -44,6 +44,14 @@ pub struct QueueSystemConfig {
     /// Max consecutive no-answers before auto-away. 0 = disabled.
     #[serde(default = "default_max_no_answer")]
     pub max_no_answer: u32,
+
+    /// Default max concurrent calls per agent. Default: 1.
+    #[serde(default = "default_one")]
+    pub default_max_concurrent_calls: u32,
+
+    /// Directory for storing call recordings.
+    #[serde(default)]
+    pub recording_dir: Option<String>,
 }
 
 impl Default for QueueSystemConfig {
@@ -58,6 +66,8 @@ impl Default for QueueSystemConfig {
             stats_publish_interval_secs: default_stats_publish_interval(),
             auto_pause_resume_secs: 0,
             max_no_answer: default_max_no_answer(),
+            default_max_concurrent_calls: default_one(),
+            recording_dir: None,
         }
     }
 }
@@ -141,6 +151,54 @@ pub struct QueueConfig {
     /// Maps agent_id → priority. Agents not listed use the global agent priority.
     #[serde(default)]
     pub agent_priorities: HashMap<String, u32>,
+
+    /// Seconds between automatic priority escalations. 0 = disabled.
+    /// A call's priority decreases (higher urgency) by 1 per interval elapsed.
+    #[serde(default)]
+    pub priority_escalation_secs: u32,
+
+    /// Business hours schedule. Empty = always open.
+    #[serde(default)]
+    pub schedule: Vec<ScheduleEntry>,
+
+    /// Where to route calls when the queue is closed (outside schedule).
+    /// If None, falls back to overflow_destination. If both None, reject with 480.
+    #[serde(default)]
+    pub closed_destination: Option<String>,
+
+    /// IANA timezone name for schedule evaluation (e.g., "America/New_York").
+    /// Defaults to "UTC".
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+
+    /// Entry prompt filename (relative to queue_audio_dir). Played to caller
+    /// when they first enter the queue, before MOH begins.
+    #[serde(default)]
+    pub entry_prompt: Option<String>,
+
+    /// Connect prompt filename (relative to queue_audio_dir). Played to caller
+    /// after an agent answers, before the two-way audio bridge starts.
+    #[serde(default)]
+    pub connect_prompt: Option<String>,
+
+    /// Enable automatic call recording for this queue.
+    #[serde(default)]
+    pub record_calls: bool,
+
+    /// Recording format: "wav" or "opus". Default: "wav".
+    #[serde(default = "default_recording_format")]
+    pub recording_format: String,
+}
+
+/// A time-of-day schedule entry for queue business hours.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ScheduleEntry {
+    /// Days of week: 0=Monday .. 6=Sunday (ISO 8601 weekday numbering).
+    pub days: Vec<u8>,
+    /// Start time in "HH:MM" format (24-hour).
+    pub start_time: String,
+    /// End time in "HH:MM" format (24-hour).
+    pub end_time: String,
 }
 
 /// Distribution strategy for selecting which agent receives the next call.
@@ -201,6 +259,18 @@ fn default_stats_publish_interval() -> u64 {
 
 fn default_max_no_answer() -> u32 {
     3
+}
+
+fn default_one() -> u32 {
+    1
+}
+
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+
+fn default_recording_format() -> String {
+    "wav".to_string()
 }
 
 #[cfg(test)]

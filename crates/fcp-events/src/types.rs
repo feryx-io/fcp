@@ -657,6 +657,35 @@ pub enum QueueEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Caller transferred from one queue to another (queue chaining)
+    CallerTransferred {
+        from_queue: String,
+        to_queue: String,
+        call_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Supervisor joined a call (monitor/whisper/barge)
+    SupervisorJoined {
+        call_id: String,
+        supervisor_id: String,
+        mode: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Supervisor left a call
+    SupervisorLeft {
+        call_id: String,
+        supervisor_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Queue statistics snapshot for event publishing.
@@ -988,7 +1017,10 @@ impl QueueEvent {
             | QueueEvent::AgentLoggedOut { timestamp, .. }
             | QueueEvent::AgentStateChanged { timestamp, .. }
             | QueueEvent::AgentKicked { timestamp, .. }
-            | QueueEvent::StatsSnapshot { timestamp, .. } => *timestamp,
+            | QueueEvent::StatsSnapshot { timestamp, .. }
+            | QueueEvent::CallerTransferred { timestamp, .. }
+            | QueueEvent::SupervisorJoined { timestamp, .. }
+            | QueueEvent::SupervisorLeft { timestamp, .. } => *timestamp,
         }
     }
 }

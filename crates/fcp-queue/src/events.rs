@@ -208,6 +208,67 @@ pub async fn callback_initiated(
     .await;
 }
 
+/// Publish a CallerTransferred event (queue chaining).
+pub async fn caller_transferred(
+    events: &Option<Arc<dyn EventPublisher>>,
+    from_queue: &str,
+    to_queue: &str,
+    call_id: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CallerTransferred {
+            from_queue: from_queue.to_string(),
+            to_queue: to_queue.to_string(),
+            call_id: call_id.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a SupervisorJoined event.
+pub async fn supervisor_joined(
+    events: &Option<Arc<dyn EventPublisher>>,
+    call_id: &str,
+    supervisor_id: &str,
+    mode: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::SupervisorJoined {
+            call_id: call_id.to_string(),
+            supervisor_id: supervisor_id.to_string(),
+            mode: mode.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a SupervisorLeft event.
+pub async fn supervisor_left(
+    events: &Option<Arc<dyn EventPublisher>>,
+    call_id: &str,
+    supervisor_id: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::SupervisorLeft {
+            call_id: call_id.to_string(),
+            supervisor_id: supervisor_id.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a StatsSnapshot event for wallboard consumers.
 pub async fn stats_snapshot(
     events: &Option<Arc<dyn EventPublisher>>,

@@ -332,6 +332,56 @@ impl MohCache {
     }
 }
 
+/// Pre-encoded prompt audio cache for entry/connect prompts.
+///
+/// Maps prompt filename → codec name → pre-encoded RTP frames.
+pub struct PromptCache {
+    prompts: HashMap<String, HashMap<String, Vec<Vec<u8>>>>,
+}
+
+impl PromptCache {
+    /// Load prompt WAV files referenced by queue configs.
+    ///
+    /// `prompt_files` is the set of unique prompt filenames (relative to `audio_dir`).
+    pub fn load(audio_dir: &Path, prompt_files: &[String]) -> Self {
+        let mut prompts = HashMap::new();
+
+        for filename in prompt_files {
+            let path = audio_dir.join(filename);
+            if let Some(pcm) = load_wav_pcm(&path) {
+                let mut codec_map = HashMap::new();
+                codec_map.insert("PCMU".to_string(), encode_pcmu_frames(&pcm));
+                codec_map.insert("PCMA".to_string(), encode_pcma_frames(&pcm));
+                codec_map.insert("G722".to_string(), encode_g722_frames(&pcm));
+
+                info!(
+                    prompt = %filename,
+                    duration_ms = pcm.len() * 1000 / 8000,
+                    "Loaded prompt audio"
+                );
+                prompts.insert(filename.clone(), codec_map);
+            } else {
+                warn!(prompt = %filename, "Failed to load prompt WAV file");
+            }
+        }
+
+        Self { prompts }
+    }
+
+    /// Get pre-encoded frames for a prompt and codec.
+    pub fn get_frames(&self, prompt_name: &str, codec: &str) -> Option<&[Vec<u8>]> {
+        self.prompts
+            .get(prompt_name)
+            .and_then(|codecs| codecs.get(codec))
+            .map(|v| v.as_slice())
+    }
+
+    /// Returns true if no prompts were loaded.
+    pub fn is_empty(&self) -> bool {
+        self.prompts.is_empty()
+    }
+}
+
 /// Encode PCM samples into G.722 RTP-payload frames.
 /// G.722 expects 16kHz input but is typically used with 8kHz PCM
 /// that is upsampled. For simplicity, we duplicate each sample to

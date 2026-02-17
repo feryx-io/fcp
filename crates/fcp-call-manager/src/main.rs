@@ -326,7 +326,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> =
+    let queue_call_handler: Option<Arc<queue_handler::QueueCallHandler>> =
         if let Some(ref qm) = queue_manager {
             let port_pool_config = forge_rtp::PortPoolConfig::new(
                 config.media.rtp_port_start,
@@ -351,6 +351,8 @@ async fn main() -> Result<()> {
         } else {
             None
         };
+    let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> =
+        queue_call_handler.as_ref().map(|h| Arc::clone(h) as Arc<dyn fcp_sip::queue::QueueHandler>);
 
     let handler = Arc::new(SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
@@ -474,6 +476,7 @@ async fn main() -> Result<()> {
         storage: Arc::clone(&dyn_storage),
         media_manager: Arc::clone(&media_manager),
         queue_manager: queue_manager.clone(),
+        queue_handler: queue_call_handler.clone(),
         start_time: Instant::now(),
     });
     let http_bind = config.http.bind_address;

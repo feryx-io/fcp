@@ -1111,6 +1111,13 @@ pub struct StoredAgent {
     /// Per-queue priority overrides (queue_name → priority).
     #[serde(default)]
     pub queue_priorities: HashMap<String, u32>,
+    /// Maximum concurrent calls this agent can handle. Default 1.
+    #[serde(default = "default_max_concurrent")]
+    pub max_concurrent_calls: u32,
+}
+
+fn default_max_concurrent() -> u32 {
+    1
 }
 
 /// Persistence for ACD queue agent state.

@@ -3373,6 +3373,7 @@ impl QueueStore for SqliteStorage {
                 priority: priority as u32,
                 state,
                 queue_priorities: HashMap::new(),
+                max_concurrent_calls: 1,
             });
         }
 

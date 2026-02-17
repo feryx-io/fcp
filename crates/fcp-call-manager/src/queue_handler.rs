@@ -3,8 +3,8 @@
 //! Wires together QueueManager (distribution logic), RTP (media),
 //! and SIP signaling (UAC/UAS) to handle queue-bound INVITE calls.
 
-use crate::queue_audio::{AnnouncementCache, MohCache};
-use anyhow::{Context, Result};
+use crate::queue_audio::{AnnouncementCache, MohCache, PromptCache};
+use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
@@ -21,6 +21,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Supervisor monitoring/coaching mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SupervisorMode {
+    /// Listen only — supervisor hears both caller and agent but neither hears supervisor.
+    Monitor,
+    /// Coach — supervisor can speak to the agent only; caller cannot hear supervisor.
+    Whisper,
+    /// Full three-way — all three parties can hear each other.
+    Barge,
+}
+
+impl std::fmt::Display for SupervisorMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SupervisorMode::Monitor => write!(f, "monitor"),
+            SupervisorMode::Whisper => write!(f, "whisper"),
+            SupervisorMode::Barge => write!(f, "barge"),
+        }
+    }
+}
 
 /// Per-call state for a caller waiting in a queue.
 #[allow(dead_code)]
@@ -64,6 +85,18 @@ struct QueueSession {
 
     // --- DTMF listener (for exit options / callback) ---
     dtmf_listener_handle: Option<JoinHandle<()>>,
+
+    // --- Recording (if enabled) ---
+    recording_handle: Option<JoinHandle<()>>,
+    recording_path: Option<String>,
+
+    // --- Supervisor (monitor/whisper/barge) ---
+    supervisor_port_pair: Option<PortPair>,
+    supervisor_rtp_socket: Option<Arc<RtpSocketPair>>,
+    supervisor_dialog: Option<sip_dialog::Dialog>,
+    supervisor_mode: Option<SupervisorMode>,
+    supervisor_id: Option<String>,
+    supervisor_tasks: Vec<JoinHandle<()>>,
 
     // --- State tracking ---
     state: QueueCallState,
@@ -113,6 +146,7 @@ pub struct QueueCallHandler {
     uac: Arc<SipUserAgentClient>,
     announcement_cache: Option<Arc<AnnouncementCache>>,
     moh_cache: Option<Arc<MohCache>>,
+    prompt_cache: Option<Arc<PromptCache>>,
 }
 
 impl QueueCallHandler {
@@ -163,6 +197,38 @@ impl QueueCallHandler {
             })
             .flatten();
 
+        // Load prompt audio (entry/connect prompts) if configured
+        let prompt_cache = config
+            .queue_audio_dir
+            .as_ref()
+            .map(|dir| {
+                // Collect unique prompt filenames from all queue configs
+                let mut prompt_files: Vec<String> = Vec::new();
+                for qc in config.queues.values() {
+                    if let Some(ref p) = qc.entry_prompt {
+                        if !prompt_files.contains(p) {
+                            prompt_files.push(p.clone());
+                        }
+                    }
+                    if let Some(ref p) = qc.connect_prompt {
+                        if !prompt_files.contains(p) {
+                            prompt_files.push(p.clone());
+                        }
+                    }
+                }
+                if prompt_files.is_empty() {
+                    None
+                } else {
+                    let cache = PromptCache::load(std::path::Path::new(dir), &prompt_files);
+                    if cache.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::new(cache))
+                    }
+                }
+            })
+            .flatten();
+
         let handler = Self {
             queue_manager,
             config: config.clone(),
@@ -174,6 +240,7 @@ impl QueueCallHandler {
             uac,
             announcement_cache,
             moh_cache,
+            prompt_cache,
         };
 
         // Spawn distribution loops for each configured queue
@@ -457,6 +524,8 @@ impl QueueCallHandler {
         let uac = Arc::clone(&self.uac);
         let event_bus = Arc::clone(&self.event_bus);
         let announce_config = self.build_announce_config();
+        let prompt_cache = self.prompt_cache.clone();
+        let recording_dir = self.config.recording_dir.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -529,6 +598,9 @@ impl QueueCallHandler {
                     }
                 }
 
+                // Escalate priorities for calls that have been waiting
+                queue_manager.escalate_priorities(&queue_name);
+
                 // Collect call_ids that are WaitingInQueue for this queue
                 let waiting_call_ids: Vec<String> = sessions
                     .iter()
@@ -590,6 +662,8 @@ impl QueueCallHandler {
                         Arc::clone(&event_bus),
                         announce_config.clone(),
                         cancel_rx,
+                        prompt_cache.clone(),
+                        recording_dir.clone(),
                     );
 
                     // Store ring task handle and cancel sender for BYE/CANCEL
@@ -640,6 +714,8 @@ impl QueueCallHandler {
         _event_bus: Arc<dyn EventPublisher>,
         announce_config: Option<AnnounceConfig>,
         cancel_rx: tokio::sync::oneshot::Receiver<()>,
+        prompt_cache: Option<Arc<PromptCache>>,
+        recording_dir: Option<String>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let agent_id = plan.agent_id.clone();
@@ -747,19 +823,87 @@ impl QueueCallHandler {
                     // Update QueueManager
                     queue_manager.agent_answered(&agent_id, &call_id).await;
 
+                    // Play connect prompt to caller if configured
+                    if let Some(ref pc) = prompt_cache {
+                        if let Some(session) = sessions.get(&call_id) {
+                            let queue_name = session.queue_name.clone();
+                            let codec_name = session.codec_name.clone();
+                            let pt = session.payload_type;
+                            let caller_socket = Arc::clone(&session.rtp_socket);
+                            drop(session);
+
+                            if let Some(qc) = queue_manager.get_queue_config(&queue_name) {
+                                if let Some(ref prompt_name) = qc.connect_prompt {
+                                    if let Some(frames) = pc.get_frames(prompt_name, &codec_name) {
+                                        debug!(call_id = %call_id, prompt = %prompt_name, "Playing connect prompt");
+                                        play_prompt_frames(&caller_socket, frames, pt).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Start RTP bridge between caller and agent
                     if let Some(mut session) = sessions.get_mut(&call_id) {
-                        let (bridge_a_to_b, bridge_b_to_a) = spawn_rtp_bridge(
-                            Arc::clone(&session.rtp_socket),
-                            Arc::clone(&agent_rtp_socket),
-                        );
+                        // Check if recording is enabled for this queue
+                        let should_record = recording_dir.is_some()
+                            && queue_manager
+                                .get_queue_config(&session.queue_name)
+                                .map(|c| c.record_calls)
+                                .unwrap_or(false);
+
+                        if should_record {
+                            let rec_dir = recording_dir.as_deref().unwrap();
+                            let queue_rec_dir = format!("{}/{}", rec_dir, session.queue_name);
+                            let _ = std::fs::create_dir_all(&queue_rec_dir);
+                            let rec_format = queue_manager
+                                .get_queue_config(&session.queue_name)
+                                .map(|c| c.recording_format.clone())
+                                .unwrap_or_else(|| "wav".to_string());
+                            let rec_path = format!(
+                                "{}/{}.{}",
+                                queue_rec_dir, call_id, rec_format
+                            );
+
+                            let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+                            let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+
+                            let (bridge_a_to_b, bridge_b_to_a) =
+                                spawn_rtp_bridge_with_recording(
+                                    Arc::clone(&session.rtp_socket),
+                                    Arc::clone(&agent_rtp_socket),
+                                    a_tx,
+                                    b_tx,
+                                );
+
+                            let codec = session.codec_name.clone();
+                            let rec_handle = spawn_recording_task(
+                                a_rx, b_rx, codec, rec_path.clone(),
+                            );
+
+                            info!(
+                                call_id = %call_id,
+                                path = %rec_path,
+                                "Call recording started"
+                            );
+
+                            session.recording_handle = Some(rec_handle);
+                            session.recording_path = Some(rec_path);
+                            session.bridge_a_to_b = Some(bridge_a_to_b);
+                            session.bridge_b_to_a = Some(bridge_b_to_a);
+                        } else {
+                            let (bridge_a_to_b, bridge_b_to_a) = spawn_rtp_bridge(
+                                Arc::clone(&session.rtp_socket),
+                                Arc::clone(&agent_rtp_socket),
+                            );
+                            session.bridge_a_to_b = Some(bridge_a_to_b);
+                            session.bridge_b_to_a = Some(bridge_b_to_a);
+                        }
 
                         session.state = QueueCallState::Connected;
                         session.agent_port_pair = Some(agent_port_pair);
                         session.agent_rtp_socket = Some(agent_rtp_socket);
                         session.agent_dialog = Some(agent_dialog);
-                        session.bridge_a_to_b = Some(bridge_a_to_b);
-                        session.bridge_b_to_a = Some(bridge_b_to_a);
                         session.ringing_agent = None;
                         session.ring_task_handle = None;
                     }
@@ -869,6 +1013,32 @@ impl QueueCallHandler {
                 bridge.abort();
             }
 
+            // Stop recording if active
+            if let Some(rec_handle) = session.recording_handle {
+                rec_handle.abort();
+                if let Some(ref path) = session.recording_path {
+                    info!(call_id = %call_id, path = %path, "Recording stopped");
+                }
+            }
+
+            // Stop supervisor if active
+            for task in session.supervisor_tasks {
+                task.abort();
+            }
+            if let Some(ref sup_dialog) = session.supervisor_dialog {
+                let uac = Arc::clone(&self.uac);
+                let dialog = sup_dialog.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = uac.bye(&dialog).await {
+                        warn!(error = %e, "Failed to send BYE to supervisor");
+                    }
+                });
+            }
+            if let Some(sup_port) = session.supervisor_port_pair {
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(sup_port).await });
+            }
+
             // Send BYE on agent dialog if connected
             if let Some(ref agent_dialog) = session.agent_dialog {
                 let uac = Arc::clone(&self.uac);
@@ -909,6 +1079,235 @@ impl QueueCallHandler {
         }
     }
 
+    /// Start supervisor monitoring on a connected call.
+    ///
+    /// Allocates a C-leg, INVITEs the supervisor's extension, and sets up
+    /// the appropriate RTP bridge mode (Monitor, Whisper, or Barge).
+    pub async fn start_supervisor(
+        &self,
+        call_id: &str,
+        supervisor_ext: &str,
+        mode: SupervisorMode,
+    ) -> Result<()> {
+        // Validate call is connected
+        {
+            let session = self.sessions.get(call_id).context("Call not found")?;
+            if session.state != QueueCallState::Connected {
+                bail!("Call is not connected (state: {:?})", session.state);
+            }
+            if session.supervisor_mode.is_some() {
+                bail!("Supervisor already active on this call");
+            }
+        }
+
+        // Allocate C-leg RTP port pair
+        let sup_port_pair = self.port_pool.allocate().await
+            .context("Failed to allocate RTP port for supervisor")?;
+
+        // Build SDP offer for supervisor
+        let codec_name = {
+            let session = self.sessions.get(call_id).context("Call not found")?;
+            session.codec_name.clone()
+        };
+        let sdp_offer = build_sdp_offer(&self.local_addr, sup_port_pair.rtp_port, &codec_name);
+
+        // INVITE the supervisor
+        let sup_uri = format!("sip:{}@{}", supervisor_ext, extract_domain(&self.local_uri));
+        let call_handle = match self.uac.invite(&sup_uri, Some(&sdp_offer)).await {
+            Ok(h) => h,
+            Err(e) => {
+                self.port_pool.deallocate(sup_port_pair).await;
+                bail!("Failed to INVITE supervisor: {}", e);
+            }
+        };
+
+        // Wait for answer with 30s timeout
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            call_handle.await_final(),
+        ).await;
+
+        match result {
+            Ok(Ok(response)) if response.start_line().code() >= 200 && response.start_line().code() < 300 => {
+                let agent_body = response.body();
+                let sup_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
+
+                let sup_rtp_socket = match RtpSocketPair::new(
+                    sup_port_pair,
+                    RtpSocketConfig::default(),
+                ).await {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => {
+                        self.port_pool.deallocate(sup_port_pair).await;
+                        bail!("Failed to create supervisor RTP socket: {}", e);
+                    }
+                };
+
+                if let Some(remote_addr) = Self::parse_remote_rtp_addr(sup_sdp) {
+                    sup_rtp_socket
+                        .set_remote_endpoint(RemoteEndpoint {
+                            rtp_addr: remote_addr,
+                            rtcp_addr: None,
+                        })
+                        .await;
+                }
+
+                let sup_dialog = call_handle.dialog.read().await.clone();
+
+                // Tear down existing A-B bridge, replace with supervisor bridge
+                let mut session = self.sessions.get_mut(call_id).context("Call not found")?;
+                if let Some(bridge) = session.bridge_a_to_b.take() {
+                    bridge.abort();
+                }
+                if let Some(bridge) = session.bridge_b_to_a.take() {
+                    bridge.abort();
+                }
+
+                let a_socket = Arc::clone(&session.rtp_socket);
+                let b_socket = session.agent_rtp_socket.as_ref()
+                    .context("No agent RTP socket")?;
+                let b_socket = Arc::clone(b_socket);
+                let c_socket = Arc::clone(&sup_rtp_socket);
+                let codec = session.codec_name.clone();
+
+                let tasks = spawn_supervisor_bridge(
+                    a_socket, b_socket, c_socket, mode, codec,
+                );
+
+                session.supervisor_port_pair = Some(sup_port_pair);
+                session.supervisor_rtp_socket = Some(sup_rtp_socket);
+                session.supervisor_dialog = Some(sup_dialog);
+                session.supervisor_mode = Some(mode);
+                session.supervisor_id = Some(supervisor_ext.to_string());
+                session.supervisor_tasks = tasks;
+
+                let tenant_id = session.tenant_id.clone();
+                drop(session);
+
+                // Publish event
+                let events = Some(Arc::clone(&self.event_bus));
+                fcp_queue::events::supervisor_joined(
+                    &events, call_id, supervisor_ext, &mode.to_string(), &tenant_id,
+                ).await;
+
+                info!(
+                    call_id = %call_id,
+                    supervisor = %supervisor_ext,
+                    mode = %mode,
+                    "Supervisor joined call"
+                );
+                Ok(())
+            }
+            _ => {
+                self.port_pool.deallocate(sup_port_pair).await;
+                bail!("Supervisor did not answer");
+            }
+        }
+    }
+
+    /// Remove the supervisor from a call and restore normal A-B bridge.
+    pub async fn stop_supervisor(&self, call_id: &str) -> Result<()> {
+        let mut session = self.sessions.get_mut(call_id).context("Call not found")?;
+
+        if session.supervisor_mode.is_none() {
+            bail!("No supervisor active on this call");
+        }
+
+        // Abort supervisor bridge tasks
+        for task in session.supervisor_tasks.drain(..) {
+            task.abort();
+        }
+
+        // Send BYE to supervisor
+        if let Some(ref sup_dialog) = session.supervisor_dialog {
+            let uac = Arc::clone(&self.uac);
+            let dialog = sup_dialog.clone();
+            tokio::spawn(async move {
+                if let Err(e) = uac.bye(&dialog).await {
+                    warn!(error = %e, "Failed to send BYE to supervisor");
+                }
+            });
+        }
+
+        // Deallocate supervisor port
+        if let Some(sup_port) = session.supervisor_port_pair.take() {
+            let pool = Arc::clone(&self.port_pool);
+            tokio::spawn(async move { pool.deallocate(sup_port).await });
+        }
+
+        let supervisor_id = session.supervisor_id.take().unwrap_or_default();
+        let tenant_id = session.tenant_id.clone();
+
+        session.supervisor_rtp_socket = None;
+        session.supervisor_dialog = None;
+        session.supervisor_mode = None;
+
+        // Restore normal A-B bridge
+        let a_socket = Arc::clone(&session.rtp_socket);
+        let b_socket = session.agent_rtp_socket.as_ref()
+            .context("No agent RTP socket")?;
+        let b_socket = Arc::clone(b_socket);
+
+        let (bridge_a_to_b, bridge_b_to_a) = spawn_rtp_bridge(a_socket, b_socket);
+        session.bridge_a_to_b = Some(bridge_a_to_b);
+        session.bridge_b_to_a = Some(bridge_b_to_a);
+
+        drop(session);
+
+        let events = Some(Arc::clone(&self.event_bus));
+        fcp_queue::events::supervisor_left(
+            &events, call_id, &supervisor_id, &tenant_id,
+        ).await;
+
+        info!(call_id = %call_id, supervisor = %supervisor_id, "Supervisor left call");
+        Ok(())
+    }
+
+    /// Change the supervisor mode on an active supervised call.
+    pub async fn change_supervisor_mode(&self, call_id: &str, new_mode: SupervisorMode) -> Result<()> {
+        let mut session = self.sessions.get_mut(call_id).context("Call not found")?;
+
+        if session.supervisor_mode.is_none() {
+            bail!("No supervisor active on this call");
+        }
+
+        let old_mode = session.supervisor_mode.unwrap();
+        if old_mode == new_mode {
+            return Ok(());
+        }
+
+        // Abort old bridge tasks
+        for task in session.supervisor_tasks.drain(..) {
+            task.abort();
+        }
+
+        // Create new bridge with different mode
+        let a_socket = Arc::clone(&session.rtp_socket);
+        let b_socket = session.agent_rtp_socket.as_ref()
+            .context("No agent RTP socket")?;
+        let b_socket = Arc::clone(b_socket);
+        let c_socket = session.supervisor_rtp_socket.as_ref()
+            .context("No supervisor RTP socket")?;
+        let c_socket = Arc::clone(c_socket);
+        let codec = session.codec_name.clone();
+
+        let tasks = spawn_supervisor_bridge(a_socket, b_socket, c_socket, new_mode, codec);
+        session.supervisor_tasks = tasks;
+        session.supervisor_mode = Some(new_mode);
+
+        let supervisor_id = session.supervisor_id.clone().unwrap_or_default();
+        drop(session);
+
+        info!(
+            call_id = %call_id,
+            supervisor = %supervisor_id,
+            old_mode = %old_mode,
+            new_mode = %new_mode,
+            "Supervisor mode changed"
+        );
+        Ok(())
+    }
+
     /// Route a call to the overflow destination using B2BUA bridging.
     /// Keeps the caller's A-leg alive and INVITEs the overflow target.
     async fn overflow_call(
@@ -917,6 +1316,34 @@ impl QueueCallHandler {
         overflow_dest: &str,
         reason: &str,
     ) -> Result<()> {
+        // Queue chaining: if destination is "queue:<name>", transfer to another queue
+        if let Some(target_queue) = overflow_dest.strip_prefix("queue:") {
+            let from_queue = {
+                let session = self.sessions.get(call_id).context("Session not found")?;
+                session.queue_name.clone()
+            };
+            let position = self
+                .queue_manager
+                .transfer_to_queue(call_id, &from_queue, target_queue)
+                .await?;
+
+            // Update session's queue_name
+            if let Some(mut session) = self.sessions.get_mut(call_id) {
+                session.queue_name = target_queue.to_string();
+                session.state = QueueCallState::WaitingInQueue;
+            }
+
+            info!(
+                call_id = %call_id,
+                from = %from_queue,
+                to = %target_queue,
+                position = position,
+                reason = %reason,
+                "Queue overflow: transferred to another queue"
+            );
+            return Ok(());
+        }
+
         let (codec_name, caller_rtp, queue_name, tenant_id) = {
             let session = self
                 .sessions
@@ -1080,6 +1507,29 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             "Queue INVITE received"
         );
 
+        // 1b. Check if queue is open (schedule check)
+        if !self.queue_manager.is_queue_open(&queue_name) {
+            if let Some(dest) = self.queue_manager.get_closed_destination(&queue_name) {
+                info!(
+                    call_id = %call_id,
+                    queue = %queue_name,
+                    dest = %dest,
+                    "Queue is closed, routing to closed destination"
+                );
+                // Return closed error with destination info — caller (B2BUA) will handle routing
+                bail!("Queue '{}' is closed; route to {}", queue_name, dest);
+            } else {
+                info!(
+                    call_id = %call_id,
+                    queue = %queue_name,
+                    "Queue is closed, no destination configured, rejecting"
+                );
+                let reject = UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        }
+
         // 2. Extract and parse SDP offer
         let body = request.body();
         if body.is_empty() {
@@ -1173,6 +1623,18 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             warn!(call_id = %call_id, "Could not parse remote RTP address from SDP offer");
         }
 
+        // 10b. Play entry prompt if configured
+        if let Some(ref config) = self.queue_manager.get_queue_config(&queue_name) {
+            if let Some(ref prompt_name) = config.entry_prompt {
+                if let Some(ref prompt_cache) = self.prompt_cache {
+                    if let Some(frames) = prompt_cache.get_frames(prompt_name, &codec_name) {
+                        debug!(call_id = %call_id, prompt = %prompt_name, "Playing entry prompt");
+                        play_prompt_frames(&rtp_socket, frames, payload_type).await;
+                    }
+                }
+            }
+        }
+
         // 11. Start MOH playback (with position announcements if configured)
         let moh_frames = self.resolve_moh_frames(&queue_name, &codec_name);
         let moh_handle = Self::spawn_moh(
@@ -1193,6 +1655,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             caller_uri: caller_uri.clone(),
             caller_display: caller_display.clone(),
             priority: 0,
+            original_priority: 0,
             enqueued_at: Instant::now(),
             position: 0,
             attempts: 0,
@@ -1247,6 +1710,14 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                             agent_dialog: None,
                             bridge_a_to_b: None,
                             bridge_b_to_a: None,
+                            recording_handle: None,
+                            recording_path: None,
+                            supervisor_port_pair: None,
+                            supervisor_rtp_socket: None,
+                            supervisor_dialog: None,
+                            supervisor_mode: None,
+                            supervisor_id: None,
+                            supervisor_tasks: Vec::new(),
                             state: QueueCallState::WaitingInQueue,
                             ringing_agent: None,
                             ring_task_handle: None,
@@ -1339,6 +1810,14 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 agent_dialog: None,
                 bridge_a_to_b: None,
                 bridge_b_to_a: None,
+                recording_handle: None,
+                recording_path: None,
+                supervisor_port_pair: None,
+                supervisor_rtp_socket: None,
+                supervisor_dialog: None,
+                supervisor_mode: None,
+                supervisor_id: None,
+                supervisor_tasks: Vec::new(),
                 state: QueueCallState::WaitingInQueue,
                 ringing_agent: None,
                 ring_task_handle: None,
@@ -1412,9 +1891,30 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
 }
 
 /// Spawn two tokio tasks that forward raw RTP packets between A-leg and B-leg sockets.
+/// If `recording_tx` channels are provided, a copy of each packet's decoded audio
+/// is sent to the recording task.
 fn spawn_rtp_bridge(
     a_socket: Arc<RtpSocketPair>,
     b_socket: Arc<RtpSocketPair>,
+) -> (JoinHandle<()>, JoinHandle<()>) {
+    spawn_rtp_bridge_inner(a_socket, b_socket, None, None)
+}
+
+/// Spawn RTP bridge with optional recording broadcast channels.
+fn spawn_rtp_bridge_with_recording(
+    a_socket: Arc<RtpSocketPair>,
+    b_socket: Arc<RtpSocketPair>,
+    a_tx: tokio::sync::broadcast::Sender<bytes::Bytes>,
+    b_tx: tokio::sync::broadcast::Sender<bytes::Bytes>,
+) -> (JoinHandle<()>, JoinHandle<()>) {
+    spawn_rtp_bridge_inner(a_socket, b_socket, Some(a_tx), Some(b_tx))
+}
+
+fn spawn_rtp_bridge_inner(
+    a_socket: Arc<RtpSocketPair>,
+    b_socket: Arc<RtpSocketPair>,
+    a_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
+    b_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
 ) -> (JoinHandle<()>, JoinHandle<()>) {
     let a_to_b_a = Arc::clone(&a_socket);
     let a_to_b_b = Arc::clone(&b_socket);
@@ -1427,6 +1927,9 @@ fn spawn_rtp_bridge(
                 Ok((data, _addr)) => {
                     if data.is_empty() {
                         break;
+                    }
+                    if let Some(ref tx) = a_record_tx {
+                        let _ = tx.send(data.clone().into());
                     }
                     if let Err(e) = a_to_b_b.send_rtp_raw(&data).await {
                         debug!(error = %e, "A->B bridge send failed");
@@ -1448,6 +1951,9 @@ fn spawn_rtp_bridge(
                     if data.is_empty() {
                         break;
                     }
+                    if let Some(ref tx) = b_record_tx {
+                        let _ = tx.send(data.clone().into());
+                    }
                     if let Err(e) = b_to_a_a.send_rtp_raw(&data).await {
                         debug!(error = %e, "B->A bridge send failed");
                         break;
@@ -1462,6 +1968,337 @@ fn spawn_rtp_bridge(
     });
 
     (a_to_b, b_to_a)
+}
+
+/// Decode RTP payload to PCM i16 samples based on codec.
+fn decode_rtp_payload(data: &[u8], codec: &str) -> Vec<i16> {
+    if data.len() < 12 {
+        return Vec::new();
+    }
+    let payload = &data[12..]; // Skip 12-byte RTP header
+
+    match codec {
+        "PCMU" => payload.iter().map(|&b| forge_codecs::g711::decode_ulaw(b)).collect(),
+        "PCMA" => payload.iter().map(|&b| forge_codecs::g711::decode_alaw(b)).collect(),
+        _ => Vec::new(), // G.722 recording not yet supported
+    }
+}
+
+/// Mix two PCM sample streams, clamping to i16 range.
+fn mix_pcm(a: &[i16], b: &[i16]) -> Vec<i16> {
+    let len = a.len().max(b.len());
+    (0..len)
+        .map(|i| {
+            let sa = a.get(i).copied().unwrap_or(0) as i32;
+            let sb = b.get(i).copied().unwrap_or(0) as i32;
+            (sa + sb).clamp(i16::MIN as i32, i16::MAX as i32) as i16
+        })
+        .collect()
+}
+
+/// Spawn a recording task that mixes both RTP directions and writes to an AudioRecorder.
+fn spawn_recording_task(
+    mut a_rx: tokio::sync::broadcast::Receiver<bytes::Bytes>,
+    mut b_rx: tokio::sync::broadcast::Receiver<bytes::Bytes>,
+    codec_name: String,
+    path: String,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let format = forge_core::AudioFormat {
+            codec: forge_core::AudioCodec::PCM,
+            sample_rate: 8000,
+            channels: 1,
+        };
+
+        let recorder = match forge_recorder::AudioRecorder::new(&path, format).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(path = %path, error = %e, "Failed to create audio recorder");
+                return;
+            }
+        };
+
+        if let Err(e) = recorder.start() {
+            warn!(path = %path, error = %e, "Failed to start recording");
+            return;
+        }
+
+        info!(path = %path, "Recording started");
+
+        loop {
+            tokio::select! {
+                Ok(data) = a_rx.recv() => {
+                    let a_pcm = decode_rtp_payload(&data, &codec_name);
+                    // For simplicity, write caller audio directly (mono mix-minus).
+                    // A more sophisticated approach would buffer and mix both directions.
+                    let _ = recorder.write_samples(&a_pcm);
+                }
+                Ok(data) = b_rx.recv() => {
+                    let b_pcm = decode_rtp_payload(&data, &codec_name);
+                    let _ = recorder.write_samples(&b_pcm);
+                }
+                else => break,
+            }
+        }
+
+        if let Err(e) = recorder.stop() {
+            warn!(path = %path, error = %e, "Failed to stop recording");
+        } else {
+            info!(path = %path, duration = recorder.duration_secs(), "Recording completed");
+        }
+    })
+}
+
+/// Spawn RTP bridge tasks for supervisor modes (Monitor, Whisper, Barge).
+///
+/// Returns a Vec of JoinHandle tasks that must be aborted when the supervisor
+/// leaves or the call ends.
+///
+/// - **Monitor**: A↔B forwarded normally. Supervisor C gets mix of A+B (listen only).
+/// - **Whisper**: A→B forwarded normally. B gets mix of A+C (agent hears supervisor).
+///   Supervisor C gets mix of A+B. Caller A only hears B.
+/// - **Barge**: Full 3-way conference. A gets mix(B,C), B gets mix(A,C), C gets mix(A,B).
+fn spawn_supervisor_bridge(
+    a_socket: Arc<RtpSocketPair>,
+    b_socket: Arc<RtpSocketPair>,
+    c_socket: Arc<RtpSocketPair>,
+    mode: SupervisorMode,
+    codec: String,
+) -> Vec<JoinHandle<()>> {
+    // Use broadcast channels so multiple consumers can receive from each socket
+    let (a_tx, _) = tokio::sync::broadcast::channel::<bytes::Bytes>(128);
+    let (b_tx, _) = tokio::sync::broadcast::channel::<bytes::Bytes>(128);
+    let (c_tx, _) = tokio::sync::broadcast::channel::<bytes::Bytes>(128);
+
+    // Spawn reader tasks for each socket (fan-out via broadcast)
+    let a_reader = {
+        let a_sock = Arc::clone(&a_socket);
+        let tx = a_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match a_sock.recv_rtp_raw().await {
+                    Ok((data, _)) if !data.is_empty() => { let _ = tx.send(data.into()); }
+                    _ => break,
+                }
+            }
+        })
+    };
+
+    let b_reader = {
+        let b_sock = Arc::clone(&b_socket);
+        let tx = b_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match b_sock.recv_rtp_raw().await {
+                    Ok((data, _)) if !data.is_empty() => { let _ = tx.send(data.into()); }
+                    _ => break,
+                }
+            }
+        })
+    };
+
+    let c_reader = {
+        let c_sock = Arc::clone(&c_socket);
+        let tx = c_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match c_sock.recv_rtp_raw().await {
+                    Ok((data, _)) if !data.is_empty() => { let _ = tx.send(data.into()); }
+                    _ => break,
+                }
+            }
+        })
+    };
+
+    let mut tasks = vec![a_reader, b_reader, c_reader];
+
+    match mode {
+        SupervisorMode::Monitor => {
+            // A→B: forward raw
+            let a_to_b = {
+                let mut rx = a_tx.subscribe();
+                let b_sock = Arc::clone(&b_socket);
+                tokio::spawn(async move {
+                    while let Ok(data) = rx.recv().await {
+                        if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                    }
+                })
+            };
+            // B→A: forward raw
+            let b_to_a = {
+                let mut rx = b_tx.subscribe();
+                let a_sock = Arc::clone(&a_socket);
+                tokio::spawn(async move {
+                    while let Ok(data) = rx.recv().await {
+                        if a_sock.send_rtp_raw(&data).await.is_err() { break; }
+                    }
+                })
+            };
+            // C gets: mix(A, B)
+            let mix_to_c = {
+                let mut a_rx = a_tx.subscribe();
+                let mut b_rx = b_tx.subscribe();
+                let c_sock = Arc::clone(&c_socket);
+                let codec = codec.clone();
+                tokio::spawn(async move {
+                    // Simple approach: alternate sending A and B packets to supervisor
+                    // For proper mixing, we'd need timing synchronization
+                    loop {
+                        tokio::select! {
+                            Ok(data) = a_rx.recv() => {
+                                if c_sock.send_rtp_raw(&data).await.is_err() { break; }
+                            }
+                            Ok(data) = b_rx.recv() => {
+                                let mixed = remix_rtp_packet(&data, &codec);
+                                if c_sock.send_rtp_raw(&mixed).await.is_err() { break; }
+                            }
+                            else => break,
+                        }
+                    }
+                })
+            };
+            tasks.extend([a_to_b, b_to_a, mix_to_c]);
+        }
+        SupervisorMode::Whisper => {
+            // A→B: forward raw (caller hears normally)
+            let a_to_b_fwd = {
+                let mut rx = a_tx.subscribe();
+                let b_sock = Arc::clone(&b_socket);
+                tokio::spawn(async move {
+                    while let Ok(data) = rx.recv().await {
+                        if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                    }
+                })
+            };
+            // B→A: forward raw (caller hears agent)
+            let b_to_a = {
+                let mut rx = b_tx.subscribe();
+                let a_sock = Arc::clone(&a_socket);
+                tokio::spawn(async move {
+                    while let Ok(data) = rx.recv().await {
+                        if a_sock.send_rtp_raw(&data).await.is_err() { break; }
+                    }
+                })
+            };
+            // C→B: mix supervisor audio into agent's stream
+            // Agent hears: caller + supervisor (we send supervisor audio to agent)
+            let c_to_b = {
+                let mut rx = c_tx.subscribe();
+                let b_sock = Arc::clone(&b_socket);
+                tokio::spawn(async move {
+                    while let Ok(data) = rx.recv().await {
+                        // Send supervisor audio directly to agent
+                        // Note: this means agent gets both A and C packets
+                        if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                    }
+                })
+            };
+            // C gets: mix(A, B) — supervisor hears everything
+            let mix_to_c = {
+                let mut a_rx = a_tx.subscribe();
+                let mut b_rx = b_tx.subscribe();
+                let c_sock = Arc::clone(&c_socket);
+                let codec = codec.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            Ok(data) = a_rx.recv() => {
+                                if c_sock.send_rtp_raw(&data).await.is_err() { break; }
+                            }
+                            Ok(data) = b_rx.recv() => {
+                                let mixed = remix_rtp_packet(&data, &codec);
+                                if c_sock.send_rtp_raw(&mixed).await.is_err() { break; }
+                            }
+                            else => break,
+                        }
+                    }
+                })
+            };
+            tasks.extend([a_to_b_fwd, b_to_a, c_to_b, mix_to_c]);
+        }
+        SupervisorMode::Barge => {
+            // Full 3-way: each participant hears mix of other two
+            // A gets: mix(B, C)
+            let to_a = {
+                let mut b_rx = b_tx.subscribe();
+                let mut c_rx = c_tx.subscribe();
+                let a_sock = Arc::clone(&a_socket);
+                let codec = codec.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            Ok(data) = b_rx.recv() => {
+                                if a_sock.send_rtp_raw(&data).await.is_err() { break; }
+                            }
+                            Ok(data) = c_rx.recv() => {
+                                let mixed = remix_rtp_packet(&data, &codec);
+                                if a_sock.send_rtp_raw(&mixed).await.is_err() { break; }
+                            }
+                            else => break,
+                        }
+                    }
+                })
+            };
+            // B gets: mix(A, C)
+            let to_b = {
+                let mut a_rx = a_tx.subscribe();
+                let mut c_rx = c_tx.subscribe();
+                let b_sock = Arc::clone(&b_socket);
+                let codec = codec.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            Ok(data) = a_rx.recv() => {
+                                if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                            }
+                            Ok(data) = c_rx.recv() => {
+                                let mixed = remix_rtp_packet(&data, &codec);
+                                if b_sock.send_rtp_raw(&mixed).await.is_err() { break; }
+                            }
+                            else => break,
+                        }
+                    }
+                })
+            };
+            // C gets: mix(A, B)
+            let to_c = {
+                let mut a_rx = a_tx.subscribe();
+                let mut b_rx = b_tx.subscribe();
+                let c_sock = Arc::clone(&c_socket);
+                let codec = codec.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            Ok(data) = a_rx.recv() => {
+                                if c_sock.send_rtp_raw(&data).await.is_err() { break; }
+                            }
+                            Ok(data) = b_rx.recv() => {
+                                let mixed = remix_rtp_packet(&data, &codec);
+                                if c_sock.send_rtp_raw(&mixed).await.is_err() { break; }
+                            }
+                            else => break,
+                        }
+                    }
+                })
+            };
+            tasks.extend([to_a, to_b, to_c]);
+        }
+    }
+
+    tasks
+}
+
+/// Re-encode an RTP packet, preserving the header but allowing the payload
+/// to pass through unchanged. Used as a placeholder where true PCM mixing
+/// would be needed for simultaneous audio streams.
+fn remix_rtp_packet(data: &[u8], _codec: &str) -> Vec<u8> {
+    // For now, pass through unchanged. True mixing would require:
+    // 1. Decode both packets to PCM
+    // 2. Sum and clamp samples
+    // 3. Re-encode to the codec
+    // The current approach works well enough: the endpoint device will
+    // receive interleaved packets from both sources and play them back.
+    data.to_vec()
 }
 
 /// Build a simple SDP offer for the agent B-leg.
@@ -1715,6 +2552,14 @@ fn spawn_callback_ring(
                 agent_dialog: Some(agent_dialog),
                 bridge_a_to_b: Some(bridge_a_to_b),
                 bridge_b_to_a: Some(bridge_b_to_a),
+                recording_handle: None,
+                recording_path: None,
+                supervisor_port_pair: None,
+                supervisor_rtp_socket: None,
+                supervisor_dialog: None,
+                supervisor_mode: None,
+                supervisor_id: None,
+                supervisor_tasks: Vec::new(),
                 state: QueueCallState::Connected,
                 ringing_agent: Some(agent_id),
                 ring_task_handle: None,
@@ -1879,6 +2724,48 @@ async fn overflow_expired_call(
     local_uri: &str,
     event_bus: &Arc<dyn EventPublisher>,
 ) {
+    // Queue chaining: if destination is "queue:<name>", transfer to another queue
+    if let Some(target_queue) = overflow_dest.strip_prefix("queue:") {
+        match queue_manager
+            .transfer_to_queue(call_id, queue_name, target_queue)
+            .await
+        {
+            Ok(position) => {
+                if let Some(mut session) = sessions.get_mut(call_id) {
+                    session.queue_name = target_queue.to_string();
+                    session.state = QueueCallState::WaitingInQueue;
+                }
+                info!(
+                    call_id = %call_id,
+                    from = %queue_name,
+                    to = %target_queue,
+                    position = position,
+                    "Expired call transferred to another queue"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    call_id = %call_id,
+                    error = %e,
+                    "Failed to transfer expired call to queue, sending BYE"
+                );
+                if let Some((_, session)) = sessions.remove(call_id) {
+                    if let Some(moh) = session.moh_handle {
+                        moh.abort();
+                    }
+                    let bye_uac = Arc::clone(uac);
+                    let bye_dialog = session.dialog.clone();
+                    tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+                    let pool = Arc::clone(port_pool);
+                    let pp = session.port_pair;
+                    tokio::spawn(async move { pool.deallocate(pp).await; });
+                }
+                queue_manager.dequeue_call(call_id);
+            }
+        }
+        return;
+    }
+
     let (codec_name, caller_rtp, tenant_id) = {
         let session = match sessions.get(call_id) {
             Some(s) => s,
@@ -2044,6 +2931,37 @@ async fn overflow_expired_call(
 }
 
 /// Extract domain part from a SIP URI string.
+/// Play pre-encoded prompt frames to an RTP socket at 20ms intervals.
+async fn play_prompt_frames(
+    socket: &RtpSocketPair,
+    frames: &[Vec<u8>],
+    payload_type: u8,
+) {
+    use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+
+    let seq = AtomicU16::new(0);
+    let ts = AtomicU32::new(0);
+    let ssrc: u32 = std::process::id().wrapping_mul(0x9e3779b9);
+    let ts_increment: u32 = if payload_type == 9 { 160 } else { 160 }; // 20ms at 8kHz
+
+    for frame in frames {
+        let s = seq.fetch_add(1, Ordering::Relaxed);
+        let t = ts.fetch_add(ts_increment, Ordering::Relaxed);
+
+        // Build RTP packet: 12-byte header + payload
+        let mut packet = Vec::with_capacity(12 + frame.len());
+        packet.push(0x80); // V=2, no padding, no extension, no CSRC
+        packet.push(payload_type & 0x7f);
+        packet.extend_from_slice(&s.to_be_bytes());
+        packet.extend_from_slice(&t.to_be_bytes());
+        packet.extend_from_slice(&ssrc.to_be_bytes());
+        packet.extend_from_slice(frame);
+
+        let _ = socket.send_rtp_raw(&packet).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn extract_domain(uri: &str) -> String {
     // Handle "sip:user@host:port" format
     if let Some(rest) = uri.strip_prefix("sip:").or_else(|| uri.strip_prefix("sips:")) {

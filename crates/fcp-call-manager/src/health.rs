@@ -10,6 +10,7 @@ use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
 use fcp_core::{CallId, DynStorage};
 use fcp_media::MediaManager;
 use fcp_queue::QueueManager;
+use crate::queue_handler::{QueueCallHandler, SupervisorMode};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub storage: Arc<DynStorage>,
     pub media_manager: Arc<MediaManager>,
     pub queue_manager: Option<Arc<QueueManager>>,
+    pub queue_handler: Option<Arc<QueueCallHandler>>,
     pub start_time: Instant,
 }
 
@@ -45,6 +47,11 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/agents/{id}/kick", post(kick_agent_handler))
         .route("/agents/{id}/login", post(login_agent_handler))
         .route("/agents/{id}/logout", post(logout_agent_handler))
+        // Supervisor endpoints
+        .route("/calls/{id}/monitor", post(monitor_call_handler))
+        .route("/calls/{id}/whisper", post(whisper_call_handler))
+        .route("/calls/{id}/barge", post(barge_call_handler))
+        .route("/calls/{id}/supervisor/leave", post(supervisor_leave_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -589,6 +596,90 @@ async fn logout_agent_handler(
     };
     match qm.agent_logout(&id).await {
         Ok(()) => Json(serde_json::json!({"status": "logged_out", "agent_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+// ---- Supervisor Endpoints ----
+
+#[derive(Deserialize)]
+struct SupervisorBody {
+    supervisor_extension: String,
+}
+
+/// Start monitoring a call (listen only).
+async fn monitor_call_handler(
+    State(state): State<Arc<AppState>>,
+    Path(call_id): Path<String>,
+    Json(body): Json<SupervisorBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qh) = state.queue_handler else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qh.start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Monitor).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "monitoring",
+            "call_id": call_id,
+            "supervisor_extension": body.supervisor_extension,
+            "mode": "monitor",
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Start whispering to the agent on a call (agent hears supervisor, caller does not).
+async fn whisper_call_handler(
+    State(state): State<Arc<AppState>>,
+    Path(call_id): Path<String>,
+    Json(body): Json<SupervisorBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qh) = state.queue_handler else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qh.start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Whisper).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "whispering",
+            "call_id": call_id,
+            "supervisor_extension": body.supervisor_extension,
+            "mode": "whisper",
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Barge into a call (full three-way conference).
+async fn barge_call_handler(
+    State(state): State<Arc<AppState>>,
+    Path(call_id): Path<String>,
+    Json(body): Json<SupervisorBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qh) = state.queue_handler else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qh.start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Barge).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "barging",
+            "call_id": call_id,
+            "supervisor_extension": body.supervisor_extension,
+            "mode": "barge",
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Remove the supervisor from a call.
+async fn supervisor_leave_handler(
+    State(state): State<Arc<AppState>>,
+    Path(call_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qh) = state.queue_handler else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qh.stop_supervisor(&call_id).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "supervisor_removed",
+            "call_id": call_id,
+        })),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
 }

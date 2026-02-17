@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
+use chrono::Datelike;
 use dashmap::DashMap;
 use fcp_core::storage::{QueueStore, StoredAgent};
 use fcp_core::TenantId;
@@ -101,6 +102,118 @@ impl QueueManager {
         self.config.read().enabled
     }
 
+    /// Escalate call priorities for a queue based on wait time.
+    pub fn escalate_priorities(&self, queue_name: &str) {
+        if let Some(mut queue) = self.queues.get_mut(queue_name) {
+            let interval = queue.config.priority_escalation_secs;
+            queue.escalate_priorities(interval);
+        }
+    }
+
+    /// Check if a queue is currently open based on its schedule.
+    /// Returns true if no schedule is configured (always open) or if the
+    /// current time falls within one of the schedule entries.
+    pub fn is_queue_open(&self, queue_name: &str) -> bool {
+        let queue = match self.queues.get(queue_name) {
+            Some(q) => q,
+            None => return false,
+        };
+
+        if queue.config.schedule.is_empty() {
+            return true; // No schedule = always open
+        }
+
+        let tz: chrono_tz::Tz = match queue.config.timezone.parse() {
+            Ok(tz) => tz,
+            Err(_) => {
+                warn!(queue = %queue_name, tz = %queue.config.timezone, "Invalid timezone, treating as always open");
+                return true;
+            }
+        };
+
+        let now = chrono::Utc::now().with_timezone(&tz);
+        let current_day = now.weekday().num_days_from_monday() as u8; // 0=Mon..6=Sun
+        let current_time = now.format("%H:%M").to_string();
+
+        for entry in &queue.config.schedule {
+            if entry.days.contains(&current_day)
+                && current_time >= entry.start_time
+                && current_time < entry.end_time
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Transfer a call from one queue to another (queue chaining).
+    /// Returns the new position in the target queue.
+    pub async fn transfer_to_queue(
+        &self,
+        call_id: &str,
+        from_queue: &str,
+        to_queue: &str,
+    ) -> Result<usize> {
+        // Remove from source queue
+        let mut call = {
+            let mut source = self
+                .queues
+                .get_mut(from_queue)
+                .ok_or_else(|| anyhow::anyhow!("Source queue '{}' not found", from_queue))?;
+            source
+                .remove_call(call_id)
+                .ok_or_else(|| anyhow::anyhow!("Call '{}' not found in queue '{}'", call_id, from_queue))?
+        };
+
+        // Reset for new queue
+        call.attempts = 0;
+        call.queue_name = to_queue.to_string();
+
+        let tenant_id = call.tenant_id.clone();
+
+        // Insert into target queue
+        let mut target = self
+            .queues
+            .get_mut(to_queue)
+            .ok_or_else(|| anyhow::anyhow!("Target queue '{}' not found", to_queue))?;
+
+        if target.waiting_calls.len() >= target.config.max_queue_depth {
+            bail!(
+                "Target queue '{}' is full ({}/{})",
+                to_queue,
+                target.waiting_calls.len(),
+                target.config.max_queue_depth
+            );
+        }
+
+        target.insert_call(call);
+        let position = target.waiting_calls.len();
+        drop(target);
+
+        info!(
+            call_id = %call_id,
+            from = %from_queue,
+            to = %to_queue,
+            position = position,
+            "Call transferred between queues"
+        );
+
+        events::caller_transferred(&self.events, from_queue, to_queue, call_id, &tenant_id).await;
+
+        Ok(position)
+    }
+
+    /// Get the closed destination for a queue (closed_destination or overflow_destination).
+    pub fn get_closed_destination(&self, queue_name: &str) -> Option<String> {
+        self.queues.get(queue_name).and_then(|q| {
+            q.config
+                .closed_destination
+                .clone()
+                .or_else(|| q.config.overflow_destination.clone())
+        })
+    }
+
     // ---- Agent Operations ----
 
     /// Log an agent into one or more queues.
@@ -125,6 +238,7 @@ impl QueueManager {
         agent.state = AgentState::Available;
         agent.state_changed_at = Instant::now();
         agent.logged_in_at = Some(Instant::now());
+        agent.max_concurrent_calls = self.config.read().default_max_concurrent_calls;
 
         // Populate per-queue priority overrides from queue configs
         for q_name in queues {
@@ -227,6 +341,7 @@ impl QueueManager {
                     priority: a.priority,
                     state: a.state.to_string(),
                     queue_priorities: a.queue_priorities.clone(),
+                    max_concurrent_calls: a.max_concurrent_calls,
                 })
                 .collect();
             tokio::spawn(async move {
@@ -239,34 +354,43 @@ impl QueueManager {
 
     /// Mark an agent's call as completed. Transitions OnCall → WrapUp and
     /// schedules automatic transition to Available after the wrap-up timeout.
+    /// If the agent still has other active calls, stays OnCall.
     pub fn agent_call_completed(&self, agent_id: &str) {
         let wrap_up_secs = self.config.read().wrap_up_time_secs;
 
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
-            // Track talk time before transitioning
-            let on_call_duration = agent.state_changed_at.elapsed().as_secs();
-            agent.total_talk_time_secs += on_call_duration;
-
-            agent.state = AgentState::WrapUp;
-            agent.state_changed_at = Instant::now();
-            agent.last_call_ended = Some(Instant::now());
+            agent.current_calls = agent.current_calls.saturating_sub(1);
             agent.calls_handled += 1;
-            drop(agent);
+            agent.last_call_ended = Some(Instant::now());
 
-            // Schedule auto-transition to Available after wrap-up
-            let agents = Arc::clone(&self.agents);
-            let agent_id = agent_id.to_string();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(wrap_up_secs as u64)).await;
-                if let Some(mut agent) = agents.get_mut(&agent_id) {
-                    if agent.state == AgentState::WrapUp {
-                        agent.total_wrap_up_time_secs += agent.state_changed_at.elapsed().as_secs();
-                        agent.state = AgentState::Available;
-                        agent.state_changed_at = Instant::now();
-                        debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
+            // Only transition to WrapUp when no more active calls
+            if agent.current_calls == 0 {
+                // Track talk time before transitioning
+                let on_call_duration = agent.state_changed_at.elapsed().as_secs();
+                agent.total_talk_time_secs += on_call_duration;
+
+                agent.state = AgentState::WrapUp;
+                agent.state_changed_at = Instant::now();
+                drop(agent);
+
+                // Schedule auto-transition to Available after wrap-up
+                let agents = Arc::clone(&self.agents);
+                let agent_id = agent_id.to_string();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(wrap_up_secs as u64)).await;
+                    if let Some(mut agent) = agents.get_mut(&agent_id) {
+                        if agent.state == AgentState::WrapUp {
+                            agent.total_wrap_up_time_secs += agent.state_changed_at.elapsed().as_secs();
+                            agent.state = AgentState::Available;
+                            agent.state_changed_at = Instant::now();
+                            debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
+                        }
                     }
-                }
-            });
+                });
+            } else {
+                drop(agent);
+                debug!(agent_id = %agent_id, "Call completed but agent still has active calls");
+            }
         } else {
             warn!(agent_id = %agent_id, "agent_call_completed: agent not found");
         }
@@ -280,6 +404,11 @@ impl QueueManager {
         let call_id = call.call_id.clone();
         let caller_uri = call.caller_uri.clone();
         let tenant_id = call.tenant_id.clone();
+
+        // Check if queue is open (schedule check)
+        if !self.is_queue_open(&queue_name) {
+            bail!("Queue '{}' is currently closed", queue_name);
+        }
 
         let mut queue = self
             .queues
@@ -420,10 +549,12 @@ impl QueueManager {
     /// Mark an agent as ringing (transitional state — still considered "available"
     /// for tracking but won't be selected again until this attempt resolves).
     pub async fn mark_agent_ringing(&self, agent_id: &str, _call_id: &str) {
-        // Transition to OnCall to prevent being selected for another call
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
-            agent.state = AgentState::OnCall;
-            agent.state_changed_at = Instant::now();
+            agent.current_calls += 1;
+            if agent.state != AgentState::OnCall {
+                agent.state = AgentState::OnCall;
+                agent.state_changed_at = Instant::now();
+            }
         }
     }
 
@@ -475,11 +606,14 @@ impl QueueManager {
     }
 
     /// Agent's ring was cancelled because the caller hung up.
-    /// Marks agent available again and removes the call from the queue.
+    /// Marks agent available again (if no other calls) and removes the call from the queue.
     pub async fn agent_no_answer_for_cancel(&self, agent_id: &str, call_id: &str) {
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
-            agent.state = AgentState::Available;
-            agent.state_changed_at = Instant::now();
+            agent.current_calls = agent.current_calls.saturating_sub(1);
+            if agent.current_calls == 0 {
+                agent.state = AgentState::Available;
+                agent.state_changed_at = Instant::now();
+            }
         }
         // Remove call from queue if still there
         self.dequeue_call(call_id);
@@ -489,8 +623,9 @@ impl QueueManager {
     pub async fn agent_no_answer(&self, agent_id: &str, call_id: &str) {
         let max_no_answer = self.config.read().max_no_answer;
 
-        // Update agent state: increment no-answer counter, auto-away if threshold reached
+        // Update agent state: decrement call count, increment no-answer counter
         if let Some(mut agent) = self.agents.get_mut(agent_id) {
+            agent.current_calls = agent.current_calls.saturating_sub(1);
             agent.consecutive_no_answers += 1;
             if max_no_answer > 0 && agent.consecutive_no_answers >= max_no_answer {
                 let old_state = agent.state.to_string();
@@ -512,9 +647,11 @@ impl QueueManager {
                 )
                 .await;
                 self.persist_agent_change(&tenant_id);
-            } else {
+            } else if agent.current_calls == 0 {
                 agent.state = AgentState::Available;
                 agent.state_changed_at = Instant::now();
+                drop(agent);
+            } else {
                 drop(agent);
             }
         }
@@ -721,6 +858,8 @@ impl QueueManager {
             total_wrap_up_time_secs: agent.total_wrap_up_time_secs,
             occupancy_pct: occupancy,
             time_in_current_state_secs: agent.state_changed_at.elapsed().as_secs(),
+            current_calls: agent.current_calls,
+            max_concurrent_calls: agent.max_concurrent_calls,
         })
     }
 
@@ -1012,6 +1151,7 @@ impl QueueManager {
             agent.state = state;
             agent.state_changed_at = Instant::now();
             agent.logged_in_at = Some(Instant::now());
+            agent.max_concurrent_calls = sa.max_concurrent_calls;
 
             info!(agent_id = %sa.id, "Restored agent from storage");
             self.agents.insert(sa.id, agent);
@@ -1054,6 +1194,14 @@ mod tests {
                 callback_enabled: false,
                 callback_digit: None,
                 agent_priorities: HashMap::new(),
+                priority_escalation_secs: 0,
+                schedule: Vec::new(),
+                closed_destination: None,
+                timezone: "UTC".to_string(),
+                entry_prompt: None,
+                connect_prompt: None,
+                record_calls: false,
+                recording_format: "wav".to_string(),
             },
         );
         QueueSystemConfig {
@@ -1066,6 +1214,8 @@ mod tests {
             stats_publish_interval_secs: 5,
             auto_pause_resume_secs: 0,
             max_no_answer: 3,
+            default_max_concurrent_calls: 1,
+            recording_dir: None,
         }
     }
 
@@ -1083,6 +1233,7 @@ mod tests {
             attempts: 0,
             is_callback: false,
             callback_uri: None,
+            original_priority: 0,
         }
     }
 

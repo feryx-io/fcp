@@ -74,6 +74,10 @@ pub struct Agent {
     pub total_wrap_up_time_secs: u64,
     /// Time when the agent logged in (for occupancy calculation).
     pub logged_in_at: Option<Instant>,
+    /// Maximum concurrent calls this agent can handle. Default 1.
+    pub max_concurrent_calls: u32,
+    /// Number of calls currently active for this agent.
+    pub current_calls: u32,
 }
 
 impl Agent {
@@ -96,12 +100,18 @@ impl Agent {
             total_talk_time_secs: 0,
             total_wrap_up_time_secs: 0,
             logged_in_at: None,
+            max_concurrent_calls: 1,
+            current_calls: 0,
         }
     }
 
     /// Returns true if the agent can receive a new call.
     pub fn is_available(&self) -> bool {
-        self.state == AgentState::Available
+        match self.state {
+            AgentState::Available => true,
+            AgentState::OnCall => self.current_calls < self.max_concurrent_calls,
+            _ => false,
+        }
     }
 }
 
@@ -122,6 +132,8 @@ pub struct QueuedCall {
     pub caller_display: Option<String>,
     /// Call priority (0 = normal, lower = higher priority).
     pub priority: u32,
+    /// The original priority when enqueued (before escalation).
+    pub original_priority: u32,
     /// When this call was added to the queue.
     pub enqueued_at: Instant,
     /// Current position in the queue (1-based).
@@ -206,6 +218,29 @@ impl Queue {
         self.recompute_positions();
     }
 
+    /// Escalate call priorities based on wait time.
+    /// Calls that have waited longer get their priority decreased (higher urgency).
+    pub fn escalate_priorities(&mut self, escalation_secs: u32) {
+        if escalation_secs == 0 {
+            return;
+        }
+        let mut changed = false;
+        for call in &mut self.waiting_calls {
+            let elapsed = call.enqueued_at.elapsed().as_secs() as u32;
+            let escalations = elapsed / escalation_secs;
+            let new_priority = call.original_priority.saturating_sub(escalations);
+            if new_priority != call.priority {
+                call.priority = new_priority;
+                changed = true;
+            }
+        }
+        if changed {
+            self.waiting_calls
+                .sort_by(|a, b| a.priority.cmp(&b.priority).then(a.enqueued_at.cmp(&b.enqueued_at)));
+            self.recompute_positions();
+        }
+    }
+
     fn recompute_positions(&mut self) {
         for (i, call) in self.waiting_calls.iter_mut().enumerate() {
             call.position = i + 1;
@@ -251,6 +286,8 @@ pub struct AgentStats {
     pub total_wrap_up_time_secs: u64,
     pub occupancy_pct: f64,
     pub time_in_current_state_secs: u64,
+    pub current_calls: u32,
+    pub max_concurrent_calls: u32,
 }
 
 #[cfg(test)]
@@ -283,6 +320,14 @@ mod tests {
             callback_enabled: false,
             callback_digit: None,
             agent_priorities: HashMap::new(),
+            priority_escalation_secs: 0,
+            schedule: Vec::new(),
+            closed_destination: None,
+            timezone: "UTC".to_string(),
+            entry_prompt: None,
+            connect_prompt: None,
+            record_calls: false,
+            recording_format: "wav".to_string(),
         }
     }
 
@@ -295,6 +340,7 @@ mod tests {
             caller_uri: "sip:caller@example.com".to_string(),
             caller_display: None,
             priority,
+            original_priority: priority,
             enqueued_at: Instant::now(),
             position: 0,
             attempts: 0,
