@@ -62,6 +62,10 @@ pub struct CallManagerConfig {
     /// PBX features (hunt groups, parking, pickup, intercom, CMC/FAC).
     #[serde(default)]
     pub pbx: fcp_pbx::PbxConfig,
+
+    /// ACD/Queue configuration.
+    #[serde(default)]
+    pub queue: fcp_queue::QueueSystemConfig,
 }
 
 /// Service identification.
@@ -489,6 +493,9 @@ mod tests {
         // PBX defaults
         assert!(!config.pbx.enabled);
         assert!(config.pbx.hunt_groups.is_empty());
+        // Queue defaults
+        assert!(!config.queue.enabled);
+        assert!(config.queue.queues.is_empty());
     }
 
     #[test]

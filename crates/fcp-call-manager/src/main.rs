@@ -28,6 +28,7 @@ use tracing::{info, warn};
 mod cli;
 mod config;
 mod health;
+mod queue_handler;
 mod storage;
 
 use cli::Cli;
@@ -280,6 +281,34 @@ async fn main() -> Result<()> {
         .or_else(|| config.media.public_ip.clone())
         .unwrap_or_else(|| derive_local_ip(&config.sip.udp_bind));
 
+    // 17a. Create QueueCallHandler (if queue system is enabled)
+    let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> =
+        if config.queue.enabled {
+            let port_pool_config = forge_rtp::PortPoolConfig::new(
+                config.media.rtp_port_start,
+                config.media.rtp_port_end,
+            )
+            .context("Invalid RTP port pool configuration for queue handler")?;
+            let queue_port_pool = Arc::new(forge_rtp::PortPool::new(port_pool_config));
+            let tenant_id = fcp_core::TenantId::nil(); // Default tenant for single-node
+            let handler = queue_handler::QueueCallHandler::new(
+                config.queue.clone(),
+                local_uri.as_str().to_string(),
+                local_addr.clone(),
+                queue_port_pool,
+                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+                Arc::clone(&uac),
+                tenant_id,
+            );
+            info!(
+                queues = config.queue.queues.len(),
+                "Queue/ACD handler enabled"
+            );
+            Some(Arc::new(handler))
+        } else {
+            None
+        };
+
     let handler = Arc::new(SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
@@ -306,7 +335,7 @@ async fn main() -> Result<()> {
         outbound_route_provider,
         pbx_handler.clone(),
         None, // No conference handler
-        None, // No queue handler
+        queue_handler,
     )?);
 
     // 16. Create and start TransportListener

@@ -31,6 +31,10 @@ fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-pbx = { path = "../fcp-pbx" }
+fcp-queue = { path = "../fcp-queue" }
+
+# Forge media crates
+forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
 
 # Storage backends (optional)
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
@@ -47,6 +51,8 @@ sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
 sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
+sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 
 # HTTP API
 axum = "0.7"
@@ -73,6 +79,7 @@ serde_json = { workspace = true }
 async-trait = "0.1"
 bytes = { workspace = true }
 dashmap = "6"
+parking_lot = "0.12"
 socket2 = "0.5"
 uuid = { workspace = true }
 
