@@ -215,6 +215,7 @@ pub struct QueueStats {
 mod tests {
     use super::*;
     use crate::config::{DistributionStrategy, QueueConfig};
+    use std::collections::HashMap;
 
     fn test_tenant() -> TenantId {
         TenantId::new()
@@ -234,6 +235,8 @@ mod tests {
             retry_on_no_answer: true,
             agents: vec!["100".to_string(), "101".to_string()],
             priority: 0,
+            required_skills: Vec::new(),
+            agent_skills: HashMap::new(),
         }
     }
 

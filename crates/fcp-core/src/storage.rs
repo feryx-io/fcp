@@ -1098,6 +1098,35 @@ pub trait GeoRoutingStore: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Persisted agent state for queue system restart recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredAgent {
+    pub id: String,
+    pub extension: String,
+    pub queues: Vec<String>,
+    pub skills: Vec<String>,
+    pub priority: u32,
+    /// Agent state: "available", "away", "logged_out"
+    pub state: String,
+}
+
+/// Persistence for ACD queue agent state.
+#[async_trait]
+pub trait QueueStore: Send + Sync {
+    /// Save all logged-in agents for a tenant.
+    async fn save_agents(&self, tenant_id: &crate::TenantId, agents: Vec<StoredAgent>)
+        -> Result<()>;
+
+    /// Load all agents for a tenant.
+    async fn load_agents(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAgent>>;
+
+    /// Remove an agent record.
+    async fn remove_agent(&self, tenant_id: &crate::TenantId, agent_id: &str) -> Result<()>;
+
+    /// Clear all agent records for a tenant.
+    async fn clear_agents(&self, tenant_id: &crate::TenantId) -> Result<()>;
+}
+
 /// Storage backend for conference meetings.
 #[async_trait::async_trait]
 pub trait ConferenceStore: Send + Sync {
@@ -1432,6 +1461,7 @@ pub struct DynStorage {
     porting_store: Arc<dyn crate::porting::PortingStore>,
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
+    queue_store: Arc<dyn QueueStore>,
 }
 
 impl DynStorage {
@@ -1449,6 +1479,7 @@ impl DynStorage {
         porting_store: Arc<dyn crate::porting::PortingStore>,
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
+        queue_store: Arc<dyn QueueStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1463,6 +1494,7 @@ impl DynStorage {
             porting_store,
             tenant_store,
             conference_store,
+            queue_store,
         }
     }
 
@@ -1484,6 +1516,7 @@ impl DynStorage {
             + crate::porting::PortingStore
             + TenantStore
             + ConferenceStore
+            + QueueStore
             + 'static,
     {
         Self {
@@ -1498,7 +1531,8 @@ impl DynStorage {
             geo_routing_store: storage.clone(),
             porting_store: storage.clone(),
             tenant_store: storage.clone(),
-            conference_store: storage,
+            conference_store: storage.clone(),
+            queue_store: storage,
         }
     }
 }
@@ -1932,6 +1966,29 @@ impl ConferenceStore for DynStorage {
 
     async fn delete_meeting(&self, id: &crate::MeetingId) -> Result<()> {
         self.conference_store.delete_meeting(id).await
+    }
+}
+
+#[async_trait]
+impl QueueStore for DynStorage {
+    async fn save_agents(
+        &self,
+        tenant_id: &crate::TenantId,
+        agents: Vec<StoredAgent>,
+    ) -> Result<()> {
+        self.queue_store.save_agents(tenant_id, agents).await
+    }
+
+    async fn load_agents(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAgent>> {
+        self.queue_store.load_agents(tenant_id).await
+    }
+
+    async fn remove_agent(&self, tenant_id: &crate::TenantId, agent_id: &str) -> Result<()> {
+        self.queue_store.remove_agent(tenant_id, agent_id).await
+    }
+
+    async fn clear_agents(&self, tenant_id: &crate::TenantId) -> Result<()> {
+        self.queue_store.clear_agents(tenant_id).await
     }
 }
 

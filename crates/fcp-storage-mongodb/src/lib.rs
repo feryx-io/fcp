@@ -27,8 +27,8 @@ use bson::{doc, DateTime as BsonDateTime, Document};
 use fcp_core::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
     CredentialStore, DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty,
-    LineBindingStore, MediaPreferences, PhoneNumberStore, Registration, RegistrationStore,
-    TenantStore, User,
+    LineBindingStore, MediaPreferences, PhoneNumberStore, QueueStore, Registration,
+    RegistrationStore, StoredAgent, TenantStore, User,
 };
 use fcp_core::{
     AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
@@ -2795,6 +2795,25 @@ fn document_to_device(doc: Document) -> Result<Device> {
         created_at,
         updated_at,
     })
+}
+
+#[async_trait]
+impl QueueStore for MongodbStorage {
+    async fn save_agents(&self, _tenant_id: &TenantId, _agents: Vec<StoredAgent>) -> Result<()> {
+        Ok(()) // TODO: implement when MongoDB queue persistence is needed
+    }
+
+    async fn load_agents(&self, _tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
+        Ok(Vec::new())
+    }
+
+    async fn remove_agent(&self, _tenant_id: &TenantId, _agent_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn clear_agents(&self, _tenant_id: &TenantId) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

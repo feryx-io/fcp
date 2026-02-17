@@ -630,6 +630,29 @@ pub enum QueueEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Periodic stats snapshot for wallboard consumers
+    StatsSnapshot {
+        stats: Vec<QueueStatsSnapshot>,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+/// Queue statistics snapshot for event publishing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueStatsSnapshot {
+    pub queue_name: String,
+    pub calls_waiting: usize,
+    pub agents_available: usize,
+    pub agents_on_call: usize,
+    pub agents_total: usize,
+    pub avg_wait_time_secs: f64,
+    pub longest_wait_secs: u64,
+    pub calls_handled_today: u64,
+    pub calls_abandoned_today: u64,
+    pub service_level_pct: f64,
 }
 
 /// Voicemail-related events.
@@ -943,7 +966,8 @@ impl QueueEvent {
             | QueueEvent::CallerOverflowed { timestamp, .. }
             | QueueEvent::AgentLoggedIn { timestamp, .. }
             | QueueEvent::AgentLoggedOut { timestamp, .. }
-            | QueueEvent::AgentStateChanged { timestamp, .. } => *timestamp,
+            | QueueEvent::AgentStateChanged { timestamp, .. }
+            | QueueEvent::StatsSnapshot { timestamp, .. } => *timestamp,
         }
     }
 }

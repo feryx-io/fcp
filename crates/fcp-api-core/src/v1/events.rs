@@ -202,6 +202,12 @@ fn parse_event_type(s: &str) -> Result<EventType, String> {
         "ivr" => Ok(EventType::Ivr),
         "recording" => Ok(EventType::Recording),
         "system" => Ok(EventType::System),
+        "queue" => Ok(EventType::Queue),
+        "voicemail" => Ok(EventType::Voicemail),
+        "conference" => Ok(EventType::Conference),
+        "user" => Ok(EventType::User),
+        "registration" => Ok(EventType::Registration),
+        "flow" => Ok(EventType::Flow),
         _ => Err(format!("Invalid event type: {}", s)),
     }
 }

@@ -26,6 +26,16 @@ pub struct QueueSystemConfig {
     /// Default ring time per agent attempt before trying the next agent.
     #[serde(default = "default_max_ring_time")]
     pub max_ring_time_secs: u32,
+
+    /// Directory containing queue audio prompt files (WAV, 8kHz mono 16-bit).
+    /// If None, position announcements are disabled even if announce_position is true.
+    #[serde(default)]
+    pub queue_audio_dir: Option<String>,
+
+    /// Interval for publishing stats snapshots to the event bus (seconds).
+    /// Set to 0 to disable. Default: 5.
+    #[serde(default = "default_stats_publish_interval")]
+    pub stats_publish_interval_secs: u64,
 }
 
 impl Default for QueueSystemConfig {
@@ -36,6 +46,8 @@ impl Default for QueueSystemConfig {
             wrap_up_time_secs: default_wrap_up_time(),
             service_level_threshold_secs: default_service_level_threshold(),
             max_ring_time_secs: default_max_ring_time(),
+            queue_audio_dir: None,
+            stats_publish_interval_secs: default_stats_publish_interval(),
         }
     }
 }
@@ -92,6 +104,15 @@ pub struct QueueConfig {
     /// Lower values = higher priority.
     #[serde(default)]
     pub priority: u32,
+
+    /// Skills required for this queue. Only agents with all listed skills are eligible.
+    /// Used with `SkillsBased` strategy (and optionally as a filter for other strategies).
+    #[serde(default)]
+    pub required_skills: Vec<String>,
+
+    /// Skills assigned to static agents (maps agent extension → skills list).
+    #[serde(default)]
+    pub agent_skills: HashMap<String, Vec<String>>,
 }
 
 /// Distribution strategy for selecting which agent receives the next call.
@@ -113,6 +134,9 @@ pub enum DistributionStrategy {
 
     /// Always start from the first agent in the list, picking the first available.
     Linear,
+
+    /// Select an agent who has all required skills, using longest-idle as tiebreaker.
+    SkillsBased,
 }
 
 fn default_wrap_up_time() -> u32 {
@@ -141,6 +165,10 @@ fn default_true() -> bool {
 
 fn default_announce_interval() -> u32 {
     30
+}
+
+fn default_stats_publish_interval() -> u64 {
+    5
 }
 
 #[cfg(test)]
@@ -217,6 +245,7 @@ agents = ["200", "201"]
             DistributionStrategy::FewestCalls,
             DistributionStrategy::Random,
             DistributionStrategy::Linear,
+            DistributionStrategy::SkillsBased,
         ];
         for strategy in strategies {
             let json = serde_json::to_string(&strategy).unwrap();

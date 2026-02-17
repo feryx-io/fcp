@@ -3,6 +3,7 @@
 //! Wires together QueueManager (distribution logic), RTP (media),
 //! and SIP signaling (UAC/UAS) to handle queue-bound INVITE calls.
 
+use crate::queue_audio::AnnouncementCache;
 use anyhow::{Context, Result};
 use dashmap::DashMap;
 use fcp_core::TenantId;
@@ -83,14 +84,24 @@ enum QueueCallState {
 ///
 /// Implements `fcp_sip::queue::QueueHandler` and is plugged into
 /// `SipMessageHandler` to intercept INVITEs destined for queue extensions.
+/// Configuration for position announcements during MOH.
+#[derive(Clone)]
+struct AnnounceConfig {
+    cache: Arc<AnnouncementCache>,
+    interval_secs: u32,
+    queue_manager: Arc<QueueManager>,
+}
+
 pub struct QueueCallHandler {
     queue_manager: Arc<QueueManager>,
+    config: QueueSystemConfig,
     sessions: Arc<DashMap<String, QueueSession>>,
     local_uri: String,
     local_addr: String,
     port_pool: Arc<PortPool>,
     event_bus: Arc<dyn EventPublisher>,
     uac: Arc<SipUserAgentClient>,
+    announcement_cache: Option<Arc<AnnouncementCache>>,
 }
 
 impl QueueCallHandler {
@@ -109,14 +120,32 @@ impl QueueCallHandler {
         event_bus: Arc<dyn EventPublisher>,
         uac: Arc<SipUserAgentClient>,
     ) -> Self {
+        // Load announcement audio if configured
+        let announcement_cache = config
+            .queue_audio_dir
+            .as_ref()
+            .map(|dir| {
+                let cache = AnnouncementCache::load(std::path::Path::new(dir));
+                if cache.is_empty() {
+                    info!("Queue announcement cache is empty (no audio files found)");
+                    None
+                } else {
+                    info!(dir = %dir, "Queue announcement audio loaded");
+                    Some(Arc::new(cache))
+                }
+            })
+            .flatten();
+
         let handler = Self {
             queue_manager,
+            config: config.clone(),
             sessions: Arc::new(DashMap::new()),
             local_uri,
             local_addr,
             port_pool,
             event_bus,
             uac,
+            announcement_cache,
         };
 
         // Spawn distribution loops for each configured queue
@@ -130,6 +159,27 @@ impl QueueCallHandler {
     /// Expose the QueueManager for agent login/logout via REST API.
     pub fn queue_manager(&self) -> &Arc<QueueManager> {
         &self.queue_manager
+    }
+
+    /// Build an AnnounceConfig if position announcements are enabled.
+    fn build_announce_config(&self) -> Option<AnnounceConfig> {
+        let cache = self.announcement_cache.as_ref()?;
+
+        // Find announce_position and interval from the first queue config that has it enabled
+        // (all queues share the same cache, but each queue can individually enable announcements)
+        let interval = self
+            .config
+            .queues
+            .values()
+            .find(|qc| qc.announce_position)
+            .map(|qc| qc.announce_interval_secs)
+            .unwrap_or(30);
+
+        Some(AnnounceConfig {
+            cache: Arc::clone(cache),
+            interval_secs: interval,
+            queue_manager: Arc::clone(&self.queue_manager),
+        })
     }
 
     /// Parse the local SIP URI.
@@ -241,11 +291,14 @@ impl QueueCallHandler {
     }
 
     /// Spawn a MOH (Music On Hold) playback task that sends encoded silence
-    /// RTP packets to the caller at 20ms intervals.
+    /// RTP packets to the caller at 20ms intervals, with periodic position
+    /// announcements if configured.
     fn spawn_moh(
         rtp_socket: Arc<RtpSocketPair>,
         codec_name: &str,
         payload_type: u8,
+        call_id: String,
+        announce: Option<AnnounceConfig>,
     ) -> JoinHandle<()> {
         let silence_frame: Vec<u8> = match codec_name {
             "PCMU" => vec![0xFFu8; 160],        // G.711 μ-law silence
@@ -257,30 +310,71 @@ impl QueueCallHandler {
         let seq = Arc::new(AtomicU16::new(0));
         let ts = Arc::new(AtomicU32::new(0));
         let pt = payload_type;
+        let codec = codec_name.to_string();
         // Generate a random SSRC from a UUID (avoids adding rand dependency)
         let ssrc = (uuid::Uuid::new_v4().as_u128() & 0xFFFF_FFFF) as u32;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(20));
+            let mut last_announcement = Instant::now();
+
             loop {
                 interval.tick().await;
 
+                // Check if it's time for a position announcement
+                if let Some(ref ac) = announce {
+                    let elapsed = last_announcement.elapsed().as_secs() as u32;
+                    if elapsed >= ac.interval_secs {
+                        last_announcement = Instant::now();
+
+                        if let Some(position) = ac.queue_manager.get_caller_position(&call_id) {
+                            if let Some(frames) = ac.cache.get_position_frames(position, &codec) {
+                                debug!(
+                                    call_id = %call_id,
+                                    position = position,
+                                    frames = frames.len(),
+                                    "Playing position announcement"
+                                );
+
+                                // Play announcement frames
+                                for frame in frames {
+                                    let sequence = seq.fetch_add(1, Ordering::Relaxed);
+                                    let timestamp = ts.fetch_add(160, Ordering::Relaxed);
+
+                                    let mut packet = Vec::with_capacity(12 + frame.len());
+                                    packet.push(0x80);
+                                    packet.push(pt);
+                                    packet.extend_from_slice(&sequence.to_be_bytes());
+                                    packet.extend_from_slice(&timestamp.to_be_bytes());
+                                    packet.extend_from_slice(&ssrc.to_be_bytes());
+                                    packet.extend_from_slice(frame);
+
+                                    if let Err(e) = rtp_socket.send_rtp_raw(&packet).await {
+                                        debug!(error = %e, "Announcement send failed");
+                                        return;
+                                    }
+
+                                    // Pace at 20ms per frame
+                                    tokio::time::sleep(Duration::from_millis(20)).await;
+                                }
+
+                                // Skip the regular silence tick since we just played audio
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // Send silence frame (normal MOH)
                 let sequence = seq.fetch_add(1, Ordering::Relaxed);
                 let timestamp = ts.fetch_add(160, Ordering::Relaxed);
 
-                // Build minimal RTP header (12 bytes) + payload
                 let mut packet = Vec::with_capacity(12 + silence_frame.len());
-                // V=2, P=0, X=0, CC=0
                 packet.push(0x80);
-                // M=0, PT
                 packet.push(pt);
-                // Sequence number (big-endian)
                 packet.extend_from_slice(&sequence.to_be_bytes());
-                // Timestamp (big-endian)
                 packet.extend_from_slice(&timestamp.to_be_bytes());
-                // SSRC (big-endian)
                 packet.extend_from_slice(&ssrc.to_be_bytes());
-                // Payload
                 packet.extend_from_slice(&silence_frame);
 
                 if let Err(e) = rtp_socket.send_rtp_raw(&packet).await {
@@ -303,6 +397,7 @@ impl QueueCallHandler {
         let local_uri = self.local_uri.clone();
         let uac = Arc::clone(&self.uac);
         let event_bus = Arc::clone(&self.event_bus);
+        let announce_config = self.build_announce_config();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -358,6 +453,7 @@ impl QueueCallHandler {
                         local_uri.clone(),
                         Arc::clone(&uac),
                         Arc::clone(&event_bus),
+                        announce_config.clone(),
                     );
 
                     // Store ring task handle for cancellation on BYE/CANCEL
@@ -381,6 +477,7 @@ impl QueueCallHandler {
         local_uri: String,
         uac: Arc<SipUserAgentClient>,
         _event_bus: Arc<dyn EventPublisher>,
+        announce_config: Option<AnnounceConfig>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let agent_id = plan.agent_id.clone();
@@ -397,7 +494,7 @@ impl QueueCallHandler {
                         error = %e,
                         "Failed to allocate RTP port for agent leg"
                     );
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager).await;
+                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
                     return;
                 }
             };
@@ -423,7 +520,7 @@ impl QueueCallHandler {
                         "Failed to INVITE agent"
                     );
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager).await;
+                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
                     return;
                 }
             };
@@ -453,7 +550,7 @@ impl QueueCallHandler {
                         Err(e) => {
                             warn!(error = %e, "Failed to create agent RTP socket");
                             port_pool.deallocate(agent_port_pair).await;
-                            Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager).await;
+                            Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
                             return;
                         }
                     };
@@ -500,7 +597,7 @@ impl QueueCallHandler {
                         "Agent rejected queue call"
                     );
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager).await;
+                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
                 }
                 Ok(Err(e)) => {
                     // Error during call setup
@@ -511,7 +608,7 @@ impl QueueCallHandler {
                         "Error during agent INVITE"
                     );
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager).await;
+                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
                 }
                 Err(_) => {
                     // Ring timeout — cancel the agent INVITE
@@ -523,7 +620,7 @@ impl QueueCallHandler {
                     );
                     let _ = call_handle.cancel().await;
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager).await;
+                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
                 }
             }
         })
@@ -535,6 +632,7 @@ impl QueueCallHandler {
         agent_id: &str,
         sessions: &DashMap<String, QueueSession>,
         queue_manager: &QueueManager,
+        announce: Option<AnnounceConfig>,
     ) {
         queue_manager.agent_no_answer(agent_id, call_id).await;
 
@@ -548,6 +646,8 @@ impl QueueCallHandler {
                 Arc::clone(&session.rtp_socket),
                 &session.codec_name,
                 session.payload_type,
+                call_id.to_string(),
+                announce,
             );
             session.moh_handle = Some(moh);
         }
@@ -751,11 +851,13 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             warn!(call_id = %call_id, "Could not parse remote RTP address from SDP offer");
         }
 
-        // 11. Start MOH playback
+        // 11. Start MOH playback (with position announcements if configured)
         let moh_handle = Self::spawn_moh(
             Arc::clone(&rtp_socket),
             &codec_name,
             payload_type,
+            call_id.clone(),
+            self.build_announce_config(),
         );
 
         // 12. Enqueue call in QueueManager
@@ -873,8 +975,16 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             "Agent logging in via feature code"
         );
 
+        // Look up skills from config for this agent extension
+        let skills = config
+            .queues
+            .values()
+            .find_map(|qc| qc.agent_skills.get(&extension.to_string()))
+            .cloned()
+            .unwrap_or_default();
+
         self.queue_manager
-            .agent_login(extension, extension, &queue_names, tenant_id.clone())
+            .agent_login(extension, extension, &queue_names, tenant_id.clone(), skills)
             .await
     }
 

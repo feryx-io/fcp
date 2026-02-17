@@ -31,7 +31,7 @@ use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        RegistrationStore,
+        QueueStore, RegistrationStore, StoredAgent,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
@@ -191,6 +191,10 @@ impl SqliteStorage {
         // Migration 010: Conference meeting support
         let migration_010 = include_str!("../migrations/010_add_conference_support.sql");
         Self::execute_migration(pool, migration_010, "010").await?;
+
+        // Migration 011: Queue agent persistence
+        let migration_011 = include_str!("../migrations/011_add_queue_agents.sql");
+        Self::execute_migration(pool, migration_011, "011").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3296,6 +3300,99 @@ impl SqliteStorage {
             created_at: UNIX_EPOCH + Duration::from_secs(created_at as u64),
             updated_at: UNIX_EPOCH + Duration::from_secs(updated_at as u64),
         })
+    }
+}
+
+// ============================================================================
+// QueueStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl QueueStore for SqliteStorage {
+    async fn save_agents(
+        &self,
+        tenant_id: &TenantId,
+        agents: Vec<StoredAgent>,
+    ) -> Result<()> {
+        let tid = tenant_id.to_string();
+
+        // Clear existing agents for this tenant, then insert all
+        sqlx::query("DELETE FROM queue_agents WHERE tenant_id = ?")
+            .bind(&tid)
+            .execute(&self.pool)
+            .await?;
+
+        for agent in agents {
+            let queues_json = serde_json::to_string(&agent.queues)?;
+            let skills_json = serde_json::to_string(&agent.skills)?;
+
+            sqlx::query(
+                "INSERT INTO queue_agents (tenant_id, agent_id, extension, queues, skills, priority, state)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&tid)
+            .bind(&agent.id)
+            .bind(&agent.extension)
+            .bind(&queues_json)
+            .bind(&skills_json)
+            .bind(agent.priority as i64)
+            .bind(&agent.state)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn load_agents(&self, tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
+        let rows = sqlx::query(
+            "SELECT agent_id, extension, queues, skills, priority, state
+             FROM queue_agents WHERE tenant_id = ?",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut agents = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("agent_id")?;
+            let extension: String = row.try_get("extension")?;
+            let queues_json: String = row.try_get("queues")?;
+            let skills_json: String = row.try_get("skills")?;
+            let priority: i64 = row.try_get("priority")?;
+            let state: String = row.try_get("state")?;
+
+            let queues: Vec<String> = serde_json::from_str(&queues_json).unwrap_or_default();
+            let skills: Vec<String> = serde_json::from_str(&skills_json).unwrap_or_default();
+
+            agents.push(StoredAgent {
+                id,
+                extension,
+                queues,
+                skills,
+                priority: priority as u32,
+                state,
+            });
+        }
+
+        Ok(agents)
+    }
+
+    async fn remove_agent(&self, tenant_id: &TenantId, agent_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM queue_agents WHERE tenant_id = ? AND agent_id = ?")
+            .bind(tenant_id.to_string())
+            .bind(agent_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_agents(&self, tenant_id: &TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM queue_agents WHERE tenant_id = ?")
+            .bind(tenant_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

@@ -73,7 +73,8 @@ pub use crate::sip_handler::{
 pub use crate::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
     CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
-    MediaPreferences, Registration, RegistrationStore, TenantStore, User, UserFileEntry,
+    MediaPreferences, QueueStore, Registration, RegistrationStore, StoredAgent, TenantStore, User,
+    UserFileEntry,
 };
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{

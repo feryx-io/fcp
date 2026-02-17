@@ -28,6 +28,7 @@ use tracing::{info, warn};
 mod cli;
 mod config;
 mod health;
+mod queue_audio;
 mod queue_handler;
 mod storage;
 
@@ -284,14 +285,46 @@ async fn main() -> Result<()> {
     // 17a. Create QueueManager and QueueCallHandler (if queue system is enabled)
     let queue_manager: Option<Arc<fcp_queue::QueueManager>> = if config.queue.enabled {
         let tenant_id = fcp_core::TenantId::nil(); // Default tenant for single-node
-        Some(Arc::new(fcp_queue::QueueManager::new(
+        let mut qm = fcp_queue::QueueManager::new(
             config.queue.clone(),
             Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
-            tenant_id,
-        )))
+            tenant_id.clone(),
+        );
+
+        // Set up queue persistence and restore agents
+        let queue_store: Arc<dyn fcp_core::storage::QueueStore> =
+            Arc::clone(&dyn_storage) as _;
+        qm.set_queue_store(Arc::clone(&queue_store));
+
+        let qm = Arc::new(qm);
+
+        // Restore agent state from storage
+        match qm.restore_agents(queue_store.as_ref(), &tenant_id).await {
+            Ok(count) if count > 0 => {
+                info!(restored = count, "Restored agent state from storage");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(error = %e, "Failed to restore agent state from storage");
+            }
+        }
+
+        Some(qm)
     } else {
         None
     };
+
+    // Start queue stats publisher (for wallboard WebSocket consumers)
+    if let Some(ref qm) = queue_manager {
+        if config.queue.stats_publish_interval_secs > 0 {
+            let tenant_id = fcp_core::TenantId::nil();
+            qm.start_stats_publisher(config.queue.stats_publish_interval_secs, tenant_id);
+            info!(
+                interval_secs = config.queue.stats_publish_interval_secs,
+                "Queue stats publisher started"
+            );
+        }
+    }
 
     let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> =
         if let Some(ref qm) = queue_manager {

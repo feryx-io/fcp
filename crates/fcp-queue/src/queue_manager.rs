@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Result};
 use dashmap::DashMap;
+use fcp_core::storage::{QueueStore, StoredAgent};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 use tracing::{debug, info, warn};
@@ -37,6 +38,8 @@ pub struct QueueManager {
     calls_abandoned_today: Arc<DashMap<String, u64>>,
     calls_within_sl: Arc<DashMap<String, u64>>,
     calls_offered_today: Arc<DashMap<String, u64>>,
+    /// Optional persistent store for agent state.
+    queue_store: Option<Arc<dyn QueueStore>>,
 }
 
 impl QueueManager {
@@ -77,7 +80,13 @@ impl QueueManager {
             calls_abandoned_today,
             calls_within_sl,
             calls_offered_today,
+            queue_store: None,
         }
+    }
+
+    /// Set the persistent store for agent state.
+    pub fn set_queue_store(&mut self, store: Arc<dyn QueueStore>) {
+        self.queue_store = Some(store);
     }
 
     /// Check if a dialed extension maps to a configured queue.
@@ -100,6 +109,7 @@ impl QueueManager {
         extension: &str,
         queues: &[String],
         tenant_id: TenantId,
+        skills: Vec<String>,
     ) -> Result<()> {
         // Validate that all requested queues exist
         for q in queues {
@@ -110,6 +120,7 @@ impl QueueManager {
 
         let mut agent = Agent::new(agent_id.to_string(), extension.to_string(), tenant_id.clone());
         agent.queues = queues.to_vec();
+        agent.skills = skills;
         agent.state = AgentState::Available;
         agent.state_changed_at = Instant::now();
 
@@ -120,6 +131,8 @@ impl QueueManager {
         for q in queues {
             events::agent_logged_in(&self.events, q, agent_id, &tenant_id).await;
         }
+
+        self.persist_agent_change(&tenant_id);
 
         Ok(())
     }
@@ -152,6 +165,8 @@ impl QueueManager {
         )
         .await;
 
+        self.persist_agent_change(&tenant_id);
+
         Ok(())
     }
 
@@ -174,7 +189,36 @@ impl QueueManager {
         events::agent_state_changed(&self.events, agent_id, &old_state, &new_state, &tenant_id)
             .await;
 
+        self.persist_agent_change(&tenant_id);
+
         Ok(())
+    }
+
+    /// Asynchronously persist all agent state for a tenant.
+    /// Spawns a detached task so the caller is not blocked.
+    fn persist_agent_change(&self, tenant_id: &TenantId) {
+        if let Some(ref store) = self.queue_store {
+            let store = Arc::clone(store);
+            let tid = tenant_id.clone();
+            let agents: Vec<StoredAgent> = self
+                .agents
+                .iter()
+                .filter(|a| a.tenant_id == tid)
+                .map(|a| StoredAgent {
+                    id: a.id.clone(),
+                    extension: a.extension.clone(),
+                    queues: a.queues.clone(),
+                    skills: a.skills.clone(),
+                    priority: a.priority,
+                    state: a.state.to_string(),
+                })
+                .collect();
+            tokio::spawn(async move {
+                if let Err(e) = store.save_agents(&tid, agents).await {
+                    warn!(error = %e, "Failed to persist agent state");
+                }
+            });
+        }
     }
 
     /// Mark an agent's call as completed. Transitions OnCall → WrapUp and
@@ -314,12 +358,8 @@ impl QueueManager {
     pub fn select_agent(&self, queue_name: &str) -> Option<DistributionPlan> {
         let queue = self.queues.get(queue_name)?;
         let strategy = queue.config.strategy;
+        let required_skills = queue.config.required_skills.clone();
         let ring_timeout = self.config.read().max_ring_time_secs;
-
-        // Collect available agents that belong to this queue
-        let available: Vec<&Agent> = Vec::new();
-        // We need to collect agent refs, but DashMap refs can't be mixed.
-        // Instead, collect agent data we need.
         drop(queue);
 
         let mut available_agents: Vec<Agent> = Vec::new();
@@ -329,7 +369,6 @@ impl QueueManager {
                 available_agents.push(agent.clone());
             }
         }
-        drop(available);
 
         // Sort by priority (lower = higher priority), then by ID for deterministic order
         available_agents.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.id.cmp(&b.id)));
@@ -342,7 +381,8 @@ impl QueueManager {
             .map(|c| c.load(Ordering::Relaxed))
             .unwrap_or(0);
 
-        let (plan, new_rr) = distribution::select_agent(strategy, &refs, rr_index, ring_timeout)?;
+        let (plan, new_rr) =
+            distribution::select_agent(strategy, &refs, rr_index, ring_timeout, &required_skills)?;
 
         // Update round-robin counter
         if let Some(counter) = self.round_robin_counters.get(queue_name) {
@@ -598,6 +638,84 @@ impl QueueManager {
             .filter_map(|entry| self.queue_stats(entry.key()))
             .collect()
     }
+
+    /// Get the current position of a caller in any queue.
+    /// Returns the 1-based position, or None if the call is not found.
+    pub fn get_caller_position(&self, call_id: &str) -> Option<usize> {
+        for queue in self.queues.iter() {
+            if let Some(call) = queue.waiting_calls.iter().find(|c| c.call_id == call_id) {
+                return Some(call.position);
+            }
+        }
+        None
+    }
+
+    /// Spawn a periodic task that publishes queue stats snapshots to the event bus.
+    pub fn start_stats_publisher(
+        self: &Arc<Self>,
+        interval_secs: u64,
+        tenant_id: TenantId,
+    ) -> tokio::task::JoinHandle<()> {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                interval.tick().await;
+                let stats = this.all_queue_stats();
+                if !stats.is_empty() {
+                    events::stats_snapshot(&this.events, stats, &tenant_id).await;
+                }
+            }
+        })
+    }
+
+    /// Restore agent state from persistent storage after a service restart.
+    /// Returns the number of agents restored.
+    pub async fn restore_agents(
+        &self,
+        store: &dyn QueueStore,
+        tenant_id: &TenantId,
+    ) -> Result<usize> {
+        let stored = store.load_agents(tenant_id).await?;
+        let count = stored.len();
+
+        for sa in stored {
+            // Only restore agents whose queues still exist in config
+            let valid_queues: Vec<String> = sa
+                .queues
+                .iter()
+                .filter(|q| self.queues.contains_key(*q))
+                .cloned()
+                .collect();
+
+            if valid_queues.is_empty() {
+                debug!(agent_id = %sa.id, "Skipping agent restore: no valid queues");
+                continue;
+            }
+
+            let state = match sa.state.as_str() {
+                "available" => AgentState::Available,
+                "away" => AgentState::Away,
+                _ => {
+                    debug!(agent_id = %sa.id, state = %sa.state, "Skipping agent with non-active state");
+                    continue;
+                }
+            };
+
+            let mut agent = Agent::new(sa.id.clone(), sa.extension.clone(), tenant_id.clone());
+            agent.queues = valid_queues;
+            agent.skills = sa.skills;
+            agent.priority = sa.priority;
+            agent.state = state;
+            agent.state_changed_at = Instant::now();
+
+            info!(agent_id = %sa.id, "Restored agent from storage");
+            self.agents.insert(sa.id, agent);
+        }
+
+        Ok(count)
+    }
 }
 
 #[cfg(test)]
@@ -627,6 +745,8 @@ mod tests {
                 retry_on_no_answer: true,
                 agents: vec!["100".to_string(), "101".to_string()],
                 priority: 0,
+                required_skills: Vec::new(),
+                agent_skills: HashMap::new(),
             },
         );
         QueueSystemConfig {
@@ -635,6 +755,8 @@ mod tests {
             wrap_up_time_secs: 5,
             service_level_threshold_secs: 20,
             max_ring_time_secs: 20,
+            queue_audio_dir: None,
+            stats_publish_interval_secs: 5,
         }
     }
 
@@ -668,7 +790,7 @@ mod tests {
 
         // Login
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone())
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
             .await
             .unwrap();
 
@@ -688,7 +810,7 @@ mod tests {
     async fn test_agent_login_invalid_queue() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         let result = manager
-            .agent_login("100", "100", &["nonexistent".to_string()], test_tenant())
+            .agent_login("100", "100", &["nonexistent".to_string()], test_tenant(), Vec::new())
             .await;
         assert!(result.is_err());
     }
@@ -734,11 +856,11 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone())
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
             .await
             .unwrap();
         manager
-            .agent_login("101", "101", &["sales".to_string()], tenant.clone())
+            .agent_login("101", "101", &["sales".to_string()], tenant.clone(), Vec::new())
             .await
             .unwrap();
 
@@ -780,7 +902,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone())
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
             .await
             .unwrap();
 
@@ -809,7 +931,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant)
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 

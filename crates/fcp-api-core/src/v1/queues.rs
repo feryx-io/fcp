@@ -69,6 +69,8 @@ pub struct AgentResponse {
 pub struct AgentLoginRequest {
     pub agent_id: String,
     pub extension: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// Update agent state request body.
@@ -225,7 +227,7 @@ pub async fn agent_login(
 
     let tenant_id = state.default_tenant_id.clone();
 
-    qm.agent_login(&req.agent_id, &req.extension, &[name.clone()], tenant_id)
+    qm.agent_login(&req.agent_id, &req.extension, &[name.clone()], tenant_id, req.skills.clone())
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 

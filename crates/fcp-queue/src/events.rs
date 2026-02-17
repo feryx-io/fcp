@@ -1,10 +1,12 @@
 //! Event publishing helpers for queue operations.
 
 use fcp_core::TenantId;
-use fcp_events::{EventPublisher, PlatformEvent, QueueEvent};
+use fcp_events::{EventPublisher, PlatformEvent, QueueEvent, QueueStatsSnapshot};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::warn;
+
+use crate::types::QueueStats;
 
 /// Publish a queue event, logging a warning if it fails.
 async fn publish(events: &Option<Arc<dyn EventPublisher>>, event: QueueEvent) {
@@ -159,6 +161,39 @@ pub async fn agent_state_changed(
             agent_id: agent_id.to_string(),
             old_state: old_state.to_string(),
             new_state: new_state.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a StatsSnapshot event for wallboard consumers.
+pub async fn stats_snapshot(
+    events: &Option<Arc<dyn EventPublisher>>,
+    stats: Vec<QueueStats>,
+    tenant_id: &TenantId,
+) {
+    let snapshots: Vec<QueueStatsSnapshot> = stats
+        .into_iter()
+        .map(|s| QueueStatsSnapshot {
+            queue_name: s.queue_name,
+            calls_waiting: s.calls_waiting,
+            agents_available: s.agents_available,
+            agents_on_call: s.agents_on_call,
+            agents_total: s.agents_total,
+            avg_wait_time_secs: s.avg_wait_time_secs,
+            longest_wait_secs: s.longest_wait_secs,
+            calls_handled_today: s.calls_handled_today,
+            calls_abandoned_today: s.calls_abandoned_today,
+            service_level_pct: s.service_level_pct,
+        })
+        .collect();
+
+    publish(
+        events,
+        QueueEvent::StatsSnapshot {
+            stats: snapshots,
             tenant_id: tenant_id.clone(),
             timestamp: SystemTime::now(),
         },

@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
-        PhoneNumberStore, RegistrationStore, TenantStore,
+        PhoneNumberStore, QueueStore, RegistrationStore, StoredAgent, TenantStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -2091,6 +2091,25 @@ fn map_meeting_row_mysql(row: sqlx::mysql::MySqlRow) -> Result<fcp_core::Meeting
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })
+}
+
+#[async_trait]
+impl QueueStore for MysqlStorage {
+    async fn save_agents(&self, _tenant_id: &TenantId, _agents: Vec<StoredAgent>) -> Result<()> {
+        Ok(()) // TODO: implement when MySQL queue persistence is needed
+    }
+
+    async fn load_agents(&self, _tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
+        Ok(Vec::new())
+    }
+
+    async fn remove_agent(&self, _tenant_id: &TenantId, _agent_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn clear_agents(&self, _tenant_id: &TenantId) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

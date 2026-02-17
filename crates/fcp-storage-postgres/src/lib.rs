@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
-        PhoneNumberStore, RegistrationStore, TenantStore,
+        PhoneNumberStore, QueueStore, RegistrationStore, StoredAgent, TenantStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -2117,6 +2117,25 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
 // ============================================================================
 // Tests
 // ============================================================================
+
+#[async_trait]
+impl QueueStore for PostgresStorage {
+    async fn save_agents(&self, _tenant_id: &TenantId, _agents: Vec<StoredAgent>) -> Result<()> {
+        Ok(()) // TODO: implement when PostgreSQL queue persistence is needed
+    }
+
+    async fn load_agents(&self, _tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
+        Ok(Vec::new())
+    }
+
+    async fn remove_agent(&self, _tenant_id: &TenantId, _agent_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn clear_agents(&self, _tenant_id: &TenantId) -> Result<()> {
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
