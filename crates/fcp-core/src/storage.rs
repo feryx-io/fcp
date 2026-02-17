@@ -2040,6 +2040,29 @@ impl QueueStore for DynStorage {
     async fn clear_agents(&self, tenant_id: &crate::TenantId) -> Result<()> {
         self.queue_store.clear_agents(tenant_id).await
     }
+
+    async fn save_stats_snapshot(
+        &self,
+        tenant_id: &crate::TenantId,
+        snapshot: StoredQueueSnapshot,
+    ) -> Result<()> {
+        self.queue_store
+            .save_stats_snapshot(tenant_id, snapshot)
+            .await
+    }
+
+    async fn query_stats_snapshots(
+        &self,
+        tenant_id: &crate::TenantId,
+        queue_name: &str,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredQueueSnapshot>> {
+        self.queue_store
+            .query_stats_snapshots(tenant_id, queue_name, from_epoch, to_epoch, limit)
+            .await
+    }
 }
 
 #[cfg(test)]

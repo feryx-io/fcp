@@ -6,6 +6,7 @@
 use crate::queue_audio::{AnnouncementCache, MohCache, PromptCache};
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
+use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, HangupCause};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 use fcp_media::{construct_answer_for_a_leg, extract_telephone_event_pt, parse_sdp_codecs};
@@ -18,9 +19,9 @@ use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Supervisor monitoring/coaching mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,10 @@ struct QueueSession {
     ring_cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// When this call was enqueued.
     enqueued_at: Instant,
+    /// When an agent answered this call (for CDR duration calculation).
+    agent_answered_at: Option<Instant>,
+    /// Agent's negotiated codec name (set when agent answers with SDP).
+    agent_codec_name: Option<String>,
 }
 
 /// State machine for a queue call.
@@ -149,6 +154,7 @@ pub struct QueueCallHandler {
     announcement_cache: Option<Arc<AnnouncementCache>>,
     moh_cache: Option<Arc<MohCache>>,
     prompt_cache: Option<Arc<PromptCache>>,
+    storage: Arc<fcp_core::DynStorage>,
 }
 
 impl QueueCallHandler {
@@ -166,6 +172,7 @@ impl QueueCallHandler {
         port_pool: Arc<PortPool>,
         event_bus: Arc<dyn EventPublisher>,
         uac: Arc<SipUserAgentClient>,
+        storage: Arc<fcp_core::DynStorage>,
     ) -> Self {
         // Load announcement audio if configured
         let announcement_cache = config
@@ -243,6 +250,7 @@ impl QueueCallHandler {
             announcement_cache,
             moh_cache,
             prompt_cache,
+            storage,
         };
 
         // Spawn distribution loops for each configured queue
@@ -789,14 +797,8 @@ impl QueueCallHandler {
                 }
             };
 
-            // 2. Build SDP offer for agent leg
-            let sdp_offer = {
-                let codec_name = sessions
-                    .get(&call_id)
-                    .map(|s| s.codec_name.clone())
-                    .unwrap_or_else(|| "PCMU".to_string());
-                build_sdp_offer(&local_addr, agent_port_pair.rtp_port, &codec_name)
-            };
+            // 2. Build multi-codec SDP offer for agent leg
+            let sdp_offer = build_multi_codec_sdp_offer(&local_addr, agent_port_pair.rtp_port);
 
             // 3. INVITE the agent
             let agent_uri = format!("sip:{}@{}", agent_extension, extract_domain(&local_uri));
@@ -841,9 +843,17 @@ impl QueueCallHandler {
                         "Agent answered queue call"
                     );
 
-                    // Parse SDP answer from agent
+                    // Parse SDP answer from agent to determine chosen codec
                     let agent_body = response.body();
                     let agent_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
+                    let (agent_codec_name, agent_pt) = parse_agent_codec(agent_sdp);
+                    debug!(
+                        call_id = %call_id,
+                        agent = %agent_id,
+                        agent_codec = %agent_codec_name,
+                        agent_pt = agent_pt,
+                        "Agent codec negotiated"
+                    );
 
                     // Create B-leg RTP socket
                     let agent_rtp_socket = match RtpSocketPair::new(
@@ -897,6 +907,19 @@ impl QueueCallHandler {
 
                     // Start RTP bridge between caller and agent
                     if let Some(mut session) = sessions.get_mut(&call_id) {
+                        let caller_codec = session.codec_name.clone();
+                        let caller_pt = session.payload_type;
+                        let needs_transcoding = caller_codec != agent_codec_name;
+
+                        if needs_transcoding {
+                            info!(
+                                call_id = %call_id,
+                                caller_codec = %caller_codec,
+                                agent_codec = %agent_codec_name,
+                                "Codecs differ, using transcoding bridge"
+                            );
+                        }
+
                         // Check if recording is enabled for this queue
                         let should_record = recording_dir.is_some()
                             && queue_manager
@@ -920,13 +943,31 @@ impl QueueCallHandler {
                             let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
                             let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
 
-                            let (bridge_a_to_b, bridge_b_to_a) =
-                                spawn_rtp_bridge_with_recording(
-                                    Arc::clone(&session.rtp_socket),
-                                    Arc::clone(&agent_rtp_socket),
-                                    a_tx,
-                                    b_tx,
-                                );
+                            if needs_transcoding {
+                                let (bridge_a_to_b, bridge_b_to_a) =
+                                    spawn_transcoding_rtp_bridge(
+                                        Arc::clone(&session.rtp_socket),
+                                        Arc::clone(&agent_rtp_socket),
+                                        codec_name_to_type(&caller_codec),
+                                        codec_name_to_type(&agent_codec_name),
+                                        caller_pt,
+                                        agent_pt,
+                                        Some(a_tx),
+                                        Some(b_tx),
+                                    );
+                                session.bridge_a_to_b = Some(bridge_a_to_b);
+                                session.bridge_b_to_a = Some(bridge_b_to_a);
+                            } else {
+                                let (bridge_a_to_b, bridge_b_to_a) =
+                                    spawn_rtp_bridge_with_recording(
+                                        Arc::clone(&session.rtp_socket),
+                                        Arc::clone(&agent_rtp_socket),
+                                        a_tx,
+                                        b_tx,
+                                    );
+                                session.bridge_a_to_b = Some(bridge_a_to_b);
+                                session.bridge_b_to_a = Some(bridge_b_to_a);
+                            }
 
                             let codec = session.codec_name.clone();
                             let rec_handle = spawn_recording_task(
@@ -941,6 +982,18 @@ impl QueueCallHandler {
 
                             session.recording_handle = Some(rec_handle);
                             session.recording_path = Some(rec_path);
+                        } else if needs_transcoding {
+                            let (bridge_a_to_b, bridge_b_to_a) =
+                                spawn_transcoding_rtp_bridge(
+                                    Arc::clone(&session.rtp_socket),
+                                    Arc::clone(&agent_rtp_socket),
+                                    codec_name_to_type(&caller_codec),
+                                    codec_name_to_type(&agent_codec_name),
+                                    caller_pt,
+                                    agent_pt,
+                                    None,
+                                    None,
+                                );
                             session.bridge_a_to_b = Some(bridge_a_to_b);
                             session.bridge_b_to_a = Some(bridge_b_to_a);
                         } else {
@@ -953,6 +1006,8 @@ impl QueueCallHandler {
                         }
 
                         session.state = QueueCallState::Connected;
+                        session.agent_answered_at = Some(Instant::now());
+                        session.agent_codec_name = Some(agent_codec_name.clone());
                         session.agent_port_pair = Some(agent_port_pair);
                         session.agent_rtp_socket = Some(agent_rtp_socket);
                         session.agent_dialog = Some(agent_dialog);
@@ -1027,7 +1082,7 @@ impl QueueCallHandler {
         }
     }
 
-    /// Remove and clean up a queue session.
+    /// Remove and clean up a queue session, inserting a CDR for the call.
     fn remove_session(&self, call_id: &str) {
         if let Some((_, session)) = self.sessions.remove(call_id) {
             info!(
@@ -1036,6 +1091,39 @@ impl QueueCallHandler {
                 state = ?session.state,
                 "Queue session removed"
             );
+
+            // Spawn CDR creation (non-blocking)
+            let storage = Arc::clone(&self.storage);
+            let cdr_call_id = call_id.to_string();
+            let cdr_tenant_id = session.tenant_id.clone();
+            let cdr_queue_name = session.queue_name.clone();
+            let cdr_caller_uri = session.caller_uri.clone();
+            let cdr_caller_display = session.caller_display.clone();
+            let cdr_codec_name = session.codec_name.clone();
+            let cdr_agent_codec = session.agent_codec_name.clone();
+            let cdr_enqueued_at = session.enqueued_at;
+            let cdr_answered_at = session.agent_answered_at;
+            let cdr_state = session.state;
+            let cdr_agent_id = session.ringing_agent.clone();
+            let cdr_recording = session.recording_path.clone();
+            tokio::spawn(async move {
+                create_queue_cdr(
+                    &storage,
+                    &cdr_call_id,
+                    cdr_tenant_id,
+                    &cdr_queue_name,
+                    &cdr_caller_uri,
+                    cdr_caller_display.as_deref(),
+                    &cdr_codec_name,
+                    cdr_agent_codec.as_deref(),
+                    cdr_enqueued_at,
+                    cdr_answered_at,
+                    cdr_state,
+                    cdr_agent_id.as_deref(),
+                    cdr_recording.as_deref(),
+                )
+                .await;
+            });
 
             // Abort MOH if running
             if let Some(moh) = session.moh_handle {
@@ -1815,6 +1903,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                             ring_task_handle: None,
                             ring_cancel_tx: None,
                             enqueued_at: Instant::now(),
+                            agent_answered_at: None,
+                            agent_codec_name: None,
                         },
                     );
 
@@ -1906,6 +1996,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 ring_task_handle: None,
                 ring_cancel_tx: None,
                 enqueued_at: Instant::now(),
+                agent_answered_at: None,
+                agent_codec_name: None,
             },
         );
 
@@ -2051,6 +2143,161 @@ fn spawn_rtp_bridge_inner(
     });
 
     (a_to_b, b_to_a)
+}
+
+/// Spawn a transcoding RTP bridge between two sockets with different codecs.
+///
+/// Each direction decodes from the source codec, resamples if needed, and re-encodes
+/// to the destination codec. The RTP payload type byte is rewritten for each direction.
+/// Optional recording broadcast channels can capture raw packets for recording.
+fn spawn_transcoding_rtp_bridge(
+    a_socket: Arc<RtpSocketPair>,
+    b_socket: Arc<RtpSocketPair>,
+    a_codec: forge_codecs::AudioCodecType,
+    b_codec: forge_codecs::AudioCodecType,
+    a_pt: u8,
+    b_pt: u8,
+    a_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
+    b_record_tx: Option<tokio::sync::broadcast::Sender<bytes::Bytes>>,
+) -> (JoinHandle<()>, JoinHandle<()>) {
+    // A→B direction: decode A's codec, encode to B's codec, rewrite PT to b_pt
+    let a_to_b_a = Arc::clone(&a_socket);
+    let a_to_b_b = Arc::clone(&b_socket);
+
+    let a_to_b = tokio::spawn(async move {
+        let src_format = forge_transcoder::AudioFormat::new(
+            codec_sample_rate_for_type(a_codec), 1, a_codec,
+        );
+        let dst_format = forge_transcoder::AudioFormat::new(
+            codec_sample_rate_for_type(b_codec), 1, b_codec,
+        );
+        let mut transcoder = match forge_transcoder::Transcoder::new(src_format, dst_format) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "Failed to create A->B transcoder");
+                return;
+            }
+        };
+
+        loop {
+            match a_to_b_a.recv_rtp_raw().await {
+                Ok((data, _addr)) => {
+                    if data.is_empty() || data.len() < 12 {
+                        break;
+                    }
+                    // Send raw copy for recording if configured
+                    if let Some(ref tx) = a_record_tx {
+                        let _ = tx.send(data.clone().into());
+                    }
+                    // Extract RTP header and payload
+                    let payload = &data[12..];
+                    // Skip DTMF (telephone-event) packets
+                    let rtp_pt = data[1] & 0x7F;
+                    if rtp_pt == 101 {
+                        // Forward DTMF as-is (telephone-event is codec-independent)
+                        if let Err(e) = a_to_b_b.send_rtp_raw(&data).await {
+                            debug!(error = %e, "A->B transcoding bridge send failed");
+                            break;
+                        }
+                        continue;
+                    }
+                    // Transcode the payload
+                    match transcoder.transcode(payload) {
+                        Ok(transcoded) => {
+                            // Rebuild RTP packet with new payload and rewritten PT
+                            let mut out_packet = Vec::with_capacity(12 + transcoded.len());
+                            out_packet.extend_from_slice(&data[..12]);
+                            // Rewrite payload type (byte 1, lower 7 bits)
+                            out_packet[1] = (data[1] & 0x80) | (b_pt & 0x7F);
+                            out_packet.extend_from_slice(&transcoded);
+                            if let Err(e) = a_to_b_b.send_rtp_raw(&out_packet).await {
+                                debug!(error = %e, "A->B transcoding bridge send failed");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "A->B transcode failed, skipping packet");
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(error = %e, "A->B transcoding bridge recv failed");
+                    break;
+                }
+            }
+        }
+    });
+
+    // B→A direction: decode B's codec, encode to A's codec, rewrite PT to a_pt
+    let b_to_a_b = Arc::clone(&b_socket);
+    let b_to_a_a = Arc::clone(&a_socket);
+
+    let b_to_a = tokio::spawn(async move {
+        let src_format = forge_transcoder::AudioFormat::new(
+            codec_sample_rate_for_type(b_codec), 1, b_codec,
+        );
+        let dst_format = forge_transcoder::AudioFormat::new(
+            codec_sample_rate_for_type(a_codec), 1, a_codec,
+        );
+        let mut transcoder = match forge_transcoder::Transcoder::new(src_format, dst_format) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "Failed to create B->A transcoder");
+                return;
+            }
+        };
+
+        loop {
+            match b_to_a_b.recv_rtp_raw().await {
+                Ok((data, _addr)) => {
+                    if data.is_empty() || data.len() < 12 {
+                        break;
+                    }
+                    if let Some(ref tx) = b_record_tx {
+                        let _ = tx.send(data.clone().into());
+                    }
+                    let payload = &data[12..];
+                    let rtp_pt = data[1] & 0x7F;
+                    if rtp_pt == 101 {
+                        if let Err(e) = b_to_a_a.send_rtp_raw(&data).await {
+                            debug!(error = %e, "B->A transcoding bridge send failed");
+                            break;
+                        }
+                        continue;
+                    }
+                    match transcoder.transcode(payload) {
+                        Ok(transcoded) => {
+                            let mut out_packet = Vec::with_capacity(12 + transcoded.len());
+                            out_packet.extend_from_slice(&data[..12]);
+                            out_packet[1] = (data[1] & 0x80) | (a_pt & 0x7F);
+                            out_packet.extend_from_slice(&transcoded);
+                            if let Err(e) = b_to_a_a.send_rtp_raw(&out_packet).await {
+                                debug!(error = %e, "B->A transcoding bridge send failed");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "B->A transcode failed, skipping packet");
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(error = %e, "B->A transcoding bridge recv failed");
+                    break;
+                }
+            }
+        }
+    });
+
+    (a_to_b, b_to_a)
+}
+
+/// Get the native sample rate for a codec type.
+fn codec_sample_rate_for_type(codec: forge_codecs::AudioCodecType) -> u32 {
+    match codec {
+        forge_codecs::AudioCodecType::G722 => 16000,
+        _ => 8000,
+    }
 }
 
 /// Decode RTP payload to PCM i16 samples based on codec.
@@ -2384,15 +2631,14 @@ fn remix_rtp_packet(data: &[u8], _codec: &str) -> Vec<u8> {
     data.to_vec()
 }
 
-/// Build a simple SDP offer for the agent B-leg.
+/// Build a single-codec SDP offer (used for supervisor, overflow, and callback legs).
 fn build_sdp_offer(local_addr: &str, rtp_port: u16, codec_name: &str) -> String {
-    // Strip port from local_addr if present (e.g., "192.168.1.100:5060" -> "192.168.1.100")
     let ip = local_addr.split(':').next().unwrap_or(local_addr);
 
     let (pt, encoding, clock_rate): (u8, &str, u32) = match codec_name {
         "PCMU" => (0, "PCMU", 8000),
         "PCMA" => (8, "PCMA", 8000),
-        "G722" => (9, "G722", 8000), // G.722 uses 8000 in SDP per RFC
+        "G722" => (9, "G722", 8000),
         _ => (0, "PCMU", 8000),
     };
 
@@ -2410,6 +2656,57 @@ fn build_sdp_offer(local_addr: &str, rtp_port: u16, codec_name: &str) -> String 
          a=ptime:20\r\n",
     )
 }
+
+/// Build a multi-codec SDP offer for the agent B-leg.
+///
+/// Offers all three supported codecs (PCMU, PCMA, G722) so the agent device
+/// can choose whichever it supports. Transcoding is handled transparently
+/// if the agent picks a different codec than the caller.
+fn build_multi_codec_sdp_offer(local_addr: &str, rtp_port: u16) -> String {
+    let ip = local_addr.split(':').next().unwrap_or(local_addr);
+
+    format!(
+        "v=0\r\n\
+         o=fcp-queue 0 0 IN IP4 {ip}\r\n\
+         s=Queue Call\r\n\
+         c=IN IP4 {ip}\r\n\
+         t=0 0\r\n\
+         m=audio {rtp_port} RTP/AVP 0 8 9 101\r\n\
+         a=rtpmap:0 PCMU/8000\r\n\
+         a=rtpmap:8 PCMA/8000\r\n\
+         a=rtpmap:9 G722/8000\r\n\
+         a=rtpmap:101 telephone-event/8000\r\n\
+         a=fmtp:101 0-16\r\n\
+         a=sendrecv\r\n\
+         a=ptime:20\r\n",
+    )
+}
+
+/// Parse the agent's chosen codec from their SDP answer.
+/// Returns (codec_name, payload_type). Defaults to ("PCMU", 0) if parsing fails.
+fn parse_agent_codec(sdp: &str) -> (String, u8) {
+    let codecs = parse_sdp_codecs(sdp);
+    for codec in &codecs {
+        // Skip telephone-event
+        let name_upper = codec.encoding_name.to_uppercase();
+        if name_upper == "TELEPHONE-EVENT" {
+            continue;
+        }
+        return (name_upper, codec.payload_type);
+    }
+    ("PCMU".to_string(), 0)
+}
+
+/// Map a codec name to forge_codecs::AudioCodecType.
+fn codec_name_to_type(name: &str) -> forge_codecs::AudioCodecType {
+    match name {
+        "PCMU" => forge_codecs::AudioCodecType::PCMU,
+        "PCMA" => forge_codecs::AudioCodecType::PCMA,
+        "G722" => forge_codecs::AudioCodecType::G722,
+        _ => forge_codecs::AudioCodecType::PCMU,
+    }
+}
+
 
 /// Parse overflow destination string into a SIP URI.
 /// Supports formats:
@@ -2682,6 +2979,8 @@ fn spawn_callback_ring(
                 ring_task_handle: None,
                 ring_cancel_tx: None,
                 enqueued_at: Instant::now(),
+                agent_answered_at: Some(Instant::now()),
+                agent_codec_name: None,
             },
         );
     });
@@ -3104,4 +3403,115 @@ fn extract_domain(uri: &str) -> String {
     }
     // Fallback: return the whole string
     uri.to_string()
+}
+
+/// Create and insert a CDR for a completed queue call.
+async fn create_queue_cdr(
+    storage: &fcp_core::DynStorage,
+    call_id: &str,
+    tenant_id: TenantId,
+    queue_name: &str,
+    caller_uri: &str,
+    caller_display: Option<&str>,
+    codec_name: &str,
+    agent_codec_name: Option<&str>,
+    enqueued_at: Instant,
+    agent_answered_at: Option<Instant>,
+    state: QueueCallState,
+    agent_id: Option<&str>,
+    recording_path: Option<&str>,
+) {
+    let now = SystemTime::now();
+    let total_elapsed = enqueued_at.elapsed();
+
+    // Approximate start_time by subtracting elapsed from now
+    let start_time = now
+        .checked_sub(total_elapsed)
+        .unwrap_or(now);
+
+    // Compute answer_time and durations
+    let (answer_time, setup_duration_ms, call_duration_ms) = if let Some(answered_at) = agent_answered_at {
+        let wait_dur = answered_at.duration_since(enqueued_at);
+        let answer_sys = start_time
+            .checked_add(wait_dur)
+            .unwrap_or(now);
+        let talk_dur = answered_at.elapsed();
+        (
+            Some(answer_sys),
+            Some(wait_dur.as_millis() as u64),
+            Some(talk_dur.as_millis() as u64),
+        )
+    } else {
+        (None, Some(total_elapsed.as_millis() as u64), None)
+    };
+
+    let (disposition, hangup_cause) = match state {
+        QueueCallState::Connected | QueueCallState::OverflowedToDestination => {
+            (CallDisposition::Answered, HangupCause::NormalClearing)
+        }
+        QueueCallState::RingingAgent => {
+            (CallDisposition::NoAnswer, HangupCause::NoAnswer)
+        }
+        QueueCallState::WaitingInQueue => {
+            (CallDisposition::Cancelled, HangupCause::NoAnswer)
+        }
+    };
+
+    // Build queue metadata as custom_data
+    let wait_time_ms = agent_answered_at
+        .map(|a| a.duration_since(enqueued_at).as_millis() as u64)
+        .unwrap_or(total_elapsed.as_millis() as u64);
+    let handle_time_ms = call_duration_ms.unwrap_or(0);
+    let outcome = match state {
+        QueueCallState::Connected => "answered",
+        QueueCallState::OverflowedToDestination => "overflowed",
+        QueueCallState::RingingAgent => "abandoned_ringing",
+        QueueCallState::WaitingInQueue => "abandoned_waiting",
+    };
+
+    let custom_data = serde_json::json!({
+        "queue_name": queue_name,
+        "agent_id": agent_id,
+        "wait_time_ms": wait_time_ms,
+        "handle_time_ms": handle_time_ms,
+        "outcome": outcome,
+    });
+
+    let cdr = CallDetailRecord {
+        call_id: fcp_core::CallId::new(),
+        tenant_id,
+        sip_call_id: call_id.to_string(),
+        from_uri: caller_uri.to_string(),
+        from_display_name: caller_display.map(|s| s.to_string()),
+        to_uri: format!("queue:{}", queue_name),
+        to_display_name: None,
+        start_time,
+        answer_time,
+        end_time: Some(now),
+        setup_duration_ms,
+        call_duration_ms,
+        total_duration_ms: Some(total_elapsed.as_millis() as u64),
+        disposition,
+        hangup_cause,
+        hangup_party: None,
+        sip_status_code: None,
+        sip_reason: None,
+        route_id: None,
+        gateway_id: None,
+        media_anchored: true,
+        codec_a_leg: Some(codec_name.to_string()),
+        codec_b_leg: agent_codec_name.map(|s| s.to_string()),
+        rtp_packets_sent: None,
+        rtp_packets_received: None,
+        rtp_bytes_sent: None,
+        rtp_bytes_received: None,
+        recording_url: recording_path.map(|s| s.to_string()),
+        cost: None,
+        currency: None,
+        custom_data: Some(custom_data),
+    };
+
+    if let Err(e) = storage.insert_cdr(cdr).await {
+        error!(call_id = %call_id, error = %e, "Failed to insert queue CDR");
+    }
 }

@@ -343,6 +343,7 @@ async fn main() -> Result<()> {
                 queue_port_pool,
                 Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
                 Arc::clone(&uac),
+                Arc::clone(&dyn_storage),
             );
             info!(
                 queues = config.queue.queues.len(),

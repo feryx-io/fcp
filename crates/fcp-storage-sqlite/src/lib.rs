@@ -31,7 +31,7 @@ use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        QueueStore, RegistrationStore, StoredAgent,
+        QueueStore, RegistrationStore, StoredAgent, StoredQueueSnapshot,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
@@ -195,6 +195,10 @@ impl SqliteStorage {
         // Migration 011: Queue agent persistence
         let migration_011 = include_str!("../migrations/011_add_queue_agents.sql");
         Self::execute_migration(pool, migration_011, "011").await?;
+
+        // Migration 012: Queue stats snapshots and missing agent columns
+        let migration_012 = include_str!("../migrations/012_queue_stats_and_agent_fields.sql");
+        Self::execute_migration(pool, migration_012, "012").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3325,10 +3329,11 @@ impl QueueStore for SqliteStorage {
         for agent in agents {
             let queues_json = serde_json::to_string(&agent.queues)?;
             let skills_json = serde_json::to_string(&agent.skills)?;
+            let priorities_json = serde_json::to_string(&agent.queue_priorities)?;
 
             sqlx::query(
-                "INSERT INTO queue_agents (tenant_id, agent_id, extension, queues, skills, priority, state)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO queue_agents (tenant_id, agent_id, extension, queues, skills, priority, state, queue_priorities, max_concurrent_calls)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&tid)
             .bind(&agent.id)
@@ -3337,6 +3342,8 @@ impl QueueStore for SqliteStorage {
             .bind(&skills_json)
             .bind(agent.priority as i64)
             .bind(&agent.state)
+            .bind(&priorities_json)
+            .bind(agent.max_concurrent_calls as i64)
             .execute(&self.pool)
             .await?;
         }
@@ -3346,7 +3353,7 @@ impl QueueStore for SqliteStorage {
 
     async fn load_agents(&self, tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
         let rows = sqlx::query(
-            "SELECT agent_id, extension, queues, skills, priority, state
+            "SELECT agent_id, extension, queues, skills, priority, state, queue_priorities, max_concurrent_calls
              FROM queue_agents WHERE tenant_id = ?",
         )
         .bind(tenant_id.to_string())
@@ -3361,9 +3368,13 @@ impl QueueStore for SqliteStorage {
             let skills_json: String = row.try_get("skills")?;
             let priority: i64 = row.try_get("priority")?;
             let state: String = row.try_get("state")?;
+            let priorities_json: String = row.try_get("queue_priorities")?;
+            let max_concurrent: i64 = row.try_get("max_concurrent_calls")?;
 
             let queues: Vec<String> = serde_json::from_str(&queues_json).unwrap_or_default();
             let skills: Vec<String> = serde_json::from_str(&skills_json).unwrap_or_default();
+            let queue_priorities: HashMap<String, u32> =
+                serde_json::from_str(&priorities_json).unwrap_or_default();
 
             agents.push(StoredAgent {
                 id,
@@ -3372,8 +3383,8 @@ impl QueueStore for SqliteStorage {
                 skills,
                 priority: priority as u32,
                 state,
-                queue_priorities: HashMap::new(),
-                max_concurrent_calls: 1,
+                queue_priorities,
+                max_concurrent_calls: max_concurrent as u32,
             });
         }
 
@@ -3395,6 +3406,91 @@ impl QueueStore for SqliteStorage {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn save_stats_snapshot(
+        &self,
+        tenant_id: &TenantId,
+        snapshot: StoredQueueSnapshot,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO queue_stats_snapshots (tenant_id, queue_name, timestamp_epoch, \
+             calls_waiting, agents_available, agents_on_call, agents_total, \
+             avg_wait_time_secs, longest_wait_secs, calls_handled_today, \
+             calls_abandoned_today, service_level_pct) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(tenant_id.to_string())
+        .bind(&snapshot.queue_name)
+        .bind(snapshot.timestamp_epoch as i64)
+        .bind(snapshot.calls_waiting as i64)
+        .bind(snapshot.agents_available as i64)
+        .bind(snapshot.agents_on_call as i64)
+        .bind(snapshot.agents_total as i64)
+        .bind(snapshot.avg_wait_time_secs)
+        .bind(snapshot.longest_wait_secs as i64)
+        .bind(snapshot.calls_handled_today as i64)
+        .bind(snapshot.calls_abandoned_today as i64)
+        .bind(snapshot.service_level_pct)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn query_stats_snapshots(
+        &self,
+        tenant_id: &TenantId,
+        queue_name: &str,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredQueueSnapshot>> {
+        let tid = tenant_id.to_string();
+
+        // Build query dynamically based on optional time range
+        let mut sql = String::from(
+            "SELECT queue_name, timestamp_epoch, calls_waiting, agents_available, \
+             agents_on_call, agents_total, avg_wait_time_secs, longest_wait_secs, \
+             calls_handled_today, calls_abandoned_today, service_level_pct \
+             FROM queue_stats_snapshots WHERE tenant_id = ? AND queue_name = ?",
+        );
+        if from_epoch.is_some() {
+            sql.push_str(" AND timestamp_epoch >= ?");
+        }
+        if to_epoch.is_some() {
+            sql.push_str(" AND timestamp_epoch <= ?");
+        }
+        sql.push_str(" ORDER BY timestamp_epoch ASC LIMIT ?");
+
+        let mut query = sqlx::query(&sql).bind(&tid).bind(queue_name);
+        if let Some(from) = from_epoch {
+            query = query.bind(from as i64);
+        }
+        if let Some(to) = to_epoch {
+            query = query.bind(to as i64);
+        }
+        query = query.bind(limit as i64);
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let mut snapshots = Vec::with_capacity(rows.len());
+        for row in rows {
+            snapshots.push(StoredQueueSnapshot {
+                queue_name: row.try_get("queue_name")?,
+                timestamp_epoch: row.try_get::<i64, _>("timestamp_epoch")? as u64,
+                calls_waiting: row.try_get::<i64, _>("calls_waiting")? as usize,
+                agents_available: row.try_get::<i64, _>("agents_available")? as usize,
+                agents_on_call: row.try_get::<i64, _>("agents_on_call")? as usize,
+                agents_total: row.try_get::<i64, _>("agents_total")? as usize,
+                avg_wait_time_secs: row.try_get("avg_wait_time_secs")?,
+                longest_wait_secs: row.try_get::<i64, _>("longest_wait_secs")? as u64,
+                calls_handled_today: row.try_get::<i64, _>("calls_handled_today")? as u64,
+                calls_abandoned_today: row.try_get::<i64, _>("calls_abandoned_today")? as u64,
+                service_level_pct: row.try_get("service_level_pct")?,
+            });
+        }
+
+        Ok(snapshots)
     }
 }
 
