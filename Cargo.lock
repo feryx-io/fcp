@@ -1612,7 +1612,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "axum",
@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "axum",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1712,7 +1712,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1754,7 +1754,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "axum",
@@ -1925,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "axum",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "clap",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "dashmap 6.1.0",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2179,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mongodb"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-mysql"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-sqlite"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.14.60"
+version = "0.14.61"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6031,7 +6031,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "sip-auth"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6045,13 +6045,15 @@ dependencies = [
  "sip-parse",
  "sip-ratelimit",
  "smol_str",
+ "subtle",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
 name = "sip-core"
-version = "0.6.26"
+version = "0.7.1"
 dependencies = [
  "bytes",
  "httpdate",
@@ -6063,7 +6065,7 @@ dependencies = [
 
 [[package]]
 name = "sip-dialog"
-version = "0.2.1"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6123,7 +6125,7 @@ dependencies = [
 
 [[package]]
 name = "sip-registrar"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6168,7 +6170,7 @@ dependencies = [
 
 [[package]]
 name = "sip-transaction"
-version = "0.4.1"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6186,7 +6188,7 @@ dependencies = [
 
 [[package]]
 name = "sip-transport"
-version = "0.2.1"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6203,7 +6205,7 @@ dependencies = [
 
 [[package]]
 name = "sip-uac"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8497,6 +8499,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
 
 [[package]]
 name = "zerotrie"
