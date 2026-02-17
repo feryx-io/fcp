@@ -65,8 +65,10 @@ struct QueueSession {
     ringing_agent: Option<String>,
     /// Handle for cancelling an in-progress agent ring task.
     ring_task_handle: Option<JoinHandle<()>>,
+    /// Sender to cancel an in-progress agent INVITE (sends SIP CANCEL).
+    ring_cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
     /// When this call was enqueued.
-    _enqueued_at: Instant,
+    enqueued_at: Instant,
 }
 
 /// State machine for a queue call.
@@ -78,6 +80,8 @@ enum QueueCallState {
     RingingAgent,
     /// Agent has answered, RTP bridge is active.
     Connected,
+    /// Call has been routed to the overflow destination (B2BUA bridged).
+    OverflowedToDestination,
 }
 
 /// Concrete handler for ACD/Queue calls.
@@ -408,6 +412,68 @@ impl QueueCallHandler {
                     continue;
                 }
 
+                // Check for callers who have exceeded max wait time
+                if let Some(config) = queue_manager.get_queue_config(&queue_name) {
+                    if config.max_wait_time_secs > 0 {
+                        let max_wait = Duration::from_secs(config.max_wait_time_secs as u64);
+                        let expired: Vec<String> = sessions
+                            .iter()
+                            .filter(|entry| {
+                                let s = entry.value();
+                                s.queue_name == queue_name
+                                    && s.state == QueueCallState::WaitingInQueue
+                                    && s.enqueued_at.elapsed() > max_wait
+                            })
+                            .map(|entry| entry.key().clone())
+                            .collect();
+
+                        for call_id in expired {
+                            if let Some(ref overflow_dest) = config.overflow_destination {
+                                info!(
+                                    call_id = %call_id,
+                                    queue = %queue_name,
+                                    dest = %overflow_dest,
+                                    "Max wait time exceeded, routing to overflow"
+                                );
+                                overflow_expired_call(
+                                    &call_id,
+                                    overflow_dest,
+                                    &queue_name,
+                                    &sessions,
+                                    &queue_manager,
+                                    &uac,
+                                    &port_pool,
+                                    &local_addr,
+                                    &local_uri,
+                                    &event_bus,
+                                )
+                                .await;
+                            } else {
+                                warn!(
+                                    call_id = %call_id,
+                                    queue = %queue_name,
+                                    "Max wait time exceeded, no overflow destination, sending BYE"
+                                );
+                                // Send BYE to caller and clean up
+                                if let Some((_, session)) = sessions.remove(&call_id) {
+                                    if let Some(moh) = session.moh_handle {
+                                        moh.abort();
+                                    }
+                                    let bye_uac = Arc::clone(&uac);
+                                    let bye_dialog = session.dialog.clone();
+                                    tokio::spawn(async move {
+                                        let _ = bye_uac.bye(&bye_dialog).await;
+                                    });
+                                    let pool = Arc::clone(&port_pool);
+                                    let pp = session.port_pair;
+                                    tokio::spawn(async move { pool.deallocate(pp).await });
+                                    queue_manager.dequeue_call(&call_id);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Collect call_ids that are WaitingInQueue for this queue
                 let waiting_call_ids: Vec<String> = sessions
                     .iter()
@@ -441,6 +507,9 @@ impl QueueCallHandler {
                         continue;
                     }
 
+                    // Create cancel channel for caller BYE during ring
+                    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
                     // Spawn the agent ring task
                     let ring_handle = Self::spawn_agent_ring(
                         call_id.clone(),
@@ -454,11 +523,13 @@ impl QueueCallHandler {
                         Arc::clone(&uac),
                         Arc::clone(&event_bus),
                         announce_config.clone(),
+                        cancel_rx,
                     );
 
-                    // Store ring task handle for cancellation on BYE/CANCEL
+                    // Store ring task handle and cancel sender for BYE/CANCEL
                     if let Some(mut session) = sessions.get_mut(&call_id) {
                         session.ring_task_handle = Some(ring_handle);
+                        session.ring_cancel_tx = Some(cancel_tx);
                     }
                 }
             }
@@ -478,6 +549,7 @@ impl QueueCallHandler {
         uac: Arc<SipUserAgentClient>,
         _event_bus: Arc<dyn EventPublisher>,
         announce_config: Option<AnnounceConfig>,
+        cancel_rx: tokio::sync::oneshot::Receiver<()>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let agent_id = plan.agent_id.clone();
@@ -525,8 +597,22 @@ impl QueueCallHandler {
                 }
             };
 
-            // 4. Wait for final response with timeout
-            let result = tokio::time::timeout(ring_timeout, call_handle.await_final()).await;
+            // 4. Wait for final response with timeout, or caller cancel
+            let result = tokio::select! {
+                r = tokio::time::timeout(ring_timeout, call_handle.await_final()) => r,
+                _ = cancel_rx => {
+                    // Caller hung up while agent was ringing — send SIP CANCEL
+                    info!(
+                        call_id = %call_id,
+                        agent = %agent_id,
+                        "Caller hung up, cancelling agent INVITE"
+                    );
+                    let _ = call_handle.cancel().await;
+                    port_pool.deallocate(agent_port_pair).await;
+                    queue_manager.agent_no_answer_for_cancel(&agent_id, &call_id).await;
+                    return;
+                }
+            };
 
             match result {
                 Ok(Ok(response)) if response.start_line().code() >= 200 && response.start_line().code() < 300 => {
@@ -668,7 +754,12 @@ impl QueueCallHandler {
                 moh.abort();
             }
 
-            // Abort ring task if running
+            // Send cancel signal to ring task (triggers SIP CANCEL to agent)
+            if let Some(cancel_tx) = session.ring_cancel_tx {
+                let _ = cancel_tx.send(());
+            }
+
+            // Abort ring task as fallback (in case select! hasn't started yet)
             if let Some(ring_task) = session.ring_task_handle {
                 ring_task.abort();
             }
@@ -704,7 +795,9 @@ impl QueueCallHandler {
             });
 
             // Notify QueueManager if still in queue
-            if session.state != QueueCallState::Connected {
+            if session.state != QueueCallState::Connected
+                && session.state != QueueCallState::OverflowedToDestination
+            {
                 let qm = self.queue_manager.clone();
                 let cid = call_id.to_string();
                 tokio::spawn(async move {
@@ -715,6 +808,138 @@ impl QueueCallHandler {
                 if let Some(ref agent_id) = session.ringing_agent {
                     self.queue_manager.agent_call_completed(agent_id);
                 }
+            }
+        }
+    }
+
+    /// Route a call to the overflow destination using B2BUA bridging.
+    /// Keeps the caller's A-leg alive and INVITEs the overflow target.
+    async fn overflow_call(
+        &self,
+        call_id: &str,
+        overflow_dest: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let (codec_name, caller_rtp, queue_name, tenant_id) = {
+            let session = self
+                .sessions
+                .get(call_id)
+                .context("Session not found for overflow")?;
+            (
+                session.codec_name.clone(),
+                Arc::clone(&session.rtp_socket),
+                session.queue_name.clone(),
+                session.tenant_id.clone(),
+            )
+        };
+
+        let dest_uri = parse_overflow_destination(overflow_dest, &extract_domain(&self.local_uri));
+
+        // Allocate B-leg RTP port pair
+        let b_port_pair = self
+            .port_pool
+            .allocate()
+            .await
+            .context("Failed to allocate RTP port for overflow leg")?;
+
+        // Build SDP offer for overflow target
+        let sdp_offer = build_sdp_offer(&self.local_addr, b_port_pair.rtp_port, &codec_name);
+
+        // INVITE the overflow destination
+        let call_handle = match self.uac.invite(&dest_uri, Some(&sdp_offer)).await {
+            Ok(h) => h,
+            Err(e) => {
+                self.port_pool.deallocate(b_port_pair).await;
+                return Err(anyhow::anyhow!("Failed to INVITE overflow dest: {}", e));
+            }
+        };
+
+        // Wait for final response (with a generous timeout)
+        let result = tokio::time::timeout(Duration::from_secs(30), call_handle.await_final()).await;
+
+        match result {
+            Ok(Ok(response))
+                if response.start_line().code() >= 200 && response.start_line().code() < 300 =>
+            {
+                // Overflow target answered
+                info!(
+                    call_id = %call_id,
+                    dest = %dest_uri,
+                    reason = %reason,
+                    "Overflow destination answered"
+                );
+
+                let agent_body = response.body();
+                let agent_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
+
+                // Create B-leg RTP socket
+                let b_rtp_socket =
+                    match RtpSocketPair::new(b_port_pair, RtpSocketConfig::default()).await {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => {
+                            self.port_pool.deallocate(b_port_pair).await;
+                            return Err(anyhow::anyhow!(
+                                "Failed to create overflow RTP socket: {}",
+                                e
+                            ));
+                        }
+                    };
+
+                // Set remote RTP endpoint
+                if let Some(remote_addr) = Self::parse_remote_rtp_addr(agent_sdp) {
+                    b_rtp_socket
+                        .set_remote_endpoint(RemoteEndpoint {
+                            rtp_addr: remote_addr,
+                            rtcp_addr: None,
+                        })
+                        .await;
+                }
+
+                let overflow_dialog = call_handle.dialog.read().await.clone();
+
+                // Start RTP bridge and update session
+                if let Some(mut session) = self.sessions.get_mut(call_id) {
+                    // Stop MOH if running
+                    if let Some(moh) = session.moh_handle.take() {
+                        moh.abort();
+                    }
+
+                    let (bridge_a_to_b, bridge_b_to_a) =
+                        spawn_rtp_bridge(Arc::clone(&caller_rtp), Arc::clone(&b_rtp_socket));
+
+                    session.state = QueueCallState::OverflowedToDestination;
+                    session.agent_port_pair = Some(b_port_pair);
+                    session.agent_rtp_socket = Some(b_rtp_socket);
+                    session.agent_dialog = Some(overflow_dialog);
+                    session.bridge_a_to_b = Some(bridge_a_to_b);
+                    session.bridge_b_to_a = Some(bridge_b_to_a);
+                    session.ringing_agent = None;
+                    session.ring_task_handle = None;
+                }
+
+                // Dequeue from QueueManager
+                self.queue_manager.dequeue_call(call_id);
+
+                // Publish overflow event
+                fcp_queue::events::caller_overflowed(
+                    &Some(Arc::clone(&self.event_bus)),
+                    &queue_name,
+                    call_id,
+                    overflow_dest,
+                    reason,
+                    &tenant_id,
+                )
+                .await;
+
+                Ok(())
+            }
+            _ => {
+                // Overflow target rejected or timed out
+                self.port_pool.deallocate(b_port_pair).await;
+                Err(anyhow::anyhow!(
+                    "Overflow destination {} did not answer",
+                    dest_uri
+                ))
             }
         }
     }
@@ -884,20 +1109,75 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 );
             }
             Err(e) => {
-                warn!(
-                    call_id = %call_id,
-                    queue = %queue_name,
-                    error = %e,
-                    "Failed to enqueue call (queue full?), sending BYE"
-                );
-                moh_handle.abort();
-                let uac = Arc::clone(&self.uac);
-                let bye_dialog = dialog.clone();
-                tokio::spawn(async move {
-                    let _ = uac.bye(&bye_dialog).await;
-                });
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                // Queue full — try overflow destination before disconnecting
+                let overflow_dest = self
+                    .queue_manager
+                    .get_queue_config(&queue_name)
+                    .and_then(|c| c.overflow_destination.clone());
+
+                if let Some(ref dest) = overflow_dest {
+                    info!(
+                        call_id = %call_id,
+                        queue = %queue_name,
+                        dest = %dest,
+                        "Queue full, routing to overflow destination"
+                    );
+
+                    // Store session so overflow_call can access it
+                    self.sessions.insert(
+                        call_id.clone(),
+                        QueueSession {
+                            call_id: call_id.clone(),
+                            queue_name: queue_name.clone(),
+                            tenant_id,
+                            caller_uri,
+                            caller_display,
+                            port_pair,
+                            rtp_socket,
+                            codec_name,
+                            payload_type,
+                            _frame_size: frame_size,
+                            dialog,
+                            moh_handle: Some(moh_handle),
+                            agent_port_pair: None,
+                            agent_rtp_socket: None,
+                            agent_dialog: None,
+                            bridge_a_to_b: None,
+                            bridge_b_to_a: None,
+                            state: QueueCallState::WaitingInQueue,
+                            ringing_agent: None,
+                            ring_task_handle: None,
+                            ring_cancel_tx: None,
+                            enqueued_at: Instant::now(),
+                        },
+                    );
+
+                    if let Err(overflow_err) =
+                        self.overflow_call(&call_id, dest, "queue_full").await
+                    {
+                        warn!(
+                            call_id = %call_id,
+                            error = %overflow_err,
+                            "Overflow routing failed, sending BYE"
+                        );
+                        self.remove_session(&call_id);
+                    }
+                } else {
+                    warn!(
+                        call_id = %call_id,
+                        queue = %queue_name,
+                        error = %e,
+                        "Queue full, no overflow destination, sending BYE"
+                    );
+                    moh_handle.abort();
+                    let uac = Arc::clone(&self.uac);
+                    let bye_dialog = dialog.clone();
+                    tokio::spawn(async move {
+                        let _ = uac.bye(&bye_dialog).await;
+                    });
+                    let pool = Arc::clone(&self.port_pool);
+                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                }
                 return Ok(());
             }
         }
@@ -926,7 +1206,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 state: QueueCallState::WaitingInQueue,
                 ringing_agent: None,
                 ring_task_handle: None,
-                _enqueued_at: Instant::now(),
+                ring_cancel_tx: None,
+                enqueued_at: Instant::now(),
             },
         );
 
@@ -1072,6 +1353,202 @@ fn build_sdp_offer(local_addr: &str, rtp_port: u16, codec_name: &str) -> String 
          a=sendrecv\r\n\
          a=ptime:20\r\n",
     )
+}
+
+/// Parse overflow destination string into a SIP URI.
+/// Supports formats:
+/// - "sip:user@host" — used as-is
+/// - "extension:NNNN" — routed as sip:NNNN@local_domain
+/// - bare digits "NNNN" — treated as extension
+fn parse_overflow_destination(dest: &str, local_domain: &str) -> String {
+    if dest.starts_with("sip:") || dest.starts_with("sips:") {
+        dest.to_string()
+    } else {
+        let ext = dest.strip_prefix("extension:").unwrap_or(dest);
+        // Also strip voicemail: prefix etc., treat as extension
+        let ext = ext
+            .strip_prefix("voicemail:")
+            .unwrap_or(ext);
+        format!("sip:{}@{}", ext, local_domain)
+    }
+}
+
+/// Route an expired call to the overflow destination from a spawned distribution loop.
+/// This is a standalone async function because the distribution loop doesn't have `&self`.
+async fn overflow_expired_call(
+    call_id: &str,
+    overflow_dest: &str,
+    queue_name: &str,
+    sessions: &Arc<DashMap<String, QueueSession>>,
+    queue_manager: &Arc<QueueManager>,
+    uac: &Arc<SipUserAgentClient>,
+    port_pool: &Arc<PortPool>,
+    local_addr: &str,
+    local_uri: &str,
+    event_bus: &Arc<dyn EventPublisher>,
+) {
+    let (codec_name, caller_rtp, tenant_id) = {
+        let session = match sessions.get(call_id) {
+            Some(s) => s,
+            None => return,
+        };
+        (
+            session.codec_name.clone(),
+            Arc::clone(&session.rtp_socket),
+            session.tenant_id.clone(),
+        )
+    };
+
+    let domain = extract_domain(local_uri);
+    let dest_uri = parse_overflow_destination(overflow_dest, &domain);
+
+    // Allocate B-leg RTP port pair
+    let b_port_pair = match port_pool.allocate().await {
+        Ok(pp) => pp,
+        Err(e) => {
+            warn!(call_id = %call_id, error = %e, "Failed to allocate overflow RTP port");
+            // Fall back to BYE
+            if let Some((_, session)) = sessions.remove(call_id) {
+                if let Some(moh) = session.moh_handle {
+                    moh.abort();
+                }
+                let bye_uac = Arc::clone(uac);
+                let bye_dialog = session.dialog.clone();
+                tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+                let pool = Arc::clone(port_pool);
+                let pp = session.port_pair;
+                tokio::spawn(async move { pool.deallocate(pp).await; });
+            }
+            queue_manager.dequeue_call(call_id);
+            return;
+        }
+    };
+
+    let sdp_offer = build_sdp_offer(local_addr, b_port_pair.rtp_port, &codec_name);
+
+    // INVITE the overflow destination
+    let call_handle = match uac.invite(&dest_uri, Some(&sdp_offer)).await {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(call_id = %call_id, error = %e, "Failed to INVITE overflow dest");
+            port_pool.deallocate(b_port_pair).await;
+            // Fall back to BYE
+            if let Some((_, session)) = sessions.remove(call_id) {
+                if let Some(moh) = session.moh_handle {
+                    moh.abort();
+                }
+                let bye_uac = Arc::clone(uac);
+                let bye_dialog = session.dialog.clone();
+                tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+                let pool = Arc::clone(port_pool);
+                let pp = session.port_pair;
+                tokio::spawn(async move { pool.deallocate(pp).await; });
+            }
+            queue_manager.dequeue_call(call_id);
+            return;
+        }
+    };
+
+    let result = tokio::time::timeout(Duration::from_secs(30), call_handle.await_final()).await;
+
+    match result {
+        Ok(Ok(response))
+            if response.start_line().code() >= 200 && response.start_line().code() < 300 =>
+        {
+            info!(
+                call_id = %call_id,
+                dest = %dest_uri,
+                "Overflow destination answered (max wait time)"
+            );
+
+            let agent_body = response.body();
+            let agent_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
+
+            let b_rtp_socket =
+                match RtpSocketPair::new(b_port_pair, RtpSocketConfig::default()).await {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => {
+                        warn!(call_id = %call_id, error = %e, "Failed to create overflow RTP socket");
+                        port_pool.deallocate(b_port_pair).await;
+                        if let Some((_, session)) = sessions.remove(call_id) {
+                            if let Some(moh) = session.moh_handle {
+                                moh.abort();
+                            }
+                            let bye_uac = Arc::clone(uac);
+                            let bye_dialog = session.dialog.clone();
+                            tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+                            let pool = Arc::clone(port_pool);
+                            let pp = session.port_pair;
+                            tokio::spawn(async move { pool.deallocate(pp).await; });
+                        }
+                        queue_manager.dequeue_call(call_id);
+                        return;
+                    }
+                };
+
+            if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(agent_sdp) {
+                b_rtp_socket
+                    .set_remote_endpoint(RemoteEndpoint {
+                        rtp_addr: remote_addr,
+                        rtcp_addr: None,
+                    })
+                    .await;
+            }
+
+            let overflow_dialog = call_handle.dialog.read().await.clone();
+
+            if let Some(mut session) = sessions.get_mut(call_id) {
+                if let Some(moh) = session.moh_handle.take() {
+                    moh.abort();
+                }
+
+                let (bridge_a_to_b, bridge_b_to_a) =
+                    spawn_rtp_bridge(Arc::clone(&caller_rtp), Arc::clone(&b_rtp_socket));
+
+                session.state = QueueCallState::OverflowedToDestination;
+                session.agent_port_pair = Some(b_port_pair);
+                session.agent_rtp_socket = Some(b_rtp_socket);
+                session.agent_dialog = Some(overflow_dialog);
+                session.bridge_a_to_b = Some(bridge_a_to_b);
+                session.bridge_b_to_a = Some(bridge_b_to_a);
+                session.ringing_agent = None;
+                session.ring_task_handle = None;
+            }
+
+            queue_manager.dequeue_call(call_id);
+
+            fcp_queue::events::caller_overflowed(
+                &Some(Arc::clone(event_bus)),
+                queue_name,
+                call_id,
+                overflow_dest,
+                "max_wait_time",
+                &tenant_id,
+            )
+            .await;
+        }
+        _ => {
+            // Overflow target rejected or timed out — BYE the caller
+            warn!(
+                call_id = %call_id,
+                dest = %dest_uri,
+                "Overflow dest did not answer, sending BYE"
+            );
+            port_pool.deallocate(b_port_pair).await;
+            if let Some((_, session)) = sessions.remove(call_id) {
+                if let Some(moh) = session.moh_handle {
+                    moh.abort();
+                }
+                let bye_uac = Arc::clone(uac);
+                let bye_dialog = session.dialog.clone();
+                tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+                let pool = Arc::clone(port_pool);
+                let pp = session.port_pair;
+                tokio::spawn(async move { pool.deallocate(pp).await; });
+            }
+            queue_manager.dequeue_call(call_id);
+        }
+    }
 }
 
 /// Extract domain part from a SIP URI string.

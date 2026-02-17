@@ -448,6 +448,17 @@ impl QueueManager {
         }
     }
 
+    /// Agent's ring was cancelled because the caller hung up.
+    /// Marks agent available again and removes the call from the queue.
+    pub async fn agent_no_answer_for_cancel(&self, agent_id: &str, call_id: &str) {
+        if let Some(mut agent) = self.agents.get_mut(agent_id) {
+            agent.state = AgentState::Available;
+            agent.state_changed_at = Instant::now();
+        }
+        // Remove call from queue if still there
+        self.dequeue_call(call_id);
+    }
+
     /// Agent didn't answer — return call to queue or overflow.
     pub async fn agent_no_answer(&self, agent_id: &str, call_id: &str) {
         // Make agent available again
