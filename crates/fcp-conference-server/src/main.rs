@@ -468,7 +468,13 @@ async fn main() -> Result<()> {
                             continue;
                         }
                         // File exceeds limit — find the room by filename prefix and stop recording
-                        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        let filename = match path.file_stem().and_then(|s| s.to_str()) {
+                            Some(f) => f,
+                            None => {
+                                warn!(path = %path.display(), "Skipping recording with invalid filename");
+                                continue;
+                            }
+                        };
                         // Filename format: {room}-{timestamp}-{uuid_simple} — extract room by
                         // stripping the last two segments (uuid is 32 hex chars, timestamp is digits).
                         // Parse from right to handle dashed room names (e.g. "conf-room-1-1707000-abc123def").
@@ -485,7 +491,9 @@ async fn main() -> Result<()> {
                                     max_mb = max_bytes / (1024 * 1024),
                                     "Recording size limit reached, stopping"
                                 );
-                                let _ = room.stop_recording();
+                                if let Err(e) = room.stop_recording() {
+                                    warn!(room = %room_id, error = %e, "Failed to stop recording on size limit");
+                                }
                                 let event = fcp_events::PlatformEvent::Conference(
                                     fcp_events::ConferenceEvent::RecordingStopped {
                                         room_number: room_id.to_string(),
@@ -803,6 +811,11 @@ async fn run_recording_cleanup(recordings_dir: String, retention_days: u32, clea
                 continue;
             }
             if let Ok(meta) = entry.metadata() {
+                // Skip non-regular files (symlinks, directories) to avoid following
+                // symlinks that point outside the recordings directory
+                if !meta.is_file() {
+                    continue;
+                }
                 let age = meta
                     .modified()
                     .ok()

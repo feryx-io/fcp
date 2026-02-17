@@ -326,6 +326,11 @@ impl ConferenceCallHandler {
             .collect()
     }
 
+    /// Get the number of active RFC 4575 conference event subscriptions.
+    pub fn subscription_count(&self) -> usize {
+        self.conference_subscriptions.len()
+    }
+
     /// Get participant list for a specific room.
     pub fn room_participants(&self, room_number: &str) -> Option<Vec<String>> {
         self.bridge
@@ -929,9 +934,11 @@ impl ConferenceCallHandler {
 
         // Periodic cleanup: evict entries older than 60s (every ~100 INVITEs)
         // Also cap map size at 10,000 entries to bound memory
-        if self.invite_rate.len() > 100 && now.duration_since(
-            self.invite_rate.iter().next().map(|e| e.value().1).unwrap_or(now)
-        ) > Duration::from_secs(10) {
+        let should_evict = self.invite_rate.len() > 100
+            && self.invite_rate.iter().next()
+                .and_then(|e| now.checked_duration_since(e.value().1))
+                .map_or(false, |elapsed| elapsed > Duration::from_secs(10));
+        if should_evict {
             self.invite_rate.retain(|_, (_, window_start)| {
                 now.duration_since(*window_start) < Duration::from_secs(60)
             });
@@ -2161,10 +2168,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_srtp = session.srtp_context.clone();
                 let new_handle = tokio::spawn(async move {
                     // Wait for old bridge to actually stop (with timeout) before starting new one
-                    let _ = tokio::time::timeout(
-                        Duration::from_millis(500),
-                        old_handle,
-                    ).await;
+                    match tokio::time::timeout(Duration::from_millis(500), old_handle).await {
+                        Ok(_) => {}
+                        Err(_) => warn!("Old audio bridge did not stop within 500ms on re-INVITE"),
+                    }
 
                     audio_bridge::run_audio_bridge(
                         bridge_room,
@@ -2503,6 +2510,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             })
             .unwrap_or_else(|| self.parse_local_sip_uri());
 
+        // Prune expired subscriptions and cap total to prevent unbounded growth
+        const MAX_SUBSCRIPTIONS: usize = 10_000;
+        if self.conference_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+            let now = Instant::now();
+            self.conference_subscriptions.retain(|_, sub| sub.expires_at > now);
+            if self.conference_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+                warn!(
+                    count = self.conference_subscriptions.len(),
+                    "Subscription limit reached, rejecting new subscription"
+                );
+                let response = UserAgentServer::create_response(request, 503, "Service Unavailable");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        }
+
         // Create/refresh subscription
         self.conference_subscriptions.insert(call_id.clone(), ConferenceSubscription {
             room_number: room_number.clone(),
@@ -2610,15 +2633,38 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     }
 }
 
+/// XML-escape a string for safe embedding in XML attributes and text nodes.
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Build a minimal RFC 4575 conference-info XML document for a room.
 fn build_conference_state_xml(room_number: &str, room: &forge_conference::ConferenceRoom) -> String {
     let participants = room.participants();
+    let safe_room = xml_escape(room_number);
     let mut users_xml = String::new();
-    for pid in &participants {
+    // Cap XML output to prevent excessive memory usage with very large rooms
+    let max_users_in_xml: usize = 1000;
+    for pid in participants.iter().take(max_users_in_xml) {
+        let safe_pid = xml_escape(pid);
         users_xml.push_str(&format!(
             "    <user entity=\"sip:{}@conference\">\n      <display-text>{}</display-text>\n      <endpoint entity=\"sip:{}@conference\">\n        <status>connected</status>\n      </endpoint>\n    </user>\n",
-            pid, pid, pid,
+            safe_pid, safe_pid, safe_pid,
         ));
+    }
+    if participants.len() > max_users_in_xml {
+        users_xml.push_str("    <!-- additional participants truncated -->\n");
     }
 
     format!(
@@ -2630,7 +2676,7 @@ fn build_conference_state_xml(room_number: &str, room: &forge_conference::Confer
            <users count=\"{}\">\n{}\
            </users>\n\
          </conference-info>\n",
-        room_number, room_number, participants.len(), users_xml,
+        safe_room, safe_room, participants.len(), users_xml,
     )
 }
 
