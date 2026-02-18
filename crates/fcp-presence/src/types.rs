@@ -64,6 +64,10 @@ pub struct Watcher {
     pub expires_at: Instant,
     /// Tenant context
     pub tenant_id: TenantId,
+    /// SIP Contact URI where NOTIFY should be sent
+    pub contact_uri: String,
+    /// Event package: "presence" (RFC 3856) or "dialog" (RFC 4235 BLF)
+    pub event_package: String,
 }
 
 /// Update request for presence state.

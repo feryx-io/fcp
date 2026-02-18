@@ -17,6 +17,7 @@
 //! the binary crate (`fcp-call-manager` or `fcp-pbx`).
 
 pub mod config;
+pub mod dialog_info;
 pub mod events;
 pub mod manager;
 pub mod pidf;

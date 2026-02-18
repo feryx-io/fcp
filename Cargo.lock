@@ -1756,6 +1756,7 @@ dependencies = [
  "sip-transport",
  "sip-uac",
  "sip-uas",
+ "smol_str",
  "socket2 0.5.10",
  "tokio",
  "toml",

@@ -168,6 +168,7 @@ async fn main() -> Result<()> {
         None,                    // pbx_handler
         None,                    // conference_handler
         None,                    // queue_handler
+        None,                    // presence_handler
     )?);
 
     let api_config = fcp_core::ApiConfig {

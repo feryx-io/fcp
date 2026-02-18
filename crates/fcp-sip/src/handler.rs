@@ -333,6 +333,9 @@ pub struct SipMessageHandler {
     /// Optional PBX handler for hunt groups, parking, pickup, intercom, CMC/FAC.
     pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
 
+    /// Optional presence handler for SUBSCRIBE/PUBLISH/NOTIFY (RFC 3856/3903/4235).
+    presence_handler: Option<Arc<dyn crate::presence::PresenceHandler>>,
+
     /// Flow registry for RFC 5626 TLS connection reuse.
     /// Maps flow tokens to connection writers for NAT'd clients.
     flow_registry: Arc<crate::flow::FlowRegistry>,
@@ -460,6 +463,7 @@ impl SipMessageHandler {
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
         conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
         queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
+        presence_handler: Option<Arc<dyn crate::presence::PresenceHandler>>,
     ) -> anyhow::Result<Self> {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -483,6 +487,7 @@ impl SipMessageHandler {
             pbx_handler,
             conference_handler,
             queue_handler,
+            presence_handler,
         )
     }
 
@@ -507,6 +512,7 @@ impl SipMessageHandler {
         pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
         conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
         queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
+        presence_handler: Option<Arc<dyn crate::presence::PresenceHandler>>,
     ) -> anyhow::Result<Self> {
         // Validate settings early to catch configuration errors at startup
         settings.validate().map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
@@ -642,6 +648,7 @@ impl SipMessageHandler {
             queue_handler,
             outbound_route_provider,
             pbx_handler,
+            presence_handler,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
         };
 
@@ -817,7 +824,13 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
             }
             Method::Subscribe => {
-                // Check conference handler first (RFC 4575 conference event package)
+                // Check presence handler first (RFC 3856 presence, RFC 4235 dialog/BLF)
+                if let Some(ref pres) = self.presence_handler {
+                    if let Ok(()) = pres.handle_subscribe(request, handle).await {
+                        return Ok(());
+                    }
+                }
+                // Check conference handler (RFC 4575 conference event package)
                 if let Some(ref conf) = self.conference_handler {
                     if let Ok(()) = conf.handle_subscribe(request, handle).await {
                         return Ok(());
@@ -828,6 +841,17 @@ impl SipMessageHandler {
             }
             Method::Notify => {
                 let response = self.handle_notify(request).await?;
+                handle.send_final(response).await;
+            }
+            Method::Publish => {
+                // RFC 3903 — presence PUBLISH
+                if let Some(ref pres) = self.presence_handler {
+                    if let Ok(()) = pres.handle_publish(request, handle).await {
+                        return Ok(());
+                    }
+                }
+                // No handler claimed it — 501
+                let response = self.create_simple_response(request, 501, "Not Implemented");
                 handle.send_final(response).await;
             }
             Method::Options => {
@@ -9477,6 +9501,7 @@ mod tests {
             None, // No PBX handler
             None, // No conference handler
             None, // No queue handler
+            None, // presence_handler
         ).unwrap();
 
         // Create a REGISTER request
@@ -9545,6 +9570,7 @@ mod tests {
             None, // No PBX handler
             None, // No conference handler
             None, // No queue handler
+            None, // presence_handler
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9613,6 +9639,7 @@ mod tests {
             None, // No PBX handler
             None, // No conference handler
             None, // No queue handler
+            None, // presence_handler
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9784,6 +9811,7 @@ mod tests {
             None, // No PBX handler
             None, // No conference handler
             None, // No queue handler
+            None, // presence_handler
         ).unwrap();
 
         // Create a REGISTER request

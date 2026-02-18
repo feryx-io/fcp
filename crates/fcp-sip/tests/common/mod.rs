@@ -192,6 +192,7 @@ impl TestHarnessBuilder {
             pbx_handler,               // pbx_handler
             None,                      // conference_handler
             None,                      // queue_handler
+            None,                      // presence_handler
         ).expect("Failed to create SipMessageHandler");
 
         TestHarness {

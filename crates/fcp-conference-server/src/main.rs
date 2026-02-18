@@ -310,6 +310,7 @@ async fn main() -> Result<()> {
         None, // No PBX handler
         Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
         None, // No queue handler
+        None, // presence_handler
     )?);
 
     // 19. Create and start TransportListener

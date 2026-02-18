@@ -11,6 +11,7 @@ use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 
 use crate::config::PresenceConfig;
+use crate::dialog_info;
 use crate::events;
 use crate::pidf;
 use crate::types::{PresenceInfo, PresenceState, PresenceUpdate, Watcher};
@@ -175,6 +176,20 @@ impl PresenceManager {
             .unwrap_or_default()
     }
 
+    /// Get watchers for a presentity filtered by event package.
+    pub fn get_watchers_by_event(&self, presentity_aor: &str, event_package: &str) -> Vec<Watcher> {
+        self.watchers
+            .get(presentity_aor)
+            .map(|entry| {
+                entry
+                    .iter()
+                    .filter(|w| w.event_package == event_package)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Remove expired watcher subscriptions. Returns the number removed.
     pub fn cleanup_expired_watchers(&self) -> usize {
         let now = Instant::now();
@@ -225,6 +240,16 @@ impl PresenceManager {
     /// Parse PIDF XML from a PUBLISH body.
     pub fn parse_pidf(&self, xml: &str) -> Result<PresenceUpdate> {
         pidf::parse_pidf(xml)
+    }
+
+    /// Generate dialog-info XML for BLF notifications (RFC 4235).
+    pub fn generate_dialog_info(&self, aor: &str) -> String {
+        let state = self
+            .presentities
+            .get(aor)
+            .map(|p| p.state)
+            .unwrap_or(PresenceState::Closed);
+        dialog_info::generate_dialog_info(aor, &state, None)
     }
 
     /// Auto-set OnThePhone state when a call starts.
@@ -380,6 +405,8 @@ mod tests {
             subscription_id: "sub-1".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
             tenant_id: tenant.clone(),
+            contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
+            event_package: "presence".to_string(),
         };
 
         mgr.add_watcher(watcher).await.unwrap();
@@ -401,6 +428,8 @@ mod tests {
             subscription_id: "sub-1".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
             tenant_id: tenant.clone(),
+            contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
+            event_package: "presence".to_string(),
         };
 
         mgr.add_watcher(watcher).await.unwrap();
@@ -426,6 +455,8 @@ mod tests {
                 subscription_id: format!("sub-{i}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
                 tenant_id: tenant.clone(),
+                contact_uri: format!("sip:user{i}@192.168.1.100:5060"),
+                event_package: "presence".to_string(),
             };
             mgr.add_watcher(watcher).await.unwrap();
         }
@@ -437,6 +468,8 @@ mod tests {
             subscription_id: "sub-2".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
             tenant_id: tenant.clone(),
+            contact_uri: "sip:user2@192.168.1.100:5060".to_string(),
+            event_package: "presence".to_string(),
         };
         let result = mgr.add_watcher(watcher).await;
         assert!(result.is_err());
@@ -454,6 +487,8 @@ mod tests {
             subscription_id: "sub-expired".to_string(),
             expires_at: Instant::now() - Duration::from_secs(1),
             tenant_id: tenant.clone(),
+            contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
+            event_package: "presence".to_string(),
         };
         mgr.add_watcher(watcher).await.unwrap();
 
@@ -464,6 +499,8 @@ mod tests {
             subscription_id: "sub-valid".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
             tenant_id: tenant.clone(),
+            contact_uri: "sip:charlie@192.168.1.101:5060".to_string(),
+            event_package: "presence".to_string(),
         };
         mgr.add_watcher(watcher2).await.unwrap();
 
@@ -488,6 +525,8 @@ mod tests {
             subscription_id: "sub-1".to_string(),
             expires_at: original_expires,
             tenant_id: tenant.clone(),
+            contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
+            event_package: "presence".to_string(),
         };
         mgr.add_watcher(watcher).await.unwrap();
 
@@ -557,6 +596,8 @@ mod tests {
                 subscription_id: format!("sub-{i}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
                 tenant_id: tenant.clone(),
+                contact_uri: format!("sip:watcher{i}@192.168.1.100:5060"),
+                event_package: "presence".to_string(),
             };
             mgr.add_watcher(watcher).await.unwrap();
         }

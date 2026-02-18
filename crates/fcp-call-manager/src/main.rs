@@ -29,6 +29,7 @@ use tracing::{info, warn};
 mod cli;
 mod config;
 mod health;
+mod presence_handler;
 mod queue_audio;
 mod queue_handler;
 mod storage;
@@ -376,6 +377,21 @@ async fn main() -> Result<()> {
         None
     };
 
+    // 17c. Create SIP presence handler (if enabled)
+    let presence_handler: Option<Arc<dyn fcp_sip::presence::PresenceHandler>> =
+        if let Some(ref pm) = presence_manager {
+            let pres_tenant = fcp_core::TenantId::nil();
+            let handler = presence_handler::SipPresenceHandler::new(
+                pm.clone(),
+                Arc::clone(&uac),
+                pres_tenant,
+                config.presence.default_subscription_expiry_secs,
+            );
+            Some(Arc::new(handler) as Arc<dyn fcp_sip::presence::PresenceHandler>)
+        } else {
+            None
+        };
+
     let handler = Arc::new(SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
@@ -403,6 +419,7 @@ async fn main() -> Result<()> {
         pbx_handler.clone(),
         None, // No conference handler
         queue_handler,
+        presence_handler.clone(),
     )?);
 
     // 16. Create and start TransportListener
@@ -637,6 +654,16 @@ async fn main() -> Result<()> {
                 }
             }
         });
+
+        // Spawn presence NOTIFY dispatcher — sends NOTIFY to watchers on state changes
+        if let Some(ref ph) = presence_handler {
+            let ph_clone = Arc::clone(ph);
+            let event_bus_notify = Arc::clone(&event_bus);
+            tokio::spawn(async move {
+                run_presence_notifier(event_bus_notify, ph_clone).await;
+            });
+            info!("Presence NOTIFY dispatcher started");
+        }
     }
 
     // 22. Publish SystemEvent::Started to announce this node
@@ -1341,6 +1368,52 @@ async fn run_presence_listener(
                     }
                     Err(e) => {
                         warn!(%e, "Failed to resubscribe presence event listener");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Subscribe to presence StatusChanged events and send NOTIFY to all watchers.
+async fn run_presence_notifier(
+    event_bus: Arc<InMemoryEventBus>,
+    presence_handler: Arc<dyn fcp_sip::presence::PresenceHandler>,
+) {
+    use fcp_events::PlatformEvent;
+
+    let filter = EventFilter::new().types(vec![EventType::Presence]);
+
+    let mut stream = match event_bus.subscribe(filter.clone()).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(%e, "Failed to subscribe to event bus for presence NOTIFY");
+            return;
+        }
+    };
+
+    tracing::info!("Presence NOTIFY dispatcher running");
+
+    loop {
+        match stream.next().await {
+            Some(event) => {
+                if let PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { aor, .. }) = &event {
+                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                        warn!(aor = %aor, error = %e, "Failed to notify watchers");
+                    }
+                }
+            }
+            None => {
+                warn!("Presence NOTIFY stream ended, resubscribing...");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match event_bus.subscribe(filter.clone()).await {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        info!("Presence NOTIFY dispatcher resubscribed");
+                    }
+                    Err(e) => {
+                        warn!(%e, "Failed to resubscribe presence NOTIFY dispatcher");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }

@@ -274,6 +274,7 @@ async fn main() -> Result<()> {
         None, // No PBX handler
         None, // No conference handler
         None, // No queue handler
+        None, // presence_handler
     )?);
 
     // 19. Create and start TransportListener

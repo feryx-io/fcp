@@ -86,6 +86,7 @@ async-trait = "0.1"
 bytes = { workspace = true }
 dashmap = "6"
 parking_lot = "0.12"
+smol_str = "0.3"
 socket2 = "0.5"
 uuid = { workspace = true }
 

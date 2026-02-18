@@ -411,6 +411,7 @@ async fn main() -> Result<()> {
         None, // No PBX handler
         None, // No conference handler
         None, // No queue handler
+        None, // presence_handler
     )?);
 
     // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared
