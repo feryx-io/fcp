@@ -1335,37 +1335,62 @@ async fn run_presence_listener(
         match stream.next().await {
             Some(event) => {
                 match &event {
-                    // Call answered → set OnThePhone for both parties
+                    // Call answered → update dialog state to Confirmed
                     PlatformEvent::Call(fcp_events::CallEvent::Answered { call_id, .. }) => {
-                        // Look up the call to get caller/callee AORs
-                        // The call_id in the event is fcp_core::CallId; we need to find who's on the call.
-                        // Since we don't have direct access to CallManager here, we use the
-                        // Initiated event tracking approach instead — handled below via Ringing.
-                        tracing::debug!(%call_id, "Call answered — presence updated via ringing tracking");
+                        let call_id_str = call_id.to_string();
+                        // Update all tracked dialogs for this call to Confirmed
+                        for entry in presence.get_all_presences() {
+                            presence.update_call_state(
+                                &entry.aor,
+                                &call_id_str,
+                                fcp_presence::DialogState::Confirmed,
+                            );
+                        }
+                        tracing::debug!(%call_id, "Call answered — dialog state updated to Confirmed");
                     }
 
-                    // Call initiated (inbound) → set Ringing for callee
-                    PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, .. }) => {
+                    // Call initiated (inbound) → set Ringing for callee, track active call
+                    PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, call_id, .. }) => {
+                        let call_id_str = call_id.to_string();
+
                         if let Some(callee_aor) = extract_aor(to) {
                             let update = fcp_presence::PresenceUpdate {
-                                aor: callee_aor,
+                                aor: callee_aor.clone(),
                                 state: fcp_presence::PresenceState::Ringing,
                                 note: Some("Ringing".to_string()),
                             };
                             let _ = presence.update_presence(update, &tenant_id).await;
+
+                            // Track active call for callee (Recipient, Early state)
+                            let caller_uri = from.clone();
+                            presence.add_active_call(&callee_aor, fcp_presence::ActiveCallInfo {
+                                call_id: call_id_str.clone(),
+                                remote_uri: caller_uri,
+                                remote_display_name: None,
+                                direction: fcp_presence::CallDirection::Recipient,
+                                dialog_state: fcp_presence::DialogState::Early,
+                            });
                         }
                         if let Some(caller_aor) = extract_aor(from) {
                             presence.set_on_the_phone(&caller_aor, &tenant_id).await;
+
+                            // Track active call for caller (Initiator, Confirmed state)
+                            let callee_uri = to.clone();
+                            presence.add_active_call(&caller_aor, fcp_presence::ActiveCallInfo {
+                                call_id: call_id_str,
+                                remote_uri: callee_uri,
+                                remote_display_name: None,
+                                direction: fcp_presence::CallDirection::Initiator,
+                                dialog_state: fcp_presence::DialogState::Confirmed,
+                            });
                         }
                     }
 
-                    // Call ended → revert to Open for both parties
+                    // Call ended → remove active call tracking, revert presence
                     PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. }) => {
-                        // We don't have from/to in the Ended event, but we can clear
-                        // on-the-phone for any presentity that was in that state.
-                        // In practice, the SIP handler knows who was on the call and
-                        // should call clear_on_the_phone directly. This is a fallback.
-                        tracing::debug!(%call_id, "Call ended — presence will be cleared by SIP handler");
+                        let call_id_str = call_id.to_string();
+                        presence.remove_active_call_by_id(&call_id_str);
+                        tracing::debug!(%call_id, "Call ended — active call removed from dialog tracking");
                     }
 
                     // Registration → set Open

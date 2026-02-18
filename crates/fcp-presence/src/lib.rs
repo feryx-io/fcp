@@ -22,10 +22,11 @@ pub mod events;
 pub mod manager;
 pub mod pidf;
 pub mod types;
+pub mod xcap;
 
 pub use config::PresenceConfig;
 pub use manager::PresenceManager;
 pub use types::{
-    EventStateComposition, PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate,
-    Watcher,
+    ActiveCallInfo, CallDirection, DialogState, EventStateComposition, PresenceAuthPolicy,
+    PresenceInfo, PresenceState, PresenceUpdate, Watcher,
 };

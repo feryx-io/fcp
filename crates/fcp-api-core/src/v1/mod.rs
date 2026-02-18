@@ -175,6 +175,10 @@ pub fn router() -> Router<ApiState> {
                 .put(presence::set_policy)
                 .delete(presence::delete_policy),
         )
+        .route(
+            "/presence/:aor/pres-rules",
+            get(presence::get_pres_rules).put(presence::set_pres_rules),
+        )
         // Voicemail
         .route(
             "/voicemail/mailboxes",

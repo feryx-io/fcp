@@ -1226,6 +1226,12 @@ pub struct StoredSubscription {
     pub event_package: String,
     /// Unix epoch seconds when this subscription expires (Instant is not serializable).
     pub expires_at_epoch: u64,
+    /// Call-ID from SUBSCRIBE (for in-dialog NOTIFY).
+    pub sip_call_id: Option<String>,
+    /// From-tag from SUBSCRIBE (becomes To-tag in NOTIFY).
+    pub sip_from_tag: Option<String>,
+    /// To-tag from our 200 OK (becomes From-tag in NOTIFY).
+    pub sip_to_tag: Option<String>,
 }
 
 /// Persisted presence authorization policy for restart recovery.

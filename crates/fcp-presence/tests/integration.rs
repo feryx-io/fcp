@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 
 use fcp_core::TenantId;
 use fcp_events::InMemoryEventBus;
+use std::collections::HashSet;
+
 use fcp_presence::{
     PresenceAuthPolicy, PresenceConfig, PresenceManager, PresenceState,
     PresenceUpdate, Watcher,
@@ -33,6 +35,9 @@ fn make_watcher(
         tenant_id: tenant_id.clone(),
         contact_uri: format!("sip:{}@192.168.1.100:5060", watcher_aor.split('@').next().unwrap_or("user")),
         event_package: event_package.to_string(),
+        sip_call_id: None,
+        sip_from_tag: None,
+        sip_to_tag: None,
     }
 }
 
@@ -79,6 +84,9 @@ async fn test_subscribe_notify_lifecycle() {
         tenant_id: tenant.clone(),
         contact_uri: "sip:charlie@192.168.1.101:5060".to_string(),
         event_package: "presence".to_string(),
+        sip_call_id: None,
+        sip_from_tag: None,
+        sip_to_tag: None,
     };
     mgr.add_watcher(expired_watcher).await.unwrap();
     assert_eq!(mgr.get_watchers("alice@example.com").len(), 2);
@@ -103,7 +111,7 @@ async fn test_publish_etag_full_lifecycle() {
         Some("Available".into()),
         &tenant,
         3600,
-    );
+    ).await;
     assert!(!etag1.is_empty());
 
     // Refresh → new ETag
@@ -116,14 +124,15 @@ async fn test_publish_etag_full_lifecycle() {
     // Modify → new ETag
     let etag3 = mgr
         .modify_publish(&etag2, PresenceState::Busy, Some("DND".into()), 3600)
+        .await
         .unwrap();
     assert_ne!(etag2, etag3);
 
     // Remove
-    mgr.remove_publish(&etag3).unwrap();
+    mgr.remove_publish(&etag3).await.unwrap();
 
     // Removed ETag should fail (412)
-    assert!(mgr.remove_publish(&etag3).is_err());
+    assert!(mgr.remove_publish(&etag3).await.is_err());
     assert!(mgr.refresh_publish(&etag3, 3600).is_err());
 
     // Cleanup should handle expired PUBLISHes
@@ -133,7 +142,7 @@ async fn test_publish_etag_full_lifecycle() {
         None,
         &tenant,
         0, // expires immediately
-    );
+    ).await;
     let update = PresenceUpdate {
         aor: "alice@example.com".to_string(),
         state: PresenceState::Open,
@@ -158,8 +167,8 @@ async fn test_auth_policy_enforcement() {
     // Set policy blocking bob
     let policy = PresenceAuthPolicy {
         default_allow: true,
-        allow_list: vec![],
-        block_list: vec!["bob@example.com".to_string()],
+        allow_list: HashSet::new(),
+        block_list: HashSet::from(["bob@example.com".to_string()]),
     };
     mgr.set_auth_policy("alice@example.com", policy);
     assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com"));
@@ -168,8 +177,8 @@ async fn test_auth_policy_enforcement() {
     // Change to allow-list-only mode
     let policy2 = PresenceAuthPolicy {
         default_allow: false,
-        allow_list: vec!["charlie@example.com".to_string()],
-        block_list: vec![],
+        allow_list: HashSet::from(["charlie@example.com".to_string()]),
+        block_list: HashSet::new(),
     };
     mgr.set_auth_policy("alice@example.com", policy2);
     assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com"));
@@ -237,8 +246,8 @@ async fn test_persistence_roundtrip_with_none_store() {
         "alice@example.com",
         PresenceAuthPolicy {
             default_allow: false,
-            allow_list: vec!["bob@example.com".to_string()],
-            block_list: vec![],
+            allow_list: HashSet::from(["bob@example.com".to_string()]),
+            block_list: HashSet::new(),
         },
     );
 

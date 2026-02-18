@@ -267,6 +267,49 @@ pub async fn delete_policy(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// GET /presence/:aor/pres-rules — Get authorization policy as XCAP pres-rules XML (RFC 5025).
+pub async fn get_pres_rules(
+    State(state): State<ApiState>,
+    Path(aor): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let pm = require_presence_manager!(state);
+
+    let policy = pm.get_auth_policy(&aor).unwrap_or(PresenceAuthPolicy {
+        default_allow: true,
+        ..Default::default()
+    });
+
+    let xml = fcp_presence::xcap::generate_pres_rules(&policy);
+
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/auth-policy+xml")],
+        xml,
+    ))
+}
+
+/// PUT /presence/:aor/pres-rules — Set authorization policy from XCAP pres-rules XML (RFC 5025).
+pub async fn set_pres_rules(
+    State(state): State<ApiState>,
+    Path(aor): Path<String>,
+    body: String,
+) -> Result<impl IntoResponse, ApiError> {
+    let pm = require_presence_manager!(state);
+
+    let policy = fcp_presence::xcap::parse_pres_rules(&body)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid pres-rules XML: {e}")))?;
+
+    pm.set_auth_policy(&aor, policy.clone());
+
+    info!(aor = %aor, default_allow = policy.default_allow, "Presence auth policy updated via XCAP pres-rules");
+
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/auth-policy+xml")],
+        fcp_presence::xcap::generate_pres_rules(&policy),
+    ))
+}
+
 /// Parse a presence state string into a `PresenceState` enum.
 fn parse_presence_state(s: &str) -> Result<PresenceState, ApiError> {
     match s {

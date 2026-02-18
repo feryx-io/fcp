@@ -27,6 +27,15 @@ pub struct SipPresenceHandler {
     default_expires: u32,
 }
 
+/// Parsed SUBSCRIBE context for easier dispatch.
+struct SubscribeContext {
+    event: String,
+    presentity_aor: String,
+    watcher_aor: String,
+    contact_uri: String,
+    expires: u32,
+}
+
 impl SipPresenceHandler {
     pub fn new(
         presence: PresenceManager,
@@ -141,6 +150,11 @@ impl SipPresenceHandler {
         });
     }
 
+    /// Clamp the requested subscription expiry to the configured range.
+    fn clamp_subscribe_expires(&self, requested: u32) -> u32 {
+        self.presence.cap_subscription_expiry(requested)
+    }
+
     /// Compute Subscription-State "active;expires=N" for a watcher.
     fn subscription_state_active(watcher: &Watcher) -> String {
         let remaining = watcher
@@ -164,6 +178,17 @@ impl SipPresenceHandler {
                 let xml = self.presence.generate_dialog_info(&watcher.presentity_aor);
                 ("dialog", "application/dialog-info+xml", xml)
             }
+            "presence.winfo" => {
+                let xml = self
+                    .presence
+                    .generate_watcherinfo(&watcher.presentity_aor)
+                    .unwrap_or_else(|e| {
+                        warn!(error = %e, "Failed to generate watcherinfo XML");
+                        // Return minimal empty watcherinfo document
+                        "<watcherinfo xmlns=\"urn:ietf:params:xml:ns:watcherinfo\" version=\"0\" state=\"full\"></watcherinfo>".to_string()
+                    });
+                ("presence.winfo", "application/watcherinfo+xml", xml)
+            }
             _ => {
                 // Default to presence PIDF
                 let xml = self
@@ -174,6 +199,7 @@ impl SipPresenceHandler {
                         fcp_presence::pidf::generate_pidf(
                             &watcher.presentity_aor,
                             &fcp_presence::PresenceState::Closed,
+                            None,
                             None,
                         )
                     });
@@ -222,21 +248,14 @@ impl SipPresenceHandler {
 
         Ok(())
     }
-}
 
-#[async_trait::async_trait]
-impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
-    async fn handle_subscribe(
-        &self,
-        request: &sip_core::Request,
-        handle: &sip_transaction::ServerTransactionHandle,
-    ) -> Result<()> {
-        // Check Event header — only handle "presence" and "dialog"
+    /// Parse SUBSCRIBE request into a context struct.
+    fn parse_subscribe_context(&self, request: &sip_core::Request) -> Result<SubscribeContext> {
         let event = Self::extract_event(request)
             .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
 
-        if event != "presence" && event != "dialog" {
-            bail!("Not a presence/dialog subscription (event: {event})");
+        if event != "presence" && event != "dialog" && event != "presence.winfo" {
+            bail!("Not a presence/dialog/winfo subscription (event: {event})");
         }
 
         let presentity_aor = Self::extract_presentity_aor(request)
@@ -248,53 +267,145 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
         let contact_uri = Self::extract_contact_uri(request)
             .ok_or_else(|| anyhow::anyhow!("Missing Contact header in SUBSCRIBE"))?;
 
-        let expires = Self::extract_expires(request).unwrap_or(self.default_expires);
+        let raw_expires = Self::extract_expires(request).unwrap_or(self.default_expires);
+        let expires = self.clamp_subscribe_expires(raw_expires);
 
-        info!(
-            presentity = %presentity_aor,
-            watcher = %watcher_aor,
-            event = %event,
-            expires = expires,
-            "Handling presence SUBSCRIBE"
-        );
+        Ok(SubscribeContext {
+            event,
+            presentity_aor,
+            watcher_aor,
+            contact_uri,
+            expires,
+        })
+    }
 
-        // Check authorization policy
+    /// Check authorization for SUBSCRIBE. Sends 403 and returns false if denied.
+    async fn check_subscribe_auth(
+        &self,
+        ctx: &SubscribeContext,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<bool> {
         if !self
             .presence
-            .is_watcher_authorized(&watcher_aor, &presentity_aor)
+            .is_watcher_authorized(&ctx.watcher_aor, &ctx.presentity_aor)
         {
             info!(
-                watcher = %watcher_aor,
-                presentity = %presentity_aor,
+                watcher = %ctx.watcher_aor,
+                presentity = %ctx.presentity_aor,
                 "SUBSCRIBE rejected by auth policy"
             );
             let response =
                 sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
             handle.send_final(response).await;
-            return Ok(());
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Handle unsubscribe (Expires: 0).
+    async fn handle_unsubscribe(
+        &self,
+        ctx: &SubscribeContext,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()> {
+        let watchers = self.presence.get_watchers(&ctx.presentity_aor);
+        for w in &watchers {
+            if w.watcher_aor == ctx.watcher_aor && w.event_package == ctx.event {
+                if let Err(e) = self
+                    .send_notify_to_watcher(w, "terminated;reason=deactivated")
+                    .await
+                {
+                    warn!(error = %e, "Failed to send terminated NOTIFY on unsubscribe");
+                }
+                self.presence
+                    .remove_watcher(&ctx.presentity_aor, &w.subscription_id)
+                    .await;
+                break;
+            }
         }
 
-        // Check for unsubscribe (Expires: 0)
-        if expires == 0 {
-            // Find watcher and send terminated NOTIFY before removing
-            let watchers = self.presence.get_watchers(&presentity_aor);
-            for w in &watchers {
-                if w.watcher_aor == watcher_aor && w.event_package == event {
-                    // Send terminated NOTIFY
-                    if let Err(e) = self
-                        .send_notify_to_watcher(w, "terminated;reason=deactivated")
-                        .await
-                    {
-                        warn!(error = %e, "Failed to send terminated NOTIFY on unsubscribe");
-                    }
+        let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
+        let _ = response.headers_mut().push(
+            smol_str::SmolStr::new("Expires"),
+            smol_str::SmolStr::new("0"),
+        );
+        handle.send_final(response).await;
+        Ok(())
+    }
+
+    /// Handle SUBSCRIBE refresh for existing subscription.
+    async fn handle_subscribe_refresh(
+        &self,
+        ctx: &SubscribeContext,
+        sub_id: &str,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()> {
+        let new_expires = Instant::now() + Duration::from_secs(ctx.expires as u64);
+        if let Err(e) = self
+            .presence
+            .refresh_watcher(&ctx.presentity_aor, sub_id, new_expires)
+        {
+            warn!(error = %e, "Failed to refresh existing watcher");
+        }
+
+        let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
+        let _ = response.headers_mut().push(
+            smol_str::SmolStr::new("Expires"),
+            smol_str::SmolStr::new(ctx.expires.to_string()),
+        );
+        handle.send_final(response).await;
+
+        // Send NOTIFY with active state for refreshed subscription
+        let refreshed_watchers = self.presence.get_watchers(&ctx.presentity_aor);
+        if let Some(w) = refreshed_watchers
+            .iter()
+            .find(|w| w.subscription_id == sub_id)
+        {
+            let sub_state = Self::subscription_state_active(w);
+            let delay = self.presence.notify_delay();
+            let handler = SipPresenceHandler {
+                presence: self.presence.clone(),
+                uac: Arc::clone(&self.uac),
+                tenant_id: self.tenant_id.clone(),
+                default_expires: self.default_expires,
+            };
+            let watcher_clone = w.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                if let Err(e) = handler
+                    .send_notify_to_watcher(&watcher_clone, &sub_state)
+                    .await
+                {
+                    warn!(error = %e, "Failed to send NOTIFY for refreshed subscription");
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Handle watcher-info SUBSCRIBE (RFC 3857/3858).
+    async fn handle_winfo_subscribe(
+        &self,
+        ctx: &SubscribeContext,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()> {
+        let subscription_id = uuid::Uuid::new_v4().to_string();
+
+        if ctx.expires == 0 {
+            // Unsubscribe from winfo
+            let winfo_watchers = self.presence.get_winfo_watchers(&ctx.presentity_aor);
+            for w in &winfo_watchers {
+                if w.watcher_aor == ctx.watcher_aor {
                     self.presence
-                        .remove_watcher(&presentity_aor, &w.subscription_id)
-                        .await;
+                        .remove_winfo_watcher(&ctx.presentity_aor, &w.subscription_id);
                     break;
                 }
             }
-
-            // Send 200 OK with Expires: 0
             let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
             let _ = response.headers_mut().push(
                 smol_str::SmolStr::new("Expires"),
@@ -304,68 +415,80 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
             return Ok(());
         }
 
-        // Check for existing subscription (refresh/dedup)
-        if let Some(existing_sub_id) =
-            self.presence
-                .find_existing_watcher(&watcher_aor, &presentity_aor, &event)
-        {
-            let new_expires = Instant::now() + Duration::from_secs(expires as u64);
-            if let Err(e) = self
-                .presence
-                .refresh_watcher(&presentity_aor, &existing_sub_id, new_expires)
-            {
-                warn!(error = %e, "Failed to refresh existing watcher");
+        let watcher = Watcher {
+            watcher_aor: ctx.watcher_aor.clone(),
+            presentity_aor: ctx.presentity_aor.clone(),
+            subscription_id: subscription_id.clone(),
+            expires_at: Instant::now() + Duration::from_secs(ctx.expires as u64),
+            tenant_id: self.tenant_id.clone(),
+            contact_uri: ctx.contact_uri.clone(),
+            event_package: "presence.winfo".to_string(),
+            sip_call_id: None,
+            sip_from_tag: None,
+            sip_to_tag: None,
+        };
+
+        self.presence.add_winfo_watcher(watcher.clone());
+
+        let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
+        let _ = response.headers_mut().push(
+            smol_str::SmolStr::new("Expires"),
+            smol_str::SmolStr::new(ctx.expires.to_string()),
+        );
+        handle.send_final(response).await;
+
+        // Send initial NOTIFY with watcherinfo XML
+        let sub_state = Self::subscription_state_active(&watcher);
+        let delay = self.presence.notify_delay();
+        let handler = SipPresenceHandler {
+            presence: self.presence.clone(),
+            uac: Arc::clone(&self.uac),
+            tenant_id: self.tenant_id.clone(),
+            default_expires: self.default_expires,
+        };
+
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Err(e) = handler.send_notify_to_watcher(&watcher, &sub_state).await {
+                warn!(error = %e, "Failed to send initial winfo NOTIFY");
             }
+        });
 
-            // Send 200 OK with Expires header
-            let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
-            let _ = response.headers_mut().push(
-                smol_str::SmolStr::new("Expires"),
-                smol_str::SmolStr::new(expires.to_string()),
-            );
-            handle.send_final(response).await;
+        Ok(())
+    }
 
-            // Send NOTIFY with active state for refreshed subscription
-            let refreshed_watchers = self.presence.get_watchers(&presentity_aor);
-            if let Some(w) = refreshed_watchers
-                .iter()
-                .find(|w| w.subscription_id == existing_sub_id)
-            {
-                let sub_state = Self::subscription_state_active(w);
-                let delay = self.presence.notify_delay();
-                let handler = SipPresenceHandler {
-                    presence: self.presence.clone(),
-                    uac: Arc::clone(&self.uac),
-                    tenant_id: self.tenant_id.clone(),
-                    default_expires: self.default_expires,
-                };
-                let watcher_clone = w.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(delay).await;
-                    if let Err(e) = handler
-                        .send_notify_to_watcher(&watcher_clone, &sub_state)
-                        .await
-                    {
-                        warn!(error = %e, "Failed to send NOTIFY for refreshed subscription");
-                    }
-                });
-            }
-
-            return Ok(());
-        }
-
-        // Generate a subscription ID
+    /// Handle new SUBSCRIBE (create watcher, send initial NOTIFY).
+    async fn handle_new_subscription(
+        &self,
+        ctx: &SubscribeContext,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()> {
         let subscription_id = uuid::Uuid::new_v4().to_string();
 
-        // Add watcher
+        // Extract SIP dialog context from SUBSCRIBE for in-dialog NOTIFYs
+        let sip_call_id = sip_parse::header(request.headers(), "Call-ID")
+            .map(|v| v.trim().to_string());
+        let sip_from_tag = sip_parse::header(request.headers(), "From")
+            .and_then(|from| {
+                from.rsplit_once("tag=").map(|(_, tag)| {
+                    tag.split(';').next().unwrap_or(tag).trim().to_string()
+                })
+            });
+        // Generate a To-tag for our 200 OK response
+        let sip_to_tag = Some(uuid::Uuid::new_v4().simple().to_string());
+
         let watcher = Watcher {
-            watcher_aor: watcher_aor.clone(),
-            presentity_aor: presentity_aor.clone(),
+            watcher_aor: ctx.watcher_aor.clone(),
+            presentity_aor: ctx.presentity_aor.clone(),
             subscription_id: subscription_id.clone(),
-            expires_at: Instant::now() + Duration::from_secs(expires as u64),
+            expires_at: Instant::now() + Duration::from_secs(ctx.expires as u64),
             tenant_id: self.tenant_id.clone(),
-            contact_uri: contact_uri.clone(),
-            event_package: event.clone(),
+            contact_uri: ctx.contact_uri.clone(),
+            event_package: ctx.event.clone(),
+            sip_call_id,
+            sip_from_tag,
+            sip_to_tag,
         };
 
         if let Err(e) = self.presence.add_watcher(watcher.clone()).await {
@@ -376,11 +499,10 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
             return Ok(());
         }
 
-        // Send 200 OK with Expires header
         let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
         let _ = response.headers_mut().push(
             smol_str::SmolStr::new("Expires"),
-            smol_str::SmolStr::new(expires.to_string()),
+            smol_str::SmolStr::new(ctx.expires.to_string()),
         );
         handle.send_final(response).await;
 
@@ -402,6 +524,53 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
         });
 
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
+    async fn handle_subscribe(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+    ) -> Result<()> {
+        let ctx = self.parse_subscribe_context(request)?;
+
+        info!(
+            presentity = %ctx.presentity_aor,
+            watcher = %ctx.watcher_aor,
+            event = %ctx.event,
+            expires = ctx.expires,
+            "Handling presence SUBSCRIBE"
+        );
+
+        // Watcher-info event package (RFC 3857/3858)
+        if ctx.event == "presence.winfo" {
+            if !self.presence.is_winfo_enabled() {
+                let response =
+                    sip_uas::UserAgentServer::create_response(request, 489, "Bad Event");
+                handle.send_final(response).await;
+                return Ok(());
+            }
+            return self.handle_winfo_subscribe(&ctx, request, handle).await;
+        }
+
+        if !self.check_subscribe_auth(&ctx, request, handle).await? {
+            return Ok(());
+        }
+
+        if ctx.expires == 0 {
+            return self.handle_unsubscribe(&ctx, request, handle).await;
+        }
+
+        if let Some(existing_sub_id) =
+            self.presence
+                .find_existing_watcher(&ctx.watcher_aor, &ctx.presentity_aor, &ctx.event)
+        {
+            return self.handle_subscribe_refresh(&ctx, &existing_sub_id, request, handle).await;
+        }
+
+        self.handle_new_subscription(&ctx, request, handle).await
     }
 
     async fn handle_publish(
@@ -444,9 +613,10 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
                     update.note.clone(),
                     &self.tenant_id,
                     expires,
-                );
+                ).await;
 
-                // Update aggregated presence state
+                // Update aggregated presence state (if composition is disabled,
+                // this is the primary update; if enabled, store_publish already recomposed)
                 let info = self
                     .presence
                     .update_presence(update, &self.tenant_id)
@@ -469,7 +639,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
             (false, Some(old_etag)) => {
                 if expires == 0 {
                     // Remove PUBLISH
-                    match self.presence.remove_publish(old_etag) {
+                    match self.presence.remove_publish(old_etag).await {
                         Ok(()) => {
                             debug!(etag = %old_etag, "PUBLISH removed (Expires: 0)");
                             let mut response =
@@ -526,7 +696,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
                     update.state,
                     update.note.clone(),
                     expires,
-                ) {
+                ).await {
                     Ok(new_etag) => {
                         let info = self
                             .presence

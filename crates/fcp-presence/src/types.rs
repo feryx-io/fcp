@@ -2,6 +2,7 @@
 
 use fcp_core::TenantId;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 use std::time::Instant;
 
@@ -84,6 +85,12 @@ pub struct Watcher {
     pub contact_uri: String,
     /// Event package: "presence" (RFC 3856) or "dialog" (RFC 4235 BLF)
     pub event_package: String,
+    /// Call-ID from SUBSCRIBE (for in-dialog NOTIFY)
+    pub sip_call_id: Option<String>,
+    /// From-tag from SUBSCRIBE (becomes To-tag in NOTIFY)
+    pub sip_from_tag: Option<String>,
+    /// To-tag from our 200 OK (becomes From-tag in NOTIFY)
+    pub sip_to_tag: Option<String>,
 }
 
 /// Event State Composition (ESC) for RFC 3903 PUBLISH tracking.
@@ -128,9 +135,9 @@ pub struct PresenceAuthPolicy {
     /// watchers on the allow_list are permitted.
     pub default_allow: bool,
     /// Watcher AORs explicitly allowed to subscribe.
-    pub allow_list: Vec<String>,
+    pub allow_list: HashSet<String>,
     /// Watcher AORs explicitly blocked from subscribing.
-    pub block_list: Vec<String>,
+    pub block_list: HashSet<String>,
 }
 
 impl PresenceAuthPolicy {
@@ -138,12 +145,85 @@ impl PresenceAuthPolicy {
     ///
     /// Block list takes precedence over allow list.
     pub fn is_allowed(&self, watcher_aor: &str) -> bool {
-        if self.block_list.iter().any(|b| b == watcher_aor) {
+        if self.block_list.contains(watcher_aor) {
             return false;
         }
-        if self.allow_list.iter().any(|a| a == watcher_aor) {
+        if self.allow_list.contains(watcher_aor) {
             return true;
         }
         self.default_allow
+    }
+}
+
+impl PresenceState {
+    /// Priority for multi-device presence composition.
+    /// Higher value = more "active" state wins.
+    pub fn composition_priority(&self) -> u8 {
+        match self {
+            PresenceState::OnThePhone => 5,
+            PresenceState::Ringing => 4,
+            PresenceState::Busy => 3,
+            PresenceState::Open => 2,
+            PresenceState::Away => 1,
+            PresenceState::Closed => 0,
+        }
+    }
+
+    /// Map to RPID activity element name (RFC 4480).
+    pub fn to_rpid_activity(&self) -> Option<&'static str> {
+        match self {
+            PresenceState::OnThePhone => Some("on-the-phone"),
+            PresenceState::Busy => Some("busy"),
+            PresenceState::Away => Some("away"),
+            _ => None,
+        }
+    }
+}
+
+/// Information about an active call for dialog-info generation.
+#[derive(Debug, Clone)]
+pub struct ActiveCallInfo {
+    pub call_id: String,
+    pub remote_uri: String,
+    pub remote_display_name: Option<String>,
+    pub direction: CallDirection,
+    pub dialog_state: DialogState,
+}
+
+/// Call direction for dialog-info.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallDirection {
+    Initiator,
+    Recipient,
+}
+
+impl fmt::Display for CallDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CallDirection::Initiator => write!(f, "initiator"),
+            CallDirection::Recipient => write!(f, "recipient"),
+        }
+    }
+}
+
+/// Dialog state for dialog-info (RFC 4235).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogState {
+    Trying,
+    Proceeding,
+    Early,
+    Confirmed,
+    Terminated,
+}
+
+impl fmt::Display for DialogState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DialogState::Trying => write!(f, "trying"),
+            DialogState::Proceeding => write!(f, "proceeding"),
+            DialogState::Early => write!(f, "early"),
+            DialogState::Confirmed => write!(f, "confirmed"),
+            DialogState::Terminated => write!(f, "terminated"),
+        }
     }
 }

@@ -8,6 +8,8 @@ use std::io::Cursor;
 use crate::types::{PresenceState, PresenceUpdate};
 
 const PIDF_NS: &str = "urn:ietf:params:xml:ns:pidf";
+const DM_NS: &str = "urn:ietf:params:xml:ns:pidf:data-model";
+const RPID_NS: &str = "urn:ietf:params:xml:ns:pidf:rpid";
 
 /// Map a PresenceState to the PIDF `<basic>` status value.
 fn state_to_basic(state: &PresenceState) -> &'static str {
@@ -29,7 +31,15 @@ fn state_to_default_note(state: &PresenceState) -> Option<&'static str> {
 }
 
 /// Generate a PIDF XML document for a presentity.
-pub fn generate_pidf(aor: &str, state: &PresenceState, note: Option<&str>) -> String {
+///
+/// When `rpid_activity` is provided, the output includes RFC 4480 RPID extensions
+/// with a `<dm:person>` element containing the activity.
+pub fn generate_pidf(
+    aor: &str,
+    state: &PresenceState,
+    note: Option<&str>,
+    rpid_activity: Option<&str>,
+) -> String {
     let mut writer = Writer::new(Cursor::new(Vec::new()));
 
     // XML declaration
@@ -40,6 +50,10 @@ pub fn generate_pidf(aor: &str, state: &PresenceState, note: Option<&str>) -> St
     // <presence xmlns="..." entity="pres:user@example.com">
     let mut presence = BytesStart::new("presence");
     presence.push_attribute(("xmlns", PIDF_NS));
+    if rpid_activity.is_some() {
+        presence.push_attribute(("xmlns:dm", DM_NS));
+        presence.push_attribute(("xmlns:rpid", RPID_NS));
+    }
     presence.push_attribute(("entity", format!("pres:{aor}").as_str()));
     writer
         .write_event(Event::Start(presence))
@@ -91,6 +105,32 @@ pub fn generate_pidf(aor: &str, state: &PresenceState, note: Option<&str>) -> St
     writer
         .write_event(Event::End(BytesEnd::new("tuple")))
         .expect("write tuple end");
+
+    // RPID: <dm:person id="p1"><rpid:activities><rpid:{activity}/></rpid:activities></dm:person>
+    if let Some(activity) = rpid_activity {
+        let mut person = BytesStart::new("dm:person");
+        person.push_attribute(("id", "p1"));
+        writer
+            .write_event(Event::Start(person))
+            .expect("write person start");
+
+        writer
+            .write_event(Event::Start(BytesStart::new("rpid:activities")))
+            .expect("write activities start");
+
+        let activity_tag = format!("rpid:{activity}");
+        writer
+            .write_event(Event::Empty(BytesStart::new(&*activity_tag)))
+            .expect("write activity");
+
+        writer
+            .write_event(Event::End(BytesEnd::new("rpid:activities")))
+            .expect("write activities end");
+
+        writer
+            .write_event(Event::End(BytesEnd::new("dm:person")))
+            .expect("write person end");
+    }
 
     // </presence>
     writer
@@ -153,17 +193,20 @@ mod tests {
 
     #[test]
     fn test_generate_pidf_open() {
-        let xml = generate_pidf("alice@example.com", &PresenceState::Open, None);
+        let xml = generate_pidf("alice@example.com", &PresenceState::Open, None, None);
         assert!(xml.contains("urn:ietf:params:xml:ns:pidf"));
         assert!(xml.contains("pres:alice@example.com"));
         assert!(xml.contains("<basic>open</basic>"));
         // Open state with no note should not have a <note> element
         assert!(!xml.contains("<note>"));
+        // No RPID namespaces when activity is None
+        assert!(!xml.contains("xmlns:dm"));
+        assert!(!xml.contains("xmlns:rpid"));
     }
 
     #[test]
     fn test_generate_pidf_closed() {
-        let xml = generate_pidf("bob@example.com", &PresenceState::Closed, None);
+        let xml = generate_pidf("bob@example.com", &PresenceState::Closed, None, None);
         assert!(xml.contains("<basic>closed</basic>"));
         assert!(xml.contains("pres:bob@example.com"));
     }
@@ -171,21 +214,58 @@ mod tests {
     #[test]
     fn test_generate_pidf_with_note() {
         let xml =
-            generate_pidf("alice@example.com", &PresenceState::Open, Some("In a meeting"));
+            generate_pidf("alice@example.com", &PresenceState::Open, Some("In a meeting"), None);
         assert!(xml.contains("<basic>open</basic>"));
         assert!(xml.contains("<note>In a meeting</note>"));
     }
 
     #[test]
     fn test_generate_pidf_busy_default_note() {
-        let xml = generate_pidf("alice@example.com", &PresenceState::Busy, None);
+        let xml = generate_pidf("alice@example.com", &PresenceState::Busy, None, None);
         assert!(xml.contains("<basic>open</basic>"));
         assert!(xml.contains("<note>Busy</note>"));
     }
 
     #[test]
+    fn test_generate_pidf_with_rpid_activity() {
+        let xml = generate_pidf(
+            "alice@example.com",
+            &PresenceState::OnThePhone,
+            None,
+            Some("on-the-phone"),
+        );
+        assert!(xml.contains("xmlns:dm=\"urn:ietf:params:xml:ns:pidf:data-model\""));
+        assert!(xml.contains("xmlns:rpid=\"urn:ietf:params:xml:ns:pidf:rpid\""));
+        assert!(xml.contains("<dm:person id=\"p1\">"));
+        assert!(xml.contains("<rpid:activities>"));
+        assert!(xml.contains("<rpid:on-the-phone/>"));
+        assert!(xml.contains("</rpid:activities>"));
+        assert!(xml.contains("</dm:person>"));
+    }
+
+    #[test]
+    fn test_generate_pidf_rpid_busy() {
+        let xml = generate_pidf(
+            "alice@example.com",
+            &PresenceState::Busy,
+            None,
+            Some("busy"),
+        );
+        assert!(xml.contains("<rpid:busy/>"));
+    }
+
+    #[test]
+    fn test_generate_pidf_open_no_rpid() {
+        // Open state has no RPID activity
+        let state = PresenceState::Open;
+        let xml = generate_pidf("alice@example.com", &state, None, state.to_rpid_activity());
+        assert!(!xml.contains("dm:person"));
+        assert!(!xml.contains("rpid:activities"));
+    }
+
+    #[test]
     fn test_parse_pidf_basic() {
-        let xml = generate_pidf("alice@example.com", &PresenceState::Open, None);
+        let xml = generate_pidf("alice@example.com", &PresenceState::Open, None, None);
         let update = parse_pidf(&xml).unwrap();
         assert_eq!(update.aor, "alice@example.com");
         assert_eq!(update.state, PresenceState::Open);
@@ -195,7 +275,7 @@ mod tests {
     #[test]
     fn test_parse_pidf_with_note() {
         let xml =
-            generate_pidf("bob@example.com", &PresenceState::Open, Some("In a meeting"));
+            generate_pidf("bob@example.com", &PresenceState::Open, Some("In a meeting"), None);
         let update = parse_pidf(&xml).unwrap();
         assert_eq!(update.aor, "bob@example.com");
         assert_eq!(update.state, PresenceState::Open);
@@ -215,7 +295,7 @@ mod tests {
         ];
 
         for (state, note) in &states {
-            let xml = generate_pidf("user@example.com", state, note.as_deref());
+            let xml = generate_pidf("user@example.com", state, note.as_deref(), state.to_rpid_activity());
             let update = parse_pidf(&xml).unwrap();
             assert_eq!(update.aor, "user@example.com");
             assert_eq!(
@@ -227,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_parse_pidf_closed_roundtrip() {
-        let xml = generate_pidf("user@example.com", &PresenceState::Closed, None);
+        let xml = generate_pidf("user@example.com", &PresenceState::Closed, None, None);
         let update = parse_pidf(&xml).unwrap();
         assert_eq!(update.state, PresenceState::Closed);
     }

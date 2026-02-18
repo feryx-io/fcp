@@ -36,6 +36,26 @@ pub struct PresenceConfig {
     /// Delay in ms before sending NOTIFY after state change. Default: 50.
     #[serde(default = "default_notify_delay")]
     pub notify_delay_ms: u64,
+
+    /// Minimum subscription expiry in seconds. Default: 60.
+    #[serde(default = "default_min_subscription_expiry")]
+    pub min_subscription_expiry_secs: u32,
+
+    /// Maximum subscription expiry in seconds. Default: 86400.
+    #[serde(default = "default_max_subscription_expiry")]
+    pub max_subscription_expiry_secs: u32,
+
+    /// Minimum PUBLISH expiry in seconds. Default: 60.
+    #[serde(default = "default_min_publish_expiry")]
+    pub min_publish_expiry_secs: u32,
+
+    /// Whether watcher-info event package is enabled. Default: false.
+    #[serde(default)]
+    pub winfo_enabled: bool,
+
+    /// Whether multi-device presence composition is enabled. Default: false.
+    #[serde(default)]
+    pub composition_enabled: bool,
 }
 
 fn default_subscription_expiry() -> u32 {
@@ -66,6 +86,18 @@ fn default_notify_delay() -> u64 {
     50
 }
 
+fn default_min_subscription_expiry() -> u32 {
+    60
+}
+
+fn default_max_subscription_expiry() -> u32 {
+    86400
+}
+
+fn default_min_publish_expiry() -> u32 {
+    60
+}
+
 impl Default for PresenceConfig {
     fn default() -> Self {
         Self {
@@ -77,6 +109,11 @@ impl Default for PresenceConfig {
             max_publish_expiry_secs: default_max_publish_expiry(),
             cleanup_interval_secs: default_cleanup_interval(),
             notify_delay_ms: default_notify_delay(),
+            min_subscription_expiry_secs: default_min_subscription_expiry(),
+            max_subscription_expiry_secs: default_max_subscription_expiry(),
+            min_publish_expiry_secs: default_min_publish_expiry(),
+            winfo_enabled: false,
+            composition_enabled: false,
         }
     }
 }

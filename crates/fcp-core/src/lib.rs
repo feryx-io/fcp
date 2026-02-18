@@ -15,6 +15,7 @@ pub mod geographic;
 pub mod identifiers;
 pub mod meeting;
 pub mod line_binding;
+pub mod metrics;
 pub mod permissions;
 pub mod phone_number;
 pub mod porting;

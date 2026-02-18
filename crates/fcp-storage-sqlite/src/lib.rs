@@ -213,6 +213,9 @@ impl SqliteStorage {
         let migration_015 = include_str!("../migrations/015_add_presence_auth_policies.sql");
         Self::execute_migration(pool, migration_015, "015").await?;
 
+        let migration_016 = include_str!("../migrations/016_add_subscription_dialog_context.sql");
+        Self::execute_migration(pool, migration_016, "016").await?;
+
         info!("SQLite migrations completed successfully");
         Ok(())
     }
@@ -3516,8 +3519,8 @@ impl PresenceStore for SqliteStorage {
     async fn save_subscription(&self, sub: StoredSubscription) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO presence_subscriptions \
-             (subscription_id, watcher_aor, presentity_aor, tenant_id, contact_uri, event_package, expires_at_epoch) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (subscription_id, watcher_aor, presentity_aor, tenant_id, contact_uri, event_package, expires_at_epoch, sip_call_id, sip_from_tag, sip_to_tag) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&sub.subscription_id)
         .bind(&sub.watcher_aor)
@@ -3526,6 +3529,9 @@ impl PresenceStore for SqliteStorage {
         .bind(&sub.contact_uri)
         .bind(&sub.event_package)
         .bind(sub.expires_at_epoch as i64)
+        .bind(&sub.sip_call_id)
+        .bind(&sub.sip_from_tag)
+        .bind(&sub.sip_to_tag)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3542,7 +3548,7 @@ impl PresenceStore for SqliteStorage {
 
         let rows = sqlx::query(
             "SELECT subscription_id, watcher_aor, presentity_aor, tenant_id, \
-             contact_uri, event_package, expires_at_epoch \
+             contact_uri, event_package, expires_at_epoch, sip_call_id, sip_from_tag, sip_to_tag \
              FROM presence_subscriptions WHERE tenant_id = ? AND expires_at_epoch > ?",
         )
         .bind(tenant_id.to_string())
@@ -3564,6 +3570,9 @@ impl PresenceStore for SqliteStorage {
                 contact_uri: row.try_get("contact_uri")?,
                 event_package: row.try_get("event_package")?,
                 expires_at_epoch: row.try_get::<i64, _>("expires_at_epoch")? as u64,
+                sip_call_id: row.try_get("sip_call_id").ok().flatten(),
+                sip_from_tag: row.try_get("sip_from_tag").ok().flatten(),
+                sip_to_tag: row.try_get("sip_to_tag").ok().flatten(),
             });
         }
 
