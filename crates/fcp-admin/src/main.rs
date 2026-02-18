@@ -197,6 +197,7 @@ async fn main() -> Result<()> {
         None, // media_manager (admin doesn't need media)
         event_bus,
         None, // queue_manager (admin doesn't use queues)
+        None, // presence_manager (admin doesn't run presence)
         realm,
         fcp_core::TenantId::nil(),
     );

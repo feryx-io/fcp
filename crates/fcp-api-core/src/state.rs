@@ -39,6 +39,9 @@ pub struct ApiState {
     /// Queue manager for ACD queue operations (optional)
     pub queue_manager: Option<Arc<fcp_queue::QueueManager>>,
 
+    /// Presence manager for presence/BLF operations (optional)
+    pub presence_manager: Option<fcp_presence::PresenceManager>,
+
     /// SIP realm for authentication
     pub realm: String,
 
@@ -60,6 +63,7 @@ impl ApiState {
         media_manager: Option<Arc<MediaManager>>,
         event_bus: Arc<dyn EventBus>,
         queue_manager: Option<Arc<fcp_queue::QueueManager>>,
+        presence_manager: Option<fcp_presence::PresenceManager>,
         realm: String,
         default_tenant_id: fcp_core::TenantId,
     ) -> Self {
@@ -73,6 +77,7 @@ impl ApiState {
             media_manager,
             event_bus,
             queue_manager,
+            presence_manager,
             realm,
             default_tenant_id,
             start_time: std::time::Instant::now(),
