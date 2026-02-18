@@ -101,6 +101,8 @@ struct QueueSession {
 
     // --- State tracking ---
     state: QueueCallState,
+    /// Whether this session is a campaign-originated call (both legs outbound).
+    is_campaign_call: bool,
     /// Agent ID currently being rung (if any).
     ringing_agent: Option<String>,
     /// Handle for cancelling an in-progress agent ring task.
@@ -157,6 +159,8 @@ pub struct QueueCallHandler {
     moh_cache: Option<Arc<MohCache>>,
     prompt_cache: Option<Arc<PromptCache>>,
     storage: Arc<fcp_core::DynStorage>,
+    /// Maps callee Call-ID ↔ agent Call-ID for campaign calls (reverse BYE lookup).
+    campaign_call_id_map: Arc<DashMap<String, String>>,
 }
 
 impl QueueCallHandler {
@@ -265,6 +269,7 @@ impl QueueCallHandler {
             moh_cache,
             prompt_cache,
             storage,
+            campaign_call_id_map: Arc::new(DashMap::new()),
         };
 
         // Spawn distribution loops for each configured queue
@@ -281,6 +286,13 @@ impl QueueCallHandler {
     /// Expose the QueueManager for agent login/logout via REST API.
     pub fn queue_manager(&self) -> &Arc<QueueManager> {
         &self.queue_manager
+    }
+
+    /// Update the queue_name on an active session (after a queue-to-queue transfer).
+    pub fn update_session_queue(&self, call_id: &str, new_queue: &str) {
+        if let Some(mut session) = self.sessions.get_mut(call_id) {
+            session.queue_name = new_queue.to_string();
+        }
     }
 
     /// Spawn a distribution loop for a dynamically added queue.
@@ -595,6 +607,12 @@ impl QueueCallHandler {
         let announce_config = self.build_announce_config(&queue_name);
         let prompt_cache = self.prompt_cache.clone();
         let recording_dir = self.config.recording_dir.clone();
+        let campaign_call_id_map = Arc::clone(&self.campaign_call_id_map);
+        // Derive tenant_id from config, falling back to nil
+        let campaign_tenant_id: TenantId = self.config.default_tenant_id
+            .as_ref()
+            .and_then(|s| s.parse::<TenantId>().ok())
+            .unwrap_or_else(TenantId::nil);
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -812,7 +830,7 @@ impl QueueCallHandler {
                                 &Some(Arc::clone(&event_bus)),
                                 &queue_name,
                                 &dest,
-                                &TenantId::nil(),
+                                &campaign_tenant_id,
                             ).await;
 
                             // Spawn outbound INVITE task
@@ -829,6 +847,8 @@ impl QueueCallHandler {
                             let ac2 = announce_config.clone();
                             let pc2 = prompt_cache.clone();
                             let rd2 = recording_dir.clone();
+                            let tid = campaign_tenant_id.clone();
+                            let ccm = Arc::clone(&campaign_call_id_map);
 
                             tokio::spawn(async move {
                                 campaign_dial_task(
@@ -847,6 +867,8 @@ impl QueueCallHandler {
                                     ac2,
                                     pc2,
                                     rd2,
+                                    tid,
+                                    ccm,
                                 ).await;
                             });
                         }
@@ -861,7 +883,7 @@ impl QueueCallHandler {
                         fcp_queue::events::queue_drained(
                             &events,
                             &queue_name,
-                            &TenantId::nil(),
+                            &campaign_tenant_id,
                         )
                         .await;
                     }
@@ -1296,6 +1318,17 @@ impl QueueCallHandler {
                 tokio::spawn(async move {
                     if let Err(e) = uac.bye(&dialog).await {
                         warn!(error = %e, "Failed to send BYE to agent");
+                    }
+                });
+            }
+
+            // For campaign calls, we originated both legs — also BYE the callee
+            if session.is_campaign_call {
+                let uac = Arc::clone(&self.uac);
+                let dialog = session.dialog.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = uac.bye(&dialog).await {
+                        warn!(error = %e, "Failed to send BYE to campaign callee");
                     }
                 });
             }
@@ -2031,6 +2064,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                             supervisor_id: None,
                             supervisor_tasks: Vec::new(),
                             state: QueueCallState::WaitingInQueue,
+                            is_campaign_call: false,
                             ringing_agent: None,
                             ring_task_handle: None,
                             ring_cancel_tx: None,
@@ -2124,6 +2158,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 supervisor_id: None,
                 supervisor_tasks: Vec::new(),
                 state: QueueCallState::WaitingInQueue,
+                is_campaign_call: false,
                 ringing_agent: None,
                 ring_task_handle: None,
                 ring_cancel_tx: None,
@@ -2139,8 +2174,23 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
     fn handle_bye(&self, call_id: &str) -> Result<()> {
         if self.sessions.contains_key(call_id) {
             self.remove_session(call_id);
+            // For campaign calls, also clean up the other leg
+            if let Some((_, other_call_id)) = self.campaign_call_id_map.remove(call_id) {
+                self.campaign_call_id_map.remove(&other_call_id);
+                if self.sessions.contains_key(&other_call_id) {
+                    self.remove_session(&other_call_id);
+                }
+            }
             Ok(())
         } else {
+            // Check if this BYE is for the agent leg of a campaign call
+            if let Some((_, callee_call_id)) = self.campaign_call_id_map.remove(call_id) {
+                self.campaign_call_id_map.remove(&callee_call_id);
+                if self.sessions.contains_key(&callee_call_id) {
+                    self.remove_session(&callee_call_id);
+                }
+                return Ok(());
+            }
             anyhow::bail!("No queue session for call_id: {}", call_id)
         }
     }
@@ -3081,7 +3131,7 @@ fn spawn_callback_ring(
             QueueSession {
                 call_id: call_id.clone(),
                 queue_name: String::new(), // No longer in a queue
-                tenant_id: fcp_core::TenantId::nil(),
+                tenant_id: tenant_id.clone(),
                 caller_uri: callback_uri,
                 caller_display: None,
                 port_pair: callback_port_pair,
@@ -3107,6 +3157,7 @@ fn spawn_callback_ring(
                 supervisor_id: None,
                 supervisor_tasks: Vec::new(),
                 state: QueueCallState::Connected,
+                is_campaign_call: false,
                 ringing_agent: Some(agent_id),
                 ring_task_handle: None,
                 ring_cancel_tx: None,
@@ -3662,9 +3713,11 @@ async fn campaign_dial_task(
     sessions: Arc<DashMap<String, QueueSession>>,
     ring_timeout_secs: u32,
     abandon_timeout_secs: u32,
-    announce_config: Option<AnnounceConfig>,
-    prompt_cache: Option<Arc<PromptCache>>,
+    _announce_config: Option<AnnounceConfig>,
+    _prompt_cache: Option<Arc<PromptCache>>,
     recording_dir: Option<String>,
+    tenant_id: TenantId,
+    campaign_call_id_map: Arc<DashMap<String, String>>,
 ) {
     let ring_timeout = Duration::from_secs(ring_timeout_secs as u64);
 
@@ -3675,7 +3728,7 @@ async fn campaign_dial_task(
             warn!(dest = %destination, queue = %queue_name, error = %e, "Campaign: failed to allocate RTP port");
             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "port_allocation_failed", &TenantId::nil(),
+                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "port_allocation_failed", &tenant_id,
             ).await;
             return;
         }
@@ -3696,7 +3749,7 @@ async fn campaign_dial_task(
             port_pool.deallocate(outbound_pp).await;
             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "invite_failed", &TenantId::nil(),
+                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "invite_failed", &tenant_id,
             ).await;
             return;
         }
@@ -3713,7 +3766,7 @@ async fn campaign_dial_task(
             // Parse callee's codec
             let callee_body = response.body();
             let callee_sdp = std::str::from_utf8(&callee_body[..]).unwrap_or("");
-            let (callee_codec, _callee_pt) = parse_agent_codec(callee_sdp);
+            let (callee_codec, callee_pt) = parse_agent_codec(callee_sdp);
 
             // Try to select an agent
             match queue_manager.select_agent(&queue_name) {
@@ -3751,30 +3804,191 @@ async fn campaign_dial_task(
                                     queue_manager.agent_answered(&agent_id, &destination).await;
                                     queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Answered);
                                     fcp_queue::events::campaign_call_connected(
-                                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, &agent_id, &TenantId::nil(),
+                                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, &agent_id, &tenant_id,
                                     ).await;
 
                                     // Parse agent SDP
                                     let agent_body = agent_resp.body();
                                     let agent_sdp_str = std::str::from_utf8(&agent_body[..]).unwrap_or("");
-                                    let (agent_codec_name, _agent_pt) = parse_agent_codec(agent_sdp_str);
+                                    let (agent_codec_name, agent_pt) = parse_agent_codec(agent_sdp_str);
 
-                                    // Bridge RTP between callee and agent (simple forwarding)
-                                    // Both sockets use the same codec if possible
-                                    let _ = callee_codec;
-                                    let _ = agent_codec_name;
-                                    let _ = sessions;
-                                    let _ = announce_config;
-                                    let _ = prompt_cache;
-                                    let _ = recording_dir;
+                                    // Create callee RTP socket
+                                    let callee_rtp_socket = match RtpSocketPair::new(
+                                        outbound_pp,
+                                        RtpSocketConfig::default(),
+                                    ).await {
+                                        Ok(s) => Arc::new(s),
+                                        Err(e) => {
+                                            warn!(error = %e, "Campaign: failed to create callee RTP socket");
+                                            let _ = uac.bye(&*call_handle.dialog.read().await).await;
+                                            let _ = uac.bye(&*agent_handle.dialog.read().await).await;
+                                            port_pool.deallocate(outbound_pp).await;
+                                            port_pool.deallocate(agent_pp).await;
+                                            return;
+                                        }
+                                    };
 
-                                    // For now, keep both legs alive until one side sends BYE
-                                    // The call handle's dialog will be managed by the UAC
-                                    // In a full implementation, we'd bridge the RTP sockets
-                                    // and handle BYE from either side
+                                    // Set callee remote RTP endpoint
+                                    if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(callee_sdp) {
+                                        callee_rtp_socket.set_remote_endpoint(RemoteEndpoint {
+                                            rtp_addr: remote_addr,
+                                            rtcp_addr: None,
+                                        }).await;
+                                    }
+
+                                    // Create agent RTP socket
+                                    let agent_rtp_socket = match RtpSocketPair::new(
+                                        agent_pp,
+                                        RtpSocketConfig::default(),
+                                    ).await {
+                                        Ok(s) => Arc::new(s),
+                                        Err(e) => {
+                                            warn!(error = %e, "Campaign: failed to create agent RTP socket");
+                                            let _ = uac.bye(&*call_handle.dialog.read().await).await;
+                                            let _ = uac.bye(&*agent_handle.dialog.read().await).await;
+                                            port_pool.deallocate(outbound_pp).await;
+                                            port_pool.deallocate(agent_pp).await;
+                                            return;
+                                        }
+                                    };
+
+                                    // Set agent remote RTP endpoint
+                                    if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(agent_sdp_str) {
+                                        agent_rtp_socket.set_remote_endpoint(RemoteEndpoint {
+                                            rtp_addr: remote_addr,
+                                            rtcp_addr: None,
+                                        }).await;
+                                    }
+
+                                    let needs_transcoding = callee_codec != agent_codec_name;
+                                    if needs_transcoding {
+                                        info!(
+                                            dest = %destination, agent = %agent_id,
+                                            callee_codec = %callee_codec, agent_codec = %agent_codec_name,
+                                            "Campaign: codecs differ, using transcoding bridge"
+                                        );
+                                    }
+
+                                    // Check if recording is enabled for this queue
+                                    let should_record = recording_dir.is_some()
+                                        && queue_manager
+                                            .get_queue_config(&queue_name)
+                                            .map(|c| c.record_calls)
+                                            .unwrap_or(false);
+
+                                    let (bridge_a_to_b, bridge_b_to_a, recording_handle, recording_path) = if should_record {
+                                        let rec_dir = recording_dir.as_deref().unwrap();
+                                        let queue_rec_dir = format!("{}/{}", rec_dir, queue_name);
+                                        let _ = std::fs::create_dir_all(&queue_rec_dir);
+                                        let rec_format = queue_manager
+                                            .get_queue_config(&queue_name)
+                                            .map(|c| c.recording_format.clone())
+                                            .unwrap_or_else(|| "wav".to_string());
+                                        let rec_path = format!("{}/{}.{}", queue_rec_dir, destination, rec_format);
+
+                                        let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+                                        let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+
+                                        let (ba, bb) = if needs_transcoding {
+                                            spawn_transcoding_rtp_bridge(
+                                                Arc::clone(&callee_rtp_socket),
+                                                Arc::clone(&agent_rtp_socket),
+                                                codec_name_to_type(&callee_codec),
+                                                codec_name_to_type(&agent_codec_name),
+                                                callee_pt,
+                                                agent_pt,
+                                                Some(a_tx),
+                                                Some(b_tx),
+                                            )
+                                        } else {
+                                            spawn_rtp_bridge_with_recording(
+                                                Arc::clone(&callee_rtp_socket),
+                                                Arc::clone(&agent_rtp_socket),
+                                                a_tx,
+                                                b_tx,
+                                            )
+                                        };
+
+                                        let rec_handle = spawn_recording_task(a_rx, b_rx, callee_codec.clone(), rec_path.clone());
+                                        info!(dest = %destination, path = %rec_path, "Campaign call recording started");
+                                        (ba, bb, Some(rec_handle), Some(rec_path))
+                                    } else if needs_transcoding {
+                                        let (ba, bb) = spawn_transcoding_rtp_bridge(
+                                            Arc::clone(&callee_rtp_socket),
+                                            Arc::clone(&agent_rtp_socket),
+                                            codec_name_to_type(&callee_codec),
+                                            codec_name_to_type(&agent_codec_name),
+                                            callee_pt,
+                                            agent_pt,
+                                            None,
+                                            None,
+                                        );
+                                        (ba, bb, None, None)
+                                    } else {
+                                        let (ba, bb) = spawn_rtp_bridge(
+                                            Arc::clone(&callee_rtp_socket),
+                                            Arc::clone(&agent_rtp_socket),
+                                        );
+                                        (ba, bb, None, None)
+                                    };
+
+                                    // Get dialogs for both legs
+                                    let callee_dialog = call_handle.dialog.read().await.clone();
+                                    let agent_dialog = agent_handle.dialog.read().await.clone();
+
+                                    // Use callee's Call-ID as the session key
+                                    let callee_call_id = callee_dialog.id().call_id().to_string();
+                                    let agent_call_id = agent_dialog.id().call_id().to_string();
+
+                                    // Insert QueueSession for the campaign call
+                                    sessions.insert(
+                                        callee_call_id.clone(),
+                                        QueueSession {
+                                            call_id: callee_call_id.clone(),
+                                            queue_name: queue_name.clone(),
+                                            tenant_id: tenant_id.clone(),
+                                            caller_uri: destination.clone(),
+                                            caller_display: None,
+                                            port_pair: outbound_pp,
+                                            rtp_socket: callee_rtp_socket,
+                                            codec_name: callee_codec.clone(),
+                                            payload_type: callee_pt,
+                                            _frame_size: 160,
+                                            dialog: callee_dialog,
+                                            moh_handle: None,
+                                            moh_frames: None,
+                                            dtmf_listener_handle: None,
+                                            agent_port_pair: Some(agent_pp),
+                                            agent_rtp_socket: Some(agent_rtp_socket),
+                                            agent_dialog: Some(agent_dialog),
+                                            bridge_a_to_b: Some(bridge_a_to_b),
+                                            bridge_b_to_a: Some(bridge_b_to_a),
+                                            recording_handle,
+                                            recording_path,
+                                            supervisor_port_pair: None,
+                                            supervisor_rtp_socket: None,
+                                            supervisor_dialog: None,
+                                            supervisor_mode: None,
+                                            supervisor_id: None,
+                                            supervisor_tasks: Vec::new(),
+                                            state: QueueCallState::Connected,
+                                            is_campaign_call: true,
+                                            ringing_agent: Some(agent_id.clone()),
+                                            ring_task_handle: None,
+                                            ring_cancel_tx: None,
+                                            enqueued_at: Instant::now(),
+                                            agent_answered_at: Some(Instant::now()),
+                                            agent_codec_name: Some(agent_codec_name.clone()),
+                                        },
+                                    );
+
+                                    // Map callee ↔ agent Call-IDs for reverse BYE lookup
+                                    campaign_call_id_map.insert(callee_call_id.clone(), agent_call_id.clone());
+                                    campaign_call_id_map.insert(agent_call_id, callee_call_id);
+
                                     debug!(
                                         dest = %destination, agent = %agent_id,
-                                        "Campaign call bridged (agent: {}, callee codec: {})", agent_codec_name, callee_codec
+                                        "Campaign call bridged (agent codec: {}, callee codec: {})", agent_codec_name, callee_codec
                                     );
                                 }
                                 _ => {
@@ -3782,9 +3996,10 @@ async fn campaign_dial_task(
                                     info!(dest = %destination, agent = %agent_id, "Campaign: agent no answer, abandoning callee");
                                     let _ = uac.bye(&*call_handle.dialog.read().await).await;
                                     port_pool.deallocate(agent_pp).await;
+                                    port_pool.deallocate(outbound_pp).await;
                                     queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Abandoned);
                                     fcp_queue::events::campaign_call_failed(
-                                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, "abandoned", &TenantId::nil(),
+                                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, "abandoned", &tenant_id,
                                     ).await;
                                 }
                             }
@@ -3793,10 +4008,10 @@ async fn campaign_dial_task(
                             warn!(dest = %destination, agent = %agent_id, error = %e, "Campaign: agent INVITE failed");
                             let _ = uac.bye(&*call_handle.dialog.read().await).await;
                             port_pool.deallocate(agent_pp).await;
+                            port_pool.deallocate(outbound_pp).await;
                             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Abandoned);
                         }
                     }
-                    port_pool.deallocate(outbound_pp).await;
                 }
                 None => {
                     // No agent available — wait for abandon timeout, then hang up
@@ -3804,17 +4019,11 @@ async fn campaign_dial_task(
                     let abandon = Duration::from_secs(abandon_timeout_secs as u64);
                     tokio::time::sleep(abandon).await;
 
-                    // Check again for an agent
-                    if let Some(_plan) = queue_manager.select_agent(&queue_name) {
-                        // Late agent found — in a full impl we'd bridge here
-                        // For now, just record as abandoned since the callee waited too long
-                    }
-
                     let _ = uac.bye(&*call_handle.dialog.read().await).await;
                     port_pool.deallocate(outbound_pp).await;
                     queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Abandoned);
                     fcp_queue::events::campaign_call_failed(
-                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, "abandoned", &TenantId::nil(),
+                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, "abandoned", &tenant_id,
                     ).await;
                 }
             }
@@ -3825,7 +4034,7 @@ async fn campaign_dial_task(
             port_pool.deallocate(outbound_pp).await;
             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Busy);
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "busy", &TenantId::nil(),
+                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "busy", &tenant_id,
             ).await;
         }
         Ok(Ok(_response)) => {
@@ -3834,7 +4043,7 @@ async fn campaign_dial_task(
             port_pool.deallocate(outbound_pp).await;
             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "failed", &TenantId::nil(),
+                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "failed", &tenant_id,
             ).await;
         }
         Ok(Err(e)) => {
@@ -3843,7 +4052,7 @@ async fn campaign_dial_task(
             port_pool.deallocate(outbound_pp).await;
             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "error", &TenantId::nil(),
+                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "error", &tenant_id,
             ).await;
         }
         Err(_) => {
@@ -3853,7 +4062,7 @@ async fn campaign_dial_task(
             port_pool.deallocate(outbound_pp).await;
             queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::NoAnswer);
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "no_answer", &TenantId::nil(),
+                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "no_answer", &tenant_id,
             ).await;
         }
     }

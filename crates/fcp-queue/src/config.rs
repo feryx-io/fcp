@@ -66,6 +66,11 @@ pub struct QueueSystemConfig {
     /// Maximum number of times an agent can extend their wrap-up per call.
     #[serde(default = "default_max_wrap_up_extensions")]
     pub max_wrap_up_extensions: u32,
+
+    /// Default tenant ID for campaign events and other system-originated calls.
+    /// If None, falls back to TenantId::nil().
+    #[serde(default)]
+    pub default_tenant_id: Option<String>,
 }
 
 impl Default for QueueSystemConfig {
@@ -85,6 +90,7 @@ impl Default for QueueSystemConfig {
             webhook_url: None,
             wrap_up_extension_secs: default_wrap_up_extension(),
             max_wrap_up_extensions: default_max_wrap_up_extensions(),
+            default_tenant_id: None,
         }
     }
 }

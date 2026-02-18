@@ -2021,6 +2021,7 @@ mod tests {
             webhook_url: None,
             wrap_up_extension_secs: 30,
             max_wrap_up_extensions: 3,
+            default_tenant_id: None,
         }
     }
 
@@ -2216,5 +2217,204 @@ mod tests {
         // Agent marked away should not be selected
         let plan = manager.select_agent("sales");
         assert!(plan.is_none());
+    }
+
+    /// Helper: test config with two queues for transfer tests.
+    fn test_config_two_queues() -> QueueSystemConfig {
+        let mut config = test_config();
+        config.queues.insert(
+            "support".to_string(),
+            QueueConfig {
+                name: "Support".to_string(),
+                extension: "6001".to_string(),
+                strategy: DistributionStrategy::RoundRobin,
+                max_wait_time_secs: 300,
+                max_queue_depth: 3,
+                overflow_destination: None,
+                overflow_destinations: Vec::new(),
+                moh_class: None,
+                announce_position: false,
+                announce_interval_secs: 30,
+                announce_eta: false,
+                retry_on_no_answer: true,
+                agents: vec!["200".to_string()],
+                priority: 0,
+                required_skills: Vec::new(),
+                agent_skills: HashMap::new(),
+                dtmf_exit_options: HashMap::new(),
+                callback_enabled: false,
+                callback_digit: None,
+                agent_priorities: HashMap::new(),
+                agent_weights: HashMap::new(),
+                priority_escalation_secs: 0,
+                schedule: Vec::new(),
+                closed_destination: None,
+                timezone: "UTC".to_string(),
+                entry_prompt: None,
+                connect_prompt: None,
+                record_calls: false,
+                recording_format: "wav".to_string(),
+                callback_max_attempts: 3,
+                callback_retry_delay_secs: 60,
+                sla_warning_threshold_pct: 0.0,
+                announcement_language: None,
+                campaign_enabled: false,
+                campaign_dial_ratio: 1.0,
+                campaign_abandon_timeout_secs: 30,
+            },
+        );
+        config
+    }
+
+    // ---- Campaign state machine tests ----
+
+    #[test]
+    fn test_campaign_lifecycle() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        // Load numbers
+        let numbers = vec![
+            CampaignNumber { destination: "15551001".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "15551002".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "15551003".to_string(), caller_id: None, metadata: None },
+        ];
+        manager.load_campaign_numbers("sales", numbers);
+
+        // Verify stats initialized
+        let stats = manager.campaign_stats("sales").unwrap();
+        assert_eq!(stats.numbers_remaining, 3);
+        assert!(!stats.running);
+
+        // Start campaign
+        manager.set_campaign_running("sales", true);
+        assert!(manager.is_campaign_running("sales"));
+
+        // Pop a number
+        let n = manager.next_campaign_number("sales").unwrap();
+        assert_eq!(n.destination, "15551001");
+        let stats = manager.campaign_stats("sales").unwrap();
+        assert_eq!(stats.numbers_remaining, 2);
+
+        // Record result
+        manager.add_campaign_active_dial("sales", &n.destination);
+        manager.campaign_call_result("sales", &n.destination, CampaignCallOutcome::Answered);
+        let stats = manager.campaign_stats("sales").unwrap();
+        assert_eq!(stats.calls_answered, 1);
+
+        // Stop campaign
+        manager.set_campaign_running("sales", false);
+        assert!(!manager.is_campaign_running("sales"));
+    }
+
+    #[test]
+    fn test_campaign_stats_tracking() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        let numbers = vec![
+            CampaignNumber { destination: "1".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "2".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "3".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "4".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "5".to_string(), caller_id: None, metadata: None },
+        ];
+        manager.load_campaign_numbers("sales", numbers);
+        manager.set_campaign_running("sales", true);
+
+        // Pop all and record various outcomes
+        for i in 1..=5 {
+            let n = manager.next_campaign_number("sales").unwrap();
+            manager.add_campaign_active_dial("sales", &n.destination);
+            let outcome = match i {
+                1 => CampaignCallOutcome::Answered,
+                2 => CampaignCallOutcome::NoAnswer,
+                3 => CampaignCallOutcome::Busy,
+                4 => CampaignCallOutcome::Failed,
+                5 => CampaignCallOutcome::Abandoned,
+                _ => unreachable!(),
+            };
+            manager.campaign_call_result("sales", &n.destination, outcome);
+        }
+
+        let stats = manager.campaign_stats("sales").unwrap();
+        assert_eq!(stats.calls_answered, 1);
+        assert_eq!(stats.calls_no_answer, 1);
+        assert_eq!(stats.calls_busy, 1);
+        assert_eq!(stats.calls_failed, 1);
+        assert_eq!(stats.calls_abandoned, 1);
+        assert_eq!(stats.numbers_remaining, 0);
+    }
+
+    #[test]
+    fn test_campaign_numbers_exhaustion() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        let numbers = vec![
+            CampaignNumber { destination: "a".to_string(), caller_id: None, metadata: None },
+            CampaignNumber { destination: "b".to_string(), caller_id: None, metadata: None },
+        ];
+        manager.load_campaign_numbers("sales", numbers);
+
+        assert!(manager.next_campaign_number("sales").is_some());
+        assert!(manager.next_campaign_number("sales").is_some());
+        // Third call should return None
+        assert!(manager.next_campaign_number("sales").is_none());
+    }
+
+    #[test]
+    fn test_campaign_not_running_blocks_dials() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        let numbers = vec![
+            CampaignNumber { destination: "x".to_string(), caller_id: None, metadata: None },
+        ];
+        manager.load_campaign_numbers("sales", numbers);
+
+        // Campaign is not started — is_campaign_running should be false
+        assert!(!manager.is_campaign_running("sales"));
+        // Numbers can still be popped (the distribution loop checks is_campaign_running)
+        assert!(manager.next_campaign_number("sales").is_some());
+    }
+
+    // ---- Transfer tests ----
+
+    #[tokio::test]
+    async fn test_transfer_to_nonexistent_queue() {
+        let manager = QueueManager::new(test_config_two_queues(), None, test_tenant());
+
+        let call = test_queued_call("call-t1", "sales");
+        manager.enqueue_call(call).await.unwrap();
+
+        let result = manager.transfer_to_queue("call-t1", "sales", "nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_call_not_found() {
+        let manager = QueueManager::new(test_config_two_queues(), None, test_tenant());
+
+        let result = manager.transfer_to_queue("no-such-call", "sales", "support").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_to_full_queue() {
+        let manager = QueueManager::new(test_config_two_queues(), None, test_tenant());
+
+        // Fill the support queue (max_queue_depth = 3)
+        for i in 0..3 {
+            let call = test_queued_call(&format!("fill-{}", i), "support");
+            manager.enqueue_call(call).await.unwrap();
+        }
+
+        // Add a call to sales
+        let call = test_queued_call("call-xfer", "sales");
+        manager.enqueue_call(call).await.unwrap();
+
+        // Transfer should fail because support is full
+        let result = manager.transfer_to_queue("call-xfer", "sales", "support").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("full"));
     }
 }

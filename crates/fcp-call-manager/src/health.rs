@@ -69,6 +69,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/campaigns/{queue}/stats", get(campaign_stats_handler))
         .route("/campaigns/{queue}/start", post(campaign_start_handler))
         .route("/campaigns/{queue}/stop", post(campaign_stop_handler))
+        // Queue transfer endpoint
+        .route("/queues/{from}/transfer/{call_id}", post(transfer_call_handler))
         // Supervisor endpoints
         .route("/calls/{id}/monitor", post(monitor_call_handler))
         .route("/calls/{id}/whisper", post(whisper_call_handler))
@@ -847,6 +849,40 @@ async fn campaign_stop_handler(
         "status": "stopped",
         "queue": queue,
     }))
+}
+
+// ---- Queue Transfer Endpoint ----
+
+#[derive(Deserialize)]
+struct TransferBody {
+    to_queue: String,
+}
+
+/// Transfer a call from one queue to another.
+async fn transfer_call_handler(
+    State(state): State<Arc<AppState>>,
+    Path((from, call_id)): Path<(String, String)>,
+    Json(body): Json<TransferBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.transfer_to_queue(&call_id, &from, &body.to_queue).await {
+        Ok(position) => {
+            // Update the session's queue_name if a handler is available
+            if let Some(ref qh) = state.queue_handler {
+                qh.update_session_queue(&call_id, &body.to_queue);
+            }
+            Json(serde_json::json!({
+                "status": "transferred",
+                "call_id": call_id,
+                "from_queue": from,
+                "to_queue": body.to_queue,
+                "position": position,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
 }
 
 // ---- Supervisor Endpoints ----
