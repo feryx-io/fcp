@@ -170,6 +170,10 @@ pub fn router() -> Router<ApiState> {
         )
         .route("/presence/:aor/watchers", get(presence::list_watchers))
         .route(
+            "/presence/:aor/watchers/:subscription_id",
+            delete(presence::delete_subscription),
+        )
+        .route(
             "/presence/:aor/policy",
             get(presence::get_policy)
                 .put(presence::set_policy)

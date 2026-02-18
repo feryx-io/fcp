@@ -102,6 +102,16 @@ impl PresenceManager {
         self.config.read().clone()
     }
 
+    /// Get a reference to the event publisher for external event emission.
+    pub fn event_publisher(&self) -> &Option<Arc<dyn EventPublisher>> {
+        &self.events
+    }
+
+    /// Get a reference to the metrics handle for external instrumentation.
+    pub fn metrics(&self) -> &MetricsHandle {
+        &self.metrics
+    }
+
     /// Cap a requested PUBLISH expiry to the configured min/max range.
     pub fn cap_publish_expiry(&self, requested: u32) -> u32 {
         let config = self.config.read();
@@ -189,7 +199,7 @@ impl PresenceManager {
 
         // Emit metrics
         self.metrics.set_gauge("fcp_presence_presentities", self.presentities.len() as f64, &[]);
-        self.metrics.inc_counter("fcp_presence_updates_total", &[]);
+        self.metrics.inc_counter("fcp_presence_updates_total", &[("tenant_id", &tenant_id.to_string())]);
 
         // Persist to store (non-blocking)
         if let Some(ref store) = self.store {
@@ -329,7 +339,7 @@ impl PresenceManager {
 
         // Emit metrics
         self.metrics.set_gauge("fcp_presence_watchers", self.total_watcher_count() as f64, &[]);
-        self.metrics.inc_counter("fcp_presence_subscribes_total", &[]);
+        self.metrics.inc_counter("fcp_presence_subscribes_total", &[("tenant_id", &tenant_id.to_string())]);
 
         info!(
             presentity = %presentity_aor,
@@ -373,6 +383,7 @@ impl PresenceManager {
 
         if let (Some(watcher_aor), Some(tid)) = (removed_aor, tenant_id) {
             self.metrics.set_gauge("fcp_presence_watchers", self.total_watcher_count() as f64, &[]);
+            self.metrics.inc_counter("fcp_presence_unsubscribes_total", &[]);
 
             info!(
                 presentity = %presentity_aor,
@@ -635,6 +646,8 @@ impl PresenceManager {
             expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
         };
         self.publish_etags.insert(etag.clone(), esc);
+        self.metrics.inc_counter("fcp_presence_publishes_total", &[("tenant_id", &tenant_id.to_string())]);
+        self.metrics.set_gauge("fcp_presence_publish_etags", self.publish_etags.len() as f64, &[]);
         self.recompose_and_update(aor, tenant_id).await;
         etag
     }
@@ -705,6 +718,7 @@ impl PresenceManager {
             .publish_etags
             .remove(etag)
             .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
+        self.metrics.set_gauge("fcp_presence_publish_etags", self.publish_etags.len() as f64, &[]);
         self.recompose_and_update(&old.aor, &old.tenant_id).await;
         Ok(())
     }
@@ -867,6 +881,58 @@ impl PresenceManager {
             .get(aor)
             .map(|entry| entry.clone())
             .unwrap_or_default()
+    }
+
+    /// Force-terminate a specific watcher subscription.
+    /// Returns the removed watcher so the caller can send `terminated;reason=forced` NOTIFY.
+    pub fn force_terminate_watcher(
+        &self,
+        presentity_aor: &str,
+        subscription_id: &str,
+    ) -> Option<Watcher> {
+        if let Some(mut entry) = self.watchers.get_mut(presentity_aor) {
+            if let Some(pos) = entry
+                .iter()
+                .position(|w| w.subscription_id == subscription_id)
+            {
+                let removed = entry.remove(pos);
+                return Some(removed);
+            }
+        }
+        None
+    }
+
+    /// Remove a presentity AND return all its watchers so the caller can send
+    /// `terminated;reason=noresource` NOTIFYs.
+    pub async fn remove_presence_with_watchers(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> Vec<Watcher> {
+        let watchers = self.get_watchers(aor);
+
+        // Remove all watchers for this AOR
+        self.watchers.remove(aor);
+
+        // Remove the presentity itself
+        self.remove_presence(aor, tenant_id).await;
+
+        // Clean up from persistent store
+        if let Some(ref store) = self.store {
+            let store = Arc::clone(store);
+            let metrics = Arc::clone(&self.metrics);
+            let sub_ids: Vec<String> = watchers.iter().map(|w| w.subscription_id.clone()).collect();
+            tokio::spawn(async move {
+                for sub_id in sub_ids {
+                    if let Err(e) = store.remove_subscription(&sub_id).await {
+                        warn!(error = %e, "Failed to remove subscription from store");
+                        metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "remove_subscription")]);
+                    }
+                }
+            });
+        }
+
+        watchers
     }
 
     // ---- Watcher-Info (RFC 3857/3858) ----
@@ -1120,6 +1186,7 @@ impl PresenceManager {
         let key = format!("{}:{}", entry.watcher.subscription_id, entry.watcher.presentity_aor);
         self.notify_retry_queue.insert(key, entry);
         self.metrics.inc_counter("fcp_presence_notify_retries_enqueued_total", &[]);
+        self.metrics.set_gauge("fcp_presence_retry_queue_depth", self.notify_retry_queue.len() as f64, &[]);
     }
 
     /// Dequeue all retry entries whose next_retry_at has passed and are within max retries.
@@ -1153,6 +1220,7 @@ impl PresenceManager {
     pub fn remove_retry(&self, subscription_id: &str, aor: &str) {
         let key = format!("{subscription_id}:{aor}");
         self.notify_retry_queue.remove(&key);
+        self.metrics.set_gauge("fcp_presence_retry_queue_depth", self.notify_retry_queue.len() as f64, &[]);
     }
 
     /// Number of pending retry entries.
@@ -2008,6 +2076,50 @@ mod tests {
 
         let all = mgr.get_all_watchers();
         assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_winfo_watcher_add_remove_lifecycle() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        let watcher = Watcher {
+            watcher_aor: "admin@example.com".to_string(),
+            presentity_aor: "alice@example.com".to_string(),
+            subscription_id: "winfo-sub-1".to_string(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+            tenant_id: tenant.clone(),
+            contact_uri: "sip:admin@192.168.1.100:5060".to_string(),
+            event_package: "presence.winfo".to_string(),
+            sip_call_id: None,
+            sip_from_tag: None,
+            sip_to_tag: None,
+        };
+
+        // Add
+        mgr.add_winfo_watcher(watcher);
+        assert_eq!(mgr.get_winfo_watchers("alice@example.com").len(), 1);
+
+        // Remove
+        mgr.remove_winfo_watcher("alice@example.com", "winfo-sub-1");
+        assert_eq!(mgr.get_winfo_watchers("alice@example.com").len(), 0);
+
+        // Verify no stale entries (adding and removing again shouldn't find old data)
+        mgr.add_winfo_watcher(Watcher {
+            watcher_aor: "admin2@example.com".to_string(),
+            presentity_aor: "alice@example.com".to_string(),
+            subscription_id: "winfo-sub-2".to_string(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+            tenant_id: tenant.clone(),
+            contact_uri: "sip:admin2@192.168.1.100:5060".to_string(),
+            event_package: "presence.winfo".to_string(),
+            sip_call_id: None,
+            sip_from_tag: None,
+            sip_to_tag: None,
+        });
+        let watchers = mgr.get_winfo_watchers("alice@example.com");
+        assert_eq!(watchers.len(), 1);
+        assert_eq!(watchers[0].watcher_aor, "admin2@example.com");
     }
 
     #[tokio::test]

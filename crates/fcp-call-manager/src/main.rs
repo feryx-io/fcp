@@ -1372,11 +1372,25 @@ async fn run_presence_listener(
                         let call_id_str = call_id.to_string();
                         // Update all tracked dialogs for this call to Confirmed
                         for entry in presence.get_all_presences() {
+                            let had_call = !presence.get_active_calls(&entry.aor)
+                                .iter()
+                                .filter(|c| c.call_id == call_id_str)
+                                .collect::<Vec<_>>()
+                                .is_empty();
                             presence.update_call_state(
                                 &entry.aor,
                                 &call_id_str,
                                 fcp_presence::DialogState::Confirmed,
                             );
+                            if had_call {
+                                fcp_presence::events::dialog_changed(
+                                    presence.event_publisher(),
+                                    &entry.aor,
+                                    &call_id_str,
+                                    "confirmed",
+                                    &tenant_id,
+                                ).await;
+                            }
                         }
                         tracing::debug!(%call_id, "Call answered — dialog state updated to Confirmed");
                     }
@@ -1402,6 +1416,13 @@ async fn run_presence_listener(
                                 direction: fcp_presence::CallDirection::Recipient,
                                 dialog_state: fcp_presence::DialogState::Early,
                             });
+                            fcp_presence::events::dialog_changed(
+                                presence.event_publisher(),
+                                &callee_aor,
+                                &call_id_str,
+                                "early",
+                                &tenant_id,
+                            ).await;
                         }
                         if let Some(caller_aor) = extract_aor(from) {
                             presence.set_on_the_phone(&caller_aor, &tenant_id).await;
@@ -1409,19 +1430,41 @@ async fn run_presence_listener(
                             // Track active call for caller (Initiator, Confirmed state)
                             let callee_uri = to.clone();
                             presence.add_active_call(&caller_aor, fcp_presence::ActiveCallInfo {
-                                call_id: call_id_str,
+                                call_id: call_id_str.clone(),
                                 remote_uri: callee_uri,
                                 remote_display_name: None,
                                 direction: fcp_presence::CallDirection::Initiator,
                                 dialog_state: fcp_presence::DialogState::Confirmed,
                             });
+                            fcp_presence::events::dialog_changed(
+                                presence.event_publisher(),
+                                &caller_aor,
+                                &call_id_str,
+                                "confirmed",
+                                &tenant_id,
+                            ).await;
                         }
                     }
 
                     // Call ended → remove active call tracking, revert presence
                     PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
+                        // Collect AORs affected before removing the call
+                        let affected_aors: Vec<String> = presence.get_all_presences()
+                            .iter()
+                            .filter(|p| presence.get_active_calls(&p.aor).iter().any(|c| c.call_id == call_id_str))
+                            .map(|p| p.aor.clone())
+                            .collect();
                         presence.remove_active_call_by_id(&call_id_str);
+                        for aor in &affected_aors {
+                            fcp_presence::events::dialog_changed(
+                                presence.event_publisher(),
+                                aor,
+                                &call_id_str,
+                                "terminated",
+                                &tenant_id,
+                            ).await;
+                        }
                         tracing::debug!(%call_id, "Call ended — active call removed from dialog tracking");
                     }
 
@@ -1492,10 +1535,18 @@ async fn run_presence_notifier(
     loop {
         match stream.next().await {
             Some(event) => {
-                if let PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { aor, .. }) = &event {
-                    if let Err(e) = presence_handler.notify_watchers(aor).await {
-                        warn!(aor = %aor, error = %e, "Failed to notify watchers");
+                match &event {
+                    PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { aor, .. }) => {
+                        if let Err(e) = presence_handler.notify_watchers(aor).await {
+                            warn!(aor = %aor, error = %e, "Failed to notify watchers");
+                        }
                     }
+                    PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged { aor, .. }) => {
+                        if let Err(e) = presence_handler.notify_watchers(aor).await {
+                            warn!(aor = %aor, error = %e, "Failed to notify dialog watchers");
+                        }
+                    }
+                    _ => {}
                 }
             }
             None => {

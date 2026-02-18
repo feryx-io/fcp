@@ -230,6 +230,10 @@ impl SipPresenceHandler {
                             attempts = next_attempt,
                             "NOTIFY retry max attempts exceeded, giving up"
                         );
+                        // Send giveup NOTIFY before removing
+                        let _ = self
+                            .send_notify_to_watcher(&entry.watcher, "terminated;reason=giveup")
+                            .await;
                         self.presence.remove_retry(
                             &entry.watcher.subscription_id,
                             &entry.watcher.presentity_aor,
@@ -250,6 +254,63 @@ impl SipPresenceHandler {
                 }
             }
         }
+    }
+
+    /// Force-terminate a specific watcher subscription with `terminated;reason=forced`.
+    /// Used by admin APIs to forcibly remove a subscription.
+    pub async fn terminate_watcher_forced(
+        &self,
+        presentity_aor: &str,
+        subscription_id: &str,
+    ) -> Result<()> {
+        if let Some(watcher) = self
+            .presence
+            .force_terminate_watcher(presentity_aor, subscription_id)
+        {
+            let _ = self
+                .send_notify_to_watcher(&watcher, "terminated;reason=forced")
+                .await;
+            self.presence
+                .remove_watcher(presentity_aor, subscription_id)
+                .await;
+            info!(
+                presentity = %presentity_aor,
+                watcher = %watcher.watcher_aor,
+                "Watcher force-terminated"
+            );
+        }
+        Ok(())
+    }
+
+    /// Remove a presentity and send `terminated;reason=noresource` to all its watchers.
+    /// Used by admin APIs when deleting a presentity.
+    pub async fn terminate_watchers_noresource(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> Result<()> {
+        let watchers = self
+            .presence
+            .remove_presence_with_watchers(aor, tenant_id)
+            .await;
+
+        let sub_state = "terminated;reason=noresource";
+        for watcher in &watchers {
+            if let Err(e) = self.send_notify_to_watcher(watcher, sub_state).await {
+                warn!(
+                    watcher = %watcher.watcher_aor,
+                    error = %e,
+                    "Failed to send noresource NOTIFY"
+                );
+            }
+        }
+
+        info!(
+            aor = %aor,
+            watcher_count = watchers.len(),
+            "Presentity removed with noresource NOTIFYs"
+        );
+        Ok(())
     }
 
     /// Clamp the requested subscription expiry to the configured range.
@@ -331,6 +392,7 @@ impl SipPresenceHandler {
                         sub_state = %subscription_state,
                         "Presence NOTIFY accepted"
                     );
+                    self.presence.metrics().inc_counter("fcp_presence_notify_success_total", &[]);
                     // Clear any pending retry on success
                     self.presence.remove_retry(
                         &watcher.subscription_id,
@@ -343,6 +405,7 @@ impl SipPresenceHandler {
                         code = response.code(),
                         "Presence NOTIFY rejected"
                     );
+                    self.presence.metrics().inc_counter("fcp_presence_notify_failure_total", &[]);
                     // Enqueue retry for non-2xx responses
                     let retry = fcp_presence::NotifyRetryEntry {
                         watcher: watcher.clone(),
@@ -361,6 +424,7 @@ impl SipPresenceHandler {
                     error = %e,
                     "Failed to send presence NOTIFY"
                 );
+                self.presence.metrics().inc_counter("fcp_presence_notify_failure_total", &[]);
                 // Enqueue retry for send errors
                 let retry = fcp_presence::NotifyRetryEntry {
                     watcher: watcher.clone(),
@@ -680,6 +744,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
                 presentity = %ctx.presentity_aor,
                 "SUBSCRIBE rate limited"
             );
+            self.presence.metrics().inc_counter("fcp_presence_rate_limited_total", &[("type", "subscribe")]);
             let mut response =
                 sip_uas::UserAgentServer::create_response(request, 503, "Service Unavailable");
             let _ = response.headers_mut().push(
@@ -753,6 +818,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
                 presentity = %presentity_aor,
                 "PUBLISH rate limited"
             );
+            self.presence.metrics().inc_counter("fcp_presence_rate_limited_total", &[("type", "publish")]);
             let mut response =
                 sip_uas::UserAgentServer::create_response(request, 503, "Service Unavailable");
             let _ = response.headers_mut().push(

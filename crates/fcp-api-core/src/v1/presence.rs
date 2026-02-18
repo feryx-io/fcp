@@ -310,6 +310,44 @@ pub async fn set_pres_rules(
     ))
 }
 
+/// DELETE /presence/:aor/watchers/:subscription_id — Force-terminate a specific watcher subscription.
+///
+/// Removes the watcher from the manager. The presence NOTIFY dispatcher will send
+/// `terminated;reason=forced` if the SipPresenceHandler is wired up.
+pub async fn delete_subscription(
+    State(state): State<ApiState>,
+    Path((aor, subscription_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let pm = require_presence_manager!(state);
+
+    if pm.get_presence(&aor).is_none() {
+        return Err(ApiError::NotFound(format!(
+            "Presentity '{}' not found",
+            aor
+        )));
+    }
+
+    // Force-terminate the watcher (returns the removed watcher for potential NOTIFY)
+    let removed = pm.force_terminate_watcher(&aor, &subscription_id);
+    if removed.is_none() {
+        return Err(ApiError::NotFound(format!(
+            "Subscription '{}' not found for '{}'",
+            subscription_id, aor
+        )));
+    }
+
+    // Clean up from persistent store
+    pm.remove_watcher(&aor, &subscription_id).await;
+
+    info!(
+        aor = %aor,
+        subscription_id = %subscription_id,
+        "Watcher force-terminated via API"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Parse a presence state string into a `PresenceState` enum.
 fn parse_presence_state(s: &str) -> Result<PresenceState, ApiError> {
     match s {

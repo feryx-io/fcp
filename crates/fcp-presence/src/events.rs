@@ -94,3 +94,24 @@ pub async fn publish_received(
     )
     .await;
 }
+
+/// Publish a DialogChanged event (call started, answered, ended, etc.).
+pub async fn dialog_changed(
+    events: &Option<Arc<dyn EventPublisher>>,
+    aor: &str,
+    call_id: &str,
+    dialog_state: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        PresenceEvent::DialogChanged {
+            aor: aor.to_string(),
+            call_id: call_id.to_string(),
+            dialog_state: dialog_state.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}

@@ -20,3 +20,6 @@ dashmap = "6"
 uuid = { workspace = true }
 quick-xml = { version = "0.37", features = ["serialize"] }
 parking_lot = "0.12"
+
+[dev-dependencies]
+futures = "0.3"

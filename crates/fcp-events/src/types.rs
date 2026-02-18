@@ -840,6 +840,16 @@ pub enum PresenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Dialog state changed (call initiated, answered, ended, etc.)
+    DialogChanged {
+        aor: String,
+        call_id: String,
+        dialog_state: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Voicemail-related events.
@@ -1181,7 +1191,8 @@ impl PresenceEvent {
             PresenceEvent::StatusChanged { timestamp, .. }
             | PresenceEvent::WatcherAdded { timestamp, .. }
             | PresenceEvent::WatcherRemoved { timestamp, .. }
-            | PresenceEvent::PublishReceived { timestamp, .. } => *timestamp,
+            | PresenceEvent::PublishReceived { timestamp, .. }
+            | PresenceEvent::DialogChanged { timestamp, .. } => *timestamp,
         }
     }
 }
