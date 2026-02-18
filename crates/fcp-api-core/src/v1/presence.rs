@@ -181,7 +181,8 @@ pub async fn delete_presence(
         )));
     }
 
-    pm.remove_presence(&aor);
+    let tenant_id = state.default_tenant_id.clone();
+    pm.remove_presence(&aor, &tenant_id).await;
 
     info!(aor = %aor, "Presentity removed via API");
 

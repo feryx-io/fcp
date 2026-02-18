@@ -366,8 +366,11 @@ async fn main() -> Result<()> {
             Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
             presence_store,
         );
-        // Load persisted subscriptions from previous run
+        // Load persisted state from previous run
         let pres_tenant = fcp_core::TenantId::nil();
+        if let Err(e) = pm.load_presentities(&pres_tenant).await {
+            warn!(error = %e, "Failed to load persisted presentity states");
+        }
         if let Err(e) = pm.load_subscriptions(&pres_tenant).await {
             warn!(error = %e, "Failed to load persisted presence subscriptions");
         }
@@ -650,7 +653,7 @@ async fn main() -> Result<()> {
         });
         info!("Presence event listener started");
 
-        // Spawn watcher cleanup task (every 60s)
+        // Spawn watcher + PUBLISH cleanup task (every 60s)
         let pm_cleanup = pm.clone();
         let ph_cleanup = presence_handler.as_ref().map(Arc::clone);
         tokio::spawn(async move {
@@ -667,6 +670,8 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                // Clean up expired PUBLISH ESC entries (RFC 3903)
+                pm_cleanup.cleanup_expired_publishes().await;
             }
         });
 

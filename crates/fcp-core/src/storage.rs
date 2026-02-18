@@ -1200,6 +1200,21 @@ pub trait ConferenceStore: Send + Sync {
     async fn delete_meeting(&self, id: &crate::MeetingId) -> Result<()>;
 }
 
+/// Persisted presentity state for restart recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPresentity {
+    /// Address of Record (user@domain)
+    pub aor: String,
+    /// Presence state as string (e.g. "open", "busy")
+    pub state: String,
+    /// Optional status note
+    pub note: Option<String>,
+    /// Tenant ID for multi-tenancy
+    pub tenant_id: crate::TenantId,
+    /// Unix epoch seconds when this was last updated
+    pub updated_at_epoch: u64,
+}
+
 /// Persisted presence subscription for restart recovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSubscription {
@@ -1213,7 +1228,7 @@ pub struct StoredSubscription {
     pub expires_at_epoch: u64,
 }
 
-/// Persistence for presence watcher subscriptions.
+/// Persistence for presence watcher subscriptions and presentity state.
 #[async_trait]
 pub trait PresenceStore: Send + Sync {
     /// Save or update a subscription.
@@ -1233,6 +1248,27 @@ pub trait PresenceStore: Send + Sync {
 
     /// Delete expired subscriptions and return how many were removed.
     async fn cleanup_expired_subscriptions(&self) -> Result<usize>;
+
+    /// Save or update a presentity's state.
+    async fn save_presentity(&self, presentity: StoredPresentity) -> Result<()> {
+        let _ = presentity;
+        Ok(())
+    }
+
+    /// Load all presentities for a tenant.
+    async fn load_presentities(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredPresentity>> {
+        let _ = tenant_id;
+        Ok(Vec::new())
+    }
+
+    /// Remove a presentity by AOR.
+    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+        let _ = aor;
+        Ok(())
+    }
 }
 
 /// Serde helper for Optional<SystemTime>
@@ -2135,6 +2171,21 @@ impl PresenceStore for DynStorage {
 
     async fn cleanup_expired_subscriptions(&self) -> Result<usize> {
         self.presence_store.cleanup_expired_subscriptions().await
+    }
+
+    async fn save_presentity(&self, presentity: StoredPresentity) -> Result<()> {
+        self.presence_store.save_presentity(presentity).await
+    }
+
+    async fn load_presentities(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredPresentity>> {
+        self.presence_store.load_presentities(tenant_id).await
+    }
+
+    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+        self.presence_store.remove_presentity(aor).await
     }
 }
 

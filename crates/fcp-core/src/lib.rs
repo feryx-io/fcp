@@ -74,7 +74,7 @@ pub use crate::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
     CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
     MediaPreferences, PresenceStore, QueueStore, Registration, RegistrationStore, StoredAgent,
-    StoredSubscription, TenantStore, User, UserFileEntry,
+    StoredPresentity, StoredSubscription, TenantStore, User, UserFileEntry,
 };
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{

@@ -25,4 +25,7 @@ pub mod types;
 
 pub use config::PresenceConfig;
 pub use manager::PresenceManager;
-pub use types::{PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate, Watcher};
+pub use types::{
+    EventStateComposition, PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate,
+    Watcher,
+};

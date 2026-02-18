@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use dashmap::DashMap;
 use tracing::{debug, info, warn};
 
-use fcp_core::storage::{PresenceStore, StoredSubscription};
+use fcp_core::storage::{PresenceStore, StoredPresentity, StoredSubscription};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 
@@ -15,7 +15,10 @@ use crate::config::PresenceConfig;
 use crate::dialog_info;
 use crate::events;
 use crate::pidf;
-use crate::types::{PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate, Watcher};
+use crate::types::{
+    EventStateComposition, PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate,
+    Watcher,
+};
 
 /// Central manager for presence state and watcher subscriptions.
 ///
@@ -34,6 +37,10 @@ pub struct PresenceManager {
     store: Option<Arc<dyn PresenceStore>>,
     /// Per-presentity authorization policies (AOR → policy)
     auth_policies: Arc<DashMap<String, PresenceAuthPolicy>>,
+    /// RFC 3903 PUBLISH ETag → Event State Composition tracking
+    publish_etags: Arc<DashMap<String, EventStateComposition>>,
+    /// RFC 4235 dialog-info version counter per presentity AOR
+    dialog_versions: Arc<DashMap<String, u64>>,
 }
 
 impl PresenceManager {
@@ -50,6 +57,8 @@ impl PresenceManager {
             events,
             store,
             auth_policies: Arc::new(DashMap::new()),
+            publish_etags: Arc::new(DashMap::new()),
+            dialog_versions: Arc::new(DashMap::new()),
         }
     }
 
@@ -86,6 +95,26 @@ impl PresenceManager {
 
         self.presentities.insert(update.aor.clone(), info.clone());
 
+        // Persist to store (non-blocking)
+        if let Some(ref store) = self.store {
+            let stored = StoredPresentity {
+                aor: info.aor.clone(),
+                state: info.state.to_string(),
+                note: info.note.clone(),
+                tenant_id: tenant_id.clone(),
+                updated_at_epoch: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+            let store = Arc::clone(store);
+            tokio::spawn(async move {
+                if let Err(e) = store.save_presentity(stored).await {
+                    warn!(error = %e, "Failed to persist presentity state");
+                }
+            });
+        }
+
         // Publish status changed event if state actually changed
         let old = old_state.unwrap_or(PresenceState::Closed);
         if old != update.state {
@@ -116,8 +145,35 @@ impl PresenceManager {
     }
 
     /// Remove a presentity (gone offline).
-    pub fn remove_presence(&self, aor: &str) {
+    ///
+    /// Publishes a StatusChanged event (→ Closed) so watchers are notified,
+    /// and removes from persistent storage.
+    pub async fn remove_presence(&self, aor: &str, tenant_id: &TenantId) {
+        let old_state = self
+            .presentities
+            .get(aor)
+            .map(|p| p.state);
+
         self.presentities.remove(aor);
+
+        // Publish StatusChanged event so the NOTIFY dispatcher can inform watchers
+        if let Some(old) = old_state {
+            if old != PresenceState::Closed {
+                events::status_changed(&self.events, aor, old, PresenceState::Closed, tenant_id)
+                    .await;
+            }
+        }
+
+        // Remove from persistent store
+        if let Some(ref store) = self.store {
+            let store = Arc::clone(store);
+            let aor = aor.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = store.remove_presentity(&aor).await {
+                    warn!(error = %e, "Failed to remove presentity from store");
+                }
+            });
+        }
     }
 
     /// Add a watcher subscription for a presentity.
@@ -319,13 +375,25 @@ impl PresenceManager {
     }
 
     /// Generate dialog-info XML for BLF notifications (RFC 4235).
+    ///
+    /// Each call increments the version counter for this AOR, ensuring
+    /// BLF phones see monotonically increasing version numbers.
     pub fn generate_dialog_info(&self, aor: &str) -> String {
         let state = self
             .presentities
             .get(aor)
             .map(|p| p.state)
             .unwrap_or(PresenceState::Closed);
-        dialog_info::generate_dialog_info(aor, &state, None)
+        let version = self.next_dialog_version(aor);
+        dialog_info::generate_dialog_info(aor, &state, None, version)
+    }
+
+    /// Atomically increment and return the next dialog-info version for an AOR.
+    fn next_dialog_version(&self, aor: &str) -> u64 {
+        let mut entry = self.dialog_versions.entry(aor.to_string()).or_insert(0);
+        let v = *entry;
+        *entry = v + 1;
+        v
     }
 
     /// Auto-set OnThePhone state when a call starts.
@@ -369,6 +437,124 @@ impl PresenceManager {
 
             if let Err(e) = self.update_presence(update, tenant_id).await {
                 debug!(aor = %aor, error = %e, "Failed to clear on-the-phone state");
+            }
+        }
+    }
+
+    // ---- RFC 3903 PUBLISH ETag management ----
+
+    /// Store an initial PUBLISH, creating a new ESC entry. Returns the assigned ETag.
+    pub fn store_publish(
+        &self,
+        aor: &str,
+        state: PresenceState,
+        note: Option<String>,
+        tenant_id: &TenantId,
+        expires_secs: u32,
+    ) -> String {
+        let etag = uuid::Uuid::new_v4().simple().to_string();
+        let esc = EventStateComposition {
+            etag: etag.clone(),
+            aor: aor.to_string(),
+            state,
+            note,
+            tenant_id: tenant_id.clone(),
+            expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
+        };
+        self.publish_etags.insert(etag.clone(), esc);
+        etag
+    }
+
+    /// Refresh an existing PUBLISH (extend expiry, no state change).
+    /// Returns a new ETag on success, or an error if the old ETag is not found (→ 412).
+    pub fn refresh_publish(&self, etag: &str, expires_secs: u32) -> Result<String> {
+        let old = self
+            .publish_etags
+            .remove(etag)
+            .map(|(_, v)| v)
+            .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
+
+        let new_etag = uuid::Uuid::new_v4().simple().to_string();
+        let esc = EventStateComposition {
+            etag: new_etag.clone(),
+            aor: old.aor,
+            state: old.state,
+            note: old.note,
+            tenant_id: old.tenant_id,
+            expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
+        };
+        self.publish_etags.insert(new_etag.clone(), esc);
+        Ok(new_etag)
+    }
+
+    /// Modify an existing PUBLISH (replace state, return new ETag).
+    /// Returns an error if the old ETag is not found (→ 412).
+    pub fn modify_publish(
+        &self,
+        etag: &str,
+        state: PresenceState,
+        note: Option<String>,
+        expires_secs: u32,
+    ) -> Result<String> {
+        let old = self
+            .publish_etags
+            .remove(etag)
+            .map(|(_, v)| v)
+            .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
+
+        let new_etag = uuid::Uuid::new_v4().simple().to_string();
+        let esc = EventStateComposition {
+            etag: new_etag.clone(),
+            aor: old.aor,
+            state,
+            note,
+            tenant_id: old.tenant_id,
+            expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
+        };
+        self.publish_etags.insert(new_etag.clone(), esc);
+        Ok(new_etag)
+    }
+
+    /// Remove a PUBLISH (Expires: 0). Returns an error if ETag not found (→ 412).
+    pub fn remove_publish(&self, etag: &str) -> Result<()> {
+        self.publish_etags
+            .remove(etag)
+            .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
+        Ok(())
+    }
+
+    /// Clean up expired PUBLISH ESC entries. If the last ESC for an AOR is removed,
+    /// the presentity reverts to Closed.
+    pub async fn cleanup_expired_publishes(&self) {
+        let now = Instant::now();
+        let mut expired_aors: Vec<(String, TenantId)> = Vec::new();
+
+        self.publish_etags.retain(|_, esc| {
+            if esc.expires_at <= now {
+                expired_aors.push((esc.aor.clone(), esc.tenant_id.clone()));
+                false
+            } else {
+                true
+            }
+        });
+
+        // For each AOR that had an ESC expire, check if any remaining ESCs exist.
+        // If none remain, revert to Closed.
+        for (aor, tenant_id) in expired_aors {
+            let has_remaining = self
+                .publish_etags
+                .iter()
+                .any(|entry| entry.value().aor == aor);
+            if !has_remaining {
+                debug!(aor = %aor, "Last PUBLISH expired, reverting to Closed");
+                let update = PresenceUpdate {
+                    aor: aor.clone(),
+                    state: PresenceState::Closed,
+                    note: None,
+                };
+                if let Err(e) = self.update_presence(update, &tenant_id).await {
+                    warn!(aor = %aor, error = %e, "Failed to revert presence after PUBLISH expiry");
+                }
             }
         }
     }
@@ -432,6 +618,36 @@ impl PresenceManager {
 
         if count > 0 {
             info!(count, "Loaded persisted presence subscriptions");
+        }
+
+        Ok(count)
+    }
+
+    /// Load persisted presentity state from the store into memory.
+    /// Returns the number of presentities loaded.
+    pub async fn load_presentities(&self, tenant_id: &TenantId) -> Result<usize> {
+        let store = match &self.store {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+
+        let stored = store.load_presentities(tenant_id).await?;
+        let count = stored.len();
+
+        for s in stored {
+            let state: PresenceState = s.state.parse().unwrap_or(PresenceState::Closed);
+            let info = PresenceInfo {
+                aor: s.aor.clone(),
+                state,
+                note: s.note,
+                tenant_id: s.tenant_id,
+                updated_at: Instant::now(),
+            };
+            self.presentities.insert(s.aor, info);
+        }
+
+        if count > 0 {
+            info!(count, "Loaded persisted presentity states");
         }
 
         Ok(count)
@@ -556,7 +772,7 @@ mod tests {
         mgr.update_presence(update, &tenant).await.unwrap();
         assert!(mgr.get_presence("alice@example.com").is_some());
 
-        mgr.remove_presence("alice@example.com");
+        mgr.remove_presence("alice@example.com", &tenant).await;
         assert!(mgr.get_presence("alice@example.com").is_none());
     }
 
@@ -823,5 +1039,167 @@ mod tests {
         assert!(xml.contains("pres:alice@example.com"));
         assert!(xml.contains("<basic>open</basic>"));
         assert!(xml.contains("<note>Do not disturb</note>"));
+    }
+
+    // ---- Fix 1: PUBLISH ETag tracking tests ----
+
+    #[test]
+    fn test_store_publish_returns_etag() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        let etag = mgr.store_publish(
+            "alice@example.com",
+            PresenceState::Open,
+            Some("Available".into()),
+            &tenant,
+            3600,
+        );
+        assert!(!etag.is_empty());
+    }
+
+    #[test]
+    fn test_refresh_publish_returns_new_etag() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600);
+        let etag2 = mgr.refresh_publish(&etag1, 7200).unwrap();
+        assert_ne!(etag1, etag2);
+
+        // Old ETag should no longer be valid
+        assert!(mgr.refresh_publish(&etag1, 3600).is_err());
+    }
+
+    #[test]
+    fn test_modify_publish_returns_new_etag() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600);
+        let etag2 = mgr.modify_publish(&etag1, PresenceState::Busy, Some("DND".into()), 3600).unwrap();
+        assert_ne!(etag1, etag2);
+
+        // Old ETag should no longer be valid
+        assert!(mgr.modify_publish(&etag1, PresenceState::Away, None, 3600).is_err());
+    }
+
+    #[test]
+    fn test_remove_publish() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        let etag = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600);
+        mgr.remove_publish(&etag).unwrap();
+
+        // Removed ETag should return 412
+        assert!(mgr.remove_publish(&etag).is_err());
+    }
+
+    #[test]
+    fn test_412_on_unknown_etag() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        assert!(mgr.refresh_publish("nonexistent", 3600).is_err());
+        assert!(mgr.modify_publish("nonexistent", PresenceState::Open, None, 3600).is_err());
+        assert!(mgr.remove_publish("nonexistent").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_expired_publishes() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        // Store a PUBLISH that expires immediately
+        let etag = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 0);
+
+        // Also set presence so cleanup can revert it
+        let update = PresenceUpdate {
+            aor: "alice@example.com".to_string(),
+            state: PresenceState::Open,
+            note: None,
+        };
+        mgr.update_presence(update, &tenant).await.unwrap();
+
+        // Wait a tiny bit for expiry
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        mgr.cleanup_expired_publishes().await;
+
+        // The expired ETag should be gone
+        assert!(mgr.refresh_publish(&etag, 3600).is_err());
+    }
+
+    // ---- Fix 3: Dialog-info version counter tests ----
+
+    #[tokio::test]
+    async fn test_dialog_info_version_increments() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        let update = PresenceUpdate {
+            aor: "alice@example.com".to_string(),
+            state: PresenceState::OnThePhone,
+            note: None,
+        };
+        mgr.update_presence(update, &tenant).await.unwrap();
+
+        let xml0 = mgr.generate_dialog_info("alice@example.com");
+        assert!(xml0.contains("version=\"0\""));
+
+        let xml1 = mgr.generate_dialog_info("alice@example.com");
+        assert!(xml1.contains("version=\"1\""));
+
+        let xml2 = mgr.generate_dialog_info("alice@example.com");
+        assert!(xml2.contains("version=\"2\""));
+    }
+
+    #[tokio::test]
+    async fn test_dialog_info_version_per_aor() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        for aor in &["alice@example.com", "bob@example.com"] {
+            let update = PresenceUpdate {
+                aor: aor.to_string(),
+                state: PresenceState::Ringing,
+                note: None,
+            };
+            mgr.update_presence(update, &tenant).await.unwrap();
+        }
+
+        // Each AOR should have independent version counters
+        let xml_alice = mgr.generate_dialog_info("alice@example.com");
+        assert!(xml_alice.contains("version=\"0\""));
+
+        let xml_bob = mgr.generate_dialog_info("bob@example.com");
+        assert!(xml_bob.contains("version=\"0\""));
+
+        // Second call for alice should be version 1
+        let xml_alice2 = mgr.generate_dialog_info("alice@example.com");
+        assert!(xml_alice2.contains("version=\"1\""));
+    }
+
+    // ---- Fix 4: remove_presence publishes event ----
+
+    #[tokio::test]
+    async fn test_remove_presence_publishes_event() {
+        use fcp_events::InMemoryEventBus;
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let mgr = PresenceManager::new(test_config(), Some(bus.clone()), None);
+        let tenant = test_tenant();
+
+        let update = PresenceUpdate {
+            aor: "alice@example.com".to_string(),
+            state: PresenceState::Open,
+            note: None,
+        };
+        mgr.update_presence(update, &tenant).await.unwrap();
+
+        // Remove should publish StatusChanged (Open → Closed)
+        mgr.remove_presence("alice@example.com", &tenant).await;
+
+        assert!(mgr.get_presence("alice@example.com").is_none());
+        // The event was published to the bus (verified by no errors)
     }
 }

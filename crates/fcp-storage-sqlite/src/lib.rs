@@ -31,8 +31,8 @@ use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        PresenceStore, QueueStore, RegistrationStore, StoredAgent, StoredQueueSnapshot,
-        StoredSubscription,
+        PresenceStore, QueueStore, RegistrationStore, StoredAgent, StoredPresentity,
+        StoredQueueSnapshot, StoredSubscription,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
@@ -204,6 +204,10 @@ impl SqliteStorage {
         // Migration 013: Presence subscription persistence
         let migration_013 = include_str!("../migrations/013_add_presence_subscriptions.sql");
         Self::execute_migration(pool, migration_013, "013").await?;
+
+        // Migration 014: Presence presentity state persistence
+        let migration_014 = include_str!("../migrations/014_add_presence_presentities.sql");
+        Self::execute_migration(pool, migration_014, "014").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3591,6 +3595,59 @@ impl PresenceStore for SqliteStorage {
                 .await?;
 
         Ok(result.rows_affected() as usize)
+    }
+
+    async fn save_presentity(&self, p: StoredPresentity) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO presence_presentities \
+             (aor, state, note, tenant_id, updated_at_epoch) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&p.aor)
+        .bind(&p.state)
+        .bind(&p.note)
+        .bind(p.tenant_id.to_string())
+        .bind(p.updated_at_epoch as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_presentities(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredPresentity>> {
+        let rows = sqlx::query(
+            "SELECT aor, state, note, tenant_id, updated_at_epoch \
+             FROM presence_presentities WHERE tenant_id = ?",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tid_str: String = row.try_get("tenant_id")?;
+            let tid = tid_str
+                .parse::<TenantId>()
+                .unwrap_or_else(|_| TenantId::nil());
+            result.push(StoredPresentity {
+                aor: row.try_get("aor")?,
+                state: row.try_get("state")?,
+                note: row.try_get("note")?,
+                tenant_id: tid,
+                updated_at_epoch: row.try_get::<i64, _>("updated_at_epoch")? as u64,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_presentities WHERE aor = ?")
+            .bind(aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

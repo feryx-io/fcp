@@ -36,6 +36,22 @@ impl fmt::Display for PresenceState {
     }
 }
 
+impl std::str::FromStr for PresenceState {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(PresenceState::Open),
+            "closed" => Ok(PresenceState::Closed),
+            "away" => Ok(PresenceState::Away),
+            "busy" => Ok(PresenceState::Busy),
+            "on_the_phone" => Ok(PresenceState::OnThePhone),
+            "ringing" => Ok(PresenceState::Ringing),
+            other => anyhow::bail!("Invalid presence state: {other}"),
+        }
+    }
+}
+
 /// Presence information for a single presentity (AOR).
 #[derive(Debug, Clone)]
 pub struct PresenceInfo {
@@ -68,6 +84,27 @@ pub struct Watcher {
     pub contact_uri: String,
     /// Event package: "presence" (RFC 3856) or "dialog" (RFC 4235 BLF)
     pub event_package: String,
+}
+
+/// Event State Composition (ESC) for RFC 3903 PUBLISH tracking.
+///
+/// Each PUBLISH creates an ESC entry keyed by SIP-ETag. The ESC holds
+/// the published presence state and expiry so that refresh/modify/remove
+/// operations can be validated against the ETag.
+#[derive(Debug, Clone)]
+pub struct EventStateComposition {
+    /// The SIP-ETag assigned to this publication.
+    pub etag: String,
+    /// Presentity AOR this publication belongs to.
+    pub aor: String,
+    /// The published presence state.
+    pub state: PresenceState,
+    /// Optional status note.
+    pub note: Option<String>,
+    /// Tenant context.
+    pub tenant_id: TenantId,
+    /// When this publication expires.
+    pub expires_at: Instant,
 }
 
 /// Update request for presence state.

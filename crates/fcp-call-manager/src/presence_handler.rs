@@ -12,6 +12,7 @@ use tracing::{debug, info, warn};
 
 use fcp_core::TenantId;
 use fcp_presence::{PresenceManager, Watcher};
+use fcp_sip::presence::PresenceHandler;
 use fcp_sip::uac::SipUserAgentClient;
 
 /// SIP presence handler that bridges SIP signaling with PresenceManager.
@@ -96,6 +97,47 @@ impl SipPresenceHandler {
     fn extract_expires(request: &sip_core::Request) -> Option<u32> {
         sip_parse::header(request.headers(), "Expires")
             .and_then(|v| v.parse::<u32>().ok())
+    }
+
+    /// Extract SIP-If-Match header value.
+    fn extract_sip_if_match(request: &sip_core::Request) -> Option<String> {
+        sip_parse::header(request.headers(), "SIP-If-Match").map(|v| v.trim().to_string())
+    }
+
+    /// Send 200 OK for PUBLISH with SIP-ETag and Expires.
+    async fn send_publish_ok(
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+        etag: &str,
+        expires: u32,
+    ) {
+        let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
+        let _ = response.headers_mut().push(
+            smol_str::SmolStr::new("SIP-ETag"),
+            smol_str::SmolStr::new(etag),
+        );
+        let _ = response.headers_mut().push(
+            smol_str::SmolStr::new("Expires"),
+            smol_str::SmolStr::new(expires.to_string()),
+        );
+        handle.send_final(response).await;
+    }
+
+    /// Spawn a background task to notify watchers of a state change.
+    fn spawn_notify_watchers(&self, aor: &str) {
+        let handler = SipPresenceHandler {
+            presence: self.presence.clone(),
+            uac: Arc::clone(&self.uac),
+            tenant_id: self.tenant_id.clone(),
+            default_expires: self.default_expires,
+        };
+        let aor = aor.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Err(e) = handler.notify_watchers(&aor).await {
+                warn!(error = %e, aor = %aor, "Failed to notify watchers after PUBLISH");
+            }
+        });
     }
 
     /// Compute Subscription-State "active;expires=N" for a watcher.
@@ -372,90 +414,154 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
             bail!("Not a presence PUBLISH (event: {event})");
         }
 
+        let if_match = Self::extract_sip_if_match(request);
+        let expires = Self::extract_expires(request).unwrap_or(3600);
         let body = std::str::from_utf8(request.body())
             .context("PUBLISH body is not valid UTF-8")?;
+        let has_body = !body.is_empty();
 
-        if body.is_empty() {
-            // RFC 3903: PUBLISH with empty body is a refresh (keep alive)
-            // Respond 200 OK with a new SIP-ETag
-            let etag = uuid::Uuid::new_v4().simple().to_string();
-            let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
-            let _ = response.headers_mut().push(
-                smol_str::SmolStr::new("SIP-ETag"),
-                smol_str::SmolStr::new(&etag),
-            );
-            let _ = response.headers_mut().push(
-                smol_str::SmolStr::new("Expires"),
-                smol_str::SmolStr::new(
-                    Self::extract_expires(request)
-                        .unwrap_or(3600)
-                        .to_string(),
-                ),
-            );
-            handle.send_final(response).await;
-            return Ok(());
-        }
+        match (has_body, &if_match) {
+            // Initial PUBLISH: body present, no SIP-If-Match
+            (true, None) => {
+                let update = self
+                    .presence
+                    .parse_pidf(body)
+                    .context("Failed to parse PIDF XML from PUBLISH body")?;
 
-        // Parse PIDF XML from body
-        let update = self
-            .presence
-            .parse_pidf(body)
-            .context("Failed to parse PIDF XML from PUBLISH body")?;
+                info!(
+                    aor = %update.aor,
+                    state = %update.state,
+                    "Handling initial PUBLISH"
+                );
 
-        info!(
-            aor = %update.aor,
-            state = %update.state,
-            "Handling presence PUBLISH"
-        );
+                let etag = self.presence.store_publish(
+                    &update.aor,
+                    update.state,
+                    update.note.clone(),
+                    &self.tenant_id,
+                    expires,
+                );
 
-        // Update presence state
-        let info = self
-            .presence
-            .update_presence(update.clone(), &self.tenant_id)
-            .await
-            .context("Failed to update presence from PUBLISH")?;
+                // Update aggregated presence state
+                let info = self
+                    .presence
+                    .update_presence(update, &self.tenant_id)
+                    .await
+                    .context("Failed to update presence from PUBLISH")?;
 
-        // Publish PUBLISH-received event
-        fcp_presence::events::publish_received(
-            &None, // Event is already published by update_presence via StatusChanged
-            &info.aor,
-            info.state,
-            &self.tenant_id,
-        )
-        .await;
+                fcp_presence::events::publish_received(
+                    &None,
+                    &info.aor,
+                    info.state,
+                    &self.tenant_id,
+                )
+                .await;
 
-        // Send 200 OK with SIP-ETag
-        let etag = uuid::Uuid::new_v4().simple().to_string();
-        let mut response = sip_uas::UserAgentServer::create_response(request, 200, "OK");
-        let _ = response.headers_mut().push(
-            smol_str::SmolStr::new("SIP-ETag"),
-            smol_str::SmolStr::new(&etag),
-        );
-        let _ = response.headers_mut().push(
-            smol_str::SmolStr::new("Expires"),
-            smol_str::SmolStr::new(
-                Self::extract_expires(request)
-                    .unwrap_or(3600)
-                    .to_string(),
-            ),
-        );
-        handle.send_final(response).await;
-
-        // Notify all watchers about the state change
-        let aor = info.aor.clone();
-        let handler = SipPresenceHandler {
-            presence: self.presence.clone(),
-            uac: Arc::clone(&self.uac),
-            tenant_id: self.tenant_id.clone(),
-            default_expires: self.default_expires,
-        };
-
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            if let Err(e) = handler.notify_watchers(&aor).await {
-                warn!(error = %e, aor = %aor, "Failed to notify watchers after PUBLISH");
+                Self::send_publish_ok(request, handle, &etag, expires).await;
+                self.spawn_notify_watchers(&info.aor);
             }
-        });
+
+            // Refresh PUBLISH: no body, SIP-If-Match present
+            (false, Some(old_etag)) => {
+                if expires == 0 {
+                    // Remove PUBLISH
+                    match self.presence.remove_publish(old_etag) {
+                        Ok(()) => {
+                            debug!(etag = %old_etag, "PUBLISH removed (Expires: 0)");
+                            let mut response =
+                                sip_uas::UserAgentServer::create_response(request, 200, "OK");
+                            let _ = response.headers_mut().push(
+                                smol_str::SmolStr::new("Expires"),
+                                smol_str::SmolStr::new("0"),
+                            );
+                            handle.send_final(response).await;
+                        }
+                        Err(_) => {
+                            let response = sip_uas::UserAgentServer::create_response(
+                                request,
+                                412,
+                                "Conditional Request Failed",
+                            );
+                            handle.send_final(response).await;
+                        }
+                    }
+                } else {
+                    // Refresh expiry
+                    match self.presence.refresh_publish(old_etag, expires) {
+                        Ok(new_etag) => {
+                            Self::send_publish_ok(request, handle, &new_etag, expires).await;
+                        }
+                        Err(_) => {
+                            let response = sip_uas::UserAgentServer::create_response(
+                                request,
+                                412,
+                                "Conditional Request Failed",
+                            );
+                            handle.send_final(response).await;
+                        }
+                    }
+                }
+            }
+
+            // Modify PUBLISH: body present, SIP-If-Match present
+            (true, Some(old_etag)) => {
+                let update = self
+                    .presence
+                    .parse_pidf(body)
+                    .context("Failed to parse PIDF XML from PUBLISH body")?;
+
+                info!(
+                    aor = %update.aor,
+                    state = %update.state,
+                    etag = %old_etag,
+                    "Handling modify PUBLISH"
+                );
+
+                match self.presence.modify_publish(
+                    old_etag,
+                    update.state,
+                    update.note.clone(),
+                    expires,
+                ) {
+                    Ok(new_etag) => {
+                        let info = self
+                            .presence
+                            .update_presence(update, &self.tenant_id)
+                            .await
+                            .context("Failed to update presence from PUBLISH")?;
+
+                        fcp_presence::events::publish_received(
+                            &None,
+                            &info.aor,
+                            info.state,
+                            &self.tenant_id,
+                        )
+                        .await;
+
+                        Self::send_publish_ok(request, handle, &new_etag, expires).await;
+                        self.spawn_notify_watchers(&info.aor);
+                    }
+                    Err(_) => {
+                        let response = sip_uas::UserAgentServer::create_response(
+                            request,
+                            412,
+                            "Conditional Request Failed",
+                        );
+                        handle.send_final(response).await;
+                    }
+                }
+            }
+
+            // No body, no SIP-If-Match → meaningless per RFC 3903
+            (false, None) => {
+                let response = sip_uas::UserAgentServer::create_response(
+                    request,
+                    400,
+                    "Bad Request",
+                );
+                handle.send_final(response).await;
+            }
+        }
 
         Ok(())
     }
