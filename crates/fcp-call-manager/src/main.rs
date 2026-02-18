@@ -481,6 +481,7 @@ async fn main() -> Result<()> {
         queue_handler: queue_call_handler.clone(),
         event_bus: Arc::clone(&event_bus),
         start_time: Instant::now(),
+        config_path: cli.config.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -576,6 +577,22 @@ async fn main() -> Result<()> {
         info!(count = config.events.webhooks.len(), "Webhook dispatchers started");
     }
 
+    // 21c. Spawn dedicated queue webhook dispatcher (if configured in queue section)
+    if let Some(ref url) = config.queue.webhook_url {
+        let wh = config::WebhookConfig {
+            url: url.clone(),
+            event_types: vec!["queue".to_string()],
+            secret: None,
+        };
+        let bus = Arc::clone(&event_bus);
+        tokio::spawn(async move {
+            if let Err(e) = run_webhook_dispatcher(bus, wh).await {
+                tracing::error!(%e, "Queue webhook dispatcher failed");
+            }
+        });
+        info!(url = %url, "Queue webhook dispatcher started");
+    }
+
     // 22. Publish SystemEvent::Started to announce this node
     {
         let started_event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::Started {
@@ -616,16 +633,42 @@ async fn main() -> Result<()> {
         "fcp-call-manager ready — listening for SIP messages"
     );
 
-    // 21. Wait for shutdown signal
+    // 21. Wait for shutdown signal (with SIGHUP for config reload)
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("Failed to register SIGTERM handler");
+    let mut sighup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .expect("Failed to register SIGHUP handler");
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
-        }
-        _ = sigterm.recv() => {
-            info!("Received SIGTERM, initiating graceful shutdown...");
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+                break;
+            }
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM, initiating graceful shutdown...");
+                break;
+            }
+            _ = sighup.recv() => {
+                info!("Received SIGHUP, reloading queue configuration...");
+                match config::load_config(cli.config.as_deref()) {
+                    Ok(new_config) => {
+                        if let Some(ref qm) = queue_manager {
+                            let new_queues = qm.reload_config(new_config.queue.clone());
+                            if let Some(ref qh) = queue_call_handler {
+                                for name in new_queues {
+                                    info!(queue = %name, "Spawning distribution loop for new queue");
+                                    qh.spawn_distribution_loop_for(name);
+                                }
+                            }
+                            info!("Queue configuration reloaded successfully");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to reload configuration");
+                    }
+                }
+            }
         }
     }
 

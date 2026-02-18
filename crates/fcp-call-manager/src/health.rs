@@ -30,6 +30,7 @@ pub struct AppState {
     pub queue_handler: Option<Arc<QueueCallHandler>>,
     pub event_bus: Arc<InMemoryEventBus>,
     pub start_time: Instant,
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 /// Run the HTTP health/status/calls server.
@@ -45,6 +46,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // Queue/Agent management endpoints
         .route("/queues", get(list_queues_handler).post(create_queue_handler))
         .route("/queues/{name}", get(get_queue_handler).put(update_queue_handler).delete(delete_queue_handler))
+        .route("/queues/{name}/drain", post(drain_queue_handler).delete(undrain_queue_handler))
+        .route("/queues/reload", post(reload_queues_handler))
         .route("/queues/{name}/history", get(queue_history_handler))
         .route("/agents", get(list_agents_handler))
         .route("/agents/{id}", get(get_agent_handler))
@@ -439,6 +442,7 @@ async fn get_queue_handler(
     match qm.queue_stats(&name) {
         Some(stats) => {
             let agents = qm.list_agents_for_queue(&name);
+            let is_draining = qm.is_queue_draining(&name);
             let agent_list: Vec<serde_json::Value> = agents
                 .iter()
                 .map(|a| {
@@ -452,6 +456,7 @@ async fn get_queue_handler(
             Json(serde_json::json!({
                 "queue": stats,
                 "agents": agent_list,
+                "is_draining": is_draining,
             }))
         }
         None => Json(serde_json::json!({"error": format!("Queue '{}' not found", name)})),
@@ -509,6 +514,74 @@ async fn delete_queue_handler(
         })),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
     }
+}
+
+/// Start draining a queue — reject new calls, let existing ones finish.
+async fn drain_queue_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.drain_queue(&name).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "draining",
+            "queue": name,
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Stop draining a queue — resume accepting calls.
+async fn undrain_queue_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.undrain_queue(&name).await {
+        Ok(()) => Json(serde_json::json!({
+            "status": "active",
+            "queue": name,
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+/// Reload queue configuration from disk.
+async fn reload_queues_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+
+    let config_path = state.config_path.as_deref();
+    let new_config = match crate::config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("Failed to load config: {}", e),
+            }));
+        }
+    };
+
+    let new_queues = qm.reload_config(new_config.queue.clone());
+
+    // Spawn distribution loops for any newly added queues
+    if let Some(ref qh) = state.queue_handler {
+        for name in &new_queues {
+            info!(queue = %name, "Spawning distribution loop for new queue");
+            qh.spawn_distribution_loop_for(name.clone());
+        }
+    }
+
+    Json(serde_json::json!({
+        "status": "reloaded",
+        "new_queues": new_queues,
+    }))
 }
 
 #[derive(Deserialize)]

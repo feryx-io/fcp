@@ -52,6 +52,12 @@ pub struct QueueSystemConfig {
     /// Directory for storing call recordings.
     #[serde(default)]
     pub recording_dir: Option<String>,
+
+    /// Optional webhook URL for queue events. All QueueEvent types are POSTed
+    /// as JSON to this URL. Uses the same delivery infrastructure as the
+    /// general webhook dispatcher.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 impl Default for QueueSystemConfig {
@@ -68,6 +74,7 @@ impl Default for QueueSystemConfig {
             max_no_answer: default_max_no_answer(),
             default_max_concurrent_calls: default_one(),
             recording_dir: None,
+            webhook_url: None,
         }
     }
 }

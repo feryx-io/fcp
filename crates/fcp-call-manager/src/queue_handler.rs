@@ -269,6 +269,13 @@ impl QueueCallHandler {
         &self.queue_manager
     }
 
+    /// Spawn a distribution loop for a dynamically added queue.
+    /// Called after reload_config() adds new queues.
+    pub fn spawn_distribution_loop_for(&self, queue_name: String) {
+        let ring_timeout = self.config.max_ring_time_secs;
+        self.spawn_distribution_loop(queue_name, ring_timeout);
+    }
+
     /// Build an AnnounceConfig if position announcements are enabled.
     fn build_announce_config(&self) -> Option<AnnounceConfig> {
         let cache = self.announcement_cache.as_ref()?;
@@ -678,6 +685,7 @@ impl QueueCallHandler {
                     .collect();
 
                 // Process normal waiting calls first
+                let no_waiting = waiting_call_ids.is_empty();
                 for call_id in waiting_call_ids {
                     // Try to select an agent for this call
                     let plan = match queue_manager.select_agent(&queue_name) {
@@ -755,6 +763,20 @@ impl QueueCallHandler {
                         Arc::clone(&event_bus),
                         queue_name.clone(),
                     );
+                }
+
+                // Check if queue is fully drained (draining + no waiting + no active sessions)
+                if queue_manager.is_queue_draining(&queue_name) && no_waiting {
+                    let active = sessions.iter().any(|e| e.value().queue_name == queue_name);
+                    if !active {
+                        let events = queue_manager.events_ref();
+                        fcp_queue::events::queue_drained(
+                            &events,
+                            &queue_name,
+                            &TenantId::nil(),
+                        )
+                        .await;
+                    }
                 }
             }
         });
@@ -1702,6 +1724,28 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                     call_id = %call_id,
                     queue = %queue_name,
                     "Queue is closed, no destination configured, rejecting"
+                );
+                let reject = UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
+                handle.send_final(reject).await;
+                return Ok(());
+            }
+        }
+
+        // 1c. Check if queue is draining
+        if self.queue_manager.is_queue_draining(&queue_name) {
+            if let Some(dest) = self.queue_manager.get_closed_destination(&queue_name) {
+                info!(
+                    call_id = %call_id,
+                    queue = %queue_name,
+                    dest = %dest,
+                    "Queue is draining, routing to closed destination"
+                );
+                bail!("Queue '{}' is draining; route to {}", queue_name, dest);
+            } else {
+                info!(
+                    call_id = %call_id,
+                    queue = %queue_name,
+                    "Queue is draining, no destination configured, rejecting"
                 );
                 let reject = UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
                 handle.send_final(reject).await;

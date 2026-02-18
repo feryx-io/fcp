@@ -735,6 +735,22 @@ pub enum QueueEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Queue entered draining mode — no new calls accepted, existing calls continue
+    QueueDraining {
+        queue_name: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Queue fully drained — drain mode active, zero waiting calls, zero active sessions
+    QueueDrained {
+        queue_name: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Queue statistics snapshot for event publishing.
@@ -1073,7 +1089,9 @@ impl QueueEvent {
             | QueueEvent::CallbackAttempted { timestamp, .. }
             | QueueEvent::CallbackCompleted { timestamp, .. }
             | QueueEvent::CallbackFailed { timestamp, .. }
-            | QueueEvent::ServiceLevelWarning { timestamp, .. } => *timestamp,
+            | QueueEvent::ServiceLevelWarning { timestamp, .. }
+            | QueueEvent::QueueDraining { timestamp, .. }
+            | QueueEvent::QueueDrained { timestamp, .. } => *timestamp,
         }
     }
 }

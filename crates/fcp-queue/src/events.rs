@@ -369,6 +369,40 @@ pub async fn service_level_warning(
     .await;
 }
 
+/// Publish a QueueDraining event (queue entered drain mode).
+pub async fn queue_draining(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::QueueDraining {
+            queue_name: queue_name.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a QueueDrained event (drain complete — zero waiting, zero active).
+pub async fn queue_drained(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::QueueDrained {
+            queue_name: queue_name.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a StatsSnapshot event for wallboard consumers.
 pub async fn stats_snapshot(
     events: &Option<Arc<dyn EventPublisher>>,

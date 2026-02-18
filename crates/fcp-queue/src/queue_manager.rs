@@ -107,6 +107,11 @@ impl QueueManager {
         self.config.read().enabled
     }
 
+    /// Get a reference to the event publisher (for use in external distribution loops).
+    pub fn events_ref(&self) -> Option<Arc<dyn EventPublisher>> {
+        self.events.clone()
+    }
+
     /// Escalate call priorities for a queue based on wait time.
     pub fn escalate_priorities(&self, queue_name: &str) {
         if let Some(mut queue) = self.queues.get_mut(queue_name) {
@@ -217,6 +222,94 @@ impl QueueManager {
                 .clone()
                 .or_else(|| q.config.overflow_destination.clone())
         })
+    }
+
+    // ---- Drain Operations ----
+
+    /// Start draining a queue — reject new calls, let existing ones finish.
+    pub async fn drain_queue(&self, queue_name: &str) -> Result<()> {
+        let tenant_id = {
+            let mut queue = self
+                .queues
+                .get_mut(queue_name)
+                .ok_or_else(|| anyhow::anyhow!("Queue '{}' not found", queue_name))?;
+            queue.draining = true;
+            queue.tenant_id.clone()
+        };
+        events::queue_draining(&self.events, queue_name, &tenant_id).await;
+        info!(queue = %queue_name, "Queue draining started");
+        Ok(())
+    }
+
+    /// Stop draining — resume accepting calls.
+    pub async fn undrain_queue(&self, queue_name: &str) -> Result<()> {
+        let mut queue = self
+            .queues
+            .get_mut(queue_name)
+            .ok_or_else(|| anyhow::anyhow!("Queue '{}' not found", queue_name))?;
+        queue.draining = false;
+        drop(queue);
+        info!(queue = %queue_name, "Queue draining cancelled");
+        Ok(())
+    }
+
+    /// Check if a queue is draining.
+    pub fn is_queue_draining(&self, queue_name: &str) -> bool {
+        self.queues
+            .get(queue_name)
+            .map(|q| q.draining)
+            .unwrap_or(false)
+    }
+
+    // ---- Config Reload ----
+
+    /// Reload queue configuration. Adds new queues, updates existing ones.
+    /// Does NOT delete queues that are removed from config (to avoid dropping active calls).
+    /// Returns list of newly added queue names (for spawning distribution loops).
+    pub fn reload_config(&self, new_config: QueueSystemConfig) -> Vec<String> {
+        let mut new_queues = Vec::new();
+
+        for (name, qc) in &new_config.queues {
+            if self.queues.contains_key(name) {
+                // Update existing queue config (preserves waiting_calls, draining state)
+                if let Some(mut queue) = self.queues.get_mut(name) {
+                    // Update extension mapping if it changed
+                    let old_extension = queue.config.extension.clone();
+                    if old_extension != qc.extension {
+                        self.extension_map.remove(&old_extension);
+                        self.extension_map
+                            .insert(qc.extension.clone(), name.clone());
+                    }
+                    queue.config = qc.clone();
+                }
+            } else {
+                // New queue — insert it
+                let tenant_id = TenantId::nil();
+                self.queues.insert(
+                    name.clone(),
+                    Queue::new(name.clone(), tenant_id, qc.clone()),
+                );
+                self.extension_map
+                    .insert(qc.extension.clone(), name.clone());
+                self.calls_handled_today.insert(name.clone(), 0);
+                self.calls_abandoned_today.insert(name.clone(), 0);
+                self.calls_within_sl.insert(name.clone(), 0);
+                self.calls_offered_today.insert(name.clone(), 0);
+                self.round_robin_counters
+                    .insert(name.clone(), AtomicUsize::new(0));
+                new_queues.push(name.clone());
+            }
+        }
+
+        // Update system-level config
+        *self.config.write() = new_config;
+
+        info!(
+            updated = self.queues.len(),
+            new = new_queues.len(),
+            "Queue configuration reloaded"
+        );
+        new_queues
     }
 
     // ---- Agent Operations ----
@@ -417,6 +510,11 @@ impl QueueManager {
             bail!("Queue '{}' is currently closed", queue_name);
         }
 
+        // Check if queue is draining
+        if self.is_queue_draining(&queue_name) {
+            bail!("Queue '{}' is draining — not accepting new calls", queue_name);
+        }
+
         let mut queue = self
             .queues
             .get_mut(&queue_name)
@@ -510,6 +608,38 @@ impl QueueManager {
 
     // ---- Distribution ----
 
+    /// Check if any higher-priority queue (lower priority number) has waiting calls
+    /// that this agent could serve. If so, defer — let that queue's loop claim them.
+    pub fn should_defer_agent(&self, agent_id: &str, queue_name: &str) -> bool {
+        let this_queue_priority = self
+            .queues
+            .get(queue_name)
+            .map(|q| q.config.priority)
+            .unwrap_or(u32::MAX);
+
+        let agent = match self.agents.get(agent_id) {
+            Some(a) => a,
+            None => return false,
+        };
+
+        for other_queue_name in &agent.queues {
+            if other_queue_name == queue_name {
+                continue;
+            }
+            if let Some(other_queue) = self.queues.get(other_queue_name) {
+                // Skip queues that are lower or equal priority (higher or equal number)
+                if other_queue.config.priority >= this_queue_priority {
+                    continue;
+                }
+                // Higher-priority queue has waiting calls — defer this agent
+                if !other_queue.waiting_calls.is_empty() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Select the next agent for a call in the given queue.
     /// Returns None if no agents are available for that queue.
     pub fn select_agent(&self, queue_name: &str) -> Option<DistributionPlan> {
@@ -527,6 +657,9 @@ impl QueueManager {
                 available_agents.push(agent.clone());
             }
         }
+
+        // Filter out agents that should be deferred to higher-priority queues
+        available_agents.retain(|agent| !self.should_defer_agent(&agent.id, queue_name));
 
         // Sort by per-queue priority (lower = higher priority), then by ID for deterministic order
         available_agents.sort_by(|a, b| {
@@ -1648,6 +1781,7 @@ mod tests {
             max_no_answer: 3,
             default_max_concurrent_calls: 1,
             recording_dir: None,
+            webhook_url: None,
         }
     }
 

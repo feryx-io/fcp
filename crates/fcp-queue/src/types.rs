@@ -176,6 +176,8 @@ pub struct Queue {
     pub config: QueueConfig,
     /// Calls waiting in this queue, ordered by (priority, enqueue time).
     pub waiting_calls: Vec<QueuedCall>,
+    /// Whether this queue is draining (no new calls accepted, existing calls continue).
+    pub draining: bool,
 }
 
 impl Queue {
@@ -186,6 +188,7 @@ impl Queue {
             tenant_id,
             config,
             waiting_calls: Vec::new(),
+            draining: false,
         }
     }
 
