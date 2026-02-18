@@ -29,6 +29,7 @@ pub struct AppState {
     pub media_manager: Arc<MediaManager>,
     pub queue_manager: Option<Arc<QueueManager>>,
     pub queue_handler: Option<Arc<QueueCallHandler>>,
+    pub presence_manager: Option<fcp_presence::PresenceManager>,
     pub event_bus: Arc<InMemoryEventBus>,
     pub start_time: Instant,
     pub config_path: Option<std::path::PathBuf>,
@@ -76,6 +77,9 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/calls/{id}/whisper", post(whisper_call_handler))
         .route("/calls/{id}/barge", post(barge_call_handler))
         .route("/calls/{id}/supervisor/leave", post(supervisor_leave_handler))
+        // Presence endpoints
+        .route("/presence", get(list_presence_handler))
+        .route("/presence/{aor}", get(get_presence_handler).put(update_presence_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -1154,5 +1158,110 @@ async fn wallboard_ws_session(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
         }
+    }
+}
+
+// ── Presence endpoints ──────────────────────────────────────────────────
+
+/// List all tracked presentities.
+async fn list_presence_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let Some(ref pm) = state.presence_manager else {
+        return Json(serde_json::json!({"error": "Presence service not enabled", "presentities": []}));
+    };
+
+    let presences: Vec<serde_json::Value> = pm
+        .get_all_presences()
+        .into_iter()
+        .map(|p| {
+            serde_json::json!({
+                "aor": p.aor,
+                "state": p.state.to_string(),
+                "note": p.note,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "presentities": presences,
+        "total": pm.presentity_count(),
+        "total_watchers": pm.total_watcher_count(),
+    }))
+}
+
+/// Get presence for a specific AOR.
+async fn get_presence_handler(
+    State(state): State<Arc<AppState>>,
+    Path(aor): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref pm) = state.presence_manager else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Presence service not enabled"}))).into_response();
+    };
+
+    // URL-decode the AOR (@ may be encoded as %40)
+
+    match pm.get_presence(&aor) {
+        Some(info) => {
+            let watchers: Vec<serde_json::Value> = pm
+                .get_watchers(&aor)
+                .into_iter()
+                .map(|w| serde_json::json!({"watcher_aor": w.watcher_aor, "subscription_id": w.subscription_id}))
+                .collect();
+
+            let pidf = pm.generate_pidf(&aor);
+
+            Json(serde_json::json!({
+                "aor": info.aor,
+                "state": info.state.to_string(),
+                "note": info.note,
+                "watchers": watchers,
+                "pidf_xml": pidf,
+            }))
+            .into_response()
+        }
+        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Presentity '{}' not found", aor)}))).into_response(),
+    }
+}
+
+/// Update presence for a specific AOR.
+async fn update_presence_handler(
+    State(state): State<Arc<AppState>>,
+    Path(aor): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(ref pm) = state.presence_manager else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Presence service not enabled"}))).into_response();
+    };
+
+
+    let state_str = body["state"].as_str().unwrap_or("open");
+    let presence_state = match state_str {
+        "open" => fcp_presence::PresenceState::Open,
+        "closed" => fcp_presence::PresenceState::Closed,
+        "away" => fcp_presence::PresenceState::Away,
+        "busy" => fcp_presence::PresenceState::Busy,
+        "on_the_phone" => fcp_presence::PresenceState::OnThePhone,
+        "ringing" => fcp_presence::PresenceState::Ringing,
+        other => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Unknown state: {}", other)}))).into_response();
+        }
+    };
+
+    let note = body["note"].as_str().map(|s| s.to_string());
+
+    let update = fcp_presence::PresenceUpdate {
+        aor,
+        state: presence_state,
+        note,
+    };
+
+    let tenant_id = fcp_core::TenantId::nil();
+    match pm.update_presence(update, &tenant_id).await {
+        Ok(info) => Json(serde_json::json!({
+            "aor": info.aor,
+            "state": info.state.to_string(),
+            "note": info.note,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

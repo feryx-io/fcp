@@ -41,6 +41,9 @@ pub enum PlatformEvent {
 
     /// Queue/ACD event
     Queue(QueueEvent),
+
+    /// Presence status event
+    Presence(PresenceEvent),
 }
 
 /// Call lifecycle events.
@@ -797,6 +800,48 @@ pub struct QueueStatsSnapshot {
     pub service_level_pct: f64,
 }
 
+/// Presence-related events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PresenceEvent {
+    /// User presence status changed
+    StatusChanged {
+        aor: String,
+        old_state: String,
+        new_state: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A watcher subscribed to a presentity
+    WatcherAdded {
+        presentity_aor: String,
+        watcher_aor: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A watcher unsubscribed from a presentity
+    WatcherRemoved {
+        presentity_aor: String,
+        watcher_aor: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// PUBLISH received from a user agent
+    PublishReceived {
+        aor: String,
+        state: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
 /// Voicemail-related events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -897,6 +942,7 @@ impl PlatformEvent {
             PlatformEvent::Voicemail(event) => event.call_id(),
             PlatformEvent::Conference(_) => None,
             PlatformEvent::Queue(_) => None,
+            PlatformEvent::Presence(_) => None,
         }
     }
 
@@ -914,6 +960,7 @@ impl PlatformEvent {
             PlatformEvent::Voicemail(event) => event.timestamp(),
             PlatformEvent::Conference(event) => event.timestamp(),
             PlatformEvent::Queue(event) => event.timestamp(),
+            PlatformEvent::Presence(event) => event.timestamp(),
         }
     }
 }
@@ -1124,6 +1171,17 @@ impl QueueEvent {
             | QueueEvent::CampaignCallPlaced { timestamp, .. }
             | QueueEvent::CampaignCallConnected { timestamp, .. }
             | QueueEvent::CampaignCallFailed { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl PresenceEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            PresenceEvent::StatusChanged { timestamp, .. }
+            | PresenceEvent::WatcherAdded { timestamp, .. }
+            | PresenceEvent::WatcherRemoved { timestamp, .. }
+            | PresenceEvent::PublishReceived { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -66,6 +66,10 @@ pub struct CallManagerConfig {
     /// ACD/Queue configuration.
     #[serde(default)]
     pub queue: fcp_queue::QueueSystemConfig,
+
+    /// Presence service configuration.
+    #[serde(default)]
+    pub presence: fcp_presence::PresenceConfig,
 }
 
 /// Service identification.

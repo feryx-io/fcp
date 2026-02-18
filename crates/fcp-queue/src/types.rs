@@ -7,6 +7,16 @@ use std::time::Instant;
 
 use crate::config::QueueConfig;
 
+/// Trait for checking agent presence/DND status.
+///
+/// Implement this to let the queue distribution engine skip agents
+/// who have set themselves as unavailable via presence (DND, Busy, etc.).
+pub trait PresenceChecker: Send + Sync {
+    /// Returns true if the agent (identified by extension/AOR) should be
+    /// skipped for call distribution due to their presence state.
+    fn is_dnd(&self, agent_extension: &str) -> bool;
+}
+
 /// Agent availability state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

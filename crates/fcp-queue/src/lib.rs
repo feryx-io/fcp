@@ -29,5 +29,5 @@ pub use distribution::DistributionPlan;
 pub use queue_manager::QueueManager;
 pub use types::{
     Agent, AgentState, AgentStats, CallbackInfo, CampaignCallOutcome, CampaignNumber,
-    CampaignStats, Queue, QueueStats, QueuedCall,
+    CampaignStats, PresenceChecker, Queue, QueueStats, QueuedCall,
 };

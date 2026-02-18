@@ -32,6 +32,7 @@ fcp-events = { path = "../fcp-events" }
 fcp-flow = { path = "../fcp-flow" }
 fcp-pbx = { path = "../fcp-pbx" }
 fcp-queue = { path = "../fcp-queue" }
+fcp-presence = { path = "../fcp-presence" }
 
 # Forge media crates
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }

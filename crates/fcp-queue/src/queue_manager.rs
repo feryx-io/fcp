@@ -62,6 +62,8 @@ pub struct QueueManager {
     campaign_stats: Arc<DashMap<String, CampaignStats>>,
     /// Whether each campaign is running (queue_name → running).
     campaign_running: Arc<DashMap<String, bool>>,
+    /// Optional presence checker for DND/busy filtering during agent selection.
+    presence_checker: Arc<parking_lot::RwLock<Option<Arc<dyn crate::types::PresenceChecker>>>>,
 }
 
 impl QueueManager {
@@ -109,7 +111,15 @@ impl QueueManager {
             campaign_active_dials: Arc::new(DashMap::new()),
             campaign_stats: Arc::new(DashMap::new()),
             campaign_running: Arc::new(DashMap::new()),
+            presence_checker: Arc::new(parking_lot::RwLock::new(None)),
         }
+    }
+
+    /// Set a presence checker for DND/busy filtering during agent selection.
+    ///
+    /// Takes `&self` so it can be called after the manager is wrapped in `Arc`.
+    pub fn set_presence_checker(&self, checker: Arc<dyn crate::types::PresenceChecker>) {
+        *self.presence_checker.write() = Some(checker);
     }
 
     /// Set the persistent store for agent state.
@@ -893,6 +903,11 @@ impl QueueManager {
 
         // Filter out agents that should be deferred to higher-priority queues
         available_agents.retain(|agent| !self.should_defer_agent(&agent.id, queue_name));
+
+        // Filter out agents in DND/Busy via presence checker
+        if let Some(ref checker) = *self.presence_checker.read() {
+            available_agents.retain(|agent| !checker.is_dnd(&agent.extension));
+        }
 
         // Sort by per-queue priority (lower = higher priority), then by ID for deterministic order
         available_agents.sort_by(|a, b| {
