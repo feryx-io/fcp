@@ -374,6 +374,9 @@ async fn main() -> Result<()> {
         if let Err(e) = pm.load_subscriptions(&pres_tenant).await {
             warn!(error = %e, "Failed to load persisted presence subscriptions");
         }
+        if let Err(e) = pm.load_auth_policies(&pres_tenant).await {
+            warn!(error = %e, "Failed to load persisted presence auth policies");
+        }
         info!("Presence service enabled");
 
         // Wire presence into queue distribution so DND/Busy agents are skipped
@@ -653,11 +656,12 @@ async fn main() -> Result<()> {
         });
         info!("Presence event listener started");
 
-        // Spawn watcher + PUBLISH cleanup task (every 60s)
+        // Spawn watcher + PUBLISH + store cleanup task
         let pm_cleanup = pm.clone();
         let ph_cleanup = presence_handler.as_ref().map(Arc::clone);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let interval_dur = pm_cleanup.cleanup_interval();
+            let mut interval = tokio::time::interval(interval_dur);
             loop {
                 interval.tick().await;
                 let removed = pm_cleanup.cleanup_expired_watchers();
@@ -672,6 +676,8 @@ async fn main() -> Result<()> {
                 }
                 // Clean up expired PUBLISH ESC entries (RFC 3903)
                 pm_cleanup.cleanup_expired_publishes().await;
+                // Clean up expired subscriptions from persistent store
+                pm_cleanup.cleanup_expired_subscriptions_from_store().await;
             }
         });
 
@@ -766,6 +772,17 @@ async fn main() -> Result<()> {
     }
 
     // 21. Graceful shutdown
+    // Send terminated NOTIFYs to all presence watchers (RFC 3265 §3.2.4, reason=probation)
+    if let (Some(ref pm), Some(ref ph)) = (&presence_manager, &presence_handler) {
+        let all_watchers = pm.get_all_watchers();
+        if !all_watchers.is_empty() {
+            info!(count = all_watchers.len(), "Sending terminated NOTIFYs to presence watchers...");
+            if let Err(e) = ph.send_terminated_notifies(&all_watchers, "probation").await {
+                warn!(error = %e, "Failed to send some shutdown NOTIFYs");
+            }
+        }
+    }
+
     // Signal trunk registration task to de-register (if running)
     if let Some(tx) = trunk_shutdown_tx {
         let _ = tx.send(true);

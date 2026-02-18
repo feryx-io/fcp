@@ -59,13 +59,13 @@ pub struct UpdatePresenceRequest {
 
 // ---- Handlers ----
 
-/// GET /presence — List all tracked presentities.
+/// GET /presence — List all tracked presentities (filtered by tenant).
 pub async fn list_presences(
     State(state): State<ApiState>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    let presences = pm.get_all_presences();
+    let presences = pm.get_presences_by_tenant(&state.default_tenant_id);
     let responses: Vec<PresenceResponse> = presences
         .into_iter()
         .map(|p| {

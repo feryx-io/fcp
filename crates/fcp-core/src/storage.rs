@@ -1228,6 +1228,18 @@ pub struct StoredSubscription {
     pub expires_at_epoch: u64,
 }
 
+/// Persisted presence authorization policy for restart recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredAuthPolicy {
+    pub aor: String,
+    pub default_allow: bool,
+    /// JSON-encoded Vec<String> of allowed watcher AORs
+    pub allow_list_json: String,
+    /// JSON-encoded Vec<String> of blocked watcher AORs
+    pub block_list_json: String,
+    pub tenant_id: crate::TenantId,
+}
+
 /// Persistence for presence watcher subscriptions and presentity state.
 #[async_trait]
 pub trait PresenceStore: Send + Sync {
@@ -1266,6 +1278,24 @@ pub trait PresenceStore: Send + Sync {
 
     /// Remove a presentity by AOR.
     async fn remove_presentity(&self, aor: &str) -> Result<()> {
+        let _ = aor;
+        Ok(())
+    }
+
+    /// Save or update an auth policy for a presentity.
+    async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
+        let _ = policy;
+        Ok(())
+    }
+
+    /// Load all auth policies for a tenant.
+    async fn load_auth_policies(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAuthPolicy>> {
+        let _ = tenant_id;
+        Ok(vec![])
+    }
+
+    /// Remove an auth policy by AOR.
+    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
         let _ = aor;
         Ok(())
     }
@@ -2186,6 +2216,18 @@ impl PresenceStore for DynStorage {
 
     async fn remove_presentity(&self, aor: &str) -> Result<()> {
         self.presence_store.remove_presentity(aor).await
+    }
+
+    async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
+        self.presence_store.save_auth_policy(policy).await
+    }
+
+    async fn load_auth_policies(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAuthPolicy>> {
+        self.presence_store.load_auth_policies(tenant_id).await
+    }
+
+    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
+        self.presence_store.remove_auth_policy(aor).await
     }
 }
 

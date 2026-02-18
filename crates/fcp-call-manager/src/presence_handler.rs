@@ -125,6 +125,7 @@ impl SipPresenceHandler {
 
     /// Spawn a background task to notify watchers of a state change.
     fn spawn_notify_watchers(&self, aor: &str) {
+        let delay = self.presence.notify_delay();
         let handler = SipPresenceHandler {
             presence: self.presence.clone(),
             uac: Arc::clone(&self.uac),
@@ -133,7 +134,7 @@ impl SipPresenceHandler {
         };
         let aor = aor.to_string();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(delay).await;
             if let Err(e) = handler.notify_watchers(&aor).await {
                 warn!(error = %e, aor = %aor, "Failed to notify watchers after PUBLISH");
             }
@@ -331,6 +332,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
                 .find(|w| w.subscription_id == existing_sub_id)
             {
                 let sub_state = Self::subscription_state_active(w);
+                let delay = self.presence.notify_delay();
                 let handler = SipPresenceHandler {
                     presence: self.presence.clone(),
                     uac: Arc::clone(&self.uac),
@@ -339,7 +341,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
                 };
                 let watcher_clone = w.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    tokio::time::sleep(delay).await;
                     if let Err(e) = handler
                         .send_notify_to_watcher(&watcher_clone, &sub_state)
                         .await
@@ -384,6 +386,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
 
         // Send initial NOTIFY with current state and active Subscription-State
         let sub_state = Self::subscription_state_active(&watcher);
+        let delay = self.presence.notify_delay();
         let handler = SipPresenceHandler {
             presence: self.presence.clone(),
             uac: Arc::clone(&self.uac),
@@ -392,7 +395,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
         };
 
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(delay).await;
             if let Err(e) = handler.send_notify_to_watcher(&watcher, &sub_state).await {
                 warn!(error = %e, "Failed to send initial presence NOTIFY");
             }
@@ -416,6 +419,7 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
 
         let if_match = Self::extract_sip_if_match(request);
         let expires = Self::extract_expires(request).unwrap_or(3600);
+        let expires = self.presence.cap_publish_expiry(expires);
         let body = std::str::from_utf8(request.body())
             .context("PUBLISH body is not valid UTF-8")?;
         let has_body = !body.is_empty();

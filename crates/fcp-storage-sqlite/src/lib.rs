@@ -31,8 +31,8 @@ use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        PresenceStore, QueueStore, RegistrationStore, StoredAgent, StoredPresentity,
-        StoredQueueSnapshot, StoredSubscription,
+        PresenceStore, QueueStore, RegistrationStore, StoredAgent, StoredAuthPolicy,
+        StoredPresentity, StoredQueueSnapshot, StoredSubscription,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
@@ -208,6 +208,10 @@ impl SqliteStorage {
         // Migration 014: Presence presentity state persistence
         let migration_014 = include_str!("../migrations/014_add_presence_presentities.sql");
         Self::execute_migration(pool, migration_014, "014").await?;
+
+        // Migration 015: Presence authorization policies persistence
+        let migration_015 = include_str!("../migrations/015_add_presence_auth_policies.sql");
+        Self::execute_migration(pool, migration_015, "015").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3644,6 +3648,56 @@ impl PresenceStore for SqliteStorage {
 
     async fn remove_presentity(&self, aor: &str) -> Result<()> {
         sqlx::query("DELETE FROM presence_presentities WHERE aor = ?")
+            .bind(aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO presence_auth_policies \
+             (aor, default_allow, allow_list_json, block_list_json, tenant_id) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&policy.aor)
+        .bind(policy.default_allow as i32)
+        .bind(&policy.allow_list_json)
+        .bind(&policy.block_list_json)
+        .bind(policy.tenant_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_auth_policies(&self, tenant_id: &TenantId) -> Result<Vec<StoredAuthPolicy>> {
+        let rows = sqlx::query(
+            "SELECT aor, default_allow, allow_list_json, block_list_json, tenant_id \
+             FROM presence_auth_policies WHERE tenant_id = ?",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut policies = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tid_str: String = row.try_get("tenant_id")?;
+            let tid = tid_str
+                .parse::<TenantId>()
+                .unwrap_or_else(|_| TenantId::nil());
+            policies.push(StoredAuthPolicy {
+                aor: row.try_get("aor")?,
+                default_allow: row.try_get::<i32, _>("default_allow")? != 0,
+                allow_list_json: row.try_get("allow_list_json")?,
+                block_list_json: row.try_get("block_list_json")?,
+                tenant_id: tid,
+            });
+        }
+        Ok(policies)
+    }
+
+    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_auth_policies WHERE aor = ?")
             .bind(aor)
             .execute(&self.pool)
             .await?;

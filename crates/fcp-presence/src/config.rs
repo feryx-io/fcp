@@ -24,6 +24,18 @@ pub struct PresenceConfig {
     /// Auto-set OnThePhone when a call is active. Default: true.
     #[serde(default = "default_true")]
     pub auto_phone_state: bool,
+
+    /// Max PUBLISH expiry in seconds. Devices requesting more get capped. Default: 3600.
+    #[serde(default = "default_max_publish_expiry")]
+    pub max_publish_expiry_secs: u32,
+
+    /// Cleanup interval in seconds for expired watchers/PUBLISHes. Default: 60.
+    #[serde(default = "default_cleanup_interval")]
+    pub cleanup_interval_secs: u64,
+
+    /// Delay in ms before sending NOTIFY after state change. Default: 50.
+    #[serde(default = "default_notify_delay")]
+    pub notify_delay_ms: u64,
 }
 
 fn default_subscription_expiry() -> u32 {
@@ -42,6 +54,18 @@ fn default_true() -> bool {
     true
 }
 
+fn default_max_publish_expiry() -> u32 {
+    3600
+}
+
+fn default_cleanup_interval() -> u64 {
+    60
+}
+
+fn default_notify_delay() -> u64 {
+    50
+}
+
 impl Default for PresenceConfig {
     fn default() -> Self {
         Self {
@@ -50,6 +74,9 @@ impl Default for PresenceConfig {
             max_watchers_per_presentity: default_max_watchers(),
             max_presentities: default_max_presentities(),
             auto_phone_state: default_true(),
+            max_publish_expiry_secs: default_max_publish_expiry(),
+            cleanup_interval_secs: default_cleanup_interval(),
+            notify_delay_ms: default_notify_delay(),
         }
     }
 }

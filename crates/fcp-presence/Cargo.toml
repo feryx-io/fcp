@@ -10,6 +10,7 @@ description = "SIP Presence service for user availability tracking"
 [dependencies]
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

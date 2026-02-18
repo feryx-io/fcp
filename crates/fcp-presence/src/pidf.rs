@@ -1,8 +1,8 @@
 //! RFC 3863 PIDF (Presence Information Data Format) XML generation and parsing.
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
-use quick_xml::{Reader, Writer};
+use quick_xml::Writer;
 use std::io::Cursor;
 
 use crate::types::{PresenceState, PresenceUpdate};
@@ -102,66 +102,33 @@ pub fn generate_pidf(aor: &str, state: &PresenceState, note: Option<&str>) -> St
 }
 
 /// Parse a PIDF XML document into a PresenceUpdate.
+///
+/// Delegates to sip-core's hardened parser which enforces:
+/// - Input size limit (1MB max)
+/// - Field length validation
+/// - Control character rejection
 pub fn parse_pidf(xml: &str) -> Result<PresenceUpdate> {
-    let mut reader = Reader::from_str(xml);
+    use sip_core::presence::{parse_pidf as sip_parse_pidf, BasicStatus};
 
-    let mut entity: Option<String> = None;
-    let mut basic_status: Option<String> = None;
-    let mut note: Option<String> = None;
+    let doc = sip_parse_pidf(xml)
+        .map_err(|e| anyhow::anyhow!("PIDF parse error: {e}"))?;
 
-    // Track which element we're currently inside
-    let mut in_basic = false;
-    let mut in_note = false;
+    let entity = doc.entity();
+    // Strip "pres:" prefix if present
+    let aor = entity.strip_prefix("pres:").unwrap_or(entity).to_string();
 
-    loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"presence" => {
-                        // Extract entity attribute
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"entity" {
-                                let val = String::from_utf8_lossy(&attr.value).to_string();
-                                // Strip "pres:" prefix if present
-                                entity = Some(
-                                    val.strip_prefix("pres:").unwrap_or(&val).to_string(),
-                                );
-                            }
-                        }
-                    }
-                    b"basic" => in_basic = true,
-                    b"note" => in_note = true,
-                    _ => {}
-                }
-            }
-            Ok(Event::Text(ref e)) => {
-                let text = e.unescape().context("unescape XML text")?.to_string();
-                if in_basic {
-                    basic_status = Some(text);
-                } else if in_note {
-                    note = Some(text);
-                }
-            }
-            Ok(Event::End(ref e)) => match e.name().as_ref() {
-                b"basic" => in_basic = false,
-                b"note" => in_note = false,
-                b"presence" => break,
-                _ => {}
-            },
-            Ok(Event::Eof) => break,
-            Err(e) => bail!("Failed to parse PIDF XML: {e}"),
-            _ => {}
-        }
-    }
+    // Get status from first tuple
+    let mut tuples = doc.tuples();
+    let first_tuple = tuples.next();
+    let basic_status = first_tuple
+        .and_then(|t| t.status())
+        .unwrap_or(BasicStatus::Closed);
 
-    let aor = entity.context("Missing entity attribute in <presence>")?;
-    let status = basic_status.context("Missing <basic> element in PIDF")?;
-
-    let state = match status.as_str() {
-        "closed" => PresenceState::Closed,
-        "open" => {
-            // Try to infer richer state from note
-            match note.as_deref() {
+    let state = match basic_status {
+        BasicStatus::Open => {
+            // Infer richer state from note (same logic as before)
+            let note_text = first_tuple.and_then(|t| t.notes().next());
+            match note_text {
                 Some("Away") => PresenceState::Away,
                 Some("Busy") => PresenceState::Busy,
                 Some("On the phone") => PresenceState::OnThePhone,
@@ -169,8 +136,13 @@ pub fn parse_pidf(xml: &str) -> Result<PresenceUpdate> {
                 _ => PresenceState::Open,
             }
         }
-        other => bail!("Unknown PIDF basic status: {other}"),
+        BasicStatus::Closed => PresenceState::Closed,
     };
+
+    let note = first_tuple
+        .and_then(|t| t.notes().next())
+        .map(|n| n.to_string())
+        .or_else(|| doc.notes().next().map(|n| n.to_string()));
 
     Ok(PresenceUpdate { aor, state, note })
 }
@@ -263,6 +235,36 @@ mod tests {
     #[test]
     fn test_parse_invalid_xml() {
         let result = parse_pidf("not xml at all <<<<");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pidf_oversized_input() {
+        // sip-core rejects inputs > 1MB
+        let oversized = "x".repeat(1024 * 1024 + 1);
+        let result = parse_pidf(&oversized);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pidf_control_chars_in_entity() {
+        // Embed a raw control character (CR) directly in the entity attribute
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+            <presence xmlns=\"urn:ietf:params:xml:ns:pidf\" entity=\"pres:alice\r@example.com\">\n\
+            <tuple id=\"t1\"><status><basic>open</basic></status></tuple>\n\
+            </presence>";
+        // The hardened parser should reject control characters
+        let result = parse_pidf(xml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_pidf_missing_entity() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<presence xmlns="urn:ietf:params:xml:ns:pidf">
+  <tuple id="t1"><status><basic>open</basic></status></tuple>
+</presence>"#;
+        let result = parse_pidf(xml);
         assert!(result.is_err());
     }
 }
