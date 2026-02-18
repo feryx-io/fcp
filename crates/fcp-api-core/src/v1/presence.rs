@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_presence::{PresenceState, PresenceUpdate};
+use fcp_presence::{PresenceAuthPolicy, PresenceState, PresenceUpdate};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tracing::info;
@@ -216,6 +216,54 @@ pub async fn list_watchers(
         .collect();
 
     Ok(Json(watchers))
+}
+
+/// GET /presence/:aor/policy — Get authorization policy for a presentity.
+pub async fn get_policy(
+    State(state): State<ApiState>,
+    Path(aor): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let pm = require_presence_manager!(state);
+
+    match pm.get_auth_policy(&aor) {
+        Some(policy) => Ok(Json(policy)),
+        None => {
+            // Return default open policy
+            Ok(Json(PresenceAuthPolicy {
+                default_allow: true,
+                ..Default::default()
+            }))
+        }
+    }
+}
+
+/// PUT /presence/:aor/policy — Set authorization policy for a presentity.
+pub async fn set_policy(
+    State(state): State<ApiState>,
+    Path(aor): Path<String>,
+    Json(policy): Json<PresenceAuthPolicy>,
+) -> Result<impl IntoResponse, ApiError> {
+    let pm = require_presence_manager!(state);
+
+    pm.set_auth_policy(&aor, policy.clone());
+
+    info!(aor = %aor, default_allow = policy.default_allow, "Presence auth policy updated via API");
+
+    Ok(Json(policy))
+}
+
+/// DELETE /presence/:aor/policy — Remove authorization policy (revert to default-allow).
+pub async fn delete_policy(
+    State(state): State<ApiState>,
+    Path(aor): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let pm = require_presence_manager!(state);
+
+    pm.remove_auth_policy(&aor);
+
+    info!(aor = %aor, "Presence auth policy removed via API");
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Parse a presence state string into a `PresenceState` enum.

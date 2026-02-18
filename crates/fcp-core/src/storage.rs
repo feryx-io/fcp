@@ -1200,6 +1200,41 @@ pub trait ConferenceStore: Send + Sync {
     async fn delete_meeting(&self, id: &crate::MeetingId) -> Result<()>;
 }
 
+/// Persisted presence subscription for restart recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredSubscription {
+    pub subscription_id: String,
+    pub watcher_aor: String,
+    pub presentity_aor: String,
+    pub tenant_id: crate::TenantId,
+    pub contact_uri: String,
+    pub event_package: String,
+    /// Unix epoch seconds when this subscription expires (Instant is not serializable).
+    pub expires_at_epoch: u64,
+}
+
+/// Persistence for presence watcher subscriptions.
+#[async_trait]
+pub trait PresenceStore: Send + Sync {
+    /// Save or update a subscription.
+    async fn save_subscription(&self, sub: StoredSubscription) -> Result<()>;
+
+    /// Load all non-expired subscriptions for a tenant.
+    async fn load_subscriptions(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredSubscription>>;
+
+    /// Remove a single subscription by ID.
+    async fn remove_subscription(&self, subscription_id: &str) -> Result<()>;
+
+    /// Remove all subscriptions for a presentity AOR.
+    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()>;
+
+    /// Delete expired subscriptions and return how many were removed.
+    async fn cleanup_expired_subscriptions(&self) -> Result<usize>;
+}
+
 /// Serde helper for Optional<SystemTime>
 mod optional_system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1512,6 +1547,7 @@ pub struct DynStorage {
     tenant_store: Arc<dyn TenantStore>,
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
+    presence_store: Arc<dyn PresenceStore>,
 }
 
 impl DynStorage {
@@ -1530,6 +1566,7 @@ impl DynStorage {
         tenant_store: Arc<dyn TenantStore>,
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
+        presence_store: Arc<dyn PresenceStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1545,6 +1582,7 @@ impl DynStorage {
             tenant_store,
             conference_store,
             queue_store,
+            presence_store,
         }
     }
 
@@ -1567,6 +1605,7 @@ impl DynStorage {
             + TenantStore
             + ConferenceStore
             + QueueStore
+            + PresenceStore
             + 'static,
     {
         Self {
@@ -1582,8 +1621,14 @@ impl DynStorage {
             porting_store: storage.clone(),
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
-            queue_store: storage,
+            queue_store: storage.clone(),
+            presence_store: storage,
         }
+    }
+
+    /// Get the presence store.
+    pub fn presence_store(&self) -> &Arc<dyn PresenceStore> {
+        &self.presence_store
     }
 }
 
@@ -2062,6 +2107,34 @@ impl QueueStore for DynStorage {
         self.queue_store
             .query_stats_snapshots(tenant_id, queue_name, from_epoch, to_epoch, limit)
             .await
+    }
+}
+
+#[async_trait]
+impl PresenceStore for DynStorage {
+    async fn save_subscription(&self, sub: StoredSubscription) -> Result<()> {
+        self.presence_store.save_subscription(sub).await
+    }
+
+    async fn load_subscriptions(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredSubscription>> {
+        self.presence_store.load_subscriptions(tenant_id).await
+    }
+
+    async fn remove_subscription(&self, subscription_id: &str) -> Result<()> {
+        self.presence_store.remove_subscription(subscription_id).await
+    }
+
+    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
+        self.presence_store
+            .remove_subscriptions_for_presentity(presentity_aor)
+            .await
+    }
+
+    async fn cleanup_expired_subscriptions(&self) -> Result<usize> {
+        self.presence_store.cleanup_expired_subscriptions().await
     }
 }
 

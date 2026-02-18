@@ -31,7 +31,8 @@ use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        QueueStore, RegistrationStore, StoredAgent, StoredQueueSnapshot,
+        PresenceStore, QueueStore, RegistrationStore, StoredAgent, StoredQueueSnapshot,
+        StoredSubscription,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
@@ -199,6 +200,10 @@ impl SqliteStorage {
         // Migration 012: Queue stats snapshots and missing agent columns
         let migration_012 = include_str!("../migrations/012_queue_stats_and_agent_fields.sql");
         Self::execute_migration(pool, migration_012, "012").await?;
+
+        // Migration 013: Presence subscription persistence
+        let migration_013 = include_str!("../migrations/013_add_presence_subscriptions.sql");
+        Self::execute_migration(pool, migration_013, "013").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3491,6 +3496,101 @@ impl QueueStore for SqliteStorage {
         }
 
         Ok(snapshots)
+    }
+}
+
+// ============================================================================
+// PresenceStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl PresenceStore for SqliteStorage {
+    async fn save_subscription(&self, sub: StoredSubscription) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO presence_subscriptions \
+             (subscription_id, watcher_aor, presentity_aor, tenant_id, contact_uri, event_package, expires_at_epoch) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&sub.subscription_id)
+        .bind(&sub.watcher_aor)
+        .bind(&sub.presentity_aor)
+        .bind(sub.tenant_id.to_string())
+        .bind(&sub.contact_uri)
+        .bind(&sub.event_package)
+        .bind(sub.expires_at_epoch as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_subscriptions(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredSubscription>> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let rows = sqlx::query(
+            "SELECT subscription_id, watcher_aor, presentity_aor, tenant_id, \
+             contact_uri, event_package, expires_at_epoch \
+             FROM presence_subscriptions WHERE tenant_id = ? AND expires_at_epoch > ?",
+        )
+        .bind(tenant_id.to_string())
+        .bind(now_epoch)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut subs = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tid_str: String = row.try_get("tenant_id")?;
+            let tid = tid_str
+                .parse::<TenantId>()
+                .unwrap_or_else(|_| TenantId::nil());
+            subs.push(StoredSubscription {
+                subscription_id: row.try_get("subscription_id")?,
+                watcher_aor: row.try_get("watcher_aor")?,
+                presentity_aor: row.try_get("presentity_aor")?,
+                tenant_id: tid,
+                contact_uri: row.try_get("contact_uri")?,
+                event_package: row.try_get("event_package")?,
+                expires_at_epoch: row.try_get::<i64, _>("expires_at_epoch")? as u64,
+            });
+        }
+
+        Ok(subs)
+    }
+
+    async fn remove_subscription(&self, subscription_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_subscriptions WHERE subscription_id = ?")
+            .bind(subscription_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_subscriptions WHERE presentity_aor = ?")
+            .bind(presentity_aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn cleanup_expired_subscriptions(&self) -> Result<usize> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let result =
+            sqlx::query("DELETE FROM presence_subscriptions WHERE expires_at_epoch <= ?")
+                .bind(now_epoch)
+                .execute(&self.pool)
+                .await?;
+
+        Ok(result.rows_affected() as usize)
     }
 }
 

@@ -169,6 +169,12 @@ pub fn router() -> Router<ApiState> {
                 .delete(presence::delete_presence),
         )
         .route("/presence/:aor/watchers", get(presence::list_watchers))
+        .route(
+            "/presence/:aor/policy",
+            get(presence::get_policy)
+                .put(presence::set_policy)
+                .delete(presence::delete_policy),
+        )
         // Voicemail
         .route(
             "/voicemail/mailboxes",

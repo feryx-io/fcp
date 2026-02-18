@@ -305,6 +305,20 @@ impl SipUserAgentClient {
             .await
     }
 
+    /// Send an unsolicited NOTIFY with a custom Subscription-State header.
+    pub async fn send_unsolicited_notify_with_state(
+        &self,
+        target: &sip_core::SipUri,
+        event: &str,
+        content_type: &str,
+        body: &str,
+        subscription_state: &str,
+    ) -> Result<sip_core::Response> {
+        self.inner
+            .send_unsolicited_notify_with_state(target, event, content_type, body, subscription_state)
+            .await
+    }
+
     fn log_outbound(&self, method: &str, dialog_id: Option<&sip_dialog::DialogId>) {
         if let Some(dir) = &self.transcript_dir {
             if let Some(did) = dialog_id {

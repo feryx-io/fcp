@@ -2250,6 +2250,7 @@ dependencies = [
  "fcp-flow",
  "fcp-media",
  "fcp-pbx",
+ "fcp-presence",
  "fcp-routing",
  "fcp-voicemail",
  "futures",

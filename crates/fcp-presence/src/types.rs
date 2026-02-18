@@ -80,3 +80,33 @@ pub struct PresenceUpdate {
     /// Optional status note
     pub note: Option<String>,
 }
+
+/// Authorization policy for presence subscriptions.
+///
+/// Determines which watchers are allowed to subscribe to a presentity's state.
+/// If no policy is set for a presentity, all watchers are allowed (default open).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PresenceAuthPolicy {
+    /// If `true`, watchers not in either list are allowed. If `false`, only
+    /// watchers on the allow_list are permitted.
+    pub default_allow: bool,
+    /// Watcher AORs explicitly allowed to subscribe.
+    pub allow_list: Vec<String>,
+    /// Watcher AORs explicitly blocked from subscribing.
+    pub block_list: Vec<String>,
+}
+
+impl PresenceAuthPolicy {
+    /// Check if a watcher is authorized by this policy.
+    ///
+    /// Block list takes precedence over allow list.
+    pub fn is_allowed(&self, watcher_aor: &str) -> bool {
+        if self.block_list.iter().any(|b| b == watcher_aor) {
+            return false;
+        }
+        if self.allow_list.iter().any(|a| a == watcher_aor) {
+            return true;
+        }
+        self.default_allow
+    }
+}

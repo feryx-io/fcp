@@ -61,4 +61,16 @@ pub trait PresenceHandler: Send + Sync {
     /// Sends NOTIFY with appropriate body (PIDF for `event: presence`,
     /// dialog-info for `event: dialog`) to each watcher's Contact URI.
     async fn notify_watchers(&self, aor: &str) -> Result<()>;
+
+    /// Send terminated NOTIFY to a list of watchers (e.g., on expiry or shutdown).
+    ///
+    /// The `reason` is placed in the Subscription-State header as
+    /// `terminated;reason={reason}` per RFC 3265 §3.2.4.
+    async fn send_terminated_notifies(
+        &self,
+        _watchers: &[fcp_presence::Watcher],
+        _reason: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
 }

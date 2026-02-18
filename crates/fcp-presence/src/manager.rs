@@ -1,12 +1,13 @@
 //! PresenceManager — central runtime state for the presence service.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
 use dashmap::DashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
+use fcp_core::storage::{PresenceStore, StoredSubscription};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 
@@ -14,7 +15,7 @@ use crate::config::PresenceConfig;
 use crate::dialog_info;
 use crate::events;
 use crate::pidf;
-use crate::types::{PresenceInfo, PresenceState, PresenceUpdate, Watcher};
+use crate::types::{PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate, Watcher};
 
 /// Central manager for presence state and watcher subscriptions.
 ///
@@ -29,16 +30,26 @@ pub struct PresenceManager {
     config: Arc<parking_lot::RwLock<PresenceConfig>>,
     /// Optional event publisher
     events: Option<Arc<dyn EventPublisher>>,
+    /// Optional persistence store for watcher subscriptions
+    store: Option<Arc<dyn PresenceStore>>,
+    /// Per-presentity authorization policies (AOR → policy)
+    auth_policies: Arc<DashMap<String, PresenceAuthPolicy>>,
 }
 
 impl PresenceManager {
     /// Create a new PresenceManager.
-    pub fn new(config: PresenceConfig, events: Option<Arc<dyn EventPublisher>>) -> Self {
+    pub fn new(
+        config: PresenceConfig,
+        events: Option<Arc<dyn EventPublisher>>,
+        store: Option<Arc<dyn PresenceStore>>,
+    ) -> Self {
         Self {
             presentities: Arc::new(DashMap::new()),
             watchers: Arc::new(DashMap::new()),
             config: Arc::new(parking_lot::RwLock::new(config)),
             events,
+            store,
+            auth_policies: Arc::new(DashMap::new()),
         }
     }
 
@@ -128,6 +139,17 @@ impl PresenceManager {
             );
         }
 
+        // Persist to store (non-blocking)
+        if let Some(ref store) = self.store {
+            let stored = watcher_to_stored(&watcher);
+            let store = Arc::clone(store);
+            tokio::spawn(async move {
+                if let Err(e) = store.save_subscription(stored).await {
+                    warn!(error = %e, "Failed to persist watcher subscription");
+                }
+            });
+        }
+
         entry.push(watcher);
         drop(entry);
 
@@ -156,6 +178,17 @@ impl PresenceManager {
                 removed_aor = Some(removed.watcher_aor);
                 tenant_id = Some(removed.tenant_id);
             }
+        }
+
+        // Remove from persistent store
+        if let Some(ref store) = self.store {
+            let store = Arc::clone(store);
+            let sub_id = subscription_id.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = store.remove_subscription(&sub_id).await {
+                    warn!(error = %e, "Failed to remove subscription from store");
+                }
+            });
         }
 
         if let (Some(watcher_aor), Some(tid)) = (removed_aor, tenant_id) {
@@ -190,25 +223,56 @@ impl PresenceManager {
             .unwrap_or_default()
     }
 
-    /// Remove expired watcher subscriptions. Returns the number removed.
-    pub fn cleanup_expired_watchers(&self) -> usize {
+    /// Remove expired watcher subscriptions. Returns the removed watchers.
+    pub fn cleanup_expired_watchers(&self) -> Vec<Watcher> {
         let now = Instant::now();
-        let mut removed = 0;
+        let mut expired = Vec::new();
 
         self.watchers.iter_mut().for_each(|mut entry| {
-            let before = entry.len();
-            entry.retain(|w| w.expires_at > now);
-            removed += before - entry.len();
+            let (keep, remove): (Vec<_>, Vec<_>) =
+                entry.drain(..).partition(|w| w.expires_at > now);
+            expired.extend(remove);
+            *entry = keep;
         });
 
         // Clean up empty watcher lists
         self.watchers.retain(|_, v| !v.is_empty());
 
-        if removed > 0 {
-            debug!(count = removed, "Cleaned up expired watchers");
+        if !expired.is_empty() {
+            debug!(count = expired.len(), "Cleaned up expired watchers");
+
+            // Remove from persistent store
+            if let Some(ref store) = self.store {
+                let store = Arc::clone(store);
+                let sub_ids: Vec<String> =
+                    expired.iter().map(|w| w.subscription_id.clone()).collect();
+                tokio::spawn(async move {
+                    for sub_id in sub_ids {
+                        if let Err(e) = store.remove_subscription(&sub_id).await {
+                            warn!(error = %e, "Failed to remove expired subscription from store");
+                        }
+                    }
+                });
+            }
         }
 
-        removed
+        expired
+    }
+
+    /// Find an existing watcher subscription by watcher AOR, presentity AOR, and event package.
+    /// Returns the subscription_id if found.
+    pub fn find_existing_watcher(
+        &self,
+        watcher_aor: &str,
+        presentity_aor: &str,
+        event_package: &str,
+    ) -> Option<String> {
+        self.watchers.get(presentity_aor).and_then(|entry| {
+            entry
+                .iter()
+                .find(|w| w.watcher_aor == watcher_aor && w.event_package == event_package)
+                .map(|w| w.subscription_id.clone())
+        })
     }
 
     /// Refresh a watcher's expiry time.
@@ -224,6 +288,18 @@ impl PresenceManager {
                 .find(|w| w.subscription_id == subscription_id)
             {
                 watcher.expires_at = new_expires;
+
+                // Update persistent store
+                if let Some(ref store) = self.store {
+                    let stored = watcher_to_stored(watcher);
+                    let store = Arc::clone(store);
+                    tokio::spawn(async move {
+                        if let Err(e) = store.save_subscription(stored).await {
+                            warn!(error = %e, "Failed to persist refreshed subscription");
+                        }
+                    });
+                }
+
                 return Ok(());
             }
         }
@@ -309,6 +385,96 @@ impl PresenceManager {
             .map(|entry| entry.len())
             .sum()
     }
+
+    /// Set authorization policy for a presentity.
+    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy) {
+        self.auth_policies.insert(aor.to_string(), policy);
+    }
+
+    /// Get authorization policy for a presentity.
+    pub fn get_auth_policy(&self, aor: &str) -> Option<PresenceAuthPolicy> {
+        self.auth_policies.get(aor).map(|p| p.clone())
+    }
+
+    /// Remove authorization policy for a presentity (reverts to default-allow).
+    pub fn remove_auth_policy(&self, aor: &str) {
+        self.auth_policies.remove(aor);
+    }
+
+    /// Check if a watcher is authorized to subscribe to a presentity.
+    ///
+    /// If no policy is set, all watchers are allowed (default open).
+    pub fn is_watcher_authorized(&self, watcher_aor: &str, presentity_aor: &str) -> bool {
+        match self.auth_policies.get(presentity_aor) {
+            Some(policy) => policy.is_allowed(watcher_aor),
+            None => true, // No policy = allow all
+        }
+    }
+
+    /// Load persisted subscriptions from the store into memory.
+    /// Returns the number of subscriptions loaded.
+    pub async fn load_subscriptions(&self, tenant_id: &TenantId) -> Result<usize> {
+        let store = match &self.store {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+
+        let stored = store.load_subscriptions(tenant_id).await?;
+        let count = stored.len();
+
+        for s in stored {
+            let watcher = stored_to_watcher(&s);
+            self.watchers
+                .entry(watcher.presentity_aor.clone())
+                .or_default()
+                .push(watcher);
+        }
+
+        if count > 0 {
+            info!(count, "Loaded persisted presence subscriptions");
+        }
+
+        Ok(count)
+    }
+}
+
+/// Convert a Watcher to a StoredSubscription for persistence.
+fn watcher_to_stored(w: &Watcher) -> StoredSubscription {
+    let remaining = w.expires_at.saturating_duration_since(Instant::now());
+    let expires_at_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + remaining.as_secs();
+
+    StoredSubscription {
+        subscription_id: w.subscription_id.clone(),
+        watcher_aor: w.watcher_aor.clone(),
+        presentity_aor: w.presentity_aor.clone(),
+        tenant_id: w.tenant_id.clone(),
+        contact_uri: w.contact_uri.clone(),
+        event_package: w.event_package.clone(),
+        expires_at_epoch,
+    }
+}
+
+/// Convert a StoredSubscription back to a Watcher (runtime type with Instant).
+fn stored_to_watcher(s: &StoredSubscription) -> Watcher {
+    let now_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let remaining_secs = s.expires_at_epoch.saturating_sub(now_epoch);
+
+    Watcher {
+        watcher_aor: s.watcher_aor.clone(),
+        presentity_aor: s.presentity_aor.clone(),
+        subscription_id: s.subscription_id.clone(),
+        expires_at: Instant::now() + Duration::from_secs(remaining_secs),
+        tenant_id: s.tenant_id.clone(),
+        contact_uri: s.contact_uri.clone(),
+        event_package: s.event_package.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -331,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_and_get_presence() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         let update = PresenceUpdate {
@@ -354,7 +520,7 @@ mod tests {
         use fcp_events::InMemoryEventBus;
 
         let bus = Arc::new(InMemoryEventBus::new());
-        let mgr = PresenceManager::new(test_config(), Some(bus.clone()));
+        let mgr = PresenceManager::new(test_config(), Some(bus.clone()), None);
         let tenant = test_tenant();
 
         // First update sets state (transitions from Closed → Open)
@@ -379,7 +545,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_presence() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         let update = PresenceUpdate {
@@ -396,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_and_get_watchers() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         let watcher = Watcher {
@@ -419,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_watcher() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         let watcher = Watcher {
@@ -445,7 +611,7 @@ mod tests {
             max_watchers_per_presentity: 2,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None);
+        let mgr = PresenceManager::new(config, None, None);
         let tenant = test_tenant();
 
         for i in 0..2 {
@@ -477,7 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_expired_watchers() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         // Add an already-expired watcher
@@ -505,7 +671,8 @@ mod tests {
         mgr.add_watcher(watcher2).await.unwrap();
 
         let removed = mgr.cleanup_expired_watchers();
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].subscription_id, "sub-expired");
         assert_eq!(mgr.get_watchers("alice@example.com").len(), 1);
         assert_eq!(
             mgr.get_watchers("alice@example.com")[0].subscription_id,
@@ -515,7 +682,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_watcher() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         let original_expires = Instant::now() + Duration::from_secs(100);
@@ -540,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_on_the_phone_auto_state() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         // Start with Open state
@@ -564,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_presentity_count() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         assert_eq!(mgr.presentity_count(), 0);
@@ -584,7 +751,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_total_watcher_count() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         assert_eq!(mgr.total_watcher_count(), 0);
@@ -606,8 +773,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_find_existing_watcher() {
+        let mgr = PresenceManager::new(test_config(), None, None);
+        let tenant = test_tenant();
+
+        // No watcher → None
+        assert!(mgr.find_existing_watcher("bob@example.com", "alice@example.com", "presence").is_none());
+
+        let watcher = Watcher {
+            watcher_aor: "bob@example.com".to_string(),
+            presentity_aor: "alice@example.com".to_string(),
+            subscription_id: "sub-1".to_string(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+            tenant_id: tenant.clone(),
+            contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
+            event_package: "presence".to_string(),
+        };
+        mgr.add_watcher(watcher).await.unwrap();
+
+        // Find existing
+        assert_eq!(
+            mgr.find_existing_watcher("bob@example.com", "alice@example.com", "presence"),
+            Some("sub-1".to_string())
+        );
+
+        // Wrong event → None
+        assert!(mgr.find_existing_watcher("bob@example.com", "alice@example.com", "dialog").is_none());
+
+        // Wrong watcher → None
+        assert!(mgr.find_existing_watcher("charlie@example.com", "alice@example.com", "presence").is_none());
+    }
+
+    #[tokio::test]
     async fn test_generate_pidf() {
-        let mgr = PresenceManager::new(test_config(), None);
+        let mgr = PresenceManager::new(test_config(), None, None);
         let tenant = test_tenant();
 
         // No presentity → None

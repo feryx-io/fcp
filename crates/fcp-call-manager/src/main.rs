@@ -359,10 +359,18 @@ async fn main() -> Result<()> {
 
     // 17b. Create PresenceManager (if enabled)
     let presence_manager: Option<fcp_presence::PresenceManager> = if config.presence.enabled {
+        let presence_store: Option<Arc<dyn fcp_core::PresenceStore>> =
+            Some(Arc::clone(dyn_storage.presence_store()));
         let pm = fcp_presence::PresenceManager::new(
             config.presence.clone(),
             Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+            presence_store,
         );
+        // Load persisted subscriptions from previous run
+        let pres_tenant = fcp_core::TenantId::nil();
+        if let Err(e) = pm.load_subscriptions(&pres_tenant).await {
+            warn!(error = %e, "Failed to load persisted presence subscriptions");
+        }
         info!("Presence service enabled");
 
         // Wire presence into queue distribution so DND/Busy agents are skipped
@@ -644,13 +652,20 @@ async fn main() -> Result<()> {
 
         // Spawn watcher cleanup task (every 60s)
         let pm_cleanup = pm.clone();
+        let ph_cleanup = presence_handler.as_ref().map(Arc::clone);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
                 let removed = pm_cleanup.cleanup_expired_watchers();
-                if removed > 0 {
-                    info!(count = removed, "Cleaned up expired presence watchers");
+                if !removed.is_empty() {
+                    info!(count = removed.len(), "Cleaned up expired presence watchers");
+                    // Send terminated NOTIFY to expired watchers
+                    if let Some(ref ph) = ph_cleanup {
+                        if let Err(e) = ph.send_terminated_notifies(&removed, "timeout").await {
+                            warn!(error = %e, "Failed to send terminated NOTIFYs for expired watchers");
+                        }
+                    }
                 }
             }
         });
