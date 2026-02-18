@@ -19,8 +19,8 @@ use crate::dialog_info;
 use crate::events;
 use crate::pidf;
 use crate::types::{
-    EventStateComposition, PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate,
-    Watcher,
+    EventStateComposition, NotifyRetryEntry, PresenceAuthPolicy, PresenceInfo, PresenceState,
+    PresenceUpdate, Watcher,
 };
 
 /// Central manager for presence state and watcher subscriptions.
@@ -52,6 +52,12 @@ pub struct PresenceManager {
     winfo_watchers: Arc<DashMap<String, Vec<Watcher>>>,
     /// Watcher-info version counter per AOR
     winfo_versions: Arc<DashMap<String, u32>>,
+    /// NOTIFY delivery retry queue (keyed by "subscription_id:aor")
+    notify_retry_queue: Arc<DashMap<String, NotifyRetryEntry>>,
+    /// Shutdown signal sender
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Shutdown signal receiver (clone for background tasks)
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl PresenceManager {
@@ -71,6 +77,7 @@ impl PresenceManager {
         store: Option<Arc<dyn PresenceStore>>,
         metrics: MetricsHandle,
     ) -> Self {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             presentities: Arc::new(DashMap::new()),
             watchers: Arc::new(DashMap::new()),
@@ -84,7 +91,15 @@ impl PresenceManager {
             active_calls: Arc::new(DashMap::new()),
             winfo_watchers: Arc::new(DashMap::new()),
             winfo_versions: Arc::new(DashMap::new()),
+            notify_retry_queue: Arc::new(DashMap::new()),
+            shutdown_tx: Arc::new(shutdown_tx),
+            shutdown_rx,
         }
+    }
+
+    /// Get a snapshot of the current configuration.
+    pub fn config(&self) -> PresenceConfig {
+        self.config.read().clone()
     }
 
     /// Cap a requested PUBLISH expiry to the configured min/max range.
@@ -368,30 +383,46 @@ impl PresenceManager {
         }
     }
 
-    /// Get all watchers for a presentity.
+    /// Get all non-expired watchers for a presentity.
     pub fn get_watchers(&self, presentity_aor: &str) -> Vec<Watcher> {
-        self.watchers
-            .get(presentity_aor)
-            .map(|entry| entry.clone())
-            .unwrap_or_default()
-    }
-
-    /// Get all active watchers across all presentities (for shutdown).
-    pub fn get_all_watchers(&self) -> Vec<Watcher> {
-        self.watchers
-            .iter()
-            .flat_map(|entry| entry.value().clone())
-            .collect()
-    }
-
-    /// Get watchers for a presentity filtered by event package.
-    pub fn get_watchers_by_event(&self, presentity_aor: &str, event_package: &str) -> Vec<Watcher> {
+        let now = Instant::now();
         self.watchers
             .get(presentity_aor)
             .map(|entry| {
                 entry
                     .iter()
-                    .filter(|w| w.event_package == event_package)
+                    .filter(|w| w.expires_at > now)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get all non-expired watchers across all presentities (for shutdown).
+    pub fn get_all_watchers(&self) -> Vec<Watcher> {
+        let now = Instant::now();
+        self.watchers
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|w| w.expires_at > now)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Get watchers for a presentity filtered by event package (excludes expired).
+    pub fn get_watchers_by_event(&self, presentity_aor: &str, event_package: &str) -> Vec<Watcher> {
+        let now = Instant::now();
+        self.watchers
+            .get(presentity_aor)
+            .map(|entry| {
+                entry
+                    .iter()
+                    .filter(|w| w.event_package == event_package && w.expires_at > now)
                     .cloned()
                     .collect()
             })
@@ -436,7 +467,7 @@ impl PresenceManager {
         expired
     }
 
-    /// Find an existing watcher subscription by watcher AOR, presentity AOR, and event package.
+    /// Find an existing non-expired watcher subscription by watcher AOR, presentity AOR, and event package.
     /// Returns the subscription_id if found.
     pub fn find_existing_watcher(
         &self,
@@ -444,10 +475,15 @@ impl PresenceManager {
         presentity_aor: &str,
         event_package: &str,
     ) -> Option<String> {
+        let now = Instant::now();
         self.watchers.get(presentity_aor).and_then(|entry| {
             entry
                 .iter()
-                .find(|w| w.watcher_aor == watcher_aor && w.event_package == event_package)
+                .find(|w| {
+                    w.watcher_aor == watcher_aor
+                        && w.event_package == event_package
+                        && w.expires_at > now
+                })
                 .map(|w| w.subscription_id.clone())
         })
     }
@@ -854,11 +890,18 @@ impl PresenceManager {
         }
     }
 
-    /// Get all watcher-info subscribers for an AOR.
+    /// Get all non-expired watcher-info subscribers for an AOR.
     pub fn get_winfo_watchers(&self, aor: &str) -> Vec<Watcher> {
+        let now = Instant::now();
         self.winfo_watchers
             .get(aor)
-            .map(|entry| entry.clone())
+            .map(|entry| {
+                entry
+                    .iter()
+                    .filter(|w| w.expires_at > now)
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -911,16 +954,17 @@ impl PresenceManager {
         self.presentities.len()
     }
 
-    /// Get the total number of watcher subscriptions across all presentities.
+    /// Get the total number of non-expired watcher subscriptions across all presentities.
     pub fn total_watcher_count(&self) -> usize {
+        let now = Instant::now();
         self.watchers
             .iter()
-            .map(|entry| entry.len())
+            .map(|entry| entry.iter().filter(|w| w.expires_at > now).count())
             .sum()
     }
 
     /// Set authorization policy for a presentity.
-    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy) {
+    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, tenant_id: &TenantId) {
         self.auth_policies.insert(aor.to_string(), policy.clone());
 
         // Persist to store (non-blocking)
@@ -930,7 +974,7 @@ impl PresenceManager {
                 default_allow: policy.default_allow,
                 allow_list_json: serde_json::to_string(&policy.allow_list).unwrap_or_default(),
                 block_list_json: serde_json::to_string(&policy.block_list).unwrap_or_default(),
-                tenant_id: TenantId::nil(), // Will be overridden if tenant context available
+                tenant_id: tenant_id.clone(),
             };
             let store = Arc::clone(store);
             let metrics = Arc::clone(&self.metrics);
@@ -1067,6 +1111,127 @@ impl PresenceManager {
         }
 
         Ok(count)
+    }
+
+    // ---- NOTIFY retry queue ----
+
+    /// Enqueue a failed NOTIFY for retry with exponential backoff.
+    pub fn enqueue_retry(&self, entry: NotifyRetryEntry) {
+        let key = format!("{}:{}", entry.watcher.subscription_id, entry.watcher.presentity_aor);
+        self.notify_retry_queue.insert(key, entry);
+        self.metrics.inc_counter("fcp_presence_notify_retries_enqueued_total", &[]);
+    }
+
+    /// Dequeue all retry entries whose next_retry_at has passed and are within max retries.
+    pub fn dequeue_due_retries(&self) -> Vec<NotifyRetryEntry> {
+        let now = Instant::now();
+        let max_retries = self.config.read().max_notify_retries;
+        let mut due = Vec::new();
+        let mut expired_keys = Vec::new();
+
+        for entry in self.notify_retry_queue.iter() {
+            if entry.value().attempt > max_retries {
+                expired_keys.push(entry.key().clone());
+            } else if entry.value().next_retry_at <= now {
+                due.push(entry.value().clone());
+                expired_keys.push(entry.key().clone());
+            }
+        }
+
+        for key in &expired_keys {
+            self.notify_retry_queue.remove(key);
+        }
+
+        if !due.is_empty() {
+            debug!(count = due.len(), "Dequeued due NOTIFY retries");
+        }
+
+        due
+    }
+
+    /// Remove a retry entry on successful delivery or max retries exceeded.
+    pub fn remove_retry(&self, subscription_id: &str, aor: &str) {
+        let key = format!("{subscription_id}:{aor}");
+        self.notify_retry_queue.remove(&key);
+    }
+
+    /// Number of pending retry entries.
+    pub fn retry_queue_len(&self) -> usize {
+        self.notify_retry_queue.len()
+    }
+
+    /// Get retry config values (base_delay_ms, max_delay_ms, max_retries).
+    pub fn retry_config(&self) -> (u64, u64, u32) {
+        let cfg = self.config.read();
+        (
+            cfg.notify_retry_base_delay_ms,
+            cfg.notify_retry_max_delay_ms,
+            cfg.max_notify_retries,
+        )
+    }
+
+    // ---- Shutdown ----
+
+    /// Get a clone of the shutdown receiver for background tasks.
+    pub fn shutdown_receiver(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.shutdown_rx.clone()
+    }
+
+    /// Signal shutdown, persist final state.
+    pub async fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+
+        // Persist all presentities
+        if let Some(ref store) = self.store {
+            let presentities: Vec<_> = self.presentities.iter().map(|e| e.value().clone()).collect();
+            for info in &presentities {
+                let stored = StoredPresentity {
+                    aor: info.aor.clone(),
+                    state: info.state.to_string(),
+                    note: info.note.clone(),
+                    tenant_id: info.tenant_id.clone(),
+                    updated_at_epoch: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                };
+                if let Err(e) = store.save_presentity(stored).await {
+                    warn!(error = %e, aor = %info.aor, "Failed to persist presentity on shutdown");
+                }
+            }
+
+            // Persist all subscriptions
+            let all_watchers = self.get_all_watchers();
+            for w in &all_watchers {
+                let stored = watcher_to_stored(w);
+                if let Err(e) = store.save_subscription(stored).await {
+                    warn!(error = %e, "Failed to persist subscription on shutdown");
+                }
+            }
+
+            info!(
+                presentities = presentities.len(),
+                watchers = all_watchers.len(),
+                "Shutdown: persisted final presence state"
+            );
+        }
+    }
+
+    /// Get all watchers including winfo watchers (for shutdown NOTIFY).
+    pub fn get_all_watchers_including_winfo(&self) -> Vec<Watcher> {
+        let now = Instant::now();
+        let mut all = self.get_all_watchers();
+
+        // Add winfo watchers
+        for entry in self.winfo_watchers.iter() {
+            for w in entry.value().iter() {
+                if w.expires_at > now {
+                    all.push(w.clone());
+                }
+            }
+        }
+
+        all
     }
 }
 
@@ -1854,7 +2019,7 @@ mod tests {
             allow_list: HashSet::from(["bob@example.com".to_string()]),
             block_list: HashSet::new(),
         };
-        mgr.set_auth_policy("alice@example.com", policy);
+        mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
         assert!(mgr.get_auth_policy("alice@example.com").is_some());
 
         mgr.remove_auth_policy("alice@example.com");

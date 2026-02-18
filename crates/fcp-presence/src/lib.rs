@@ -27,6 +27,6 @@ pub mod xcap;
 pub use config::PresenceConfig;
 pub use manager::PresenceManager;
 pub use types::{
-    ActiveCallInfo, CallDirection, DialogState, EventStateComposition, PresenceAuthPolicy,
-    PresenceInfo, PresenceState, PresenceUpdate, Watcher,
+    ActiveCallInfo, CallDirection, DialogState, EventStateComposition, NotifyRetryEntry,
+    PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate, Watcher,
 };

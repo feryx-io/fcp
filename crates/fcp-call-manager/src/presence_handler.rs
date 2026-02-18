@@ -25,6 +25,10 @@ pub struct SipPresenceHandler {
     tenant_id: TenantId,
     /// Default subscription expiry in seconds
     default_expires: u32,
+    /// Rate limiter for SUBSCRIBE requests (keyed by source IP and AOR)
+    subscribe_limiter: Arc<sip_ratelimit::RateLimiter>,
+    /// Rate limiter for PUBLISH requests (keyed by source IP and AOR)
+    publish_limiter: Arc<sip_ratelimit::RateLimiter>,
 }
 
 /// Parsed SUBSCRIBE context for easier dispatch.
@@ -43,11 +47,22 @@ impl SipPresenceHandler {
         tenant_id: TenantId,
         default_expires: u32,
     ) -> Self {
+        let config = presence.config();
+        let subscribe_limiter = Arc::new(sip_ratelimit::RateLimiter::new(
+            sip_ratelimit::RateLimitConfig::new(config.subscribe_rate_limit_per_ip, 60)
+                .unwrap_or_else(|_| sip_ratelimit::RateLimitConfig::new(20, 60).unwrap()),
+        ));
+        let publish_limiter = Arc::new(sip_ratelimit::RateLimiter::new(
+            sip_ratelimit::RateLimitConfig::new(config.publish_rate_limit_per_ip, 60)
+                .unwrap_or_else(|_| sip_ratelimit::RateLimitConfig::new(30, 60).unwrap()),
+        ));
         Self {
             presence,
             uac,
             tenant_id,
             default_expires,
+            subscribe_limiter,
+            publish_limiter,
         }
     }
 
@@ -140,6 +155,8 @@ impl SipPresenceHandler {
             uac: Arc::clone(&self.uac),
             tenant_id: self.tenant_id.clone(),
             default_expires: self.default_expires,
+            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
+            publish_limiter: Arc::clone(&self.publish_limiter),
         };
         let aor = aor.to_string();
         tokio::spawn(async move {
@@ -148,6 +165,91 @@ impl SipPresenceHandler {
                 warn!(error = %e, aor = %aor, "Failed to notify watchers after PUBLISH");
             }
         });
+    }
+
+    /// Extract source IP from the top Via header's received param or sent-by host.
+    fn extract_source_ip(request: &sip_core::Request) -> String {
+        if let Some(via) = sip_parse::header(request.headers(), "Via") {
+            // Try to extract "received" parameter first
+            if let Some(pos) = via.find("received=") {
+                let rest = &via[pos + 9..];
+                let end = rest.find(|c: char| c == ';' || c == ',' || c.is_whitespace())
+                    .unwrap_or(rest.len());
+                return rest[..end].to_string();
+            }
+            // Fall back to sent-by host (between protocol and ;params)
+            // Via: SIP/2.0/UDP 192.168.1.100:5060;branch=...
+            if let Some(host_start) = via.rfind(' ') {
+                let host_part = &via[host_start + 1..];
+                let end = host_part.find(|c: char| c == ';' || c == ',')
+                    .unwrap_or(host_part.len());
+                let host_port = &host_part[..end];
+                // Strip port
+                if let Some((host, _)) = host_port.rsplit_once(':') {
+                    return host.to_string();
+                }
+                return host_port.to_string();
+            }
+        }
+        "unknown".to_string()
+    }
+
+    /// Process pending NOTIFY retries from the retry queue.
+    pub async fn process_retry_queue(&self) {
+        let due_entries = self.presence.dequeue_due_retries();
+        if due_entries.is_empty() {
+            return;
+        }
+
+        let (base_delay_ms, max_delay_ms, max_retries) = self.presence.retry_config();
+
+        for entry in due_entries {
+            match self
+                .send_notify_to_watcher(&entry.watcher, &entry.subscription_state)
+                .await
+            {
+                Ok(()) => {
+                    // Success — remove from retry queue
+                    self.presence.remove_retry(
+                        &entry.watcher.subscription_id,
+                        &entry.watcher.presentity_aor,
+                    );
+                    debug!(
+                        watcher = %entry.watcher.watcher_aor,
+                        presentity = %entry.watcher.presentity_aor,
+                        attempt = entry.attempt,
+                        "NOTIFY retry succeeded"
+                    );
+                }
+                Err(_) => {
+                    let next_attempt = entry.attempt + 1;
+                    if next_attempt > max_retries {
+                        warn!(
+                            watcher = %entry.watcher.watcher_aor,
+                            presentity = %entry.watcher.presentity_aor,
+                            attempts = next_attempt,
+                            "NOTIFY retry max attempts exceeded, giving up"
+                        );
+                        self.presence.remove_retry(
+                            &entry.watcher.subscription_id,
+                            &entry.watcher.presentity_aor,
+                        );
+                    } else {
+                        // Re-enqueue with exponential backoff
+                        let delay_ms = (base_delay_ms * 2u64.pow(next_attempt - 1))
+                            .min(max_delay_ms);
+                        let retry = fcp_presence::NotifyRetryEntry {
+                            watcher: entry.watcher,
+                            subscription_state: entry.subscription_state,
+                            attempt: next_attempt,
+                            next_retry_at: Instant::now() + Duration::from_millis(delay_ms),
+                            created_at: entry.created_at,
+                        };
+                        self.presence.enqueue_retry(retry);
+                    }
+                }
+            }
+        }
     }
 
     /// Clamp the requested subscription expiry to the configured range.
@@ -207,6 +309,8 @@ impl SipPresenceHandler {
             }
         };
 
+        let (base_delay_ms, _, _) = self.presence.retry_config();
+
         match self
             .uac
             .send_unsolicited_notify_with_state(
@@ -227,6 +331,11 @@ impl SipPresenceHandler {
                         sub_state = %subscription_state,
                         "Presence NOTIFY accepted"
                     );
+                    // Clear any pending retry on success
+                    self.presence.remove_retry(
+                        &watcher.subscription_id,
+                        &watcher.presentity_aor,
+                    );
                 } else {
                     warn!(
                         watcher = %watcher.watcher_aor,
@@ -234,6 +343,15 @@ impl SipPresenceHandler {
                         code = response.code(),
                         "Presence NOTIFY rejected"
                     );
+                    // Enqueue retry for non-2xx responses
+                    let retry = fcp_presence::NotifyRetryEntry {
+                        watcher: watcher.clone(),
+                        subscription_state: subscription_state.to_string(),
+                        attempt: 1,
+                        next_retry_at: Instant::now() + Duration::from_millis(base_delay_ms),
+                        created_at: Instant::now(),
+                    };
+                    self.presence.enqueue_retry(retry);
                 }
             }
             Err(e) => {
@@ -243,6 +361,15 @@ impl SipPresenceHandler {
                     error = %e,
                     "Failed to send presence NOTIFY"
                 );
+                // Enqueue retry for send errors
+                let retry = fcp_presence::NotifyRetryEntry {
+                    watcher: watcher.clone(),
+                    subscription_state: subscription_state.to_string(),
+                    attempt: 1,
+                    next_retry_at: Instant::now() + Duration::from_millis(base_delay_ms),
+                    created_at: Instant::now(),
+                };
+                self.presence.enqueue_retry(retry);
             }
         }
 
@@ -371,6 +498,8 @@ impl SipPresenceHandler {
                 uac: Arc::clone(&self.uac),
                 tenant_id: self.tenant_id.clone(),
                 default_expires: self.default_expires,
+                subscribe_limiter: Arc::clone(&self.subscribe_limiter),
+                publish_limiter: Arc::clone(&self.publish_limiter),
             };
             let watcher_clone = w.clone();
             tokio::spawn(async move {
@@ -445,6 +574,8 @@ impl SipPresenceHandler {
             uac: Arc::clone(&self.uac),
             tenant_id: self.tenant_id.clone(),
             default_expires: self.default_expires,
+            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
+            publish_limiter: Arc::clone(&self.publish_limiter),
         };
 
         tokio::spawn(async move {
@@ -514,6 +645,8 @@ impl SipPresenceHandler {
             uac: Arc::clone(&self.uac),
             tenant_id: self.tenant_id.clone(),
             default_expires: self.default_expires,
+            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
+            publish_limiter: Arc::clone(&self.publish_limiter),
         };
 
         tokio::spawn(async move {
@@ -535,6 +668,27 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
         let ctx = self.parse_subscribe_context(request)?;
+
+        // Rate limiting: check both per-IP and per-AOR
+        let source_ip = Self::extract_source_ip(request);
+        let aor_key = format!("aor:{}", ctx.presentity_aor);
+        if !self.subscribe_limiter.check_rate_limit(&source_ip)
+            || !self.subscribe_limiter.check_rate_limit(&aor_key)
+        {
+            warn!(
+                source = %source_ip,
+                presentity = %ctx.presentity_aor,
+                "SUBSCRIBE rate limited"
+            );
+            let mut response =
+                sip_uas::UserAgentServer::create_response(request, 503, "Service Unavailable");
+            let _ = response.headers_mut().push(
+                smol_str::SmolStr::new("Retry-After"),
+                smol_str::SmolStr::new("60"),
+            );
+            handle.send_final(response).await;
+            return Ok(());
+        }
 
         info!(
             presentity = %ctx.presentity_aor,
@@ -584,6 +738,29 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
 
         if event != "presence" {
             bail!("Not a presence PUBLISH (event: {event})");
+        }
+
+        // Rate limiting: check both per-IP and per-AOR
+        let source_ip = Self::extract_source_ip(request);
+        let presentity_aor = Self::extract_presentity_aor(request)
+            .unwrap_or_default();
+        let aor_key = format!("aor:{presentity_aor}");
+        if !self.publish_limiter.check_rate_limit(&source_ip)
+            || !self.publish_limiter.check_rate_limit(&aor_key)
+        {
+            warn!(
+                source = %source_ip,
+                presentity = %presentity_aor,
+                "PUBLISH rate limited"
+            );
+            let mut response =
+                sip_uas::UserAgentServer::create_response(request, 503, "Service Unavailable");
+            let _ = response.headers_mut().push(
+                smol_str::SmolStr::new("Retry-After"),
+                smol_str::SmolStr::new("60"),
+            );
+            handle.send_final(response).await;
+            return Ok(());
         }
 
         let if_match = Self::extract_sip_if_match(request);

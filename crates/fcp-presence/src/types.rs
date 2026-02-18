@@ -114,6 +114,21 @@ pub struct EventStateComposition {
     pub expires_at: Instant,
 }
 
+/// A pending NOTIFY delivery that needs to be retried.
+#[derive(Debug, Clone)]
+pub struct NotifyRetryEntry {
+    /// The watcher to send the NOTIFY to.
+    pub watcher: Watcher,
+    /// The Subscription-State header value to use.
+    pub subscription_state: String,
+    /// Number of delivery attempts so far.
+    pub attempt: u32,
+    /// When the next retry should be attempted.
+    pub next_retry_at: Instant,
+    /// When the entry was originally created.
+    pub created_at: Instant,
+}
+
 /// Update request for presence state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceUpdate {

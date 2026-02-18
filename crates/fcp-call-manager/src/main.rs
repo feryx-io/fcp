@@ -392,7 +392,7 @@ async fn main() -> Result<()> {
     };
 
     // 17c. Create SIP presence handler (if enabled)
-    let presence_handler: Option<Arc<dyn fcp_sip::presence::PresenceHandler>> =
+    let concrete_presence_handler: Option<Arc<presence_handler::SipPresenceHandler>> =
         if let Some(ref pm) = presence_manager {
             let pres_tenant = fcp_core::TenantId::nil();
             let handler = presence_handler::SipPresenceHandler::new(
@@ -401,10 +401,14 @@ async fn main() -> Result<()> {
                 pres_tenant,
                 config.presence.default_subscription_expiry_secs,
             );
-            Some(Arc::new(handler) as Arc<dyn fcp_sip::presence::PresenceHandler>)
+            Some(Arc::new(handler))
         } else {
             None
         };
+    let presence_handler: Option<Arc<dyn fcp_sip::presence::PresenceHandler>> =
+        concrete_presence_handler
+            .as_ref()
+            .map(|h| Arc::clone(h) as Arc<dyn fcp_sip::presence::PresenceHandler>);
 
     let handler = Arc::new(SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
@@ -656,28 +660,45 @@ async fn main() -> Result<()> {
         });
         info!("Presence event listener started");
 
-        // Spawn watcher + PUBLISH + store cleanup task
+        // Spawn watcher + PUBLISH + store cleanup task (with shutdown signal)
         let pm_cleanup = pm.clone();
         let ph_cleanup = presence_handler.as_ref().map(Arc::clone);
+        let concrete_ph_cleanup = concrete_presence_handler.as_ref().map(Arc::clone);
+        let mut cleanup_shutdown_rx = pm.shutdown_receiver();
         tokio::spawn(async move {
             let interval_dur = pm_cleanup.cleanup_interval();
             let mut interval = tokio::time::interval(interval_dur);
+            // Shorter interval for retry queue processing (10s)
+            let mut retry_interval = tokio::time::interval(std::time::Duration::from_secs(10));
             loop {
-                interval.tick().await;
-                let removed = pm_cleanup.cleanup_expired_watchers();
-                if !removed.is_empty() {
-                    info!(count = removed.len(), "Cleaned up expired presence watchers");
-                    // Send terminated NOTIFY to expired watchers
-                    if let Some(ref ph) = ph_cleanup {
-                        if let Err(e) = ph.send_terminated_notifies(&removed, "timeout").await {
-                            warn!(error = %e, "Failed to send terminated NOTIFYs for expired watchers");
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let removed = pm_cleanup.cleanup_expired_watchers();
+                        if !removed.is_empty() {
+                            info!(count = removed.len(), "Cleaned up expired presence watchers");
+                            // Send terminated NOTIFY to expired watchers
+                            if let Some(ref ph) = ph_cleanup {
+                                if let Err(e) = ph.send_terminated_notifies(&removed, "timeout").await {
+                                    warn!(error = %e, "Failed to send terminated NOTIFYs for expired watchers");
+                                }
+                            }
+                        }
+                        // Clean up expired PUBLISH ESC entries (RFC 3903)
+                        pm_cleanup.cleanup_expired_publishes().await;
+                        // Clean up expired subscriptions from persistent store
+                        pm_cleanup.cleanup_expired_subscriptions_from_store().await;
+                    }
+                    _ = retry_interval.tick() => {
+                        // Process NOTIFY retry queue
+                        if let Some(ref ph) = concrete_ph_cleanup {
+                            ph.process_retry_queue().await;
                         }
                     }
+                    _ = cleanup_shutdown_rx.changed() => {
+                        info!("Presence cleanup task received shutdown signal");
+                        break;
+                    }
                 }
-                // Clean up expired PUBLISH ESC entries (RFC 3903)
-                pm_cleanup.cleanup_expired_publishes().await;
-                // Clean up expired subscriptions from persistent store
-                pm_cleanup.cleanup_expired_subscriptions_from_store().await;
             }
         });
 
@@ -772,14 +793,25 @@ async fn main() -> Result<()> {
     }
 
     // 21. Graceful shutdown
-    // Send terminated NOTIFYs to all presence watchers (RFC 3265 §3.2.4, reason=probation)
+    // Signal presence manager to shutdown (persists state, signals cleanup task)
+    if let Some(ref pm) = presence_manager {
+        pm.shutdown().await;
+    }
+
+    // Send terminated NOTIFYs to all presence watchers including winfo (RFC 3265 §3.2.4, reason=probation)
     if let (Some(ref pm), Some(ref ph)) = (&presence_manager, &presence_handler) {
-        let all_watchers = pm.get_all_watchers();
+        let all_watchers = pm.get_all_watchers_including_winfo();
         if !all_watchers.is_empty() {
             info!(count = all_watchers.len(), "Sending terminated NOTIFYs to presence watchers...");
             if let Err(e) = ph.send_terminated_notifies(&all_watchers, "probation").await {
                 warn!(error = %e, "Failed to send some shutdown NOTIFYs");
             }
+        }
+
+        // Drain retry queue entries
+        let retry_count = pm.retry_queue_len();
+        if retry_count > 0 {
+            info!(count = retry_count, "Draining NOTIFY retry queue on shutdown");
         }
     }
 

@@ -246,7 +246,7 @@ pub async fn set_policy(
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    pm.set_auth_policy(&aor, policy.clone());
+    pm.set_auth_policy(&aor, policy.clone(), &state.default_tenant_id);
 
     info!(aor = %aor, default_allow = policy.default_allow, "Presence auth policy updated via API");
 
@@ -299,7 +299,7 @@ pub async fn set_pres_rules(
     let policy = fcp_presence::xcap::parse_pres_rules(&body)
         .map_err(|e| ApiError::BadRequest(format!("Invalid pres-rules XML: {e}")))?;
 
-    pm.set_auth_policy(&aor, policy.clone());
+    pm.set_auth_policy(&aor, policy.clone(), &state.default_tenant_id);
 
     info!(aor = %aor, default_allow = policy.default_allow, "Presence auth policy updated via XCAP pres-rules");
 
