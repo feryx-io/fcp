@@ -58,6 +58,14 @@ pub struct QueueSystemConfig {
     /// general webhook dispatcher.
     #[serde(default)]
     pub webhook_url: Option<String>,
+
+    /// Duration (seconds) to extend the wrap-up timer per extension request.
+    #[serde(default = "default_wrap_up_extension")]
+    pub wrap_up_extension_secs: u32,
+
+    /// Maximum number of times an agent can extend their wrap-up per call.
+    #[serde(default = "default_max_wrap_up_extensions")]
+    pub max_wrap_up_extensions: u32,
 }
 
 impl Default for QueueSystemConfig {
@@ -75,6 +83,8 @@ impl Default for QueueSystemConfig {
             default_max_concurrent_calls: default_one(),
             recording_dir: None,
             webhook_url: None,
+            wrap_up_extension_secs: default_wrap_up_extension(),
+            max_wrap_up_extensions: default_max_wrap_up_extensions(),
         }
     }
 }
@@ -227,6 +237,27 @@ pub struct QueueConfig {
     /// value, a `ServiceLevelWarning` event is emitted. 0 = disabled. Default: 0.
     #[serde(default)]
     pub sla_warning_threshold_pct: f64,
+
+    /// Language code for queue announcements (e.g., "en", "es", "fr").
+    /// Audio files are loaded from `{queue_audio_dir}/{language}/`.
+    /// Falls back to "en" if the requested language is not found.
+    /// If None, defaults to "en".
+    #[serde(default)]
+    pub announcement_language: Option<String>,
+
+    /// Enable predictive/progressive dialer campaign mode for this queue.
+    #[serde(default)]
+    pub campaign_enabled: bool,
+
+    /// Dial ratio: how many outbound calls to place per available agent.
+    /// 1.0 = progressive (1:1), >1.0 = predictive (over-dial). Default: 1.0.
+    #[serde(default = "default_campaign_dial_ratio")]
+    pub campaign_dial_ratio: f32,
+
+    /// Seconds to wait for an agent before abandoning a campaign call
+    /// that was answered but has no agent available (over-dial scenario).
+    #[serde(default = "default_campaign_abandon_timeout")]
+    pub campaign_abandon_timeout_secs: u32,
 }
 
 impl QueueConfig {
@@ -342,6 +373,22 @@ fn default_callback_max_attempts() -> u32 {
 
 fn default_callback_retry_delay() -> u32 {
     60
+}
+
+fn default_wrap_up_extension() -> u32 {
+    30
+}
+
+fn default_max_wrap_up_extensions() -> u32 {
+    3
+}
+
+fn default_campaign_dial_ratio() -> f32 {
+    1.0
+}
+
+fn default_campaign_abandon_timeout() -> u32 {
+    30
 }
 
 #[cfg(test)]

@@ -751,6 +751,35 @@ pub enum QueueEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Campaign outbound call placed to a destination
+    CampaignCallPlaced {
+        queue_name: String,
+        destination: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Campaign call answered and connected to an agent
+    CampaignCallConnected {
+        queue_name: String,
+        destination: String,
+        agent_id: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Campaign call failed (no answer, busy, error, or abandoned)
+    CampaignCallFailed {
+        queue_name: String,
+        destination: String,
+        outcome: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Queue statistics snapshot for event publishing.
@@ -1091,7 +1120,10 @@ impl QueueEvent {
             | QueueEvent::CallbackFailed { timestamp, .. }
             | QueueEvent::ServiceLevelWarning { timestamp, .. }
             | QueueEvent::QueueDraining { timestamp, .. }
-            | QueueEvent::QueueDrained { timestamp, .. } => *timestamp,
+            | QueueEvent::QueueDrained { timestamp, .. }
+            | QueueEvent::CampaignCallPlaced { timestamp, .. }
+            | QueueEvent::CampaignCallConnected { timestamp, .. }
+            | QueueEvent::CampaignCallFailed { timestamp, .. } => *timestamp,
         }
     }
 }

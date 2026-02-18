@@ -482,6 +482,7 @@ async fn main() -> Result<()> {
         event_bus: Arc::clone(&event_bus),
         start_time: Instant::now(),
         config_path: cli.config.clone(),
+        api_token: config.http.api_token.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {

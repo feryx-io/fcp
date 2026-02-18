@@ -3,6 +3,7 @@
 use axum::{
     extract::{Path, Query, State},
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -31,6 +32,7 @@ pub struct AppState {
     pub event_bus: Arc<InMemoryEventBus>,
     pub start_time: Instant,
     pub config_path: Option<std::path::PathBuf>,
+    pub api_token: Option<String>,
 }
 
 /// Run the HTTP health/status/calls server.
@@ -56,11 +58,17 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/agents/{id}/kick", post(kick_agent_handler))
         .route("/agents/{id}/login", post(login_agent_handler))
         .route("/agents/{id}/logout", post(logout_agent_handler))
+        .route("/agents/{id}/extend-wrapup", post(extend_wrapup_handler))
         // Callback endpoints
         .route("/callbacks", get(list_callbacks_handler))
         .route("/callbacks/{call_id}", delete(cancel_callback_handler))
         // WebSocket wallboard (real-time queue stats)
         .route("/ws/wallboard", get(wallboard_ws_handler))
+        // Campaign / predictive dialer endpoints
+        .route("/campaigns/{queue}/numbers", post(campaign_load_numbers_handler))
+        .route("/campaigns/{queue}/stats", get(campaign_stats_handler))
+        .route("/campaigns/{queue}/start", post(campaign_start_handler))
+        .route("/campaigns/{queue}/stop", post(campaign_stop_handler))
         // Supervisor endpoints
         .route("/calls/{id}/monitor", post(monitor_call_handler))
         .route("/calls/{id}/whisper", post(whisper_call_handler))
@@ -749,6 +757,98 @@ async fn logout_agent_handler(
     }
 }
 
+/// Extend an agent's wrap-up timer.
+async fn extend_wrapup_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.extend_wrap_up(&id).await {
+        Ok(extensions_used) => Json(serde_json::json!({
+            "status": "extended",
+            "agent_id": id,
+            "extensions_used": extensions_used,
+        })),
+        Err(e) => Json(serde_json::json!({"error": e.to_string()})),
+    }
+}
+
+// ---- Campaign / Predictive Dialer Endpoints ----
+
+#[derive(Deserialize)]
+struct CampaignNumbersBody {
+    numbers: Vec<fcp_queue::CampaignNumber>,
+}
+
+/// Upload a list of numbers for a campaign.
+async fn campaign_load_numbers_handler(
+    State(state): State<Arc<AppState>>,
+    Path(queue): Path<String>,
+    Json(body): Json<CampaignNumbersBody>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    let count = body.numbers.len();
+    qm.load_campaign_numbers(&queue, body.numbers);
+    Json(serde_json::json!({
+        "status": "loaded",
+        "queue": queue,
+        "numbers_loaded": count,
+    }))
+}
+
+/// Get campaign statistics for a queue.
+async fn campaign_stats_handler(
+    State(state): State<Arc<AppState>>,
+    Path(queue): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    match qm.campaign_stats(&queue) {
+        Some(stats) => Json(serde_json::json!({
+            "queue": queue,
+            "stats": stats,
+        })),
+        None => Json(serde_json::json!({
+            "error": "No campaign data for this queue",
+        })),
+    }
+}
+
+/// Start the campaign for a queue.
+async fn campaign_start_handler(
+    State(state): State<Arc<AppState>>,
+    Path(queue): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    qm.set_campaign_running(&queue, true);
+    Json(serde_json::json!({
+        "status": "started",
+        "queue": queue,
+    }))
+}
+
+/// Stop the campaign for a queue.
+async fn campaign_stop_handler(
+    State(state): State<Arc<AppState>>,
+    Path(queue): Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(ref qm) = state.queue_manager else {
+        return Json(serde_json::json!({"error": "Queue system not enabled"}));
+    };
+    qm.set_campaign_running(&queue, false);
+    Json(serde_json::json!({
+        "status": "stopped",
+        "queue": queue,
+    }))
+}
+
 // ---- Supervisor Endpoints ----
 
 #[derive(Deserialize)]
@@ -893,15 +993,69 @@ async fn cancel_callback_handler(
 
 // ---- WebSocket Wallboard Endpoint ----
 
+#[derive(Deserialize)]
+struct WallboardQuery {
+    token: Option<String>,
+}
+
+/// Extract a bearer token from the Authorization header value.
+fn extract_bearer_token(header_value: &str) -> Option<&str> {
+    header_value
+        .strip_prefix("Bearer ")
+        .or_else(|| header_value.strip_prefix("bearer "))
+        .map(|t| t.trim())
+}
+
+/// Constant-time string comparison to prevent timing attacks.
+fn constant_time_compare(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 /// WebSocket upgrade handler for real-time wallboard stats.
 ///
 /// Subscribes to `QueueEvent::StatsSnapshot` on the event bus and streams
 /// each snapshot as JSON to the connected WebSocket client.
+///
+/// If `api_token` is configured, validates bearer token from the
+/// `Authorization` header or `?token=` query parameter before upgrading.
 async fn wallboard_ws_handler(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<WallboardQuery>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
+    // Check auth if api_token is configured
+    if let Some(ref expected_token) = state.api_token {
+        // Try Authorization header first, then query param
+        let provided_token = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(extract_bearer_token)
+            .map(|s| s.to_string())
+            .or(query.token);
+
+        match provided_token {
+            Some(ref token) if constant_time_compare(token, expected_token) => {
+                // Auth passed
+            }
+            _ => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     ws.on_upgrade(move |socket| wallboard_ws_session(socket, state))
+        .into_response()
 }
 
 /// Run a wallboard WebSocket session.

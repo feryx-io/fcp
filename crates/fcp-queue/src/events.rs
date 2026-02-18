@@ -403,6 +403,67 @@ pub async fn queue_drained(
     .await;
 }
 
+/// Publish a CampaignCallPlaced event (outbound campaign call initiated).
+pub async fn campaign_call_placed(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    destination: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CampaignCallPlaced {
+            queue_name: queue_name.to_string(),
+            destination: destination.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a CampaignCallConnected event (campaign call answered and bridged to agent).
+pub async fn campaign_call_connected(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    destination: &str,
+    agent_id: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CampaignCallConnected {
+            queue_name: queue_name.to_string(),
+            destination: destination.to_string(),
+            agent_id: agent_id.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a CampaignCallFailed event (campaign call not connected).
+pub async fn campaign_call_failed(
+    events: &Option<Arc<dyn EventPublisher>>,
+    queue_name: &str,
+    destination: &str,
+    outcome: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        QueueEvent::CampaignCallFailed {
+            queue_name: queue_name.to_string(),
+            destination: destination.to_string(),
+            outcome: outcome.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a StatsSnapshot event for wallboard consumers.
 pub async fn stats_snapshot(
     events: &Option<Arc<dyn EventPublisher>>,

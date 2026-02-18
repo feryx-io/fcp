@@ -252,6 +252,12 @@ pub struct HttpSection {
     /// Bind address for health/status/calls endpoint
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
+
+    /// Optional bearer token for authenticating WebSocket wallboard connections.
+    /// Supports `Authorization: Bearer <token>` header and `?token=<token>` query param.
+    /// When None, wallboard connections require no authentication.
+    #[serde(default)]
+    pub api_token: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
@@ -262,6 +268,7 @@ impl Default for HttpSection {
     fn default() -> Self {
         Self {
             bind_address: default_http_bind(),
+            api_token: None,
         }
     }
 }

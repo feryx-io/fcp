@@ -16,8 +16,8 @@ const NB_FRAME_SAMPLES: usize = 160;
 /// Frame size in samples for G.722 (16kHz input, 20ms).
 const G722_FRAME_SAMPLES: usize = 320;
 
-/// Pre-encoded position and ETA announcements for each codec type.
-pub struct AnnouncementCache {
+/// Pre-encoded position and ETA announcements for a single language.
+struct PerLanguageCache {
     /// Position number → pre-encoded RTP-payload frames (PCMU).
     pcmu: HashMap<usize, Vec<Vec<u8>>>,
     /// Position number → pre-encoded RTP-payload frames (PCMA).
@@ -32,165 +32,185 @@ pub struct AnnouncementCache {
     eta_g722: HashMap<usize, Vec<Vec<u8>>>,
 }
 
-impl AnnouncementCache {
-    /// Load WAV audio from `audio_dir` and pre-encode for all codecs.
-    ///
-    /// Expected files:
-    /// - `position.wav` — "You are caller number"
-    /// - `digits/1.wav` through `digits/20.wav`
-    /// - `digits/30.wav`, `digits/40.wav`, `digits/50.wav`
-    ///
-    /// All WAV files must be 8kHz mono 16-bit LE PCM (standard telephony).
-    /// If `audio_dir` doesn't exist or no files are found, returns an empty cache.
-    pub fn load(audio_dir: &Path) -> Self {
-        let mut pcmu = HashMap::new();
-        let mut pcma = HashMap::new();
-        let mut g722 = HashMap::new();
-        let mut eta_pcmu = HashMap::new();
-        let mut eta_pcma = HashMap::new();
-        let mut eta_g722 = HashMap::new();
+/// Load announcement audio from a directory and build a PerLanguageCache.
+///
+/// Expected files in `dir`:
+/// - `position.wav` — "You are caller number"
+/// - `digits/1.wav` through `digits/20.wav`
+/// - `digits/30.wav`, `digits/40.wav`, `digits/50.wav`, `digits/60.wav`
+/// - `eta.wav` and `minutes.wav` (optional, for ETA announcements)
+fn load_language_cache(dir: &Path) -> Option<PerLanguageCache> {
+    let prefix_path = dir.join("position.wav");
+    let prefix_pcm = load_wav_pcm(&prefix_path)?;
 
-        let empty = Self {
-            pcmu: HashMap::new(),
-            pcma: HashMap::new(),
-            g722: HashMap::new(),
-            eta_pcmu: HashMap::new(),
-            eta_pcma: HashMap::new(),
-            eta_g722: HashMap::new(),
-        };
-
-        if !audio_dir.exists() {
-            warn!(path = %audio_dir.display(), "Queue audio directory not found; announcements disabled");
-            return empty;
-        }
-
-        // Load the "you are caller number" prefix
-        let prefix_path = audio_dir.join("position.wav");
-        let prefix_pcm = match load_wav_pcm(&prefix_path) {
-            Some(samples) => samples,
-            None => {
-                warn!("position.wav not found; announcements disabled");
-                return empty;
+    let mut digit_pcm: HashMap<usize, Vec<i16>> = HashMap::new();
+    let digits_dir = dir.join("digits");
+    if digits_dir.exists() {
+        for n in (1..=20).chain([30, 40, 50, 60].iter().copied()) {
+            let path = digits_dir.join(format!("{}.wav", n));
+            if let Some(samples) = load_wav_pcm(&path) {
+                digit_pcm.insert(n, samples);
             }
-        };
-
-        // Load digit files
-        let mut digit_pcm: HashMap<usize, Vec<i16>> = HashMap::new();
-        let digits_dir = audio_dir.join("digits");
-        if digits_dir.exists() {
-            for n in (1..=20).chain([30, 40, 50, 60].iter().copied()) {
-                let path = digits_dir.join(format!("{}.wav", n));
-                if let Some(samples) = load_wav_pcm(&path) {
-                    digit_pcm.insert(n, samples);
-                }
-            }
-        }
-
-        info!(
-            digit_files = digit_pcm.len(),
-            "Loaded queue announcement audio"
-        );
-
-        // Build announcements for positions 1..50
-        for pos in 1..=50 {
-            let number_samples = compose_number_pcm(pos, &digit_pcm);
-            if number_samples.is_empty() {
-                continue;
-            }
-
-            // Concatenate prefix + number
-            let mut full_pcm = prefix_pcm.clone();
-            // Small silence gap (100ms = 800 samples at 8kHz)
-            full_pcm.extend_from_slice(&[0i16; 800]);
-            full_pcm.extend_from_slice(&number_samples);
-
-            // Encode for each codec
-            pcmu.insert(pos, encode_pcmu_frames(&full_pcm));
-            pcma.insert(pos, encode_pcma_frames(&full_pcm));
-            g722.insert(pos, encode_g722_frames(&full_pcm));
-        }
-
-        debug!(
-            positions = pcmu.len(),
-            "Pre-encoded position announcements"
-        );
-
-        // Load ETA audio: "estimated wait time is" prefix and "minutes" suffix
-        let eta_prefix_path = audio_dir.join("eta.wav");
-        let minutes_path = audio_dir.join("minutes.wav");
-        let eta_prefix_pcm = load_wav_pcm(&eta_prefix_path);
-        let minutes_pcm = load_wav_pcm(&minutes_path);
-
-        if let (Some(eta_prefix), Some(minutes_suffix)) = (eta_prefix_pcm, minutes_pcm) {
-            // Build ETA announcements for 1..60 minutes
-            for mins in 1..=60 {
-                let number_samples = compose_number_pcm(mins, &digit_pcm);
-                if number_samples.is_empty() {
-                    continue;
-                }
-
-                // Concatenate: "estimated wait time is" + number + "minutes"
-                let mut full_pcm = eta_prefix.clone();
-                full_pcm.extend_from_slice(&[0i16; 800]); // 100ms gap
-                full_pcm.extend_from_slice(&number_samples);
-                full_pcm.extend_from_slice(&[0i16; 400]); // 50ms gap
-                full_pcm.extend_from_slice(&minutes_suffix);
-
-                eta_pcmu.insert(mins, encode_pcmu_frames(&full_pcm));
-                eta_pcma.insert(mins, encode_pcma_frames(&full_pcm));
-                eta_g722.insert(mins, encode_g722_frames(&full_pcm));
-            }
-
-            debug!(
-                eta_entries = eta_pcmu.len(),
-                "Pre-encoded ETA announcements"
-            );
-        } else {
-            debug!("eta.wav or minutes.wav not found; ETA announcements disabled");
-        }
-
-        Self {
-            pcmu,
-            pcma,
-            g722,
-            eta_pcmu,
-            eta_pcma,
-            eta_g722,
         }
     }
 
-    /// Get pre-encoded frames for a position number and codec.
-    /// Returns None if the position or codec is not available.
-    pub fn get_position_frames(&self, position: usize, codec_name: &str) -> Option<&[Vec<u8>]> {
+    let mut pcmu = HashMap::new();
+    let mut pcma = HashMap::new();
+    let mut g722 = HashMap::new();
+
+    for pos in 1..=50 {
+        let number_samples = compose_number_pcm(pos, &digit_pcm);
+        if number_samples.is_empty() {
+            continue;
+        }
+        let mut full_pcm = prefix_pcm.clone();
+        full_pcm.extend_from_slice(&[0i16; 800]);
+        full_pcm.extend_from_slice(&number_samples);
+
+        pcmu.insert(pos, encode_pcmu_frames(&full_pcm));
+        pcma.insert(pos, encode_pcma_frames(&full_pcm));
+        g722.insert(pos, encode_g722_frames(&full_pcm));
+    }
+
+    let mut eta_pcmu = HashMap::new();
+    let mut eta_pcma = HashMap::new();
+    let mut eta_g722 = HashMap::new();
+
+    let eta_prefix_pcm = load_wav_pcm(&dir.join("eta.wav"));
+    let minutes_pcm = load_wav_pcm(&dir.join("minutes.wav"));
+
+    if let (Some(eta_prefix), Some(minutes_suffix)) = (eta_prefix_pcm, minutes_pcm) {
+        for mins in 1..=60 {
+            let number_samples = compose_number_pcm(mins, &digit_pcm);
+            if number_samples.is_empty() {
+                continue;
+            }
+            let mut full_pcm = eta_prefix.clone();
+            full_pcm.extend_from_slice(&[0i16; 800]);
+            full_pcm.extend_from_slice(&number_samples);
+            full_pcm.extend_from_slice(&[0i16; 400]);
+            full_pcm.extend_from_slice(&minutes_suffix);
+
+            eta_pcmu.insert(mins, encode_pcmu_frames(&full_pcm));
+            eta_pcma.insert(mins, encode_pcma_frames(&full_pcm));
+            eta_g722.insert(mins, encode_g722_frames(&full_pcm));
+        }
+    }
+
+    if pcmu.is_empty() {
+        return None;
+    }
+
+    Some(PerLanguageCache {
+        pcmu,
+        pcma,
+        g722,
+        eta_pcmu,
+        eta_pcma,
+        eta_g722,
+    })
+}
+
+/// Pre-encoded position and ETA announcements, keyed by language code.
+///
+/// Supports per-queue language selection via subdirectories:
+/// `{audio_dir}/{lang}/position.wav`, `{audio_dir}/{lang}/digits/1.wav`, etc.
+/// Falls back to loading flat layout as "en" for backward compatibility.
+pub struct AnnouncementCache {
+    languages: HashMap<String, PerLanguageCache>,
+}
+
+impl AnnouncementCache {
+    /// Load WAV audio from `audio_dir` and pre-encode for all codecs.
+    ///
+    /// Scans for language subdirectories containing `position.wav`.
+    /// Each valid subdirectory (except `moh/`) becomes a language.
+    /// If no subdirectories are found but flat `position.wav` exists,
+    /// loads as "en" for backward compatibility.
+    pub fn load(audio_dir: &Path) -> Self {
+        let mut languages = HashMap::new();
+
+        if !audio_dir.exists() {
+            warn!(path = %audio_dir.display(), "Queue audio directory not found; announcements disabled");
+            return Self { languages };
+        }
+
+        // Scan for language subdirectories
+        if let Ok(entries) = std::fs::read_dir(audio_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                // Skip moh/ directory
+                if dir_name == "moh" {
+                    continue;
+                }
+                // Check if this subdir has position.wav
+                if !path.join("position.wav").exists() {
+                    continue;
+                }
+                if let Some(cache) = load_language_cache(&path) {
+                    info!(lang = %dir_name, positions = cache.pcmu.len(), "Loaded announcement language");
+                    languages.insert(dir_name, cache);
+                }
+            }
+        }
+
+        // Backward compatibility: if no language subdirs found, try flat layout as "en"
+        if languages.is_empty() && audio_dir.join("position.wav").exists() {
+            if let Some(cache) = load_language_cache(audio_dir) {
+                info!(positions = cache.pcmu.len(), "Loaded flat announcement audio as 'en'");
+                languages.insert("en".to_string(), cache);
+            }
+        }
+
+        Self { languages }
+    }
+
+    /// Get pre-encoded frames for a position number, codec, and language.
+    /// Falls back to "en" if the requested language is not available.
+    pub fn get_position_frames(&self, position: usize, codec_name: &str, lang: &str) -> Option<&[Vec<u8>]> {
+        let cache = self.languages.get(lang).or_else(|| self.languages.get("en"))?;
         let map = match codec_name {
-            "PCMU" => &self.pcmu,
-            "PCMA" => &self.pcma,
-            "G722" => &self.g722,
+            "PCMU" => &cache.pcmu,
+            "PCMA" => &cache.pcma,
+            "G722" => &cache.g722,
             _ => return None,
         };
         map.get(&position).map(|v| v.as_slice())
     }
 
-    /// Get pre-encoded ETA frames for a given number of minutes and codec.
-    /// Returns None if no ETA audio is available or minutes is out of range.
-    pub fn get_eta_frames(&self, minutes: usize, codec_name: &str) -> Option<&[Vec<u8>]> {
+    /// Get pre-encoded ETA frames for a given number of minutes, codec, and language.
+    /// Falls back to "en" if the requested language is not available.
+    pub fn get_eta_frames(&self, minutes: usize, codec_name: &str, lang: &str) -> Option<&[Vec<u8>]> {
+        let cache = self.languages.get(lang).or_else(|| self.languages.get("en"))?;
         let map = match codec_name {
-            "PCMU" => &self.eta_pcmu,
-            "PCMA" => &self.eta_pcma,
-            "G722" => &self.eta_g722,
+            "PCMU" => &cache.eta_pcmu,
+            "PCMA" => &cache.eta_pcma,
+            "G722" => &cache.eta_g722,
             _ => return None,
         };
         map.get(&minutes).map(|v| v.as_slice())
     }
 
-    /// Check if ETA announcements are available.
-    pub fn has_eta(&self) -> bool {
-        !self.eta_pcmu.is_empty()
+    /// Check if ETA announcements are available for a language.
+    /// Falls back to "en" if the requested language is not available.
+    pub fn has_eta(&self, lang: &str) -> bool {
+        self.languages
+            .get(lang)
+            .or_else(|| self.languages.get("en"))
+            .map(|c| !c.eta_pcmu.is_empty())
+            .unwrap_or(false)
     }
 
-    /// Check if announcements are available.
+    /// Check if any announcements are loaded.
     pub fn is_empty(&self) -> bool {
-        self.pcmu.is_empty()
+        self.languages.is_empty()
     }
 }
 
@@ -419,10 +439,33 @@ impl PromptCache {
     /// Load prompt WAV files referenced by queue configs.
     ///
     /// `prompt_files` is the set of unique prompt filenames (relative to `audio_dir`).
-    pub fn load(audio_dir: &Path, prompt_files: &[String]) -> Self {
+    /// `languages` is the set of language codes to try. For each prompt, tries
+    /// `{audio_dir}/{lang}/{filename}` first, falling back to `{audio_dir}/{filename}`.
+    pub fn load(audio_dir: &Path, prompt_files: &[String], languages: &[String]) -> Self {
         let mut prompts = HashMap::new();
 
         for filename in prompt_files {
+            // Try language-specific paths first, then flat path
+            let mut loaded = false;
+            for lang in languages {
+                let lang_path = audio_dir.join(lang).join(filename);
+                if let Some(pcm) = load_wav_pcm(&lang_path) {
+                    let key = format!("{}/{}", lang, filename);
+                    let mut codec_map = HashMap::new();
+                    codec_map.insert("PCMU".to_string(), encode_pcmu_frames(&pcm));
+                    codec_map.insert("PCMA".to_string(), encode_pcma_frames(&pcm));
+                    codec_map.insert("G722".to_string(), encode_g722_frames(&pcm));
+
+                    info!(
+                        prompt = %key,
+                        duration_ms = pcm.len() * 1000 / 8000,
+                        "Loaded prompt audio (i18n)"
+                    );
+                    prompts.insert(key, codec_map);
+                    loaded = true;
+                }
+            }
+            // Fall back to flat path
             let path = audio_dir.join(filename);
             if let Some(pcm) = load_wav_pcm(&path) {
                 let mut codec_map = HashMap::new();
@@ -436,12 +479,25 @@ impl PromptCache {
                     "Loaded prompt audio"
                 );
                 prompts.insert(filename.clone(), codec_map);
-            } else {
+                loaded = true;
+            }
+            if !loaded {
                 warn!(prompt = %filename, "Failed to load prompt WAV file");
             }
         }
 
         Self { prompts }
+    }
+
+    /// Get pre-encoded frames for a prompt and codec, with language support.
+    /// Tries `{lang}/{prompt_name}` first, falls back to `{prompt_name}`.
+    pub fn get_frames_i18n(&self, prompt_name: &str, codec: &str, lang: &str) -> Option<&[Vec<u8>]> {
+        let lang_key = format!("{}/{}", lang, prompt_name);
+        self.prompts
+            .get(&lang_key)
+            .or_else(|| self.prompts.get(prompt_name))
+            .and_then(|codecs| codecs.get(codec))
+            .map(|v| v.as_slice())
     }
 
     /// Get pre-encoded frames for a prompt and codec.

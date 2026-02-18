@@ -80,6 +80,8 @@ pub struct Agent {
     pub current_calls: u32,
     /// Reason for the current Away/Paused state (e.g., "lunch", "meeting", "bathroom").
     pub pause_reason: Option<String>,
+    /// Number of wrap-up extensions used for the current call (reset on new call).
+    pub wrap_up_extensions_used: u32,
 }
 
 impl Agent {
@@ -105,6 +107,7 @@ impl Agent {
             max_concurrent_calls: 1,
             current_calls: 0,
             pause_reason: None,
+            wrap_up_extensions_used: 0,
         }
     }
 
@@ -315,6 +318,56 @@ pub struct AgentStats {
     pub pause_reason: Option<String>,
 }
 
+/// A number to dial as part of a campaign.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CampaignNumber {
+    /// Destination URI or phone number to dial.
+    pub destination: String,
+    /// Caller ID to present (overrides queue default if set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_id: Option<String>,
+    /// Arbitrary metadata to attach to this call (e.g., CRM record ID).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Outcome of a campaign outbound call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignCallOutcome {
+    /// Callee answered and was connected to an agent.
+    Answered,
+    /// No answer within ring timeout.
+    NoAnswer,
+    /// Line busy.
+    Busy,
+    /// Call failed (network error, invalid number, etc.).
+    Failed,
+    /// Callee answered but no agent was available (over-dial abandon).
+    Abandoned,
+}
+
+/// Statistics for a campaign run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CampaignStats {
+    /// Numbers remaining in the dial list.
+    pub numbers_remaining: usize,
+    /// Currently active outbound dials (ringing, not yet answered/failed).
+    pub active_dials: usize,
+    /// Calls answered and connected to an agent.
+    pub calls_answered: u64,
+    /// Calls that rang but were not answered.
+    pub calls_no_answer: u64,
+    /// Calls that got a busy signal.
+    pub calls_busy: u64,
+    /// Calls that failed (network/invalid).
+    pub calls_failed: u64,
+    /// Calls answered but abandoned (no agent available).
+    pub calls_abandoned: u64,
+    /// Whether the campaign is currently running.
+    pub running: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +412,10 @@ mod tests {
             callback_retry_delay_secs: 60,
             sla_warning_threshold_pct: 0.0,
             agent_weights: HashMap::new(),
+            announcement_language: None,
+            campaign_enabled: false,
+            campaign_dial_ratio: 1.0,
+            campaign_abandon_timeout_secs: 30,
         }
     }
 

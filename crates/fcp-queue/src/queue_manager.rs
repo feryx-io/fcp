@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use chrono::Datelike;
 use dashmap::DashMap;
 use std::collections::VecDeque;
+use tokio_util::sync::CancellationToken;
 
 use fcp_core::storage::{QueueStore, StoredAgent, StoredQueueSnapshot};
 use fcp_core::TenantId;
@@ -18,7 +19,12 @@ use tracing::{debug, info, warn};
 use crate::config::{QueueConfig, QueueSystemConfig};
 use crate::distribution::{self, DistributionPlan};
 use crate::events;
-use crate::types::{Agent, AgentState, AgentStats, Queue, QueueStats, QueuedCall};
+use std::collections::HashSet;
+
+use crate::types::{
+    Agent, AgentState, AgentStats, CampaignCallOutcome, CampaignNumber, CampaignStats, Queue,
+    QueueStats, QueuedCall,
+};
 
 /// Central manager for all queues, agents, and call distribution.
 ///
@@ -46,6 +52,16 @@ pub struct QueueManager {
     queue_store: Option<Arc<dyn QueueStore>>,
     /// In-memory ring buffer of stats snapshots per queue (max 1440 = 24h at 1-min intervals).
     stats_history: Arc<DashMap<String, VecDeque<StoredQueueSnapshot>>>,
+    /// Cancellation tokens for active wrap-up timers, keyed by agent ID.
+    wrap_up_cancels: Arc<DashMap<String, CancellationToken>>,
+    /// Campaign dial lists per queue (queue_name → remaining numbers).
+    campaign_numbers: Arc<DashMap<String, VecDeque<CampaignNumber>>>,
+    /// Active campaign dials per queue (queue_name → set of destinations currently ringing).
+    campaign_active_dials: Arc<DashMap<String, HashSet<String>>>,
+    /// Campaign statistics per queue.
+    campaign_stats: Arc<DashMap<String, CampaignStats>>,
+    /// Whether each campaign is running (queue_name → running).
+    campaign_running: Arc<DashMap<String, bool>>,
 }
 
 impl QueueManager {
@@ -88,6 +104,11 @@ impl QueueManager {
             calls_offered_today,
             queue_store: None,
             stats_history: Arc::new(DashMap::new()),
+            wrap_up_cancels: Arc::new(DashMap::new()),
+            campaign_numbers: Arc::new(DashMap::new()),
+            campaign_active_dials: Arc::new(DashMap::new()),
+            campaign_stats: Arc::new(DashMap::new()),
+            campaign_running: Arc::new(DashMap::new()),
         }
     }
 
@@ -471,28 +492,240 @@ impl QueueManager {
 
                 agent.state = AgentState::WrapUp;
                 agent.state_changed_at = Instant::now();
+                agent.wrap_up_extensions_used = 0;
                 drop(agent);
 
-                // Schedule auto-transition to Available after wrap-up
-                let agents = Arc::clone(&self.agents);
-                let agent_id = agent_id.to_string();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(wrap_up_secs as u64)).await;
-                    if let Some(mut agent) = agents.get_mut(&agent_id) {
-                        if agent.state == AgentState::WrapUp {
-                            agent.total_wrap_up_time_secs += agent.state_changed_at.elapsed().as_secs();
-                            agent.state = AgentState::Available;
-                            agent.state_changed_at = Instant::now();
-                            debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
-                        }
-                    }
-                });
+                // Cancel any existing wrap-up timer
+                if let Some((_, old_token)) = self.wrap_up_cancels.remove(agent_id) {
+                    old_token.cancel();
+                }
+
+                // Create new cancellation token and spawn timer
+                let token = CancellationToken::new();
+                self.wrap_up_cancels.insert(agent_id.to_string(), token.clone());
+                self.spawn_wrap_up_timer(agent_id, wrap_up_secs, token);
             } else {
                 drop(agent);
                 debug!(agent_id = %agent_id, "Call completed but agent still has active calls");
             }
         } else {
             warn!(agent_id = %agent_id, "agent_call_completed: agent not found");
+        }
+    }
+
+    /// Spawn a wrap-up timer task that transitions the agent to Available
+    /// after the given duration, unless cancelled via the token.
+    fn spawn_wrap_up_timer(&self, agent_id: &str, secs: u32, token: CancellationToken) {
+        let agents = Arc::clone(&self.agents);
+        let events = self.events.clone();
+        let wrap_up_cancels = Arc::clone(&self.wrap_up_cancels);
+        let agent_id = agent_id.to_string();
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(secs as u64)) => {
+                    if let Some(mut agent) = agents.get_mut(&agent_id) {
+                        if agent.state == AgentState::WrapUp {
+                            agent.total_wrap_up_time_secs += agent.state_changed_at.elapsed().as_secs();
+                            agent.state = AgentState::Available;
+                            agent.state_changed_at = Instant::now();
+                            let tenant_id = agent.tenant_id.clone();
+                            drop(agent);
+                            debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
+                            events::agent_state_changed(
+                                &events, &agent_id, "wrap_up", "available", None, &tenant_id,
+                            ).await;
+                        }
+                    }
+                    wrap_up_cancels.remove(&agent_id);
+                }
+                _ = token.cancelled() => {
+                    debug!(agent_id = %agent_id, "Wrap-up timer cancelled");
+                }
+            }
+        });
+    }
+
+    /// Extend an agent's wrap-up timer. Returns the number of extensions used.
+    ///
+    /// Split into sync + async to keep parking_lot guards out of the async
+    /// state machine (parking_lot guards are `!Send`).
+    pub async fn extend_wrap_up(&self, agent_id: &str) -> Result<u32> {
+        let (extensions_used, tenant_id) = self.extend_wrap_up_sync(agent_id)?;
+
+        events::agent_state_changed(
+            &self.events,
+            agent_id,
+            "wrap_up",
+            "wrap_up",
+            Some("wrap_up_extended"),
+            &tenant_id,
+        )
+        .await;
+
+        Ok(extensions_used)
+    }
+
+    /// Synchronous portion of extend_wrap_up — validates, cancels old timer,
+    /// spawns new timer, returns (extensions_used, tenant_id).
+    fn extend_wrap_up_sync(&self, agent_id: &str) -> Result<(u32, TenantId)> {
+        let config = self.config.read();
+        let extension_secs = config.wrap_up_extension_secs;
+        let max_extensions = config.max_wrap_up_extensions;
+        drop(config);
+
+        let mut agent = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))?;
+
+        if agent.state != AgentState::WrapUp {
+            bail!("Agent '{}' is not in wrap-up (state: {})", agent_id, agent.state);
+        }
+
+        if agent.wrap_up_extensions_used >= max_extensions {
+            bail!(
+                "Agent '{}' has reached maximum wrap-up extensions ({}/{})",
+                agent_id,
+                agent.wrap_up_extensions_used,
+                max_extensions
+            );
+        }
+
+        agent.wrap_up_extensions_used += 1;
+        let extensions_used = agent.wrap_up_extensions_used;
+        let tenant_id = agent.tenant_id.clone();
+        drop(agent);
+
+        // Cancel the old wrap-up timer
+        if let Some((_, old_token)) = self.wrap_up_cancels.remove(agent_id) {
+            old_token.cancel();
+        }
+
+        // Create new cancellation token and spawn a new timer
+        let token = CancellationToken::new();
+        self.wrap_up_cancels.insert(agent_id.to_string(), token.clone());
+        self.spawn_wrap_up_timer(agent_id, extension_secs, token);
+
+        info!(
+            agent_id = %agent_id,
+            extensions_used = extensions_used,
+            max = max_extensions,
+            extension_secs = extension_secs,
+            "Wrap-up timer extended"
+        );
+
+        Ok((extensions_used, tenant_id))
+    }
+
+    // ---- Campaign / Predictive Dialer ----
+
+    /// Load a list of numbers into the campaign dial queue.
+    pub fn load_campaign_numbers(&self, queue_name: &str, numbers: Vec<CampaignNumber>) {
+        let count = numbers.len();
+        self.campaign_numbers
+            .insert(queue_name.to_string(), VecDeque::from(numbers));
+        // Initialize or reset stats
+        let mut stats = self
+            .campaign_stats
+            .entry(queue_name.to_string())
+            .or_insert_with(CampaignStats::default);
+        stats.numbers_remaining = count;
+        stats.active_dials = 0;
+        stats.calls_answered = 0;
+        stats.calls_no_answer = 0;
+        stats.calls_busy = 0;
+        stats.calls_failed = 0;
+        stats.calls_abandoned = 0;
+        info!(queue = %queue_name, numbers = count, "Campaign numbers loaded");
+    }
+
+    /// Pop the next number to dial from the campaign queue.
+    pub fn next_campaign_number(&self, queue_name: &str) -> Option<CampaignNumber> {
+        let mut entry = self.campaign_numbers.get_mut(queue_name)?;
+        let number = entry.pop_front()?;
+        // Update remaining count in stats
+        if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
+            stats.numbers_remaining = entry.len();
+        }
+        Some(number)
+    }
+
+    /// Record the outcome of a campaign call.
+    pub fn campaign_call_result(&self, queue_name: &str, destination: &str, outcome: CampaignCallOutcome) {
+        // Remove from active dials
+        if let Some(mut active) = self.campaign_active_dials.get_mut(queue_name) {
+            active.remove(destination);
+        }
+        // Update stats
+        if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
+            if let Some(active) = self.campaign_active_dials.get(queue_name) {
+                stats.active_dials = active.len();
+            }
+            match outcome {
+                CampaignCallOutcome::Answered => stats.calls_answered += 1,
+                CampaignCallOutcome::NoAnswer => stats.calls_no_answer += 1,
+                CampaignCallOutcome::Busy => stats.calls_busy += 1,
+                CampaignCallOutcome::Failed => stats.calls_failed += 1,
+                CampaignCallOutcome::Abandoned => stats.calls_abandoned += 1,
+            }
+        }
+    }
+
+    /// Start the campaign for a queue.
+    pub fn set_campaign_running(&self, queue_name: &str, running: bool) {
+        self.campaign_running.insert(queue_name.to_string(), running);
+        if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
+            stats.running = running;
+        }
+        if running {
+            info!(queue = %queue_name, "Campaign started");
+        } else {
+            info!(queue = %queue_name, "Campaign stopped");
+        }
+    }
+
+    /// Check if a campaign is currently running for a queue.
+    pub fn is_campaign_running(&self, queue_name: &str) -> bool {
+        self.campaign_running
+            .get(queue_name)
+            .map(|v| *v)
+            .unwrap_or(false)
+    }
+
+    /// Get campaign statistics for a queue.
+    pub fn campaign_stats(&self, queue_name: &str) -> Option<CampaignStats> {
+        self.campaign_stats.get(queue_name).map(|s| s.clone())
+    }
+
+    /// Count available agents for a given queue.
+    pub fn count_available_agents(&self, queue_name: &str) -> usize {
+        self.agents
+            .iter()
+            .filter(|entry| {
+                let agent = entry.value();
+                agent.queues.contains(&queue_name.to_string()) && agent.is_available()
+            })
+            .count()
+    }
+
+    /// Get the number of active campaign dials for a queue.
+    pub fn campaign_active_dial_count(&self, queue_name: &str) -> usize {
+        self.campaign_active_dials
+            .get(queue_name)
+            .map(|s| s.len())
+            .unwrap_or(0)
+    }
+
+    /// Register a destination as an active campaign dial.
+    pub fn add_campaign_active_dial(&self, queue_name: &str, destination: &str) {
+        let mut entry = self
+            .campaign_active_dials
+            .entry(queue_name.to_string())
+            .or_insert_with(HashSet::new);
+        entry.insert(destination.to_string());
+        if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
+            stats.active_dials = entry.len();
         }
     }
 
@@ -1767,6 +2000,10 @@ mod tests {
                 callback_max_attempts: 3,
                 callback_retry_delay_secs: 60,
                 sla_warning_threshold_pct: 0.0,
+                announcement_language: None,
+                campaign_enabled: false,
+                campaign_dial_ratio: 1.0,
+                campaign_abandon_timeout_secs: 30,
             },
         );
         QueueSystemConfig {
@@ -1782,6 +2019,8 @@ mod tests {
             default_max_concurrent_calls: 1,
             recording_dir: None,
             webhook_url: None,
+            wrap_up_extension_secs: 30,
+            max_wrap_up_extensions: 3,
         }
     }
 
