@@ -328,14 +328,15 @@ impl SipPresenceHandler {
     }
 
     /// Send NOTIFY to a single watcher with the appropriate body and Subscription-State.
+    ///
+    /// This method generates the XML body per-watcher. For batch notifications
+    /// (e.g., notify_watchers), use `send_notify_with_body` to avoid redundant
+    /// XML generation.
     async fn send_notify_to_watcher(
         &self,
         watcher: &Watcher,
         subscription_state: &str,
     ) -> Result<()> {
-        let target_uri = SipUri::parse(&watcher.contact_uri)
-            .context("Failed to parse watcher contact URI")?;
-
         let (event, content_type, body) = match watcher.event_package.as_str() {
             "dialog" => {
                 let xml = self.presence.generate_dialog_info(&watcher.presentity_aor);
@@ -347,18 +348,15 @@ impl SipPresenceHandler {
                     .generate_watcherinfo(&watcher.presentity_aor)
                     .unwrap_or_else(|e| {
                         warn!(error = %e, "Failed to generate watcherinfo XML");
-                        // Return minimal empty watcherinfo document
                         "<watcherinfo xmlns=\"urn:ietf:params:xml:ns:watcherinfo\" version=\"0\" state=\"full\"></watcherinfo>".to_string()
                     });
                 ("presence.winfo", "application/watcherinfo+xml", xml)
             }
             _ => {
-                // Default to presence PIDF
                 let xml = self
                     .presence
                     .generate_pidf(&watcher.presentity_aor)
                     .unwrap_or_else(|| {
-                        // Generate a "closed" PIDF if no presentity found
                         fcp_presence::pidf::generate_pidf(
                             &watcher.presentity_aor,
                             &fcp_presence::PresenceState::Closed,
@@ -370,6 +368,25 @@ impl SipPresenceHandler {
             }
         };
 
+        self.send_notify_with_body(watcher, subscription_state, event, content_type, &body)
+            .await
+    }
+
+    /// Send NOTIFY to a single watcher with a pre-built body.
+    ///
+    /// This is the core send logic used by both single-watcher sends and batch
+    /// notifications. It handles the UAC send, retry enqueue, and metrics.
+    async fn send_notify_with_body(
+        &self,
+        watcher: &Watcher,
+        subscription_state: &str,
+        event: &str,
+        content_type: &str,
+        body: &str,
+    ) -> Result<()> {
+        let target_uri = SipUri::parse(&watcher.contact_uri)
+            .context("Failed to parse watcher contact URI")?;
+
         let (base_delay_ms, _, _) = self.presence.retry_config();
 
         match self
@@ -378,7 +395,7 @@ impl SipPresenceHandler {
                 &target_uri,
                 event,
                 content_type,
-                &body,
+                body,
                 subscription_state,
             )
             .await
@@ -393,7 +410,6 @@ impl SipPresenceHandler {
                         "Presence NOTIFY accepted"
                     );
                     self.presence.metrics().inc_counter("fcp_presence_notify_success_total", &[]);
-                    // Clear any pending retry on success
                     self.presence.remove_retry(
                         &watcher.subscription_id,
                         &watcher.presentity_aor,
@@ -406,7 +422,6 @@ impl SipPresenceHandler {
                         "Presence NOTIFY rejected"
                     );
                     self.presence.metrics().inc_counter("fcp_presence_notify_failure_total", &[]);
-                    // Enqueue retry for non-2xx responses
                     let retry = fcp_presence::NotifyRetryEntry {
                         watcher: watcher.clone(),
                         subscription_state: subscription_state.to_string(),
@@ -425,7 +440,6 @@ impl SipPresenceHandler {
                     "Failed to send presence NOTIFY"
                 );
                 self.presence.metrics().inc_counter("fcp_presence_notify_failure_total", &[]);
-                // Enqueue retry for send errors
                 let retry = fcp_presence::NotifyRetryEntry {
                     watcher: watcher.clone(),
                     subscription_state: subscription_state.to_string(),
@@ -479,7 +493,7 @@ impl SipPresenceHandler {
     ) -> Result<bool> {
         if !self
             .presence
-            .is_watcher_authorized(&ctx.watcher_aor, &ctx.presentity_aor)
+            .is_watcher_authorized(&ctx.watcher_aor, &ctx.presentity_aor, &ctx.event)
         {
             info!(
                 watcher = %ctx.watcher_aor,
@@ -996,9 +1010,42 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
             "Notifying watchers of presence change"
         );
 
+        // Pre-generate XML bodies once per event package to avoid redundant
+        // regeneration across N watchers for the same AOR.
+        // This also ensures dialog-info version increments once per state change
+        // (correct BLF semantics) instead of N times for N watchers.
+        let pidf_body = self.presence.generate_pidf(aor).unwrap_or_else(|| {
+            fcp_presence::pidf::generate_pidf(
+                aor,
+                &fcp_presence::PresenceState::Closed,
+                None,
+                None,
+            )
+        });
+        let dialog_body = self.presence.generate_dialog_info(aor);
+        let winfo_body = self
+            .presence
+            .generate_watcherinfo(aor)
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to generate watcherinfo XML");
+                "<watcherinfo xmlns=\"urn:ietf:params:xml:ns:watcherinfo\" version=\"0\" state=\"full\"></watcherinfo>".to_string()
+            });
+
         for watcher in &watchers {
             let sub_state = Self::subscription_state_active(watcher);
-            if let Err(e) = self.send_notify_to_watcher(watcher, &sub_state).await {
+            let (event, content_type, body) = match watcher.event_package.as_str() {
+                "dialog" => ("dialog", "application/dialog-info+xml", &dialog_body),
+                "presence.winfo" => (
+                    "presence.winfo",
+                    "application/watcherinfo+xml",
+                    &winfo_body,
+                ),
+                _ => ("presence", "application/pidf+xml", &pidf_body),
+            };
+            if let Err(e) = self
+                .send_notify_with_body(watcher, &sub_state, event, content_type, body)
+                .await
+            {
                 warn!(
                     watcher = %watcher.watcher_aor,
                     error = %e,

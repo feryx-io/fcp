@@ -28,5 +28,5 @@ pub use config::PresenceConfig;
 pub use manager::PresenceManager;
 pub use types::{
     ActiveCallInfo, CallDirection, DialogState, EventStateComposition, NotifyRetryEntry,
-    PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate, Watcher,
+    PresenceAuthPolicy, PresenceInfo, PresenceState, PresenceUpdate, TimeWindow, Watcher,
 };

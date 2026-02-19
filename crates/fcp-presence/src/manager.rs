@@ -72,11 +72,15 @@ impl PresenceManager {
 
     /// Create a new PresenceManager with a custom metrics handle.
     pub fn with_metrics(
-        config: PresenceConfig,
+        mut config: PresenceConfig,
         events: Option<Arc<dyn EventPublisher>>,
         store: Option<Arc<dyn PresenceStore>>,
         metrics: MetricsHandle,
     ) -> Self {
+        let warnings = config.validate();
+        for w in &warnings {
+            warn!(warning = %w, "Presence config validation");
+        }
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             presentities: Arc::new(DashMap::new()),
@@ -1076,13 +1080,13 @@ impl PresenceManager {
         }
     }
 
-    /// Check if a watcher is authorized to subscribe to a presentity.
+    /// Check if a watcher is authorized to subscribe to a presentity for a specific event package.
     ///
     /// If no policy is set, all watchers are allowed (default open).
-    pub fn is_watcher_authorized(&self, watcher_aor: &str, presentity_aor: &str) -> bool {
+    pub fn is_watcher_authorized(&self, watcher_aor: &str, presentity_aor: &str, event_package: &str) -> bool {
         match self.auth_policies.get(presentity_aor) {
             Some(policy) => {
-                let allowed = policy.is_allowed(watcher_aor);
+                let allowed = policy.is_allowed_for_event(watcher_aor, event_package);
                 if !allowed {
                     self.metrics.inc_counter("fcp_presence_auth_denied_total", &[]);
                 }
@@ -1112,6 +1116,7 @@ impl PresenceManager {
                 default_allow: s.default_allow,
                 allow_list,
                 block_list,
+                ..Default::default()
             };
             self.auth_policies.insert(s.aor, policy);
         }
@@ -2130,6 +2135,7 @@ mod tests {
             default_allow: false,
             allow_list: HashSet::from(["bob@example.com".to_string()]),
             block_list: HashSet::new(),
+            ..Default::default()
         };
         mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
         assert!(mgr.get_auth_policy("alice@example.com").is_some());

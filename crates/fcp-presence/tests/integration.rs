@@ -163,31 +163,33 @@ async fn test_auth_policy_enforcement() {
     let mgr = PresenceManager::new(test_config(), None, None);
 
     // No policy = allow all
-    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com"));
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
 
     // Set policy blocking bob
     let policy = PresenceAuthPolicy {
         default_allow: true,
         allow_list: HashSet::new(),
         block_list: HashSet::from(["bob@example.com".to_string()]),
+        ..Default::default()
     };
     mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
-    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com"));
-    assert!(mgr.is_watcher_authorized("charlie@example.com", "alice@example.com"));
+    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    assert!(mgr.is_watcher_authorized("charlie@example.com", "alice@example.com", "presence"));
 
     // Change to allow-list-only mode
     let policy2 = PresenceAuthPolicy {
         default_allow: false,
         allow_list: HashSet::from(["charlie@example.com".to_string()]),
         block_list: HashSet::new(),
+        ..Default::default()
     };
     mgr.set_auth_policy("alice@example.com", policy2, &TenantId::nil());
-    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com"));
-    assert!(mgr.is_watcher_authorized("charlie@example.com", "alice@example.com"));
+    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    assert!(mgr.is_watcher_authorized("charlie@example.com", "alice@example.com", "presence"));
 
     // Remove policy → revert to default-allow
     mgr.remove_auth_policy("alice@example.com");
-    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com"));
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
 }
 
 /// Test: cross-tenant watcher subscription is rejected.
@@ -249,6 +251,7 @@ async fn test_persistence_roundtrip_with_none_store() {
             default_allow: false,
             allow_list: HashSet::from(["bob@example.com".to_string()]),
             block_list: HashSet::new(),
+            ..Default::default()
         },
         &tenant,
     );
@@ -360,6 +363,7 @@ async fn test_auth_policy_with_tenant_id() {
         default_allow: false,
         allow_list: HashSet::from(["bob@example.com".to_string()]),
         block_list: HashSet::new(),
+        ..Default::default()
     };
 
     // Set with specific tenant (no store means no actual persistence, but API works)
@@ -1231,4 +1235,175 @@ async fn test_cleanup_under_load() {
 
     assert_eq!(removed.len(), 5000);
     assert_eq!(mgr.total_watcher_count(), 5000);
+}
+
+// ===========================================================================
+// Item 14: Advanced authorization tests
+// ===========================================================================
+
+use std::collections::HashMap;
+use fcp_presence::TimeWindow;
+
+/// Test: per-event-package allow blocks other packages.
+#[tokio::test]
+async fn test_event_package_allow_blocks_other_packages() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    let mut event_allow = HashMap::new();
+    event_allow.insert("presence".to_string(), HashSet::from(["bob@example.com".to_string()]));
+
+    let policy = PresenceAuthPolicy {
+        default_allow: true,
+        event_allow,
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    // Bob allowed for "presence"
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    // Bob NOT allowed for "dialog" when presence-specific allow list is set
+    // (dialog has no event_allow entry, so falls through to default_allow=true)
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "dialog"));
+
+    // Charlie not in event_allow for "presence" → blocked for "presence"
+    assert!(!mgr.is_watcher_authorized("charlie@example.com", "alice@example.com", "presence"));
+    // Charlie allowed for "dialog" (no event_allow entry, default_allow=true)
+    assert!(mgr.is_watcher_authorized("charlie@example.com", "alice@example.com", "dialog"));
+}
+
+/// Test: per-event-package block for specific event.
+#[tokio::test]
+async fn test_event_package_block_specific() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    let mut event_block = HashMap::new();
+    event_block.insert("dialog".to_string(), HashSet::from(["bob@example.com".to_string()]));
+
+    let policy = PresenceAuthPolicy {
+        default_allow: true,
+        event_block,
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    // Bob blocked for "dialog"
+    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "dialog"));
+    // Bob still allowed for "presence"
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+}
+
+/// Test: domain wildcard allow pattern.
+#[tokio::test]
+async fn test_domain_wildcard_allow() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    let policy = PresenceAuthPolicy {
+        default_allow: false,
+        allow_patterns: vec!["*@support.example.com".to_string()],
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    // Support users allowed
+    assert!(mgr.is_watcher_authorized("agent1@support.example.com", "alice@example.com", "presence"));
+    assert!(mgr.is_watcher_authorized("agent2@support.example.com", "alice@example.com", "presence"));
+    // Other users blocked (default_allow=false)
+    assert!(!mgr.is_watcher_authorized("bob@other.com", "alice@example.com", "presence"));
+}
+
+/// Test: domain wildcard block pattern.
+#[tokio::test]
+async fn test_domain_wildcard_block() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    let policy = PresenceAuthPolicy {
+        default_allow: true,
+        block_patterns: vec!["*@external.com".to_string()],
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    // External users blocked
+    assert!(!mgr.is_watcher_authorized("eve@external.com", "alice@example.com", "presence"));
+    // Internal users allowed
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+}
+
+/// Test: time window within current hour allows access.
+#[tokio::test]
+async fn test_time_window_within() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    // Get current UTC hour to construct a window that covers now
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_hour = ((now % 86400) / 3600) as u8;
+
+    let policy = PresenceAuthPolicy {
+        default_allow: true,
+        time_windows: vec![TimeWindow {
+            start_hour: current_hour,
+            end_hour: (current_hour + 2) % 24,
+            days: vec![], // all days
+        }],
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    // Should be within time window → allowed
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+}
+
+/// Test: time window outside current hour blocks access.
+#[tokio::test]
+async fn test_time_window_outside() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    // Get current UTC hour and create a window that does NOT cover now
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let current_hour = ((now % 86400) / 3600) as u8;
+    let start = (current_hour + 12) % 24;
+    let end = (current_hour + 14) % 24;
+
+    let policy = PresenceAuthPolicy {
+        default_allow: true,
+        time_windows: vec![TimeWindow {
+            start_hour: start,
+            end_hour: end,
+            days: vec![], // all days
+        }],
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    // Should be outside time window → blocked
+    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+}
+
+/// Test: backward compatibility — old-style simple policy still works identically.
+#[tokio::test]
+async fn test_backward_compat_simple_policy() {
+    let mgr = PresenceManager::new(test_config(), None, None);
+
+    // Old-style: no new fields
+    let policy = PresenceAuthPolicy {
+        default_allow: false,
+        allow_list: HashSet::from(["bob@example.com".to_string()]),
+        block_list: HashSet::from(["eve@example.com".to_string()]),
+        ..Default::default()
+    };
+    mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
+
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    assert!(!mgr.is_watcher_authorized("eve@example.com", "alice@example.com", "presence"));
+    assert!(!mgr.is_watcher_authorized("charlie@example.com", "alice@example.com", "presence"));
+
+    // Also works for dialog
+    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "dialog"));
+    assert!(!mgr.is_watcher_authorized("eve@example.com", "alice@example.com", "dialog"));
 }

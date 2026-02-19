@@ -154,6 +154,89 @@ fn default_publish_rate_limit_per_aor() -> u32 {
     60
 }
 
+impl PresenceConfig {
+    /// Validate configuration constraints and auto-correct invalid values.
+    ///
+    /// Returns a list of warning messages for any corrections made.
+    /// This is fail-open: invalid values are corrected rather than rejected.
+    pub fn validate(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        // Subscription expiry ordering
+        if self.min_subscription_expiry_secs > self.max_subscription_expiry_secs {
+            warnings.push(format!(
+                "min_subscription_expiry ({}) > max_subscription_expiry ({}), swapping",
+                self.min_subscription_expiry_secs, self.max_subscription_expiry_secs
+            ));
+            std::mem::swap(
+                &mut self.min_subscription_expiry_secs,
+                &mut self.max_subscription_expiry_secs,
+            );
+        }
+
+        // Clamp default subscription expiry to [min, max]
+        let clamped = self.default_subscription_expiry_secs.clamp(
+            self.min_subscription_expiry_secs,
+            self.max_subscription_expiry_secs,
+        );
+        if clamped != self.default_subscription_expiry_secs {
+            warnings.push(format!(
+                "default_subscription_expiry ({}) outside [{}, {}], clamped to {}",
+                self.default_subscription_expiry_secs,
+                self.min_subscription_expiry_secs,
+                self.max_subscription_expiry_secs,
+                clamped,
+            ));
+            self.default_subscription_expiry_secs = clamped;
+        }
+
+        // PUBLISH expiry ordering
+        if self.min_publish_expiry_secs > self.max_publish_expiry_secs {
+            warnings.push(format!(
+                "min_publish_expiry ({}) > max_publish_expiry ({}), swapping",
+                self.min_publish_expiry_secs, self.max_publish_expiry_secs
+            ));
+            std::mem::swap(
+                &mut self.min_publish_expiry_secs,
+                &mut self.max_publish_expiry_secs,
+            );
+        }
+
+        // Rate limits must be > 0
+        for (name, val) in [
+            ("subscribe_rate_limit_per_ip", &mut self.subscribe_rate_limit_per_ip),
+            ("subscribe_rate_limit_per_aor", &mut self.subscribe_rate_limit_per_aor),
+            ("publish_rate_limit_per_ip", &mut self.publish_rate_limit_per_ip),
+            ("publish_rate_limit_per_aor", &mut self.publish_rate_limit_per_aor),
+        ] {
+            if *val == 0 {
+                warnings.push(format!("{name} is 0, setting to 1"));
+                *val = 1;
+            }
+        }
+
+        // Retry backoff ordering
+        if self.notify_retry_base_delay_ms > self.notify_retry_max_delay_ms {
+            warnings.push(format!(
+                "notify_retry_base_delay_ms ({}) > notify_retry_max_delay_ms ({}), swapping",
+                self.notify_retry_base_delay_ms, self.notify_retry_max_delay_ms
+            ));
+            std::mem::swap(
+                &mut self.notify_retry_base_delay_ms,
+                &mut self.notify_retry_max_delay_ms,
+            );
+        }
+
+        // Max presentities must be > 0
+        if self.max_presentities == 0 {
+            warnings.push("max_presentities is 0, setting to 1".to_string());
+            self.max_presentities = 1;
+        }
+
+        warnings
+    }
+}
+
 impl Default for PresenceConfig {
     fn default() -> Self {
         Self {
@@ -178,5 +261,108 @@ impl Default for PresenceConfig {
             publish_rate_limit_per_ip: default_publish_rate_limit_per_ip(),
             publish_rate_limit_per_aor: default_publish_rate_limit_per_aor(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_swaps_inverted_subscription_expiry() {
+        let mut config = PresenceConfig {
+            min_subscription_expiry_secs: 7200,
+            max_subscription_expiry_secs: 3600,
+            default_subscription_expiry_secs: 5000,
+            ..Default::default()
+        };
+        let warnings = config.validate();
+        assert!(!warnings.is_empty());
+        assert_eq!(config.min_subscription_expiry_secs, 3600);
+        assert_eq!(config.max_subscription_expiry_secs, 7200);
+    }
+
+    #[test]
+    fn test_validate_swaps_inverted_publish_expiry() {
+        let mut config = PresenceConfig {
+            min_publish_expiry_secs: 7200,
+            max_publish_expiry_secs: 3600,
+            ..Default::default()
+        };
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("min_publish_expiry")));
+        assert_eq!(config.min_publish_expiry_secs, 3600);
+        assert_eq!(config.max_publish_expiry_secs, 7200);
+    }
+
+    #[test]
+    fn test_validate_clamps_default_expiry_to_range() {
+        let mut config = PresenceConfig {
+            min_subscription_expiry_secs: 100,
+            max_subscription_expiry_secs: 200,
+            default_subscription_expiry_secs: 3600,
+            ..Default::default()
+        };
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("default_subscription_expiry")));
+        assert_eq!(config.default_subscription_expiry_secs, 200);
+
+        // Below min
+        let mut config2 = PresenceConfig {
+            min_subscription_expiry_secs: 500,
+            max_subscription_expiry_secs: 1000,
+            default_subscription_expiry_secs: 100,
+            ..Default::default()
+        };
+        config2.validate();
+        assert_eq!(config2.default_subscription_expiry_secs, 500);
+    }
+
+    #[test]
+    fn test_validate_fixes_zero_rate_limits() {
+        let mut config = PresenceConfig {
+            subscribe_rate_limit_per_ip: 0,
+            subscribe_rate_limit_per_aor: 0,
+            publish_rate_limit_per_ip: 0,
+            publish_rate_limit_per_aor: 0,
+            ..Default::default()
+        };
+        let warnings = config.validate();
+        assert_eq!(warnings.len(), 4);
+        assert_eq!(config.subscribe_rate_limit_per_ip, 1);
+        assert_eq!(config.subscribe_rate_limit_per_aor, 1);
+        assert_eq!(config.publish_rate_limit_per_ip, 1);
+        assert_eq!(config.publish_rate_limit_per_aor, 1);
+    }
+
+    #[test]
+    fn test_validate_swaps_inverted_retry_delays() {
+        let mut config = PresenceConfig {
+            notify_retry_base_delay_ms: 30000,
+            notify_retry_max_delay_ms: 1000,
+            ..Default::default()
+        };
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("notify_retry_base_delay_ms")));
+        assert_eq!(config.notify_retry_base_delay_ms, 1000);
+        assert_eq!(config.notify_retry_max_delay_ms, 30000);
+    }
+
+    #[test]
+    fn test_validate_fixes_zero_max_presentities() {
+        let mut config = PresenceConfig {
+            max_presentities: 0,
+            ..Default::default()
+        };
+        let warnings = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("max_presentities")));
+        assert_eq!(config.max_presentities, 1);
+    }
+
+    #[test]
+    fn test_validate_valid_config_no_warnings() {
+        let mut config = PresenceConfig::default();
+        let warnings = config.validate();
+        assert!(warnings.is_empty(), "Default config should have no warnings: {:?}", warnings);
     }
 }
