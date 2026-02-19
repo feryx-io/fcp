@@ -28,8 +28,8 @@ use fcp_core::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
     CredentialStore, DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty,
     LineBindingStore, MediaPreferences, PhoneNumberStore, PresenceStore, QueueStore, Registration,
-    RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredSubscription,
-    TenantStore, User,
+    RegistrationStore, ResourceListStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
+    StoredResourceList, StoredSubscription, TenantStore, User,
 };
 use fcp_core::{
     AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
@@ -121,6 +121,7 @@ pub struct MongodbStorage {
     presence_subscriptions: Collection<Document>,
     presence_presentities: Collection<Document>,
     presence_auth_policies: Collection<Document>,
+    resource_lists: Collection<Document>,
 }
 
 impl MongodbStorage {
@@ -162,6 +163,7 @@ impl MongodbStorage {
         let presence_subscriptions = db.collection::<Document>("presence_subscriptions");
         let presence_presentities = db.collection::<Document>("presence_presentities");
         let presence_auth_policies = db.collection::<Document>("presence_auth_policies");
+        let resource_lists = db.collection::<Document>("resource_lists");
 
         let storage = Self {
             client,
@@ -179,6 +181,7 @@ impl MongodbStorage {
             presence_subscriptions,
             presence_presentities,
             presence_auth_policies,
+            resource_lists,
         };
 
         // Create indexes
@@ -3086,6 +3089,88 @@ impl PresenceStore for MongodbStorage {
             .delete_one(doc! { "aor": aor })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to remove auth policy: {}", e))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ResourceListStore for MongodbStorage {
+    async fn save_resource_list(&self, list: &StoredResourceList) -> Result<()> {
+        let doc = doc! {
+            "uri": &list.uri,
+            "name": &list.name,
+            "entries_json": &list.entries_json,
+            "tenant_id": list.tenant_id.to_string(),
+        };
+
+        let options = mongodb::options::ReplaceOptions::builder()
+            .upsert(true)
+            .build();
+        self.resource_lists
+            .replace_one(doc! { "uri": &list.uri }, doc)
+            .with_options(options)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to save resource list: {}", e))?;
+        Ok(())
+    }
+
+    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
+        let doc = self
+            .resource_lists
+            .find_one(doc! { "uri": uri })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get resource list: {}", e))?;
+
+        Ok(doc.map(|d| StoredResourceList {
+            uri: d.get_str("uri").unwrap_or_default().to_string(),
+            name: d.get_str("name").ok().map(|s| s.to_string()),
+            entries_json: d.get_str("entries_json").unwrap_or("[]").to_string(),
+            tenant_id: d
+                .get_str("tenant_id")
+                .unwrap_or_default()
+                .parse()
+                .unwrap_or_default(),
+        }))
+    }
+
+    async fn get_resource_lists_by_tenant(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredResourceList>> {
+        let mut cursor = self
+            .resource_lists
+            .find(doc! { "tenant_id": tenant_id.to_string() })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query resource lists: {}", e))?;
+
+        let mut lists = Vec::new();
+        while cursor
+            .advance()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to iterate resource lists cursor: {}", e))?
+        {
+            let d = cursor
+                .deserialize_current()
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize resource list: {}", e))?;
+            lists.push(StoredResourceList {
+                uri: d.get_str("uri").unwrap_or_default().to_string(),
+                name: d.get_str("name").ok().map(|s| s.to_string()),
+                entries_json: d.get_str("entries_json").unwrap_or("[]").to_string(),
+                tenant_id: d
+                    .get_str("tenant_id")
+                    .unwrap_or_default()
+                    .parse()
+                    .unwrap_or_default(),
+            });
+        }
+        Ok(lists)
+    }
+
+    async fn delete_resource_list(&self, uri: &str) -> Result<()> {
+        self.resource_lists
+            .delete_one(doc! { "uri": uri })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to delete resource list: {}", e))?;
         Ok(())
     }
 }

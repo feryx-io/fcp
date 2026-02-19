@@ -1322,6 +1322,38 @@ pub trait PresenceStore: Send + Sync {
     }
 }
 
+/// Persisted resource list for RFC 4826 Resource List Subscriptions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredResourceList {
+    /// The resource list URI (e.g., `sip:my-team@example.com`).
+    pub uri: String,
+    /// Optional display name.
+    pub name: Option<String>,
+    /// JSON-encoded array of `{uri, display_name}` entries.
+    pub entries_json: String,
+    /// Tenant ID for multi-tenancy.
+    pub tenant_id: crate::TenantId,
+}
+
+/// Storage backend for RFC 4826 resource lists.
+#[async_trait]
+pub trait ResourceListStore: Send + Sync {
+    /// Save or update a resource list.
+    async fn save_resource_list(&self, list: &StoredResourceList) -> Result<()>;
+
+    /// Get a resource list by URI.
+    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>>;
+
+    /// Get all resource lists for a tenant.
+    async fn get_resource_lists_by_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredResourceList>>;
+
+    /// Delete a resource list by URI.
+    async fn delete_resource_list(&self, uri: &str) -> Result<()>;
+}
+
 /// Serde helper for Optional<SystemTime>
 mod optional_system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1635,6 +1667,7 @@ pub struct DynStorage {
     conference_store: Arc<dyn ConferenceStore>,
     queue_store: Arc<dyn QueueStore>,
     presence_store: Arc<dyn PresenceStore>,
+    resource_list_store: Arc<dyn ResourceListStore>,
 }
 
 impl DynStorage {
@@ -1654,6 +1687,7 @@ impl DynStorage {
         conference_store: Arc<dyn ConferenceStore>,
         queue_store: Arc<dyn QueueStore>,
         presence_store: Arc<dyn PresenceStore>,
+        resource_list_store: Arc<dyn ResourceListStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1670,6 +1704,7 @@ impl DynStorage {
             conference_store,
             queue_store,
             presence_store,
+            resource_list_store,
         }
     }
 
@@ -1693,6 +1728,7 @@ impl DynStorage {
             + ConferenceStore
             + QueueStore
             + PresenceStore
+            + ResourceListStore
             + 'static,
     {
         Self {
@@ -1709,13 +1745,19 @@ impl DynStorage {
             tenant_store: storage.clone(),
             conference_store: storage.clone(),
             queue_store: storage.clone(),
-            presence_store: storage,
+            presence_store: storage.clone(),
+            resource_list_store: storage,
         }
     }
 
     /// Get the presence store.
     pub fn presence_store(&self) -> &Arc<dyn PresenceStore> {
         &self.presence_store
+    }
+
+    /// Get the resource list store.
+    pub fn resource_list_store(&self) -> &Arc<dyn ResourceListStore> {
+        &self.resource_list_store
     }
 }
 
@@ -2249,6 +2291,30 @@ impl PresenceStore for DynStorage {
 
     async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
         self.presence_store.remove_auth_policy(aor).await
+    }
+}
+
+#[async_trait]
+impl ResourceListStore for DynStorage {
+    async fn save_resource_list(&self, list: &StoredResourceList) -> Result<()> {
+        self.resource_list_store.save_resource_list(list).await
+    }
+
+    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
+        self.resource_list_store.get_resource_list(uri).await
+    }
+
+    async fn get_resource_lists_by_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredResourceList>> {
+        self.resource_list_store
+            .get_resource_lists_by_tenant(tenant_id)
+            .await
+    }
+
+    async fn delete_resource_list(&self, uri: &str) -> Result<()> {
+        self.resource_list_store.delete_resource_list(uri).await
     }
 }
 

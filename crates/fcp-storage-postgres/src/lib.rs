@@ -33,8 +33,9 @@ use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
-        PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore, StoredAgent,
-        StoredAuthPolicy, StoredPresentity, StoredSubscription, TenantStore,
+        PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore, ResourceListStore,
+        StoredAgent, StoredAuthPolicy, StoredPresentity, StoredResourceList, StoredSubscription,
+        TenantStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -2376,6 +2377,69 @@ impl PresenceStore for PostgresStorage {
     async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
         sqlx::query("DELETE FROM presence_auth_policies WHERE aor = $1")
             .bind(aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ResourceListStore for PostgresStorage {
+    async fn save_resource_list(&self, list: &StoredResourceList) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO resource_lists (uri, name, entries_json, tenant_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT(uri) DO UPDATE SET
+                name = EXCLUDED.name,
+                entries_json = EXCLUDED.entries_json,
+                tenant_id = EXCLUDED.tenant_id",
+        )
+        .bind(&list.uri)
+        .bind(&list.name)
+        .bind(&list.entries_json)
+        .bind(list.tenant_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
+        let row = sqlx::query("SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE uri = $1")
+            .bind(uri)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.map(|r| StoredResourceList {
+            uri: r.get("uri"),
+            name: r.get("name"),
+            entries_json: r.get("entries_json"),
+            tenant_id: r.get::<String, _>("tenant_id").parse().unwrap_or_default(),
+        }))
+    }
+
+    async fn get_resource_lists_by_tenant(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredResourceList>> {
+        let rows = sqlx::query("SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE tenant_id = $1")
+            .bind(tenant_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| StoredResourceList {
+                uri: r.get("uri"),
+                name: r.get("name"),
+                entries_json: r.get("entries_json"),
+                tenant_id: r.get::<String, _>("tenant_id").parse().unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    async fn delete_resource_list(&self, uri: &str) -> Result<()> {
+        sqlx::query("DELETE FROM resource_lists WHERE uri = $1")
+            .bind(uri)
             .execute(&self.pool)
             .await?;
         Ok(())

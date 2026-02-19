@@ -31,8 +31,9 @@ use chrono::TimeZone;
 use fcp_core::{
     storage::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
-        PresenceStore, QueueStore, RegistrationStore, StoredAgent, StoredAuthPolicy,
-        StoredPresentity, StoredQueueSnapshot, StoredSubscription,
+        PresenceStore, QueueStore, RegistrationStore, ResourceListStore, StoredAgent,
+        StoredAuthPolicy, StoredPresentity, StoredQueueSnapshot, StoredResourceList,
+        StoredSubscription,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
@@ -215,6 +216,12 @@ impl SqliteStorage {
 
         let migration_016 = include_str!("../migrations/016_add_subscription_dialog_context.sql");
         Self::execute_migration(pool, migration_016, "016").await?;
+
+        let migration_017 = include_str!("../migrations/017_add_advanced_auth_policy_fields.sql");
+        Self::execute_migration(pool, migration_017, "017").await?;
+
+        let migration_018 = include_str!("../migrations/018_add_resource_lists.sql");
+        Self::execute_migration(pool, migration_018, "018").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3722,6 +3729,73 @@ impl PresenceStore for SqliteStorage {
     async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
         sqlx::query("DELETE FROM presence_auth_policies WHERE aor = ?")
             .bind(aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// ResourceListStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl ResourceListStore for SqliteStorage {
+    async fn save_resource_list(&self, list: &StoredResourceList) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO resource_lists (uri, name, entries_json, tenant_id)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(uri) DO UPDATE SET
+                name = excluded.name,
+                entries_json = excluded.entries_json,
+                tenant_id = excluded.tenant_id",
+        )
+        .bind(&list.uri)
+        .bind(&list.name)
+        .bind(&list.entries_json)
+        .bind(list.tenant_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
+        let row = sqlx::query("SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE uri = ?")
+            .bind(uri)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.map(|r| StoredResourceList {
+            uri: r.get("uri"),
+            name: r.get("name"),
+            entries_json: r.get("entries_json"),
+            tenant_id: r.get::<String, _>("tenant_id").parse().unwrap_or_default(),
+        }))
+    }
+
+    async fn get_resource_lists_by_tenant(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredResourceList>> {
+        let rows = sqlx::query("SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE tenant_id = ?")
+            .bind(tenant_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| StoredResourceList {
+                uri: r.get("uri"),
+                name: r.get("name"),
+                entries_json: r.get("entries_json"),
+                tenant_id: r.get::<String, _>("tenant_id").parse().unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    async fn delete_resource_list(&self, uri: &str) -> Result<()> {
+        sqlx::query("DELETE FROM resource_lists WHERE uri = ?")
+            .bind(uri)
             .execute(&self.pool)
             .await?;
         Ok(())

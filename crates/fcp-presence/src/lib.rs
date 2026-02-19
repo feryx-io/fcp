@@ -20,9 +20,17 @@ pub mod config;
 pub mod dialog_info;
 pub mod events;
 pub mod manager;
+pub mod multipart;
 pub mod pidf;
+pub mod rlmi;
+pub mod rls;
 pub mod types;
 pub mod xcap;
+
+#[cfg(feature = "redis")]
+pub mod redis_pubsub;
+#[cfg(feature = "redis")]
+pub mod redis_store;
 
 pub use config::PresenceConfig;
 pub use manager::PresenceManager;

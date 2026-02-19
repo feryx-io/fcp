@@ -58,6 +58,13 @@ pub struct PresenceManager {
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// Shutdown signal receiver (clone for background tasks)
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    /// Optional Redis Pub/Sub for cross-node NOTIFY propagation
+    #[cfg(feature = "redis")]
+    pubsub: Option<Arc<crate::redis_pubsub::RedisPresencePubSub>>,
+    /// Optional resource list store for RLS
+    resource_list_store: Option<Arc<dyn fcp_core::storage::ResourceListStore>>,
+    /// RLS subscriptions: list_uri → Vec<RlsSubscription>
+    rls_subscriptions: Arc<DashMap<String, Vec<crate::rls::RlsSubscription>>>,
 }
 
 impl PresenceManager {
@@ -98,6 +105,10 @@ impl PresenceManager {
             notify_retry_queue: Arc::new(DashMap::new()),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
+            #[cfg(feature = "redis")]
+            pubsub: None,
+            resource_list_store: None,
+            rls_subscriptions: Arc::new(DashMap::new()),
         }
     }
 
@@ -238,6 +249,10 @@ impl PresenceManager {
             );
             events::status_changed(&self.events, &update.aor, old, update.state, tenant_id)
                 .await;
+
+            // Publish to Redis for cross-node propagation
+            #[cfg(feature = "redis")]
+            self.publish_change_to_cluster(&update.aor, tenant_id).await;
         }
 
         Ok(info)
@@ -1302,6 +1317,309 @@ impl PresenceManager {
                 "Shutdown: persisted final presence state"
             );
         }
+    }
+
+    // ========================================================================
+    // Redis Pub/Sub (cross-node clustering)
+    // ========================================================================
+
+    /// Set the Redis Pub/Sub handler for cross-node NOTIFY propagation.
+    #[cfg(feature = "redis")]
+    pub fn set_pubsub(&mut self, pubsub: Arc<crate::redis_pubsub::RedisPresencePubSub>) {
+        self.pubsub = Some(pubsub);
+    }
+
+    /// Publish a presence change to Redis for cross-node propagation.
+    ///
+    /// Called internally after a local presence state update.
+    #[cfg(feature = "redis")]
+    async fn publish_change_to_cluster(&self, aor: &str, tenant_id: &TenantId) {
+        if let Some(ref pubsub) = self.pubsub {
+            if let Err(e) = pubsub.publish_change(aor, tenant_id).await {
+                warn!(error = %e, aor = %aor, "Failed to publish presence change to Redis");
+            }
+        }
+    }
+
+    /// Start the background Pub/Sub listener that consumes remote presence changes
+    /// and triggers local NOTIFY delivery for affected watchers.
+    ///
+    /// Returns a `JoinHandle` for the background task.
+    #[cfg(feature = "redis")]
+    pub async fn run_pubsub_listener(
+        &self,
+    ) -> Result<tokio::task::JoinHandle<()>> {
+        use futures::StreamExt;
+
+        let pubsub = self
+            .pubsub
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Pubsub not configured"))?;
+
+        let stream = pubsub.subscribe().await?;
+        let manager = self.clone();
+        let mut shutdown_rx = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            tokio::pin!(stream);
+            loop {
+                tokio::select! {
+                    event = stream.next() => {
+                        match event {
+                            Some(change) => {
+                                debug!(
+                                    aor = %change.aor,
+                                    source_node = %change.node_id,
+                                    "Processing remote presence change"
+                                );
+                                // Re-read the presentity state and notify local watchers
+                                let watchers = manager.get_watchers(&change.aor);
+                                if !watchers.is_empty() {
+                                    debug!(
+                                        aor = %change.aor,
+                                        watcher_count = watchers.len(),
+                                        "Notifying local watchers of remote presence change"
+                                    );
+                                }
+                            }
+                            None => {
+                                warn!("Pubsub stream ended");
+                                break;
+                            }
+                        }
+                    }
+                    _ = shutdown_rx.changed() => {
+                        info!("Pubsub listener shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(handle)
+    }
+
+    // ========================================================================
+    // RFC 4826 Resource List Subscriptions (RLS)
+    // ========================================================================
+
+    /// Set the resource list store for RLS operations.
+    pub fn set_resource_list_store(&mut self, store: Arc<dyn fcp_core::storage::ResourceListStore>) {
+        self.resource_list_store = Some(store);
+    }
+
+    /// Handle an RLS SUBSCRIBE — look up the resource list, create virtual
+    /// subscriptions for each entry, and return the full-state NOTIFY body.
+    ///
+    /// Returns `(content_type, body)` for the NOTIFY response.
+    pub async fn handle_rls_subscribe(
+        &self,
+        list_uri: &str,
+        watcher_aor: &str,
+        contact_uri: &str,
+        subscription_id: &str,
+        tenant_id: &TenantId,
+        expires_secs: u32,
+    ) -> Result<(String, String)> {
+        use crate::rls::{RlsSubscription, VirtualSubscription};
+
+        // Look up the resource list
+        let store = self
+            .resource_list_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Resource list store not configured"))?;
+
+        let stored = store
+            .get_resource_list(list_uri)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Resource list not found: {list_uri}"))?;
+
+        // Parse entries
+        let entries: Vec<crate::rls::ResourceListEntry> =
+            serde_json::from_str(&stored.entries_json)
+                .unwrap_or_default();
+
+        // Create virtual subscriptions for each entry
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + expires_secs as u64;
+
+        let virtual_subs: Vec<VirtualSubscription> = entries
+            .iter()
+            .map(|entry| VirtualSubscription {
+                presentity_aor: entry.uri.clone(),
+                last_state: self
+                    .get_presence(&entry.uri)
+                    .map(|p| p.state),
+                last_notify_cseq: 0,
+            })
+            .collect();
+
+        let rls_sub = RlsSubscription {
+            list_uri: list_uri.to_string(),
+            watcher_aor: watcher_aor.to_string(),
+            contact_uri: contact_uri.to_string(),
+            expires_at,
+            tenant_id: tenant_id.clone(),
+            virtual_subs,
+            subscription_id: subscription_id.to_string(),
+            version: 0,
+            sip_call_id: None,
+            sip_from_tag: None,
+            sip_to_tag: None,
+        };
+
+        // Build full-state NOTIFY body
+        let (content_type, body) = self.build_rls_notify(&rls_sub, true);
+
+        // Store the subscription
+        self.rls_subscriptions
+            .entry(list_uri.to_string())
+            .or_default()
+            .push(rls_sub);
+
+        Ok((content_type, body))
+    }
+
+    /// Build an RLS NOTIFY body (RLMI + PIDF multipart).
+    ///
+    /// Returns `(content_type, body)` tuple.
+    pub fn build_rls_notify(
+        &self,
+        rls_sub: &crate::rls::RlsSubscription,
+        full_state: bool,
+    ) -> (String, String) {
+        use crate::multipart::MultipartBuilder;
+        use crate::rlmi::{RlmiBuilder, RlmiInstance, RlmiResource};
+
+        let mut rlmi = RlmiBuilder::new(&rls_sub.list_uri, rls_sub.version, full_state);
+        let mut multipart = MultipartBuilder::new();
+
+        // Build RLMI resources and PIDF parts for each virtual sub
+        for vsub in &rls_sub.virtual_subs {
+            let state = vsub
+                .last_state
+                .or_else(|| self.get_presence(&vsub.presentity_aor).map(|p| p.state))
+                .unwrap_or(PresenceState::Closed);
+
+            let instance_id = uuid::Uuid::new_v4().simple().to_string();
+            let cid = vsub.presentity_aor.clone();
+
+            rlmi.add_resource(RlmiResource {
+                uri: format!("sip:{}", vsub.presentity_aor),
+                instances: vec![RlmiInstance {
+                    id: instance_id,
+                    state: "active".to_string(),
+                    cid: cid.clone(),
+                }],
+            });
+
+            // Build PIDF XML for this presentity
+            let pidf_xml = pidf::generate_pidf(
+                &format!("pres:{}", vsub.presentity_aor),
+                &state,
+                None,
+                state.to_rpid_activity(),
+            );
+            multipart.add_pidf(pidf_xml, &cid);
+        }
+
+        // Build RLMI XML and insert as first part
+        let rlmi_cid = format!("rlmi+{}", rls_sub.list_uri);
+        let rlmi_xml = rlmi.build();
+
+        // We need to prepend the RLMI part — rebuild multipart with RLMI first
+        let mut final_multipart = MultipartBuilder::with_boundary(multipart.boundary());
+        final_multipart.add_rlmi(rlmi_xml, &rlmi_cid);
+
+        // Re-add PIDF parts
+        for vsub in &rls_sub.virtual_subs {
+            let state = vsub
+                .last_state
+                .or_else(|| self.get_presence(&vsub.presentity_aor).map(|p| p.state))
+                .unwrap_or(PresenceState::Closed);
+
+            let pidf_xml = pidf::generate_pidf(
+                &format!("pres:{}", vsub.presentity_aor),
+                &state,
+                None,
+                state.to_rpid_activity(),
+            );
+            final_multipart.add_pidf(pidf_xml, &vsub.presentity_aor);
+        }
+
+        let content_type = final_multipart.content_type();
+        let body = final_multipart.build();
+
+        (content_type, body)
+    }
+
+    /// Notify RLS watchers when a presentity's state changes.
+    ///
+    /// Finds all resource lists containing this AOR and builds partial-state
+    /// NOTIFY bodies for their subscribers.
+    ///
+    /// Returns a list of `(subscription_id, contact_uri, content_type, body)` tuples
+    /// for the caller to send as SIP NOTIFYs.
+    pub fn notify_rls_watchers(
+        &self,
+        aor: &str,
+    ) -> Vec<(String, String, String, String)> {
+        let mut notifications = Vec::new();
+
+        for mut entry in self.rls_subscriptions.iter_mut() {
+            let list_uri = entry.key().clone();
+            let subs = entry.value_mut();
+
+            for sub in subs.iter_mut() {
+                // Check if this list contains the changed presentity
+                let contains = sub.virtual_subs.iter().any(|vs| vs.presentity_aor == aor);
+                if !contains {
+                    continue;
+                }
+
+                // Update virtual sub state
+                let new_state = self.get_presence(aor).map(|p| p.state);
+                for vs in &mut sub.virtual_subs {
+                    if vs.presentity_aor == aor {
+                        vs.last_state = new_state;
+                    }
+                }
+
+                // Increment version
+                sub.version += 1;
+
+                // Build partial-state NOTIFY
+                let (content_type, body) = self.build_rls_notify(sub, false);
+
+                notifications.push((
+                    sub.subscription_id.clone(),
+                    sub.contact_uri.clone(),
+                    content_type,
+                    body,
+                ));
+
+                debug!(
+                    list_uri = %list_uri,
+                    subscription_id = %sub.subscription_id,
+                    aor = %aor,
+                    version = sub.version,
+                    "Built RLS partial NOTIFY"
+                );
+            }
+        }
+
+        notifications
+    }
+
+    /// Get the count of active RLS subscriptions.
+    pub fn rls_subscription_count(&self) -> usize {
+        self.rls_subscriptions
+            .iter()
+            .map(|e| e.value().len())
+            .sum()
     }
 
     /// Get all watchers including winfo watchers (for shutdown NOTIFY).
