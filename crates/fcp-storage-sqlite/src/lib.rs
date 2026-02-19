@@ -3666,14 +3666,21 @@ impl PresenceStore for SqliteStorage {
     async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO presence_auth_policies \
-             (aor, default_allow, allow_list_json, block_list_json, tenant_id) \
-             VALUES (?, ?, ?, ?, ?)",
+             (aor, default_allow, allow_list_json, block_list_json, tenant_id, \
+              event_allow_json, event_block_json, time_windows_json, \
+              allow_patterns_json, block_patterns_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&policy.aor)
         .bind(policy.default_allow as i32)
         .bind(&policy.allow_list_json)
         .bind(&policy.block_list_json)
         .bind(policy.tenant_id.to_string())
+        .bind(&policy.event_allow_json)
+        .bind(&policy.event_block_json)
+        .bind(&policy.time_windows_json)
+        .bind(&policy.allow_patterns_json)
+        .bind(&policy.block_patterns_json)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3681,7 +3688,9 @@ impl PresenceStore for SqliteStorage {
 
     async fn load_auth_policies(&self, tenant_id: &TenantId) -> Result<Vec<StoredAuthPolicy>> {
         let rows = sqlx::query(
-            "SELECT aor, default_allow, allow_list_json, block_list_json, tenant_id \
+            "SELECT aor, default_allow, allow_list_json, block_list_json, tenant_id, \
+                    event_allow_json, event_block_json, time_windows_json, \
+                    allow_patterns_json, block_patterns_json \
              FROM presence_auth_policies WHERE tenant_id = ?",
         )
         .bind(tenant_id.to_string())
@@ -3700,6 +3709,11 @@ impl PresenceStore for SqliteStorage {
                 allow_list_json: row.try_get("allow_list_json")?,
                 block_list_json: row.try_get("block_list_json")?,
                 tenant_id: tid,
+                event_allow_json: row.try_get("event_allow_json").unwrap_or_default(),
+                event_block_json: row.try_get("event_block_json").unwrap_or_default(),
+                time_windows_json: row.try_get("time_windows_json").unwrap_or_default(),
+                allow_patterns_json: row.try_get("allow_patterns_json").unwrap_or_default(),
+                block_patterns_json: row.try_get("block_patterns_json").unwrap_or_default(),
             });
         }
         Ok(policies)

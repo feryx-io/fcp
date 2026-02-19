@@ -1244,6 +1244,21 @@ pub struct StoredAuthPolicy {
     /// JSON-encoded Vec<String> of blocked watcher AORs
     pub block_list_json: String,
     pub tenant_id: crate::TenantId,
+    /// JSON-encoded HashMap<String, HashSet<String>> for per-event allow lists
+    #[serde(default)]
+    pub event_allow_json: String,
+    /// JSON-encoded HashMap<String, HashSet<String>> for per-event block lists
+    #[serde(default)]
+    pub event_block_json: String,
+    /// JSON-encoded Vec<TimeWindow> for time-based restrictions
+    #[serde(default)]
+    pub time_windows_json: String,
+    /// JSON-encoded Vec<String> for domain wildcard allow patterns
+    #[serde(default)]
+    pub allow_patterns_json: String,
+    /// JSON-encoded Vec<String> for domain wildcard block patterns
+    #[serde(default)]
+    pub block_patterns_json: String,
 }
 
 /// Persistence for presence watcher subscriptions and presentity state.

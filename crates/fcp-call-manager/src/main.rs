@@ -1340,6 +1340,48 @@ fn extract_aor(uri: &str) -> Option<String> {
     Some(aor.to_string())
 }
 
+/// Resolve a conference participant_id to an AOR.
+///
+/// The participant_id may be a SIP URI, extension number, or user@domain.
+/// We try extract_aor first, then fall back to searching known presences
+/// by matching the user part against existing AORs.
+fn resolve_conference_participant_aor(
+    participant_id: &str,
+    presence: &fcp_presence::PresenceManager,
+) -> Option<String> {
+    // Try direct extraction if it looks like a SIP URI
+    if let Some(aor) = extract_aor(participant_id) {
+        return Some(aor);
+    }
+    // Fall back: participant_id is likely just an extension number (e.g., "5001").
+    // Search known presences for a matching user part.
+    for info in presence.get_all_presences() {
+        let user_part = info.aor.split('@').next().unwrap_or("");
+        if user_part == participant_id {
+            return Some(info.aor.clone());
+        }
+    }
+    None
+}
+
+/// Resolve a voicemail mailbox_id to an AOR.
+///
+/// Mailbox IDs are typically the extension number (e.g., "5001").
+/// Searches known presences for a matching user part.
+fn resolve_mailbox_aor(
+    mailbox_id: &str,
+    presence: &fcp_presence::PresenceManager,
+) -> Option<String> {
+    // Search known presences for a matching user part
+    for info in presence.get_all_presences() {
+        let user_part = info.aor.split('@').next().unwrap_or("");
+        if user_part == mailbox_id {
+            return Some(info.aor.clone());
+        }
+    }
+    None
+}
+
 /// Subscribe to call and registration events, update presence accordingly.
 async fn run_presence_listener(
     event_bus: Arc<InMemoryEventBus>,
@@ -1351,6 +1393,8 @@ async fn run_presence_listener(
     let filter = EventFilter::new().types(vec![
         EventType::Call,
         EventType::Registration,
+        EventType::Conference,
+        EventType::Voicemail,
     ]);
 
     let mut stream = match event_bus.subscribe(filter.clone()).await {
@@ -1489,6 +1533,64 @@ async fn run_presence_listener(
                                 note: None,
                             };
                             let _ = presence.update_presence(update, &tenant_id).await;
+                        }
+                    }
+
+                    // Conference participant joined → set Busy (in conference)
+                    PlatformEvent::Conference(fcp_events::ConferenceEvent::ParticipantJoined {
+                        participant_id,
+                        tenant_id: event_tenant_id,
+                        ..
+                    }) => {
+                        let aor = resolve_conference_participant_aor(participant_id, &presence);
+                        if let Some(aor) = aor {
+                            let update = fcp_presence::PresenceUpdate {
+                                aor,
+                                state: fcp_presence::PresenceState::Busy,
+                                note: Some("In conference".to_string()),
+                            };
+                            let _ = presence.update_presence(update, event_tenant_id).await;
+                        }
+                    }
+
+                    // Conference participant left → revert to Open if no other active calls
+                    PlatformEvent::Conference(fcp_events::ConferenceEvent::ParticipantLeft {
+                        participant_id,
+                        tenant_id: event_tenant_id,
+                        ..
+                    }) => {
+                        let aor = resolve_conference_participant_aor(participant_id, &presence);
+                        if let Some(aor) = aor {
+                            if presence.get_active_calls(&aor).is_empty() {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor,
+                                    state: fcp_presence::PresenceState::Open,
+                                    note: None,
+                                };
+                                let _ = presence.update_presence(update, event_tenant_id).await;
+                            }
+                        }
+                    }
+
+                    // MWI updated → annotate presence note with voicemail count
+                    PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MwiUpdated {
+                        mailbox_id,
+                        new_messages,
+                        ..
+                    }) => {
+                        if *new_messages > 0 {
+                            let aor = resolve_mailbox_aor(mailbox_id, &presence);
+                            if let Some(aor) = aor {
+                                if let Some(info) = presence.get_presence(&aor) {
+                                    let note = format!("{} new voicemail(s)", new_messages);
+                                    let update = fcp_presence::PresenceUpdate {
+                                        aor,
+                                        state: info.state,
+                                        note: Some(note),
+                                    };
+                                    let _ = presence.update_presence(update, &tenant_id).await;
+                                }
+                            }
                         }
                     }
 

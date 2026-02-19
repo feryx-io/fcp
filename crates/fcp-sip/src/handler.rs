@@ -7856,6 +7856,33 @@ impl SipMessageHandler {
                 }
             }
 
+            // Filter out busy/DND members if skip_busy is enabled
+            if plan.skip_busy {
+                if let Some(ref presence) = self.presence_handler {
+                    let before = contacts.len();
+                    contacts.retain(|(member, _)| {
+                        let busy = presence.is_busy(member);
+                        if busy {
+                            debug!(
+                                call_id = %call_id,
+                                member = %member,
+                                "Skipping busy/DND hunt group member"
+                            );
+                        }
+                        !busy
+                    });
+                    if contacts.len() < before {
+                        debug!(
+                            call_id = %call_id,
+                            phase = phase_idx,
+                            skipped = before - contacts.len(),
+                            remaining = contacts.len(),
+                            "Filtered busy hunt group members"
+                        );
+                    }
+                }
+            }
+
             if contacts.is_empty() {
                 debug!(
                     call_id = %call_id,

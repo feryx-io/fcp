@@ -27,8 +27,9 @@ use bson::{doc, DateTime as BsonDateTime, Document};
 use fcp_core::storage::{
     AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
     CredentialStore, DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty,
-    LineBindingStore, MediaPreferences, PhoneNumberStore, QueueStore, Registration,
-    RegistrationStore, StoredAgent, TenantStore, User,
+    LineBindingStore, MediaPreferences, PhoneNumberStore, PresenceStore, QueueStore, Registration,
+    RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredSubscription,
+    TenantStore, User,
 };
 use fcp_core::{
     AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
@@ -117,6 +118,9 @@ pub struct MongodbStorage {
     devices: Collection<Document>,
     device_bindings: Collection<Document>,
     meetings: Collection<Document>,
+    presence_subscriptions: Collection<Document>,
+    presence_presentities: Collection<Document>,
+    presence_auth_policies: Collection<Document>,
 }
 
 impl MongodbStorage {
@@ -155,6 +159,9 @@ impl MongodbStorage {
         let devices = db.collection::<Document>("devices");
         let device_bindings = db.collection::<Document>("device_bindings");
         let meetings = db.collection::<Document>("meetings");
+        let presence_subscriptions = db.collection::<Document>("presence_subscriptions");
+        let presence_presentities = db.collection::<Document>("presence_presentities");
+        let presence_auth_policies = db.collection::<Document>("presence_auth_policies");
 
         let storage = Self {
             client,
@@ -169,6 +176,9 @@ impl MongodbStorage {
             devices,
             device_bindings,
             meetings,
+            presence_subscriptions,
+            presence_presentities,
+            presence_auth_policies,
         };
 
         // Create indexes
@@ -347,6 +357,57 @@ impl MongodbStorage {
             .create_indexes(meetings_indexes)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create meetings indexes: {}", e))?;
+
+        // Presence subscriptions indexes
+        let pres_sub_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "subscription_id": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "presentity_aor": 1 })
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "tenant_id": 1 })
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "expires_at_epoch": 1 })
+                .build(),
+        ];
+        self.presence_subscriptions
+            .create_indexes(pres_sub_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create presence_subscriptions indexes: {}", e))?;
+
+        // Presence presentities indexes
+        let pres_presentity_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "aor": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "tenant_id": 1 })
+                .build(),
+        ];
+        self.presence_presentities
+            .create_indexes(pres_presentity_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create presence_presentities indexes: {}", e))?;
+
+        // Presence auth policies indexes
+        let pres_policy_indexes = vec![
+            IndexModel::builder()
+                .keys(doc! { "aor": 1 })
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! { "tenant_id": 1 })
+                .build(),
+        ];
+        self.presence_auth_policies
+            .create_indexes(pres_policy_indexes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create presence_auth_policies indexes: {}", e))?;
 
         debug!("MongoDB indexes created successfully");
         Ok(())
@@ -2812,6 +2873,219 @@ impl QueueStore for MongodbStorage {
     }
 
     async fn clear_agents(&self, _tenant_id: &TenantId) -> Result<()> {
+        Ok(())
+    }
+}
+
+// ============================================================================
+// PresenceStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl PresenceStore for MongodbStorage {
+    async fn save_subscription(&self, sub: StoredSubscription) -> Result<()> {
+        let doc = doc! {
+            "subscription_id": &sub.subscription_id,
+            "watcher_aor": &sub.watcher_aor,
+            "presentity_aor": &sub.presentity_aor,
+            "tenant_id": sub.tenant_id.to_string(),
+            "contact_uri": &sub.contact_uri,
+            "event_package": &sub.event_package,
+            "expires_at_epoch": sub.expires_at_epoch as i64,
+            "sip_call_id": sub.sip_call_id.as_deref(),
+            "sip_from_tag": sub.sip_from_tag.as_deref(),
+            "sip_to_tag": sub.sip_to_tag.as_deref(),
+        };
+        let filter = doc! { "subscription_id": &sub.subscription_id };
+        self.presence_subscriptions
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to save presence subscription: {}", e))?;
+        Ok(())
+    }
+
+    async fn load_subscriptions(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredSubscription>> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let filter = doc! {
+            "tenant_id": tenant_id.to_string(),
+            "expires_at_epoch": { "$gt": now_epoch },
+        };
+
+        let mut cursor = self
+            .presence_subscriptions
+            .find(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load presence subscriptions: {}", e))?;
+
+        let mut subs = Vec::new();
+        while cursor.advance().await.map_err(|e| anyhow::anyhow!("Cursor error: {}", e))? {
+            let doc = cursor.deserialize_current().map_err(|e| anyhow::anyhow!("Deserialize error: {}", e))?;
+            let tid_str = doc.get_str("tenant_id").unwrap_or("");
+            let tid = tid_str.parse::<TenantId>().unwrap_or_else(|_| TenantId::nil());
+            subs.push(StoredSubscription {
+                subscription_id: doc.get_str("subscription_id").unwrap_or("").to_string(),
+                watcher_aor: doc.get_str("watcher_aor").unwrap_or("").to_string(),
+                presentity_aor: doc.get_str("presentity_aor").unwrap_or("").to_string(),
+                tenant_id: tid,
+                contact_uri: doc.get_str("contact_uri").unwrap_or("").to_string(),
+                event_package: doc.get_str("event_package").unwrap_or("presence").to_string(),
+                expires_at_epoch: doc.get_i64("expires_at_epoch").unwrap_or(0) as u64,
+                sip_call_id: doc.get_str("sip_call_id").ok().map(|s| s.to_string()),
+                sip_from_tag: doc.get_str("sip_from_tag").ok().map(|s| s.to_string()),
+                sip_to_tag: doc.get_str("sip_to_tag").ok().map(|s| s.to_string()),
+            });
+        }
+
+        Ok(subs)
+    }
+
+    async fn remove_subscription(&self, subscription_id: &str) -> Result<()> {
+        self.presence_subscriptions
+            .delete_one(doc! { "subscription_id": subscription_id })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to remove presence subscription: {}", e))?;
+        Ok(())
+    }
+
+    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
+        self.presence_subscriptions
+            .delete_many(doc! { "presentity_aor": presentity_aor })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to remove subscriptions for presentity: {}", e))?;
+        Ok(())
+    }
+
+    async fn cleanup_expired_subscriptions(&self) -> Result<usize> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let result = self
+            .presence_subscriptions
+            .delete_many(doc! { "expires_at_epoch": { "$lte": now_epoch } })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to cleanup expired subscriptions: {}", e))?;
+
+        Ok(result.deleted_count as usize)
+    }
+
+    async fn save_presentity(&self, p: StoredPresentity) -> Result<()> {
+        let doc = doc! {
+            "aor": &p.aor,
+            "state": &p.state,
+            "note": &p.note,
+            "tenant_id": p.tenant_id.to_string(),
+            "updated_at_epoch": p.updated_at_epoch as i64,
+        };
+        let filter = doc! { "aor": &p.aor };
+        self.presence_presentities
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to save presentity: {}", e))?;
+        Ok(())
+    }
+
+    async fn load_presentities(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredPresentity>> {
+        let filter = doc! { "tenant_id": tenant_id.to_string() };
+        let mut cursor = self
+            .presence_presentities
+            .find(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load presentities: {}", e))?;
+
+        let mut result = Vec::new();
+        while cursor.advance().await.map_err(|e| anyhow::anyhow!("Cursor error: {}", e))? {
+            let doc = cursor.deserialize_current().map_err(|e| anyhow::anyhow!("Deserialize error: {}", e))?;
+            let tid_str = doc.get_str("tenant_id").unwrap_or("");
+            let tid = tid_str.parse::<TenantId>().unwrap_or_else(|_| TenantId::nil());
+            result.push(StoredPresentity {
+                aor: doc.get_str("aor").unwrap_or("").to_string(),
+                state: doc.get_str("state").unwrap_or("").to_string(),
+                note: doc.get_str("note").ok().map(|s| s.to_string()),
+                tenant_id: tid,
+                updated_at_epoch: doc.get_i64("updated_at_epoch").unwrap_or(0) as u64,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+        self.presence_presentities
+            .delete_one(doc! { "aor": aor })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to remove presentity: {}", e))?;
+        Ok(())
+    }
+
+    async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
+        let doc = doc! {
+            "aor": &policy.aor,
+            "default_allow": policy.default_allow,
+            "allow_list_json": &policy.allow_list_json,
+            "block_list_json": &policy.block_list_json,
+            "tenant_id": policy.tenant_id.to_string(),
+            "event_allow_json": &policy.event_allow_json,
+            "event_block_json": &policy.event_block_json,
+            "time_windows_json": &policy.time_windows_json,
+            "allow_patterns_json": &policy.allow_patterns_json,
+            "block_patterns_json": &policy.block_patterns_json,
+        };
+        let filter = doc! { "aor": &policy.aor };
+        self.presence_auth_policies
+            .replace_one(filter, doc)
+            .upsert(true)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to save auth policy: {}", e))?;
+        Ok(())
+    }
+
+    async fn load_auth_policies(&self, tenant_id: &TenantId) -> Result<Vec<StoredAuthPolicy>> {
+        let filter = doc! { "tenant_id": tenant_id.to_string() };
+        let mut cursor = self
+            .presence_auth_policies
+            .find(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load auth policies: {}", e))?;
+
+        let mut policies = Vec::new();
+        while cursor.advance().await.map_err(|e| anyhow::anyhow!("Cursor error: {}", e))? {
+            let doc = cursor.deserialize_current().map_err(|e| anyhow::anyhow!("Deserialize error: {}", e))?;
+            let tid_str = doc.get_str("tenant_id").unwrap_or("");
+            let tid = tid_str.parse::<TenantId>().unwrap_or_else(|_| TenantId::nil());
+            policies.push(StoredAuthPolicy {
+                aor: doc.get_str("aor").unwrap_or("").to_string(),
+                default_allow: doc.get_bool("default_allow").unwrap_or(true),
+                allow_list_json: doc.get_str("allow_list_json").unwrap_or("[]").to_string(),
+                block_list_json: doc.get_str("block_list_json").unwrap_or("[]").to_string(),
+                tenant_id: tid,
+                event_allow_json: doc.get_str("event_allow_json").unwrap_or("{}").to_string(),
+                event_block_json: doc.get_str("event_block_json").unwrap_or("{}").to_string(),
+                time_windows_json: doc.get_str("time_windows_json").unwrap_or("[]").to_string(),
+                allow_patterns_json: doc.get_str("allow_patterns_json").unwrap_or("[]").to_string(),
+                block_patterns_json: doc.get_str("block_patterns_json").unwrap_or("[]").to_string(),
+            });
+        }
+        Ok(policies)
+    }
+
+    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
+        self.presence_auth_policies
+            .delete_one(doc! { "aor": aor })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to remove auth policy: {}", e))?;
         Ok(())
     }
 }

@@ -73,4 +73,12 @@ pub trait PresenceHandler: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Check if a user (identified by extension) is in DND/Busy state.
+    ///
+    /// Used by hunt group routing to skip busy members when `skip_busy` is enabled.
+    /// Returns `true` if the user should be skipped (Busy or Closed state).
+    fn is_busy(&self, _extension: &str) -> bool {
+        false
+    }
 }

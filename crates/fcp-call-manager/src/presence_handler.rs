@@ -1074,4 +1074,17 @@ impl fcp_sip::presence::PresenceHandler for SipPresenceHandler {
         }
         Ok(())
     }
+
+    fn is_busy(&self, extension: &str) -> bool {
+        for info in self.presence.get_all_presences() {
+            let user_part = info.aor.split('@').next().unwrap_or("");
+            if user_part == extension {
+                return matches!(
+                    info.state,
+                    fcp_presence::PresenceState::Busy | fcp_presence::PresenceState::Closed
+                );
+            }
+        }
+        false
+    }
 }

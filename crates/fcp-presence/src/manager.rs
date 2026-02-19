@@ -1045,6 +1045,11 @@ impl PresenceManager {
                 allow_list_json: serde_json::to_string(&policy.allow_list).unwrap_or_default(),
                 block_list_json: serde_json::to_string(&policy.block_list).unwrap_or_default(),
                 tenant_id: tenant_id.clone(),
+                event_allow_json: serde_json::to_string(&policy.event_allow).unwrap_or_default(),
+                event_block_json: serde_json::to_string(&policy.event_block).unwrap_or_default(),
+                time_windows_json: serde_json::to_string(&policy.time_windows).unwrap_or_default(),
+                allow_patterns_json: serde_json::to_string(&policy.allow_patterns).unwrap_or_default(),
+                block_patterns_json: serde_json::to_string(&policy.block_patterns).unwrap_or_default(),
             };
             let store = Arc::clone(store);
             let metrics = Arc::clone(&self.metrics);
@@ -1112,11 +1117,20 @@ impl PresenceManager {
                 serde_json::from_str(&s.allow_list_json).unwrap_or_default();
             let block_list: HashSet<String> =
                 serde_json::from_str(&s.block_list_json).unwrap_or_default();
+            let event_allow = serde_json::from_str(&s.event_allow_json).unwrap_or_default();
+            let event_block = serde_json::from_str(&s.event_block_json).unwrap_or_default();
+            let time_windows = serde_json::from_str(&s.time_windows_json).unwrap_or_default();
+            let allow_patterns = serde_json::from_str(&s.allow_patterns_json).unwrap_or_default();
+            let block_patterns = serde_json::from_str(&s.block_patterns_json).unwrap_or_default();
             let policy = PresenceAuthPolicy {
                 default_allow: s.default_allow,
                 allow_list,
                 block_list,
-                ..Default::default()
+                event_allow,
+                event_block,
+                time_windows,
+                allow_patterns,
+                block_patterns,
             };
             self.auth_policies.insert(s.aor, policy);
         }

@@ -51,6 +51,7 @@ impl HuntGroup {
             forking_config: ForkingConfig::pbx_parallel(),
             no_answer_destination: self.config.no_answer_destination.clone(),
             total_timeout_secs: self.config.total_timeout,
+            skip_busy: self.config.skip_busy,
         }
     }
 
@@ -71,6 +72,7 @@ impl HuntGroup {
             forking_config: ForkingConfig::pbx_sequential(),
             no_answer_destination: self.config.no_answer_destination.clone(),
             total_timeout_secs: self.config.total_timeout,
+            skip_busy: self.config.skip_busy,
         }
     }
 
@@ -82,6 +84,7 @@ impl HuntGroup {
                 forking_config: ForkingConfig::pbx_sequential(),
                 no_answer_destination: self.config.no_answer_destination.clone(),
                 total_timeout_secs: self.config.total_timeout,
+                skip_busy: self.config.skip_busy,
             };
         }
 
@@ -105,6 +108,7 @@ impl HuntGroup {
             forking_config: ForkingConfig::pbx_sequential(),
             no_answer_destination: self.config.no_answer_destination.clone(),
             total_timeout_secs: self.config.total_timeout,
+            skip_busy: self.config.skip_busy,
         }
     }
 
@@ -122,6 +126,7 @@ impl HuntGroup {
             forking_config: ForkingConfig::pbx_parallel(),
             no_answer_destination: self.config.no_answer_destination.clone(),
             total_timeout_secs: self.config.total_timeout,
+            skip_busy: self.config.skip_busy,
         }
     }
 }
@@ -140,6 +145,9 @@ pub struct HuntGroupPlan {
 
     /// Maximum total time across all phases.
     pub total_timeout_secs: u32,
+
+    /// Skip members that are known busy/DND (from presence state).
+    pub skip_busy: bool,
 }
 
 /// A single phase of ringing within a hunt group plan.

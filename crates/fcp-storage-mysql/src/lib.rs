@@ -33,7 +33,8 @@ use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
-        PhoneNumberStore, QueueStore, RegistrationStore, StoredAgent, TenantStore,
+        PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore, StoredAgent,
+        StoredAuthPolicy, StoredPresentity, StoredSubscription, TenantStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -132,7 +133,11 @@ impl MysqlStorage {
     async fn run_migrations(pool: &Pool<MySql>) -> Result<()> {
         info!("Running MySQL migrations");
 
-        let migration_sql = include_str!("../migrations/001_initial_schema.sql");
+        let migration_files = [
+            include_str!("../migrations/001_initial_schema.sql"),
+            include_str!("../migrations/013_add_presence_support.sql"),
+        ];
+        let migration_sql = migration_files.join("\n");
 
         // Split by semicolon and filter out comments and empty lines
         let statements: Vec<String> = migration_sql
@@ -2108,6 +2113,250 @@ impl QueueStore for MysqlStorage {
     }
 
     async fn clear_agents(&self, _tenant_id: &TenantId) -> Result<()> {
+        Ok(())
+    }
+}
+
+// ============================================================================
+// PresenceStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl PresenceStore for MysqlStorage {
+    async fn save_subscription(&self, sub: StoredSubscription) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO presence_subscriptions \
+             (subscription_id, watcher_aor, presentity_aor, tenant_id, contact_uri, \
+              event_package, expires_at_epoch, sip_call_id, sip_from_tag, sip_to_tag) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+                watcher_aor = VALUES(watcher_aor), \
+                presentity_aor = VALUES(presentity_aor), \
+                tenant_id = VALUES(tenant_id), \
+                contact_uri = VALUES(contact_uri), \
+                event_package = VALUES(event_package), \
+                expires_at_epoch = VALUES(expires_at_epoch), \
+                sip_call_id = VALUES(sip_call_id), \
+                sip_from_tag = VALUES(sip_from_tag), \
+                sip_to_tag = VALUES(sip_to_tag)",
+        )
+        .bind(&sub.subscription_id)
+        .bind(&sub.watcher_aor)
+        .bind(&sub.presentity_aor)
+        .bind(sub.tenant_id.to_string())
+        .bind(&sub.contact_uri)
+        .bind(&sub.event_package)
+        .bind(sub.expires_at_epoch as i64)
+        .bind(&sub.sip_call_id)
+        .bind(&sub.sip_from_tag)
+        .bind(&sub.sip_to_tag)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_subscriptions(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredSubscription>> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let rows = sqlx::query(
+            "SELECT subscription_id, watcher_aor, presentity_aor, tenant_id, \
+             contact_uri, event_package, expires_at_epoch, sip_call_id, sip_from_tag, sip_to_tag \
+             FROM presence_subscriptions WHERE tenant_id = ? AND expires_at_epoch > ?",
+        )
+        .bind(tenant_id.to_string())
+        .bind(now_epoch)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut subs = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tid_str: String = row.try_get("tenant_id")?;
+            let tid = tid_str
+                .parse::<TenantId>()
+                .unwrap_or_else(|_| TenantId::nil());
+            subs.push(StoredSubscription {
+                subscription_id: row.try_get("subscription_id")?,
+                watcher_aor: row.try_get("watcher_aor")?,
+                presentity_aor: row.try_get("presentity_aor")?,
+                tenant_id: tid,
+                contact_uri: row.try_get("contact_uri")?,
+                event_package: row.try_get("event_package")?,
+                expires_at_epoch: row.try_get::<i64, _>("expires_at_epoch")? as u64,
+                sip_call_id: row.try_get("sip_call_id")?,
+                sip_from_tag: row.try_get("sip_from_tag")?,
+                sip_to_tag: row.try_get("sip_to_tag")?,
+            });
+        }
+
+        Ok(subs)
+    }
+
+    async fn remove_subscription(&self, subscription_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_subscriptions WHERE subscription_id = ?")
+            .bind(subscription_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_subscriptions WHERE presentity_aor = ?")
+            .bind(presentity_aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn cleanup_expired_subscriptions(&self) -> Result<usize> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let result =
+            sqlx::query("DELETE FROM presence_subscriptions WHERE expires_at_epoch <= ?")
+                .bind(now_epoch)
+                .execute(&self.pool)
+                .await?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn save_presentity(&self, p: StoredPresentity) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO presence_presentities \
+             (aor, state, note, tenant_id, updated_at_epoch) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+                state = VALUES(state), \
+                note = VALUES(note), \
+                tenant_id = VALUES(tenant_id), \
+                updated_at_epoch = VALUES(updated_at_epoch)",
+        )
+        .bind(&p.aor)
+        .bind(&p.state)
+        .bind(&p.note)
+        .bind(p.tenant_id.to_string())
+        .bind(p.updated_at_epoch as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_presentities(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<StoredPresentity>> {
+        let rows = sqlx::query(
+            "SELECT aor, state, note, tenant_id, updated_at_epoch \
+             FROM presence_presentities WHERE tenant_id = ?",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tid_str: String = row.try_get("tenant_id")?;
+            let tid = tid_str
+                .parse::<TenantId>()
+                .unwrap_or_else(|_| TenantId::nil());
+            result.push(StoredPresentity {
+                aor: row.try_get("aor")?,
+                state: row.try_get("state")?,
+                note: row.try_get("note")?,
+                tenant_id: tid,
+                updated_at_epoch: row.try_get::<i64, _>("updated_at_epoch")? as u64,
+            });
+        }
+        Ok(result)
+    }
+
+    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_presentities WHERE aor = ?")
+            .bind(aor)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO presence_auth_policies \
+             (aor, default_allow, allow_list_json, block_list_json, tenant_id, \
+              event_allow_json, event_block_json, time_windows_json, \
+              allow_patterns_json, block_patterns_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON DUPLICATE KEY UPDATE \
+                default_allow = VALUES(default_allow), \
+                allow_list_json = VALUES(allow_list_json), \
+                block_list_json = VALUES(block_list_json), \
+                tenant_id = VALUES(tenant_id), \
+                event_allow_json = VALUES(event_allow_json), \
+                event_block_json = VALUES(event_block_json), \
+                time_windows_json = VALUES(time_windows_json), \
+                allow_patterns_json = VALUES(allow_patterns_json), \
+                block_patterns_json = VALUES(block_patterns_json)",
+        )
+        .bind(&policy.aor)
+        .bind(policy.default_allow as i32)
+        .bind(&policy.allow_list_json)
+        .bind(&policy.block_list_json)
+        .bind(policy.tenant_id.to_string())
+        .bind(&policy.event_allow_json)
+        .bind(&policy.event_block_json)
+        .bind(&policy.time_windows_json)
+        .bind(&policy.allow_patterns_json)
+        .bind(&policy.block_patterns_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn load_auth_policies(&self, tenant_id: &TenantId) -> Result<Vec<StoredAuthPolicy>> {
+        let rows = sqlx::query(
+            "SELECT aor, default_allow, allow_list_json, block_list_json, tenant_id, \
+                    event_allow_json, event_block_json, time_windows_json, \
+                    allow_patterns_json, block_patterns_json \
+             FROM presence_auth_policies WHERE tenant_id = ?",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut policies = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tid_str: String = row.try_get("tenant_id")?;
+            let tid = tid_str
+                .parse::<TenantId>()
+                .unwrap_or_else(|_| TenantId::nil());
+            policies.push(StoredAuthPolicy {
+                aor: row.try_get("aor")?,
+                default_allow: row.try_get::<i32, _>("default_allow")? != 0,
+                allow_list_json: row.try_get("allow_list_json")?,
+                block_list_json: row.try_get("block_list_json")?,
+                tenant_id: tid,
+                event_allow_json: row.try_get("event_allow_json").unwrap_or_default(),
+                event_block_json: row.try_get("event_block_json").unwrap_or_default(),
+                time_windows_json: row.try_get("time_windows_json").unwrap_or_default(),
+                allow_patterns_json: row.try_get("allow_patterns_json").unwrap_or_default(),
+                block_patterns_json: row.try_get("block_patterns_json").unwrap_or_default(),
+            });
+        }
+        Ok(policies)
+    }
+
+    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_auth_policies WHERE aor = ?")
+            .bind(aor)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }
