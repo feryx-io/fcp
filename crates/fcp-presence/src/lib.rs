@@ -16,9 +16,11 @@
 //! SIP signaling integration (SUBSCRIBE/NOTIFY/PUBLISH handlers) lives in
 //! the binary crate (`fcp-call-manager` or `fcp-pbx`).
 
+pub mod analytics;
 pub mod config;
 pub mod dialog_info;
 pub mod events;
+pub mod federation;
 pub mod manager;
 pub mod multipart;
 pub mod pidf;
@@ -31,6 +33,8 @@ pub mod xcap;
 pub mod redis_pubsub;
 #[cfg(feature = "redis")]
 pub mod redis_store;
+#[cfg(feature = "webhook")]
+pub mod webhook;
 
 pub use config::PresenceConfig;
 pub use manager::PresenceManager;

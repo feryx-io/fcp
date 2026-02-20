@@ -95,6 +95,48 @@ pub async fn publish_received(
     .await;
 }
 
+/// Publish a PublishExpiryWarning event.
+pub async fn publish_expiry_warning(
+    events: &Option<Arc<dyn EventPublisher>>,
+    aor: &str,
+    etag: &str,
+    elapsed_pct: u8,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        PresenceEvent::PublishExpiryWarning {
+            aor: aor.to_string(),
+            etag: etag.to_string(),
+            elapsed_pct,
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
+/// Publish a PublishExpired event.
+pub async fn publish_expired(
+    events: &Option<Arc<dyn EventPublisher>>,
+    aor: &str,
+    etag: &str,
+    state: &str,
+    tenant_id: &TenantId,
+) {
+    publish(
+        events,
+        PresenceEvent::PublishExpired {
+            aor: aor.to_string(),
+            etag: etag.to_string(),
+            state: state.to_string(),
+            tenant_id: tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )
+    .await;
+}
+
 /// Publish a DialogChanged event (call started, answered, ended, etc.).
 pub async fn dialog_changed(
     events: &Option<Arc<dyn EventPublisher>>,

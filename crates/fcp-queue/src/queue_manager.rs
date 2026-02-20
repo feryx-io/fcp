@@ -906,7 +906,17 @@ impl QueueManager {
 
         // Filter out agents in DND/Busy via presence checker
         if let Some(ref checker) = *self.presence_checker.read() {
+            let before = available_agents.len();
             available_agents.retain(|agent| !checker.is_dnd(&agent.extension));
+            let filtered = before - available_agents.len();
+            if filtered > 0 {
+                debug!(
+                    queue = %queue_name,
+                    filtered_count = filtered,
+                    remaining = available_agents.len(),
+                    "Agents filtered by presence DND state"
+                );
+            }
         }
 
         // Sort by per-queue priority (lower = higher priority), then by ID for deterministic order

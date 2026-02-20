@@ -15,6 +15,7 @@ storage-mysql = ["dep:fcp-storage-mysql"]
 storage-mongodb = ["dep:fcp-storage-mongodb"]
 storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
 redis = ["fcp-presence/redis"]
+webhook = ["fcp-presence/webhook"]
 
 [[bin]]
 name = "fcp-presence"

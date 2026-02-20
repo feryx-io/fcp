@@ -84,6 +84,15 @@ pub struct PresenceConfig {
     /// PUBLISH rate limit per presentity AOR (requests per minute). Default: 60.
     #[serde(default = "default_publish_rate_limit_per_aor")]
     pub publish_rate_limit_per_aor: u32,
+
+    /// Percentage of PUBLISH lifetime elapsed before emitting an expiry warning event.
+    /// Default: 80 (warn when 80% of the publication's lifetime has elapsed).
+    #[serde(default = "default_publish_expiry_warn_threshold_pct")]
+    pub publish_expiry_warn_threshold_pct: u8,
+
+    /// Federation configuration for inter-domain presence.
+    #[serde(default)]
+    pub federation: crate::federation::FederationConfig,
 }
 
 fn default_subscription_expiry() -> u32 {
@@ -152,6 +161,10 @@ fn default_publish_rate_limit_per_ip() -> u32 {
 
 fn default_publish_rate_limit_per_aor() -> u32 {
     60
+}
+
+fn default_publish_expiry_warn_threshold_pct() -> u8 {
+    80
 }
 
 impl PresenceConfig {
@@ -260,6 +273,8 @@ impl Default for PresenceConfig {
             subscribe_rate_limit_per_aor: default_subscribe_rate_limit_per_aor(),
             publish_rate_limit_per_ip: default_publish_rate_limit_per_ip(),
             publish_rate_limit_per_aor: default_publish_rate_limit_per_aor(),
+            publish_expiry_warn_threshold_pct: default_publish_expiry_warn_threshold_pct(),
+            federation: crate::federation::FederationConfig::default(),
         }
     }
 }

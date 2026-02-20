@@ -1354,6 +1354,63 @@ pub trait ResourceListStore: Send + Sync {
     async fn delete_resource_list(&self, uri: &str) -> Result<()>;
 }
 
+/// A stored presence state change for analytics/history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredPresenceChange {
+    /// Unique ID for this change record.
+    pub id: String,
+    /// Address of Record (user@domain).
+    pub aor: String,
+    /// Previous presence state.
+    pub old_state: String,
+    /// New presence state.
+    pub new_state: String,
+    /// Tenant ID for multi-tenancy.
+    pub tenant_id: crate::TenantId,
+    /// Unix epoch seconds when this change occurred.
+    pub timestamp_epoch: u64,
+}
+
+/// Summary of presence activity for an AOR over a time range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceSummary {
+    /// Address of Record.
+    pub aor: String,
+    /// Total number of state changes in the period.
+    pub total_changes: u64,
+    /// Seconds spent in Open state.
+    pub time_in_open_secs: u64,
+    /// Seconds spent in Busy state.
+    pub time_in_busy_secs: u64,
+    /// Seconds spent in Away state.
+    pub time_in_away_secs: u64,
+    /// Seconds spent in Closed state.
+    pub time_in_closed_secs: u64,
+}
+
+/// Storage backend for presence history/analytics.
+#[async_trait]
+pub trait PresenceHistoryStore: Send + Sync {
+    /// Record a presence state change.
+    async fn record_change(&self, change: StoredPresenceChange) -> Result<()>;
+
+    /// Query history for a specific AOR within a time range.
+    async fn query_history(
+        &self,
+        aor: &str,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredPresenceChange>>;
+
+    /// Get a summary of presence activity across all AORs.
+    async fn query_summary(
+        &self,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+    ) -> Result<Vec<PresenceSummary>>;
+}
+
 /// Serde helper for Optional<SystemTime>
 mod optional_system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

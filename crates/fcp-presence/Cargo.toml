@@ -11,6 +11,7 @@ description = "SIP Presence service for user availability tracking"
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+async-trait = "0.1"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,10 +25,15 @@ redis = { version = "0.25", features = ["tokio-comp", "connection-manager"], opt
 futures = { version = "0.3", optional = true }
 tokio-stream = { version = "0.1", optional = true }
 async-stream = { version = "0.3", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
 
 [features]
 default = []
 redis = ["dep:redis", "dep:futures", "dep:tokio-stream", "dep:async-stream"]
+webhook = ["dep:reqwest", "dep:hmac", "dep:sha2", "dep:hex"]
 
 [dev-dependencies]
 futures = "0.3"

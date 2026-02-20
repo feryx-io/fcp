@@ -850,6 +850,26 @@ pub enum PresenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// A PUBLISH is nearing expiry (configurable threshold, default 80%).
+    PublishExpiryWarning {
+        aor: String,
+        etag: String,
+        elapsed_pct: u8,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A PUBLISH has expired and been removed.
+    PublishExpired {
+        aor: String,
+        etag: String,
+        state: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Voicemail-related events.
@@ -1192,7 +1212,9 @@ impl PresenceEvent {
             | PresenceEvent::WatcherAdded { timestamp, .. }
             | PresenceEvent::WatcherRemoved { timestamp, .. }
             | PresenceEvent::PublishReceived { timestamp, .. }
-            | PresenceEvent::DialogChanged { timestamp, .. } => *timestamp,
+            | PresenceEvent::DialogChanged { timestamp, .. }
+            | PresenceEvent::PublishExpiryWarning { timestamp, .. }
+            | PresenceEvent::PublishExpired { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -1198,10 +1198,7 @@ impl PresenceHandler for SipPresenceHandler {
         for info in self.presence.get_all_presences() {
             let user_part = info.aor.split('@').next().unwrap_or("");
             if user_part == extension {
-                return matches!(
-                    info.state,
-                    fcp_presence::PresenceState::Busy | fcp_presence::PresenceState::Closed
-                );
+                return info.state.is_dnd_state();
             }
         }
         false

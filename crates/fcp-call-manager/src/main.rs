@@ -381,7 +381,7 @@ async fn main() -> Result<()> {
 
         // Wire presence into queue distribution so DND/Busy agents are skipped
         if let Some(ref qm) = queue_manager {
-            let checker = Arc::new(PresenceBasedChecker { presence: pm.clone() });
+            let checker = Arc::new(fcp_sip::presence_checker::PresenceCheckerAdapter::new(pm.clone()));
             qm.set_presence_checker(checker);
             info!("Queue agent selection will respect presence DND state");
         }
@@ -683,6 +683,8 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        // Check for PUBLISH expiry warnings before cleanup
+                        pm_cleanup.check_publish_expiry_warnings().await;
                         // Clean up expired PUBLISH ESC entries (RFC 3903)
                         pm_cleanup.cleanup_expired_publishes().await;
                         // Clean up expired subscriptions from persistent store
@@ -1273,29 +1275,6 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 }
             }
         }
-    }
-}
-
-/// Adapter that lets the queue manager check presence DND state.
-struct PresenceBasedChecker {
-    presence: fcp_presence::PresenceManager,
-}
-
-impl fcp_queue::PresenceChecker for PresenceBasedChecker {
-    fn is_dnd(&self, agent_extension: &str) -> bool {
-        // Check if any presentity with a matching extension is in DND/Busy state.
-        // Agent extensions are typically just the user part; we check all presentities
-        // whose AOR starts with the extension followed by '@'.
-        for info in self.presence.get_all_presences() {
-            let user_part = info.aor.split('@').next().unwrap_or("");
-            if user_part == agent_extension {
-                return matches!(
-                    info.state,
-                    fcp_presence::PresenceState::Busy | fcp_presence::PresenceState::Closed
-                );
-            }
-        }
-        false
     }
 }
 

@@ -29,6 +29,9 @@ pub struct PresenceServerConfig {
 
     #[serde(default)]
     pub xcap: Option<XcapSection>,
+
+    #[serde(default)]
+    pub webhooks: Option<WebhookSection>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -187,6 +190,49 @@ impl Default for XcapSection {
         Self {
             enabled: default_xcap_enabled(),
             root_path: default_xcap_root(),
+        }
+    }
+}
+
+/// Webhook delivery configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebhookSection {
+    /// Whether webhook delivery is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Maximum number of delivery retries. Default: 3.
+    #[serde(default = "default_webhook_max_retries")]
+    pub max_retries: u32,
+
+    /// Base delay in ms for exponential backoff. Default: 1000.
+    #[serde(default = "default_webhook_base_delay_ms")]
+    pub base_delay_ms: u64,
+
+    /// Maximum delay in ms for exponential backoff. Default: 30000.
+    #[serde(default = "default_webhook_max_delay_ms")]
+    pub max_delay_ms: u64,
+}
+
+fn default_webhook_max_retries() -> u32 {
+    3
+}
+
+fn default_webhook_base_delay_ms() -> u64 {
+    1000
+}
+
+fn default_webhook_max_delay_ms() -> u64 {
+    30000
+}
+
+impl Default for WebhookSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_retries: default_webhook_max_retries(),
+            base_delay_ms: default_webhook_base_delay_ms(),
+            max_delay_ms: default_webhook_max_delay_ms(),
         }
     }
 }

@@ -62,10 +62,13 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
+    // Create event bus for presence events + analytics
+    let event_bus = Arc::new(fcp_events::InMemoryEventBus::new());
+
     // Create PresenceManager
     let mut manager = fcp_presence::PresenceManager::new(
         presence_config,
-        None, // no event publisher
+        Some(event_bus.clone() as Arc<dyn fcp_events::EventPublisher>),
         Some(Arc::clone(dyn_storage.presence_store())),
     );
 
@@ -78,6 +81,42 @@ async fn main() -> Result<()> {
         setup_redis(&mut manager, redis_config, &config.service.node_id).await?;
     }
 
+    // Start presence analytics consumer
+    let history_store: Arc<dyn fcp_core::storage::PresenceHistoryStore> =
+        Arc::new(fcp_presence::analytics::InMemoryPresenceHistory::new(100_000));
+    let _analytics_handle = fcp_presence::analytics::spawn_analytics_consumer(
+        event_bus.clone() as Arc<dyn fcp_events::EventSubscriber>,
+        Arc::clone(&history_store),
+    );
+
+    // Start webhook dispatcher (if configured and webhook feature enabled)
+    #[cfg(feature = "webhook")]
+    let webhook_dispatcher = {
+        let dispatcher = if config
+            .webhooks
+            .as_ref()
+            .map_or(false, |w| w.enabled)
+        {
+            let wh = config.webhooks.as_ref().unwrap();
+            let d = Arc::new(fcp_presence::webhook::WebhookDispatcher::new(
+                wh.max_retries,
+                wh.base_delay_ms,
+                wh.max_delay_ms,
+            ));
+            let _handle = fcp_presence::webhook::spawn_webhook_consumer(
+                event_bus.clone() as Arc<dyn fcp_events::EventSubscriber>,
+                Arc::clone(&d),
+            );
+            info!("Webhook dispatcher started");
+            Some(d)
+        } else {
+            None
+        };
+        dispatcher
+    };
+    #[cfg(not(feature = "webhook"))]
+    let _webhook_dispatcher: Option<()> = None;
+
     // Start background expiry cleanup
     let cleanup_manager = manager.clone();
     let cleanup_interval = config.presence.cleanup_interval_secs;
@@ -89,6 +128,8 @@ async fn main() -> Result<()> {
                 _ = interval.tick() => {
                     cleanup_manager.cleanup_expired_subscriptions_from_store().await;
                     cleanup_manager.cleanup_expired_watchers();
+                    cleanup_manager.check_publish_expiry_warnings().await;
+                    cleanup_manager.cleanup_expired_publishes().await;
                 }
                 _ = shutdown_rx.changed() => {
                     break;
@@ -104,6 +145,9 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         resource_list_store: Arc::clone(dyn_storage.resource_list_store()),
         default_tenant_id: fcp_core::TenantId::default(),
+        history_store: Some(Arc::clone(&history_store)),
+        #[cfg(feature = "webhook")]
+        webhook_dispatcher,
     });
 
     // Determine XCAP root path from config

@@ -112,6 +112,8 @@ pub struct EventStateComposition {
     pub tenant_id: TenantId,
     /// When this publication expires.
     pub expires_at: Instant,
+    /// When this publication was created or last modified.
+    pub created_at: Instant,
 }
 
 /// A pending NOTIFY delivery that needs to be retried.
@@ -308,6 +310,15 @@ impl PresenceState {
             PresenceState::Away => 1,
             PresenceState::Closed => 0,
         }
+    }
+
+    /// Whether this state represents an explicit DND (Do Not Disturb) condition.
+    ///
+    /// Only `Busy` returns true. `Closed` (offline) is NOT DND — offline agents
+    /// should fail the ring attempt naturally, not be silently skipped by queue
+    /// distribution.
+    pub fn is_dnd_state(&self) -> bool {
+        matches!(self, PresenceState::Busy)
     }
 
     /// Map to RPID activity element name (RFC 4480).

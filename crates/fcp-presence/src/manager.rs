@@ -54,6 +54,8 @@ pub struct PresenceManager {
     winfo_versions: Arc<DashMap<String, u32>>,
     /// NOTIFY delivery retry queue (keyed by "subscription_id:aor")
     notify_retry_queue: Arc<DashMap<String, NotifyRetryEntry>>,
+    /// ETags for which we've already emitted a PublishExpiryWarning (avoid duplicates)
+    warned_etags: Arc<dashmap::DashSet<String>>,
     /// Shutdown signal sender
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
     /// Shutdown signal receiver (clone for background tasks)
@@ -65,6 +67,8 @@ pub struct PresenceManager {
     resource_list_store: Option<Arc<dyn fcp_core::storage::ResourceListStore>>,
     /// RLS subscriptions: list_uri → Vec<RlsSubscription>
     rls_subscriptions: Arc<DashMap<String, Vec<crate::rls::RlsSubscription>>>,
+    /// Optional federation manager for inter-domain presence
+    federation: Option<Arc<crate::federation::FederationManager>>,
 }
 
 impl PresenceManager {
@@ -89,6 +93,13 @@ impl PresenceManager {
             warn!(warning = %w, "Presence config validation");
         }
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let federation = if config.federation.enabled {
+            Some(Arc::new(crate::federation::FederationManager::new(
+                config.federation.clone(),
+            )))
+        } else {
+            None
+        };
         Self {
             presentities: Arc::new(DashMap::new()),
             watchers: Arc::new(DashMap::new()),
@@ -103,12 +114,14 @@ impl PresenceManager {
             winfo_watchers: Arc::new(DashMap::new()),
             winfo_versions: Arc::new(DashMap::new()),
             notify_retry_queue: Arc::new(DashMap::new()),
+            warned_etags: Arc::new(dashmap::DashSet::new()),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
             #[cfg(feature = "redis")]
             pubsub: None,
             resource_list_store: None,
             rls_subscriptions: Arc::new(DashMap::new()),
+            federation,
         }
     }
 
@@ -260,7 +273,30 @@ impl PresenceManager {
 
     /// Get current presence info for an AOR.
     pub fn get_presence(&self, aor: &str) -> Option<PresenceInfo> {
-        self.presentities.get(aor).map(|p| p.clone())
+        // Check local presentities first
+        if let Some(p) = self.presentities.get(aor) {
+            return Some(p.clone());
+        }
+
+        // Fall back to federation cache
+        if let Some(ref fm) = self.federation {
+            if let Some(state) = fm.get_federated_presence(aor) {
+                return Some(PresenceInfo {
+                    aor: aor.to_string(),
+                    state,
+                    note: None,
+                    tenant_id: TenantId::default(),
+                    updated_at: Instant::now(),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Get the federation manager (if enabled).
+    pub fn federation(&self) -> Option<&Arc<crate::federation::FederationManager>> {
+        self.federation.as_ref()
     }
 
     /// Get all tracked presentities.
@@ -656,13 +692,15 @@ impl PresenceManager {
         expires_secs: u32,
     ) -> String {
         let etag = uuid::Uuid::new_v4().simple().to_string();
+        let now = Instant::now();
         let esc = EventStateComposition {
             etag: etag.clone(),
             aor: aor.to_string(),
             state,
             note,
             tenant_id: tenant_id.clone(),
-            expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
+            expires_at: now + Duration::from_secs(expires_secs as u64),
+            created_at: now,
         };
         self.publish_etags.insert(etag.clone(), esc);
         self.metrics.inc_counter("fcp_presence_publishes_total", &[("tenant_id", &tenant_id.to_string())]);
@@ -681,14 +719,18 @@ impl PresenceManager {
             .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
 
         let new_etag = uuid::Uuid::new_v4().simple().to_string();
+        let now = Instant::now();
         let esc = EventStateComposition {
             etag: new_etag.clone(),
             aor: old.aor,
             state: old.state,
             note: old.note,
             tenant_id: old.tenant_id,
-            expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
+            expires_at: now + Duration::from_secs(expires_secs as u64),
+            created_at: now,
         };
+        // Clear any previous warning for the old etag
+        self.warned_etags.remove(etag);
         self.publish_etags.insert(new_etag.clone(), esc);
         Ok(new_etag)
     }
@@ -715,14 +757,18 @@ impl PresenceManager {
         let tenant_id = old.tenant_id.clone();
 
         let new_etag = uuid::Uuid::new_v4().simple().to_string();
+        let now = Instant::now();
         let esc = EventStateComposition {
             etag: new_etag.clone(),
             aor: old.aor,
             state,
             note,
             tenant_id: old.tenant_id,
-            expires_at: Instant::now() + Duration::from_secs(expires_secs as u64),
+            expires_at: now + Duration::from_secs(expires_secs as u64),
+            created_at: now,
         };
+        // Clear any previous warning for the old etag
+        self.warned_etags.remove(etag);
         self.publish_etags.insert(new_etag.clone(), esc);
         self.recompose_and_update(&aor, &tenant_id).await;
         Ok(new_etag)
@@ -788,21 +834,77 @@ impl PresenceManager {
         }
     }
 
+    /// Check active PUBLISHes for upcoming expiry and emit warning events.
+    ///
+    /// Scans all publish_etags. If `elapsed_pct >= threshold` and not already
+    /// warned, emits a `PublishExpiryWarning` event and records the etag in
+    /// `warned_etags`.
+    pub async fn check_publish_expiry_warnings(&self) {
+        let now = Instant::now();
+        let threshold = self.config.read().publish_expiry_warn_threshold_pct;
+
+        for entry in self.publish_etags.iter() {
+            let esc = entry.value();
+            let total = esc.expires_at.saturating_duration_since(esc.created_at);
+            if total.is_zero() {
+                continue;
+            }
+            let elapsed = now.saturating_duration_since(esc.created_at);
+            let pct = ((elapsed.as_millis() as f64 / total.as_millis() as f64) * 100.0) as u8;
+
+            if pct >= threshold && !self.warned_etags.contains(&esc.etag) {
+                self.warned_etags.insert(esc.etag.clone());
+                events::publish_expiry_warning(
+                    &self.events,
+                    &esc.aor,
+                    &esc.etag,
+                    pct,
+                    &esc.tenant_id,
+                )
+                .await;
+                self.metrics.inc_counter("fcp_presence_publish_expiry_warnings_total", &[]);
+                debug!(
+                    aor = %esc.aor,
+                    etag = %esc.etag,
+                    elapsed_pct = pct,
+                    "PUBLISH expiry warning"
+                );
+            }
+        }
+    }
+
     /// Clean up expired PUBLISH ESC entries. If the last ESC for an AOR is removed,
     /// the presentity reverts to Closed (or the highest-priority remaining state
     /// if composition is enabled).
+    ///
+    /// Emits `PublishExpired` events for each expired publication.
     pub async fn cleanup_expired_publishes(&self) {
         let now = Instant::now();
         let mut expired_aors: Vec<(String, TenantId)> = Vec::new();
+        let mut expired_entries: Vec<(String, String, String, TenantId)> = Vec::new();
 
         self.publish_etags.retain(|_, esc| {
             if esc.expires_at <= now {
                 expired_aors.push((esc.aor.clone(), esc.tenant_id.clone()));
+                expired_entries.push((
+                    esc.aor.clone(),
+                    esc.etag.clone(),
+                    esc.state.to_string(),
+                    esc.tenant_id.clone(),
+                ));
+                // Clean up warned_etags for this expired entry
+                self.warned_etags.remove(&esc.etag);
                 false
             } else {
                 true
             }
         });
+
+        // Emit PublishExpired events
+        for (aor, etag, state, tenant_id) in &expired_entries {
+            events::publish_expired(&self.events, aor, etag, state, tenant_id).await;
+            self.metrics.inc_counter("fcp_presence_publish_expired_total", &[]);
+        }
 
         // Deduplicate AORs (multiple ESCs may have expired for the same AOR)
         expired_aors.sort_by(|a, b| a.0.cmp(&b.0));

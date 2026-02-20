@@ -22,6 +22,9 @@ pub struct AppState {
     pub start_time: Instant,
     pub resource_list_store: Arc<dyn fcp_core::storage::ResourceListStore>,
     pub default_tenant_id: fcp_core::TenantId,
+    pub history_store: Option<Arc<dyn fcp_core::storage::PresenceHistoryStore>>,
+    #[cfg(feature = "webhook")]
+    pub webhook_dispatcher: Option<Arc<fcp_presence::webhook::WebhookDispatcher>>,
 }
 
 /// Build the HTTP router.
@@ -38,7 +41,22 @@ pub fn router(state: Arc<AppState>, xcap_root: Option<&str>) -> Router {
         .route(
             "/v1/presence/{aor}/watchers/{subscription_id}",
             delete(remove_watcher),
-        );
+        )
+        .route(
+            "/v1/analytics/presence/{aor}/history",
+            get(get_presence_history),
+        )
+        .route("/v1/analytics/presence/summary", get(get_presence_summary));
+
+    #[cfg(feature = "webhook")]
+    {
+        app = app
+            .route("/v1/webhooks", axum::routing::post(create_webhook))
+            .route("/v1/webhooks", get(list_webhooks))
+            .route("/v1/webhooks/{id}", delete(delete_webhook));
+    }
+
+    let _ = &app; // suppress unused warning when webhook feature is off
 
     if let Some(root) = xcap_root {
         app = app.nest(root, crate::xcap_server::xcap_router());
@@ -232,5 +250,192 @@ async fn remove_watcher(
             Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+// ============================================================================
+// Analytics
+// ============================================================================
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    from: Option<u64>,
+    to: Option<u64>,
+    #[serde(default = "default_history_limit")]
+    limit: usize,
+}
+
+fn default_history_limit() -> usize {
+    100
+}
+
+#[derive(Deserialize)]
+struct SummaryQuery {
+    from: Option<u64>,
+    to: Option<u64>,
+}
+
+async fn get_presence_history(
+    State(state): State<Arc<AppState>>,
+    Path(aor): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
+) -> impl IntoResponse {
+    let Some(ref store) = state.history_store else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Analytics not enabled"})),
+        )
+            .into_response();
+    };
+
+    match store
+        .query_history(&aor, query.from, query.to, query.limit)
+        .await
+    {
+        Ok(history) => {
+            let items: Vec<serde_json::Value> = history
+                .iter()
+                .map(|h| {
+                    serde_json::json!({
+                        "id": h.id,
+                        "aor": h.aor,
+                        "old_state": h.old_state,
+                        "new_state": h.new_state,
+                        "timestamp": h.timestamp_epoch,
+                    })
+                })
+                .collect();
+
+            Json(serde_json::json!({
+                "aor": aor,
+                "count": items.len(),
+                "history": items,
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_presence_summary(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
+) -> impl IntoResponse {
+    let Some(ref store) = state.history_store else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Analytics not enabled"})),
+        )
+            .into_response();
+    };
+
+    match store.query_summary(query.from, query.to).await {
+        Ok(summaries) => {
+            let items: Vec<serde_json::Value> = summaries
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "aor": s.aor,
+                        "total_changes": s.total_changes,
+                        "time_in_open_secs": s.time_in_open_secs,
+                        "time_in_busy_secs": s.time_in_busy_secs,
+                        "time_in_away_secs": s.time_in_away_secs,
+                        "time_in_closed_secs": s.time_in_closed_secs,
+                    })
+                })
+                .collect();
+
+            Json(serde_json::json!({
+                "count": items.len(),
+                "summaries": items,
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+// ============================================================================
+// Webhooks (feature-gated)
+// ============================================================================
+
+#[cfg(feature = "webhook")]
+async fn create_webhook(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<fcp_presence::webhook::WebhookEndpoint>,
+) -> impl IntoResponse {
+    let Some(ref dispatcher) = state.webhook_dispatcher else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Webhooks not enabled"})),
+        )
+            .into_response();
+    };
+
+    let id = body.id.clone();
+    dispatcher.add_endpoint(body).await;
+
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({"id": id, "status": "created"})),
+    )
+        .into_response()
+}
+
+#[cfg(feature = "webhook")]
+async fn list_webhooks(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(ref dispatcher) = state.webhook_dispatcher else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Webhooks not enabled"})),
+        )
+            .into_response();
+    };
+
+    let endpoints = dispatcher.list_endpoints().await;
+    let items: Vec<serde_json::Value> = endpoints
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "url": e.url,
+                "events": e.events,
+                "enabled": e.enabled,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "count": items.len(),
+        "webhooks": items,
+    }))
+    .into_response()
+}
+
+#[cfg(feature = "webhook")]
+async fn delete_webhook(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let Some(ref dispatcher) = state.webhook_dispatcher else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Webhooks not enabled"})),
+        )
+            .into_response();
+    };
+
+    if dispatcher.remove_endpoint(&id).await {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
     }
 }
