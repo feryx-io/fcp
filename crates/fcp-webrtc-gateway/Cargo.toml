@@ -1,0 +1,61 @@
+[package]
+name = "fcp-webrtc-gateway"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "WebRTC-to-SIP gateway for the Ferrous Communications Platform"
+
+[[bin]]
+name = "fcp-webrtc-gw"
+path = "src/main.rs"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-sip = { path = "../fcp-sip" }
+fcp-media = { path = "../fcp-media" }
+
+# Forge media crates
+forge-api = { path = "../../external/forge-media/crates/forge-api" }
+forge-core = { path = "../../external/forge-media/crates/forge-core" }
+forge-webrtc = { path = "../../external/forge-media/crates/forge-webrtc" }
+forge-engine = { path = "../../external/forge-media/crates/forge-engine" }
+forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
+forge-conference = { path = "../../external/forge-media/crates/forge-conference" }
+
+# SIP stack from siphon-rs
+sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
+sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-dialog = { path = "../../external/siphon-rs/crates/sip-dialog" }
+sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
+sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
+
+# HTTP API
+axum = { version = "0.7", features = ["ws"] }
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+
+# Async runtime
+tokio = { workspace = true, features = ["full", "signal"] }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+dashmap = "6"
+socket2 = "0.5"
+uuid = { workspace = true }
