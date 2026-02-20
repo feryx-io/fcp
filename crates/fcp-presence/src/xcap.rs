@@ -14,6 +14,198 @@ use crate::types::{PresenceAuthPolicy, TimeWindow};
 
 const CR_NS: &str = "urn:ietf:params:xml:ns:common-policy";
 const PR_NS: &str = "urn:ietf:params:xml:ns:pres-rules";
+const RL_NS: &str = "urn:ietf:params:xml:ns:resource-lists";
+
+// ============================================================================
+// Resource Lists (RFC 4826)
+// ============================================================================
+
+/// A single resource list with optional name and entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceListXml {
+    pub name: Option<String>,
+    pub entries: Vec<ResourceListEntryXml>,
+}
+
+/// An entry within a resource list.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ResourceListEntryXml {
+    pub uri: String,
+    pub display_name: Option<String>,
+}
+
+/// Generate RFC 4826 resource-lists XML from a slice of lists.
+pub fn generate_resource_lists_xml(lists: &[ResourceListXml]) -> String {
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+
+    writer
+        .write_event(Event::Decl(quick_xml::events::BytesDecl::new(
+            "1.0",
+            Some("UTF-8"),
+            None,
+        )))
+        .expect("write xml decl");
+
+    let mut root = BytesStart::new("resource-lists");
+    root.push_attribute(("xmlns", RL_NS));
+    writer
+        .write_event(Event::Start(root))
+        .expect("write resource-lists start");
+
+    for list in lists {
+        let mut list_elem = BytesStart::new("list");
+        if let Some(ref name) = list.name {
+            list_elem.push_attribute(("name", name.as_str()));
+        }
+        writer
+            .write_event(Event::Start(list_elem))
+            .expect("write list start");
+
+        for entry in &list.entries {
+            let mut entry_elem = BytesStart::new("entry");
+            entry_elem.push_attribute(("uri", entry.uri.as_str()));
+
+            if let Some(ref dn) = entry.display_name {
+                writer
+                    .write_event(Event::Start(entry_elem))
+                    .expect("write entry start");
+                writer
+                    .write_event(Event::Start(BytesStart::new("display-name")))
+                    .expect("write display-name start");
+                writer
+                    .write_event(Event::Text(BytesText::new(dn)))
+                    .expect("write display-name text");
+                writer
+                    .write_event(Event::End(BytesEnd::new("display-name")))
+                    .expect("write display-name end");
+                writer
+                    .write_event(Event::End(BytesEnd::new("entry")))
+                    .expect("write entry end");
+            } else {
+                writer
+                    .write_event(Event::Empty(entry_elem))
+                    .expect("write entry empty");
+            }
+        }
+
+        writer
+            .write_event(Event::End(BytesEnd::new("list")))
+            .expect("write list end");
+    }
+
+    writer
+        .write_event(Event::End(BytesEnd::new("resource-lists")))
+        .expect("write resource-lists end");
+
+    let result = writer.into_inner().into_inner();
+    String::from_utf8(result).expect("valid utf-8")
+}
+
+/// Parse RFC 4826 resource-lists XML into a vector of lists.
+pub fn parse_resource_lists_xml(xml: &str) -> Result<Vec<ResourceListXml>> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+
+    let mut lists = Vec::new();
+    let mut current_list: Option<ResourceListXml> = None;
+    let mut current_entry_uri: Option<String> = None;
+    let mut in_display_name = false;
+    let mut current_display_name: Option<String> = None;
+
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let ln = e.local_name();
+                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                match local_name {
+                    "list" => {
+                        let mut name = None;
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"name" {
+                                name = Some(
+                                    std::str::from_utf8(&attr.value).unwrap_or("").to_string(),
+                                );
+                            }
+                        }
+                        current_list = Some(ResourceListXml {
+                            name,
+                            entries: Vec::new(),
+                        });
+                    }
+                    "entry" => {
+                        let mut uri = String::new();
+                        for attr in e.attributes().flatten() {
+                            if attr.key.local_name().as_ref() == b"uri" {
+                                uri = std::str::from_utf8(&attr.value).unwrap_or("").to_string();
+                            }
+                        }
+                        current_entry_uri = Some(uri);
+                        current_display_name = None;
+                    }
+                    "display-name" => {
+                        in_display_name = true;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                let ln = e.local_name();
+                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                if local_name == "entry" {
+                    let mut uri = String::new();
+                    for attr in e.attributes().flatten() {
+                        if attr.key.local_name().as_ref() == b"uri" {
+                            uri = std::str::from_utf8(&attr.value).unwrap_or("").to_string();
+                        }
+                    }
+                    if let Some(ref mut list) = current_list {
+                        list.entries.push(ResourceListEntryXml {
+                            uri,
+                            display_name: None,
+                        });
+                    }
+                }
+            }
+            Ok(Event::Text(ref e)) => {
+                if in_display_name {
+                    current_display_name = Some(e.unescape().unwrap_or_default().to_string());
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let ln = e.local_name();
+                let local_name = std::str::from_utf8(ln.as_ref()).unwrap_or("");
+                match local_name {
+                    "list" => {
+                        if let Some(list) = current_list.take() {
+                            lists.push(list);
+                        }
+                    }
+                    "entry" => {
+                        if let (Some(ref mut list), Some(uri)) =
+                            (&mut current_list, current_entry_uri.take())
+                        {
+                            list.entries.push(ResourceListEntryXml {
+                                uri,
+                                display_name: current_display_name.take(),
+                            });
+                        }
+                    }
+                    "display-name" => {
+                        in_display_name = false;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => bail!("Error parsing resource-lists XML: {e}"),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(lists)
+}
 
 /// Generate pres-rules XML (RFC 5025) from a `PresenceAuthPolicy`.
 pub fn generate_pres_rules(policy: &PresenceAuthPolicy) -> String {
@@ -592,6 +784,95 @@ mod tests {
     #[test]
     fn test_parse_invalid_xml() {
         let result = parse_pres_rules("not xml at all <<<");
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Resource Lists XML tests
+    // ========================================================================
+
+    #[test]
+    fn test_generate_resource_lists_xml() {
+        let lists = vec![ResourceListXml {
+            name: Some("My Contacts".to_string()),
+            entries: vec![
+                ResourceListEntryXml {
+                    uri: "sip:alice@example.com".to_string(),
+                    display_name: Some("Alice".to_string()),
+                },
+                ResourceListEntryXml {
+                    uri: "sip:bob@example.com".to_string(),
+                    display_name: None,
+                },
+            ],
+        }];
+        let xml = generate_resource_lists_xml(&lists);
+        assert!(xml.contains("urn:ietf:params:xml:ns:resource-lists"));
+        assert!(xml.contains("My Contacts"));
+        assert!(xml.contains("sip:alice@example.com"));
+        assert!(xml.contains("<display-name>Alice</display-name>"));
+        assert!(xml.contains("sip:bob@example.com"));
+    }
+
+    #[test]
+    fn test_roundtrip_resource_lists() {
+        let lists = vec![
+            ResourceListXml {
+                name: Some("Team".to_string()),
+                entries: vec![
+                    ResourceListEntryXml {
+                        uri: "sip:alice@example.com".to_string(),
+                        display_name: Some("Alice Smith".to_string()),
+                    },
+                    ResourceListEntryXml {
+                        uri: "sip:bob@example.com".to_string(),
+                        display_name: Some("Bob Jones".to_string()),
+                    },
+                ],
+            },
+            ResourceListXml {
+                name: None,
+                entries: vec![ResourceListEntryXml {
+                    uri: "sip:carol@example.com".to_string(),
+                    display_name: None,
+                }],
+            },
+        ];
+
+        let xml = generate_resource_lists_xml(&lists);
+        let parsed = parse_resource_lists_xml(&xml).unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, Some("Team".to_string()));
+        assert_eq!(parsed[0].entries.len(), 2);
+        assert_eq!(parsed[0].entries[0].uri, "sip:alice@example.com");
+        assert_eq!(
+            parsed[0].entries[0].display_name,
+            Some("Alice Smith".to_string())
+        );
+        assert_eq!(parsed[0].entries[1].uri, "sip:bob@example.com");
+        assert_eq!(
+            parsed[0].entries[1].display_name,
+            Some("Bob Jones".to_string())
+        );
+        assert_eq!(parsed[1].name, None);
+        assert_eq!(parsed[1].entries.len(), 1);
+        assert_eq!(parsed[1].entries[0].uri, "sip:carol@example.com");
+        assert_eq!(parsed[1].entries[0].display_name, None);
+    }
+
+    #[test]
+    fn test_parse_empty_resource_lists() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<resource-lists xmlns="urn:ietf:params:xml:ns:resource-lists">
+</resource-lists>"#;
+        let parsed = parse_resource_lists_xml(xml).unwrap();
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_resource_lists_invalid_xml() {
+        let result = parse_resource_lists_xml("not valid xml <<<");
         assert!(result.is_err());
     }
 }

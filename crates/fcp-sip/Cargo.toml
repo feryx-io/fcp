@@ -35,6 +35,7 @@ sip-registrar = { path = "../../external/siphon-rs/crates/sip-registrar" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-uas = { path = "../../external/siphon-rs/crates/sip-uas" }
+sip-ratelimit = { path = "../../external/siphon-rs/crates/sip-ratelimit" }
 
 # Common dependencies
 anyhow = { workspace = true }

@@ -12,6 +12,7 @@ use tracing::info;
 
 mod config;
 mod http_api;
+mod xcap_server;
 
 use config::PresenceServerConfig;
 
@@ -99,10 +100,22 @@ async fn main() -> Result<()> {
     // Start HTTP API
     let app_state = Arc::new(http_api::AppState {
         manager: manager.clone(),
+        sip_handler: None, // SIP transport setup is a follow-up task
         start_time: Instant::now(),
+        resource_list_store: Arc::clone(dyn_storage.resource_list_store()),
+        default_tenant_id: fcp_core::TenantId::default(),
     });
+
+    // Determine XCAP root path from config
+    let xcap_root = config
+        .xcap
+        .as_ref()
+        .filter(|x| x.enabled)
+        .map(|x| x.root_path.clone())
+        .unwrap_or_else(|| "/xcap-root".to_string());
+
     let http_bind = config.http.bind_address;
-    let router = http_api::router(app_state);
+    let router = http_api::router(app_state, Some(&xcap_root));
 
     let http_handle = tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(http_bind)

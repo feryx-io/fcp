@@ -29,13 +29,13 @@ use tracing::{info, warn};
 mod cli;
 mod config;
 mod health;
-mod presence_handler;
 mod queue_audio;
 mod queue_handler;
 mod storage;
 
 use cli::Cli;
 use config::CallManagerConfig;
+use fcp_sip::presence::{extract_aor, SipPresenceHandler};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -392,10 +392,10 @@ async fn main() -> Result<()> {
     };
 
     // 17c. Create SIP presence handler (if enabled)
-    let concrete_presence_handler: Option<Arc<presence_handler::SipPresenceHandler>> =
+    let concrete_presence_handler: Option<Arc<SipPresenceHandler>> =
         if let Some(ref pm) = presence_manager {
             let pres_tenant = fcp_core::TenantId::nil();
-            let handler = presence_handler::SipPresenceHandler::new(
+            let handler = SipPresenceHandler::new(
                 pm.clone(),
                 Arc::clone(&uac),
                 pres_tenant,
@@ -1297,47 +1297,6 @@ impl fcp_queue::PresenceChecker for PresenceBasedChecker {
         }
         false
     }
-}
-
-/// Extract AOR (user@domain) from a SIP URI string.
-///
-/// Handles formats: "sip:alice@example.com", "sip:alice@example.com:5060",
-/// "alice@example.com", "<sip:alice@example.com>", "\"Alice\" <sip:alice@example.com>".
-fn extract_aor(uri: &str) -> Option<String> {
-    // Strip display name and angle brackets: "Alice" <sip:alice@example.com> → sip:alice@example.com
-    let uri = if let Some(start) = uri.find('<') {
-        let end = uri.find('>').unwrap_or(uri.len());
-        &uri[start + 1..end]
-    } else {
-        uri
-    };
-
-    // Strip sip:/sips: scheme
-    let uri = uri
-        .strip_prefix("sip:")
-        .or_else(|| uri.strip_prefix("sips:"))
-        .unwrap_or(uri);
-
-    // Must contain @ to be a valid AOR
-    if !uri.contains('@') {
-        return None;
-    }
-
-    // Take user@host, strip port/parameters
-    let aor = uri
-        .split(';')
-        .next()
-        .unwrap_or(uri);
-
-    // Remove port from host: user@host:5060 → user@host
-    if let Some((user_host, _port)) = aor.rsplit_once(':') {
-        // Verify this looks like user@host (the ':' was a port separator)
-        if user_host.contains('@') {
-            return Some(user_host.to_string());
-        }
-    }
-
-    Some(aor.to_string())
 }
 
 /// Resolve a conference participant_id to an AOR.

@@ -26,6 +26,9 @@ pub struct PresenceServerConfig {
 
     #[serde(default)]
     pub redis: Option<RedisSection>,
+
+    #[serde(default)]
+    pub xcap: Option<XcapSection>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -160,6 +163,32 @@ impl Default for LoggingSection {
 pub struct RedisSection {
     pub url: String,
     pub node_id: Option<String>,
+}
+
+/// XCAP server configuration (RFC 4825).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct XcapSection {
+    #[serde(default = "default_xcap_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_xcap_root")]
+    pub root_path: String,
+}
+
+fn default_xcap_enabled() -> bool {
+    true
+}
+
+fn default_xcap_root() -> String {
+    "/xcap-root".to_string()
+}
+
+impl Default for XcapSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_xcap_enabled(),
+            root_path: default_xcap_root(),
+        }
+    }
 }
 
 /// Load configuration from file or use defaults.

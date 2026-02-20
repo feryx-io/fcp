@@ -8,27 +8,43 @@ use axum::{
     Json, Router,
 };
 use fcp_presence::PresenceManager;
+use fcp_sip::presence::SipPresenceHandler;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::warn;
 
 /// Shared application state for HTTP handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub manager: PresenceManager,
+    pub sip_handler: Option<Arc<SipPresenceHandler>>,
     pub start_time: Instant,
+    pub resource_list_store: Arc<dyn fcp_core::storage::ResourceListStore>,
+    pub default_tenant_id: fcp_core::TenantId,
 }
 
 /// Build the HTTP router.
-pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+///
+/// If `xcap_root` is provided, the XCAP server routes are nested under that path.
+pub fn router(state: Arc<AppState>, xcap_root: Option<&str>) -> Router {
+    let mut app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/metrics", get(metrics))
         .route("/v1/presence/{aor}", get(get_presence))
         .route("/v1/presence/{aor}", put(update_presence))
         .route("/v1/presence/{aor}", delete(remove_presence))
         .route("/v1/presence/{aor}/watchers", get(get_watchers))
-        .with_state(state)
+        .route(
+            "/v1/presence/{aor}/watchers/{subscription_id}",
+            delete(remove_watcher),
+        );
+
+    if let Some(root) = xcap_root {
+        app = app.nest(root, crate::xcap_server::xcap_router());
+    }
+
+    app.with_state(state)
 }
 
 // ============================================================================
@@ -142,12 +158,27 @@ async fn update_presence(
     }
 }
 
+/// DELETE /v1/presence/{aor}
+///
+/// If a SIP handler is available, sends `terminated;reason=noresource` NOTIFYs
+/// to all watchers before removing the presentity. Otherwise falls back to a
+/// simple remove without NOTIFY.
 async fn remove_presence(
     State(state): State<Arc<AppState>>,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
     let tenant_id = fcp_core::TenantId::default();
-    state.manager.remove_presence(&aor, &tenant_id).await;
+
+    if let Some(ref sip) = state.sip_handler {
+        if let Err(e) = sip.terminate_watchers_noresource(&aor, &tenant_id).await {
+            warn!(aor = %aor, error = %e, "Failed to send noresource NOTIFYs");
+            // Fall back to plain remove
+            state.manager.remove_presence(&aor, &tenant_id).await;
+        }
+    } else {
+        state.manager.remove_presence(&aor, &tenant_id).await;
+    }
+
     StatusCode::NO_CONTENT
 }
 
@@ -175,4 +206,31 @@ async fn get_watchers(
         "aor": aor,
         "watchers": watcher_list,
     }))
+}
+
+/// DELETE /v1/presence/{aor}/watchers/{subscription_id}
+///
+/// Force-terminates a specific watcher subscription. Sends a NOTIFY with
+/// `Subscription-State: terminated;reason=forced` if a SIP handler is available.
+/// Returns 503 if no SIP handler is configured.
+async fn remove_watcher(
+    State(state): State<Arc<AppState>>,
+    Path((aor, subscription_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let Some(ref sip) = state.sip_handler else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "SIP handler not configured"})),
+        )
+            .into_response();
+    };
+
+    match sip.terminate_watcher_forced(&aor, &subscription_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
