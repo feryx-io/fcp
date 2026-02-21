@@ -135,6 +135,14 @@ fcp/
 │   │   │   └── service.rs        # Service wrappers (TransactionService, DialogService, etc.)
 │   │   └── Cargo.toml
 │   │
+│   ├── fcp-webhooks/             # General-purpose webhook dispatcher
+│   │   ├── src/
+│   │   │   ├── lib.rs            # Module exports
+│   │   │   ├── dispatcher.rs     # WebhookDispatcher — delivery, retry, event matching
+│   │   │   ├── consumer.rs       # Event bus subscriber that feeds dispatcher
+│   │   │   └── payload.rs        # WebhookPayload struct and HMAC-SHA256 signing
+│   │   └── Cargo.toml
+│   │
 │   └── siphon-rs/                # SIP stack (git submodule)
 │       │                         # Repository: https://github.com/thevoiceguy/siphon-rs
 │       ├── CLAUDE.md             # siphon-rs specific documentation
@@ -438,7 +446,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 **Key Components to Build:**
 - `fcp-flow-engine`: Call flow DSL runtime
 - `fcp-ivr`: IVR service using flow engine
-- `fcp-webhook-dispatcher`: Outbound webhook delivery
+- ✅ `fcp-webhooks`: General-purpose webhook dispatcher (HMAC-signed, retry with backoff, REST API via fcp-events-server)
 - `fcp-api-websocket`: Real-time event streaming
 - Recording support via media pipeline
 
@@ -593,6 +601,7 @@ cargo run -p siphond -- --mode registrar
 - **IMPLEMENTATION_DOCS.md**: Index of implementation documentation for completed features
   - **Dial Node B2BUA**: Complete 4-phase implementation (outbound calls, response handling, media bridging)
   - **CDR System**: Automatic call detail record creation with REST API
+  - **Webhooks**: General-purpose webhook dispatcher with HMAC signing, retries, and REST management API
 - **external/siphon-rs/CLAUDE.md**: Comprehensive SIP stack documentation
 - **external/siphon-rs/bins/siphond/README.md**: siphond daemon documentation
 - **RFC Implementation Docs**: `external/siphon-rs/RFC_*_IMPLEMENTATION.md`
