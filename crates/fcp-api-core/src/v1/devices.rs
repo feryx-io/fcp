@@ -9,6 +9,7 @@ use axum::{
 };
 use fcp_core::storage::DeviceStore;
 use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
+use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -212,6 +213,17 @@ pub async fn create_device(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create device: {}", e)))?;
 
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "device".to_string(),
+            entity_id: device.id.to_string(),
+            tenant_id: device.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
+
     info!("Created device {} ({})", device.id, device.name);
 
     Ok((StatusCode::CREATED, Json(DeviceResponse::from(device))))
@@ -304,6 +316,17 @@ pub async fn update_device(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update device: {}", e)))?;
 
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "device".to_string(),
+            entity_id: device.id.to_string(),
+            tenant_id: device.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
+
     info!("Updated device {} ({})", device.id, device.name);
 
     Ok(Json(device.into()))
@@ -319,10 +342,28 @@ pub async fn delete_device(
     let id = DeviceId::from_str(&id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {}", e)))?;
 
+    // Fetch device before deletion for event data
+    let device = storage
+        .get_device(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))?;
+
     storage
         .delete_device(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete device: {}", e)))?;
+
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "device".to_string(),
+            entity_id: device.id.to_string(),
+            tenant_id: device.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
 
     info!("Deleted device {}", id);
     Ok(StatusCode::NO_CONTENT)

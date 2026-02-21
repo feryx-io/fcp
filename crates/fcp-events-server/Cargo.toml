@@ -11,12 +11,17 @@ description = "FCP Events Server - WebSocket event streaming service"
 name = "fcp-events-server"
 path = "src/main.rs"
 
+[features]
+default = []
+redis-events = ["fcp-storage-redis"]
+
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
 fcp-webhooks = { path = "../fcp-webhooks" }
 fcp-storage-sqlite = { path = "../fcp-storage-sqlite" }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"], optional = true }
 
 # WebSocket and HTTP server
 axum = { version = "0.7", features = ["ws"] }

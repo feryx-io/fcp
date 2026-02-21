@@ -184,6 +184,56 @@ async fn main() -> Result<()> {
         app
     };
 
+    // Start Redis stream consumer if configured
+    #[cfg(feature = "redis-events")]
+    if config.event_bus.bus_type == "redis" {
+        if let Some(ref redis_url) = config.event_bus.redis_url {
+            let redis_config = fcp_storage_redis::RedisConfig {
+                url: redis_url.clone(),
+                key_prefix: config.event_bus.redis_key_prefix.clone(),
+            };
+
+            match fcp_storage_redis::RedisStorage::new(redis_config).await {
+                Ok(redis_storage) => {
+                    let stream_key = format!("{}event_stream", config.event_bus.redis_key_prefix);
+                    let consumer = fcp_storage_redis::event_bus::RedisStreamConsumer::new(
+                        redis_storage,
+                        stream_key,
+                        config.event_bus.consumer_group.clone(),
+                        config.event_bus.consumer_name.clone(),
+                    );
+
+                    // Ensure consumer group exists
+                    if let Err(e) = consumer.ensure_group().await {
+                        error!(error = %e, "Failed to create Redis consumer group");
+                    } else {
+                        let event_bus_redis = event_bus.clone();
+                        let call_store_redis = call_store.clone();
+                        let registration_store_redis = registration_store.clone();
+                        let node_registry_redis = node_registry.clone();
+
+                        tokio::spawn(async move {
+                            redis_stream_consumer_task(
+                                consumer,
+                                event_bus_redis,
+                                call_store_redis,
+                                registration_store_redis,
+                                node_registry_redis,
+                            )
+                            .await;
+                        });
+                        info!("Redis stream consumer started (replacing HTTP /ingest)");
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to connect to Redis for event streaming");
+                }
+            }
+        } else {
+            warn!("event_bus.bus_type = \"redis\" but redis_url is not set");
+        }
+    }
+
     // Start background tasks
     let manager_clone = manager.clone();
     tokio::spawn(async move {
@@ -521,6 +571,9 @@ fn process_event_for_state(
                         node_registry.register_or_update(node_id, Some(NodeType::CallManager));
                     }
                 }
+                SystemEvent::ConfigChanged { .. } => {
+                    // Config changes are handled by call-manager nodes via cache invalidation
+                }
             }
         }
         _ => {
@@ -610,6 +663,61 @@ async fn stale_cleanup_task(
         let removed_nodes = node_registry.remove_stale_nodes(Duration::from_secs(600));
         if removed_nodes > 0 {
             info!(count = removed_nodes, "Removed stale offline nodes");
+        }
+    }
+}
+
+/// Background task that reads events from a Redis Stream (consumer group).
+///
+/// This replaces the HTTP `/ingest` endpoint for clustered deployments.
+/// Events published by any fcp-call-manager node are durably stored in the
+/// Redis Stream and consumed here with at-least-once delivery.
+#[cfg(feature = "redis-events")]
+async fn redis_stream_consumer_task(
+    consumer: fcp_storage_redis::event_bus::RedisStreamConsumer,
+    event_bus: Arc<InMemoryEventBus>,
+    call_store: Arc<CallStateStore>,
+    registration_store: Arc<RegistrationStateStore>,
+    node_registry: Arc<NodeRegistry>,
+) {
+    info!("Redis stream consumer task running");
+
+    loop {
+        match consumer.read_events(100, 2000).await {
+            Ok(events) => {
+                if events.is_empty() {
+                    continue;
+                }
+
+                let mut ack_ids = Vec::with_capacity(events.len());
+
+                for (stream_id, event) in events {
+                    // Process event for state tracking (same as ingest_handler)
+                    process_event_for_state(
+                        &event,
+                        &call_store,
+                        &registration_store,
+                        &node_registry,
+                        None,
+                    );
+
+                    // Publish to local event bus for WebSocket broadcast
+                    let _ = event_bus.publish(event).await;
+
+                    ack_ids.push(stream_id);
+                }
+
+                // Acknowledge processed events
+                if let Err(e) = consumer.ack(&ack_ids).await {
+                    error!(error = %e, "Failed to acknowledge Redis stream events");
+                } else {
+                    debug!(count = ack_ids.len(), "Acknowledged Redis stream events");
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "Redis stream read failed, retrying in 2s...");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         }
     }
 }

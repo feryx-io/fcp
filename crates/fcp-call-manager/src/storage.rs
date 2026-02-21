@@ -1,6 +1,8 @@
 //! Storage backend initialization for fcp-call-manager.
 //!
 //! Supports SQLite, PostgreSQL, MySQL, and MongoDB through conditional compilation.
+//! When `storage.redis_url` and `storage.registration_backend = "redis"` are configured,
+//! registrations are stored in Redis while other data remains in the primary backend.
 
 use anyhow::{Context, Result};
 use fcp_core::DynStorage;
@@ -10,6 +12,9 @@ use tracing::info;
 use crate::config::StorageSection;
 
 /// Initialize a storage backend from configuration.
+///
+/// Returns the primary DynStorage. For Redis integration, use `initialize_redis()`
+/// separately and then call `apply_redis_registration_store()`.
 pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorage>> {
     info!(
         backend = %config.backend,
@@ -24,6 +29,45 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorag
         "mongodb" | "mongo" => init_mongodb(config).await,
         other => anyhow::bail!("Unknown storage backend: {}", other),
     }
+}
+
+/// Initialize Redis storage if configured.
+///
+/// Returns None if `redis_url` is not set.
+#[cfg(feature = "storage-redis")]
+pub async fn initialize_redis(
+    config: &StorageSection,
+) -> Result<Option<fcp_storage_redis::RedisStorage>> {
+    if let Some(ref redis_url) = config.redis_url {
+        let redis_config = fcp_storage_redis::RedisConfig {
+            url: redis_url.clone(),
+            key_prefix: "fcp:".to_string(),
+        };
+        let storage = fcp_storage_redis::RedisStorage::new(redis_config)
+            .await
+            .context("Failed to initialize Redis storage")?;
+        Ok(Some(storage))
+    } else {
+        Ok(None)
+    }
+}
+
+/// If registration_backend is "redis", swap the registration store in DynStorage
+/// to use Redis. Returns the modified DynStorage.
+#[cfg(feature = "storage-redis")]
+pub fn apply_redis_registration_store(
+    dyn_storage: Arc<DynStorage>,
+    redis_storage: &fcp_storage_redis::RedisStorage,
+) -> Arc<DynStorage> {
+    let redis_reg_store = Arc::new(
+        fcp_storage_redis::registration::RedisRegistrationStore::new(redis_storage.clone()),
+    );
+
+    let inner = Arc::try_unwrap(dyn_storage).unwrap_or_else(|arc| (*arc).clone());
+    let split = inner.with_registration_store(redis_reg_store);
+
+    info!("Registration store swapped to Redis (split backend)");
+    Arc::new(split)
 }
 
 async fn init_sqlite(config: &StorageSection) -> Result<Arc<DynStorage>> {
@@ -152,6 +196,42 @@ async fn init_mongodb(config: &StorageSection) -> Result<Arc<DynStorage>> {
             "MongoDB storage backend not available. Compile with --features storage-mongodb"
         )
     }
+}
+
+/// Wrap the hot-path stores (credentials, extensions, devices) in DashMap caches.
+///
+/// Returns the new DynStorage with cached stores, plus handles to the three
+/// cache wrappers so callers can evict entries on ConfigChanged events.
+pub fn apply_cached_stores(
+    dyn_storage: Arc<DynStorage>,
+    cache_ttl: std::time::Duration,
+) -> (
+    Arc<DynStorage>,
+    Arc<fcp_core::CachedCredentialStore>,
+    Arc<fcp_core::CachedExtensionStore>,
+    Arc<fcp_core::CachedDeviceStore>,
+) {
+    let cached_creds = Arc::new(fcp_core::CachedCredentialStore::new(
+        Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
+        cache_ttl,
+    ));
+    let cached_exts = Arc::new(fcp_core::CachedExtensionStore::new(
+        Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::ExtensionStore>,
+        cache_ttl,
+    ));
+    let cached_devs = Arc::new(fcp_core::CachedDeviceStore::new(
+        Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::DeviceStore>,
+        cache_ttl,
+    ));
+
+    let inner = Arc::try_unwrap(dyn_storage).unwrap_or_else(|arc| (*arc).clone());
+    let new_storage = inner
+        .with_credential_store(Arc::clone(&cached_creds) as Arc<dyn fcp_core::CredentialStore>)
+        .with_extension_store(Arc::clone(&cached_exts) as Arc<dyn fcp_core::storage::ExtensionStore>)
+        .with_device_store(Arc::clone(&cached_devs) as Arc<dyn fcp_core::storage::DeviceStore>);
+
+    info!("Hot-path stores wrapped with in-memory cache (TTL={}s)", cache_ttl.as_secs());
+    (Arc::new(new_storage), cached_creds, cached_exts, cached_devs)
 }
 
 /// Mask sensitive information in connection strings for logging.

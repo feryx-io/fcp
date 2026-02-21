@@ -80,6 +80,9 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // Presence endpoints
         .route("/presence", get(list_presence_handler))
         .route("/presence/{aor}", get(get_presence_handler).put(update_presence_handler))
+        // Internal cluster endpoints (authenticated via cluster secret)
+        .route("/internal/hangup", post(internal_hangup_handler))
+        .route("/internal/supervisor", post(internal_supervisor_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -1263,5 +1266,131 @@ async fn update_presence_handler(
         }))
         .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal cluster endpoints (cross-node operations)
+// ---------------------------------------------------------------------------
+
+/// Request body for POST /internal/hangup
+#[derive(Deserialize)]
+struct InternalHangupRequest {
+    call_id: String,
+    reason: Option<String>,
+}
+
+/// Hang up a call on this node. Used by other nodes for cross-node call control.
+///
+/// POST /internal/hangup
+async fn internal_hangup_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<InternalHangupRequest>,
+) -> impl IntoResponse {
+    // Authenticate via cluster secret
+    if let Err(resp) = verify_cluster_secret(&state, &headers) {
+        return resp;
+    }
+
+    let call_id = match req.call_id.parse::<fcp_b2bua_core::CallId>() {
+        Ok(id) => id,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid call_id: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    let _ = state
+        .call_manager
+        .terminate_call(&call_id, req.reason);
+
+    info!(call_id = %call_id, "Internal hangup request processed");
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+}
+
+/// Request body for POST /internal/supervisor
+#[derive(Deserialize)]
+struct InternalSupervisorRequest {
+    call_id: String,
+    mode: String, // "monitor", "whisper", "barge"
+}
+
+/// Inject a supervisor session into a call on this node.
+///
+/// POST /internal/supervisor
+async fn internal_supervisor_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<InternalSupervisorRequest>,
+) -> impl IntoResponse {
+    // Authenticate via cluster secret
+    if let Err(resp) = verify_cluster_secret(&state, &headers) {
+        return resp;
+    }
+
+    let mode = match req.mode.as_str() {
+        "monitor" => SupervisorMode::Monitor,
+        "whisper" => SupervisorMode::Whisper,
+        "barge" => SupervisorMode::Barge,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid mode: {}", req.mode)})),
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(ref qh) = state.queue_handler {
+        match qh.change_supervisor_mode(&req.call_id, mode).await {
+            Ok(()) => {
+                info!(call_id = %req.call_id, mode = %req.mode, "Internal supervisor request processed");
+                (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response(),
+        }
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Queue handler not available"})),
+        )
+            .into_response()
+    }
+}
+
+/// Verify the cluster secret from the Authorization header.
+fn verify_cluster_secret(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    // If no api_token is configured, skip auth (single-node mode)
+    let secret = match &state.api_token {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+
+    if token == secret {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid cluster secret"})),
+        )
+            .into_response())
     }
 }

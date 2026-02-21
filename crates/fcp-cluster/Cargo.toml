@@ -1,0 +1,36 @@
+[package]
+name = "fcp-cluster"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Cluster membership, call ownership, and inter-node communication for FCP"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-storage-redis = { path = "../fcp-storage-redis" }
+
+# Redis
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Concurrency
+dashmap = "6"
+
+# HTTP client for inter-node calls
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

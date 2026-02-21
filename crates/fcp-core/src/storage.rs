@@ -1902,6 +1902,33 @@ impl DynStorage {
         }
     }
 
+    /// Replace the registration store with a different implementation.
+    ///
+    /// This supports split-backend deployments where registrations are stored
+    /// in Redis while other data remains in the primary backend.
+    pub fn with_registration_store(mut self, store: Arc<dyn RegistrationStore>) -> Self {
+        self.registration_store = store;
+        self
+    }
+
+    /// Replace the credential store with a different implementation (e.g. cached).
+    pub fn with_credential_store(mut self, store: Arc<dyn CredentialStore>) -> Self {
+        self.credential_store = store;
+        self
+    }
+
+    /// Replace the extension store with a different implementation (e.g. cached).
+    pub fn with_extension_store(mut self, store: Arc<dyn ExtensionStore>) -> Self {
+        self.extension_store = store;
+        self
+    }
+
+    /// Replace the device store with a different implementation (e.g. cached).
+    pub fn with_device_store(mut self, store: Arc<dyn DeviceStore>) -> Self {
+        self.device_store = store;
+        self
+    }
+
     /// Get the presence store.
     pub fn presence_store(&self) -> &Arc<dyn PresenceStore> {
         &self.presence_store

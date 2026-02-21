@@ -9,6 +9,7 @@ use axum::{
 };
 use fcp_core::storage::ExtensionStore;
 use fcp_core::{DeviceId, Extension, ExtensionTarget, PhoneNumberId, ServiceId, TenantId, UserId};
+use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -195,6 +196,17 @@ pub async fn create_extension(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create extension: {}", e)))?;
 
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "extension".to_string(),
+            entity_id: extension.id.to_string(),
+            tenant_id: extension.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
+
     info!(
         "Created extension {} -> {}",
         extension.number, extension.target
@@ -248,6 +260,17 @@ pub async fn update_extension(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update extension: {}", e)))?;
 
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "extension".to_string(),
+            entity_id: extension.id.to_string(),
+            tenant_id: extension.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
+
     info!(
         "Updated extension {} -> {}",
         extension.number, extension.target
@@ -278,6 +301,17 @@ pub async fn delete_extension(
         .delete_extension(&extension.id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete extension: {}", e)))?;
+
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "extension".to_string(),
+            entity_id: extension.id.to_string(),
+            tenant_id: extension.tenant_id,
+            timestamp: SystemTime::now(),
+        }))
+        .await;
 
     info!("Deleted extension {}", number);
     Ok(StatusCode::NO_CONTENT)

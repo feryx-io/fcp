@@ -70,6 +70,10 @@ pub struct CallManagerConfig {
     /// Presence service configuration.
     #[serde(default)]
     pub presence: fcp_presence::PresenceConfig,
+
+    /// Cluster configuration.
+    #[serde(default)]
+    pub cluster: ClusterSection,
 }
 
 /// Service identification.
@@ -230,6 +234,19 @@ pub struct StorageSection {
     /// Connection pool size (for PG/MySQL/Mongo)
     #[serde(default)]
     pub max_connections: Option<u32>,
+
+    /// Redis connection URL for registration store and cluster state.
+    /// When set alongside `registration_backend = "redis"`, registrations
+    /// are stored in Redis while other data remains in the primary backend.
+    /// Example: "redis://redis:6379"
+    #[serde(default)]
+    pub redis_url: Option<String>,
+
+    /// Override the registration storage backend.
+    /// Set to "redis" to use Redis for registrations (requires `redis_url`).
+    /// When unset or null, registrations use the primary backend.
+    #[serde(default)]
+    pub registration_backend: Option<String>,
 }
 
 fn default_backend() -> String {
@@ -246,6 +263,8 @@ impl Default for StorageSection {
             backend: default_backend(),
             connection_string: default_connection_string(),
             max_connections: None,
+            redis_url: None,
+            registration_backend: None,
         }
     }
 }
@@ -414,9 +433,23 @@ impl Default for RoutingSection {
 /// Events configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EventsSection {
-    /// URL of fcp-events-server ingest endpoint (optional)
+    /// URL of fcp-events-server ingest endpoint (optional).
+    /// Used for HTTP-based event forwarding (fallback when Redis is not configured).
     /// Example: "http://fcp-events-server:8081/ingest"
     pub server_url: Option<String>,
+
+    /// Use Redis Pub/Sub + Streams for distributed event bus.
+    /// Requires `storage.redis_url` to be set.
+    #[serde(default)]
+    pub use_redis: bool,
+
+    /// Redis Pub/Sub channel name for events (default: "{prefix}events").
+    #[serde(default)]
+    pub redis_channel: Option<String>,
+
+    /// Redis Stream key for durable events (default: "{prefix}event_stream").
+    #[serde(default)]
+    pub redis_stream_key: Option<String>,
 
     /// External webhook endpoints to receive event notifications.
     #[serde(default)]
@@ -427,7 +460,50 @@ impl Default for EventsSection {
     fn default() -> Self {
         Self {
             server_url: None,
+            use_redis: false,
+            redis_channel: None,
+            redis_stream_key: None,
             webhooks: Vec::new(),
+        }
+    }
+}
+
+/// Cluster configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterSection {
+    /// Enable cluster mode. Requires `storage.redis_url`.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Shared secret for inter-node HTTP authentication.
+    #[serde(default)]
+    pub cluster_secret: Option<String>,
+
+    /// Heartbeat interval in seconds (default: 5).
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+
+    /// Heartbeat TTL in seconds — if a node misses this many seconds of
+    /// heartbeats, it is considered dead (default: 15).
+    #[serde(default = "default_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
+
+impl Default for ClusterSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cluster_secret: None,
+            heartbeat_interval_secs: default_heartbeat_interval(),
+            heartbeat_ttl_secs: default_heartbeat_ttl(),
         }
     }
 }

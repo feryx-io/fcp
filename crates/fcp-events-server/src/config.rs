@@ -230,13 +230,29 @@ impl Default for WebSocketConfig {
 /// Event bus configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EventBusConfig {
-    /// Event bus type (in-memory for now)
+    /// Event bus type: "in-memory" or "redis"
     #[serde(default = "default_event_bus_type")]
     pub bus_type: String,
 
     /// Buffer size for event streams
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
+
+    /// Redis URL for distributed event bus (required when bus_type = "redis")
+    #[serde(default)]
+    pub redis_url: Option<String>,
+
+    /// Redis key prefix (default: "fcp:")
+    #[serde(default = "default_redis_key_prefix")]
+    pub redis_key_prefix: String,
+
+    /// Redis consumer group name for this events-server instance
+    #[serde(default = "default_consumer_group")]
+    pub consumer_group: String,
+
+    /// Redis consumer name (unique per instance within a consumer group)
+    #[serde(default = "default_consumer_name")]
+    pub consumer_name: String,
 }
 
 fn default_event_bus_type() -> String {
@@ -247,11 +263,27 @@ fn default_buffer_size() -> usize {
     1000
 }
 
+fn default_redis_key_prefix() -> String {
+    "fcp:".to_string()
+}
+
+fn default_consumer_group() -> String {
+    "fcp-events-server".to_string()
+}
+
+fn default_consumer_name() -> String {
+    format!("consumer-{}", uuid::Uuid::new_v4())
+}
+
 impl Default for EventBusConfig {
     fn default() -> Self {
         Self {
             bus_type: default_event_bus_type(),
             buffer_size: default_buffer_size(),
+            redis_url: None,
+            redis_key_prefix: default_redis_key_prefix(),
+            consumer_group: default_consumer_group(),
+            consumer_name: default_consumer_name(),
         }
     }
 }

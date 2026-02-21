@@ -1,7 +1,7 @@
 //! User management API endpoints.
 
 use crate::{error::ApiError, state::ApiState, validation};
-use fcp_events::{PlatformEvent, UserEvent};
+use fcp_events::{PlatformEvent, SystemEvent, UserEvent};
 use tracing::{info, warn};
 
 /// Helper macro to get storage or return error.
@@ -324,6 +324,17 @@ pub async fn create_user(
         }))
         .await;
 
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user.id.to_string(),
+            tenant_id: user.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
+
     // Security audit log
     info!(
         event = "user_created",
@@ -447,6 +458,17 @@ pub async fn update_user(
         }))
         .await;
 
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user.id.to_string(),
+            tenant_id: user.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
+
     // Security audit log
     info!(
         event = "user_updated",
@@ -487,8 +509,22 @@ pub async fn update_password(
     user.sip_ha1_hash = Some(sip_ha1_hash);
     user.updated_at = std::time::SystemTime::now();
 
+    let tenant_id = user.tenant_id;
+    let user_id_str = user.id.to_string();
+
     // Save user
     require_storage!(state).put_user(user).await?;
+
+    // Publish ConfigChanged event for cache invalidation (credentials changed)
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user_id_str,
+            tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
 
     // Security audit log
     warn!(
@@ -540,8 +576,22 @@ pub async fn update_digest_password(
     user.sip_ha1_hash = Some(sip_ha1_hash);
     user.updated_at = std::time::SystemTime::now();
 
+    let tenant_id = user.tenant_id;
+    let user_id_str = user.id.to_string();
+
     // Save user
     require_storage!(state).put_user(user).await?;
+
+    // Publish ConfigChanged event for cache invalidation (credentials changed)
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user_id_str,
+            tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
 
     // Security audit log
     info!(
@@ -589,8 +639,22 @@ pub async fn delete_digest_password(
     user.sip_ha1_hash = None;
     user.updated_at = std::time::SystemTime::now();
 
+    let tenant_id = user.tenant_id;
+    let user_id_str = user.id.to_string();
+
     // Save user
     require_storage!(state).put_user(user).await?;
+
+    // Publish ConfigChanged event for cache invalidation (credentials changed)
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user_id_str,
+            tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
 
     // Security audit log
     warn!(
@@ -627,6 +691,17 @@ pub async fn delete_user(
         .publish(PlatformEvent::User(UserEvent::Deleted {
             user_id: user.id.to_string(),
             username: user.username.clone(),
+            tenant_id: user.tenant_id,
+            timestamp: std::time::SystemTime::now(),
+        }))
+        .await;
+
+    // Publish ConfigChanged event for cache invalidation
+    let _ = state
+        .event_bus
+        .publish(PlatformEvent::System(SystemEvent::ConfigChanged {
+            entity_type: "user".to_string(),
+            entity_id: user.id.to_string(),
             tenant_id: user.tenant_id,
             timestamp: std::time::SystemTime::now(),
         }))

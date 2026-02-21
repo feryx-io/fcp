@@ -123,7 +123,66 @@ async fn main() -> Result<()> {
     }
 
     // 4. Initialize storage
-    let dyn_storage = storage::initialize_storage(&config.storage).await?;
+    #[allow(unused_mut)]
+    let mut dyn_storage = storage::initialize_storage(&config.storage).await?;
+
+    // 4b. Initialize Redis + split backend (if configured)
+    #[cfg(feature = "storage-redis")]
+    let redis_storage = {
+        let rs = storage::initialize_redis(&config.storage).await?;
+
+        // Swap registration store to Redis if configured
+        if config.storage.registration_backend.as_deref() == Some("redis") {
+            if let Some(ref redis) = rs {
+                dyn_storage = storage::apply_redis_registration_store(dyn_storage, redis);
+            } else {
+                warn!("registration_backend = \"redis\" but redis_url is not set; using primary backend");
+            }
+        }
+
+        rs
+    };
+
+    // 4b2. Wrap hot-path stores in DashMap caches for fast lookups
+    let cache_ttl = Duration::from_secs(60);
+    let (cached_storage, cached_creds, cached_exts, cached_devs) =
+        storage::apply_cached_stores(dyn_storage, cache_ttl);
+    let dyn_storage = cached_storage;
+
+    // 4c. Initialize cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if config.cluster.enabled {
+        if let Some(ref redis) = redis_storage {
+            let member = fcp_cluster::ClusterMember {
+                node_id: config.service.node_id.clone(),
+                node_type: config.service.service_type.clone(),
+                http_address: config.http.bind_address,
+                sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                capabilities: vec!["registrar".to_string(), "b2bua".to_string()],
+                active_calls: 0,
+                started_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            };
+
+            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member);
+            let _handle = cm.start();
+            info!("Cluster membership started");
+
+            let call_registry = fcp_cluster::CallRegistry::new(
+                redis.clone(),
+                config.service.node_id.clone(),
+            );
+            Some((cm, call_registry))
+        } else {
+            warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
 
     // 5. Create SIP components
     let dialog_manager = DialogManager::new();
@@ -168,14 +227,46 @@ async fn main() -> Result<()> {
 
     // 12. Create event bus (needed by registrar and call manager)
     let event_bus = Arc::new(InMemoryEventBus::new());
-    info!("Event bus initialized (in-memory)");
+
+    // If Redis event bus is configured, bridge local ↔ cluster events
+    #[cfg(feature = "storage-redis")]
+    let redis_event_publisher: Option<Arc<dyn EventPublisher>> = if config.events.use_redis {
+        if let Some(ref redis) = redis_storage {
+            let redis_bus = fcp_storage_redis::event_bus::RedisEventBus::new(
+                redis.clone(),
+                config.service.node_id.clone(),
+            );
+
+            // Start subscriber: listens for remote events on Redis Pub/Sub,
+            // filters self-published, and re-publishes to local InMemoryEventBus.
+            let _sub_handle = redis_bus.start_subscriber(Arc::clone(&event_bus));
+
+            info!("Redis event bus initialized (Pub/Sub + Streams)");
+            Some(Arc::new(redis_bus) as Arc<dyn EventPublisher>)
+        } else {
+            warn!("events.use_redis = true but redis_url is not set; falling back to in-memory");
+            None
+        }
+    } else {
+        None
+    };
+
+    // Choose the event publisher: Redis if available, otherwise in-memory
+    #[cfg(feature = "storage-redis")]
+    let event_publisher: Arc<dyn EventPublisher> = redis_event_publisher
+        .unwrap_or_else(|| Arc::clone(&event_bus) as Arc<dyn EventPublisher>);
+
+    #[cfg(not(feature = "storage-redis"))]
+    let event_publisher: Arc<dyn EventPublisher> = Arc::clone(&event_bus) as Arc<dyn EventPublisher>;
+
+    info!("Event bus initialized");
 
     // 13. Create FcpRegistrar (conditional — disabled in session-manager mode)
     let registrar = if config.registrar.enabled {
         Some(create_registrar(
             &config,
             &dyn_storage,
-            Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+            Arc::clone(&event_publisher),
         ))
     } else {
         info!("Registrar disabled (session-manager mode)");
@@ -249,7 +340,7 @@ async fn main() -> Result<()> {
     // 15. Create CallManager for B2BUA functionality (with event publishing)
     let mut call_manager_inner = fcp_sip::CallManager::with_storage_and_events(
         Arc::clone(&dyn_storage),
-        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        Arc::clone(&event_publisher),
     );
     call_manager_inner.set_node_id(&config.service.node_id);
     let call_manager = Arc::new(call_manager_inner);
@@ -289,7 +380,7 @@ async fn main() -> Result<()> {
         let tenant_id = fcp_core::TenantId::nil(); // Default tenant for single-node
         let mut qm = fcp_queue::QueueManager::new(
             config.queue.clone(),
-            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+            Some(Arc::clone(&event_publisher)),
             tenant_id.clone(),
         );
 
@@ -342,7 +433,7 @@ async fn main() -> Result<()> {
                 local_uri.as_str().to_string(),
                 local_addr.clone(),
                 queue_port_pool,
-                Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+                Arc::clone(&event_publisher),
                 Arc::clone(&uac),
                 Arc::clone(&dyn_storage),
             );
@@ -363,7 +454,7 @@ async fn main() -> Result<()> {
             Some(Arc::clone(dyn_storage.presence_store()));
         let pm = fcp_presence::PresenceManager::new(
             config.presence.clone(),
-            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+            Some(Arc::clone(&event_publisher)),
             presence_store,
         );
         // Load persisted state from previous run
@@ -715,13 +806,26 @@ async fn main() -> Result<()> {
         }
     }
 
+    // 21e. Spawn ConfigChanged event listener for cache invalidation
+    {
+        let cached_creds = Arc::clone(&cached_creds);
+        let cached_exts = Arc::clone(&cached_exts);
+        let cached_devs = Arc::clone(&cached_devs);
+        let event_bus_cache = Arc::clone(&event_bus);
+        tokio::spawn(async move {
+            run_cache_invalidation_listener(event_bus_cache, cached_creds, cached_exts, cached_devs)
+                .await;
+        });
+        info!("Cache invalidation listener started");
+    }
+
     // 22. Publish SystemEvent::Started to announce this node
     {
         let started_event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::Started {
             node_id: config.service.node_id.clone(),
             timestamp: std::time::SystemTime::now(),
         });
-        if let Err(e) = event_bus.publish(started_event).await {
+        if let Err(e) = event_publisher.publish(started_event).await {
             warn!(%e, "Failed to publish SystemEvent::Started");
         } else {
             info!(node_id = %config.service.node_id, "Published SystemEvent::Started");
@@ -1545,6 +1649,86 @@ async fn run_presence_listener(
                     }
                     Err(e) => {
                         warn!(%e, "Failed to resubscribe presence event listener");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Subscribe to ConfigChanged events and evict matching cache entries.
+///
+/// This ensures that when an admin updates a user, extension, or device via the
+/// API, all nodes' in-memory caches are invalidated so the next lookup fetches
+/// fresh data from the database.
+async fn run_cache_invalidation_listener(
+    event_bus: Arc<InMemoryEventBus>,
+    cached_creds: Arc<fcp_core::CachedCredentialStore>,
+    cached_exts: Arc<fcp_core::CachedExtensionStore>,
+    cached_devs: Arc<fcp_core::CachedDeviceStore>,
+) {
+    let filter = EventFilter::new().types(vec![EventType::System]);
+
+    let mut stream = match event_bus.subscribe(filter.clone()).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(%e, "Failed to subscribe to event bus for cache invalidation");
+            return;
+        }
+    };
+
+    tracing::info!("Cache invalidation listener running");
+
+    loop {
+        match stream.next().await {
+            Some(event) => {
+                if let fcp_events::PlatformEvent::System(
+                    fcp_events::SystemEvent::ConfigChanged {
+                        entity_type,
+                        entity_id,
+                        ..
+                    },
+                ) = &event
+                {
+                    match entity_type.as_str() {
+                        "user" => {
+                            // Evict all credential cache entries — we don't have the
+                            // username, only the user_id, so clear the whole cache.
+                            cached_creds.evict_all();
+                            tracing::debug!(
+                                entity_id = %entity_id,
+                                "Evicted credential cache (user config changed)"
+                            );
+                        }
+                        "extension" => {
+                            cached_exts.evict_all();
+                            tracing::debug!(
+                                entity_id = %entity_id,
+                                "Evicted extension cache (extension config changed)"
+                            );
+                        }
+                        "device" => {
+                            cached_devs.evict_all();
+                            tracing::debug!(
+                                entity_id = %entity_id,
+                                "Evicted device cache (device config changed)"
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None => {
+                warn!("Cache invalidation stream ended, resubscribing...");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match event_bus.subscribe(filter.clone()).await {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        info!("Cache invalidation listener resubscribed");
+                    }
+                    Err(e) => {
+                        warn!(%e, "Failed to resubscribe cache invalidation listener");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }

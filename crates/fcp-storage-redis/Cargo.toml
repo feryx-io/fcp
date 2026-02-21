@@ -1,0 +1,38 @@
+[package]
+name = "fcp-storage-redis"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Redis storage backend for FCP — registrations, event bus, parking"
+
+[features]
+default = []
+event-bus = ["dep:futures-util"]
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+
+# Redis
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "cluster-async"] }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+futures-util = { version = "0.3", optional = true }

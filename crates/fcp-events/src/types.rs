@@ -332,6 +332,19 @@ pub enum SystemEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Configuration entity changed (user, extension, device, etc.).
+    /// Used for cache invalidation across cluster nodes.
+    ConfigChanged {
+        /// Type of entity changed (e.g. "user", "extension", "device")
+        entity_type: String,
+        /// Identifier of the changed entity
+        entity_id: String,
+        /// Tenant the entity belongs to
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// User lifecycle events.
@@ -1002,6 +1015,7 @@ impl PlatformEvent {
                 SystemEvent::Started { .. } => "system.started",
                 SystemEvent::Stopping { .. } => "system.stopping",
                 SystemEvent::HealthCheck { .. } => "system.health_check",
+                SystemEvent::ConfigChanged { .. } => "system.config_changed",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -1143,11 +1157,14 @@ impl PlatformEvent {
                 | PresenceEvent::PublishExpiryWarning { tenant_id, .. }
                 | PresenceEvent::PublishExpired { tenant_id, .. } => Some(tenant_id),
             },
+            PlatformEvent::System(e) => match e {
+                SystemEvent::ConfigChanged { tenant_id, .. } => Some(tenant_id),
+                _ => None,
+            },
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
             | PlatformEvent::Recording(_)
             | PlatformEvent::Flow(_)
-            | PlatformEvent::System(_)
             | PlatformEvent::Voicemail(_) => None,
         }
     }
@@ -1326,7 +1343,8 @@ impl SystemEvent {
         match self {
             SystemEvent::Started { timestamp, .. }
             | SystemEvent::Stopping { timestamp, .. }
-            | SystemEvent::HealthCheck { timestamp, .. } => *timestamp,
+            | SystemEvent::HealthCheck { timestamp, .. }
+            | SystemEvent::ConfigChanged { timestamp, .. } => *timestamp,
         }
     }
 }

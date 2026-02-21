@@ -3,6 +3,7 @@
 //! This crate holds common error types, identifiers, and configuration
 //! structures that other crates depend on.
 
+pub mod cached_storage;
 pub mod call_forking;
 pub mod call_state;
 pub mod codec;
@@ -83,6 +84,7 @@ pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,
 };
+pub use crate::cached_storage::{CachedCredentialStore, CachedDeviceStore, CachedExtensionStore};
 pub use crate::voicemail::{
     GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
     VoicemailMailbox, VoicemailMessage, VoicemailStats,

@@ -14,7 +14,8 @@ storage-sqlite = ["dep:fcp-storage-sqlite"]
 storage-postgres = ["dep:fcp-storage-postgres"]
 storage-mysql = ["dep:fcp-storage-mysql"]
 storage-mongodb = ["dep:fcp-storage-mongodb"]
-storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
+storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb", "storage-redis"]
 
 [[bin]]
 name = "fcp-call-manager"
@@ -47,6 +48,8 @@ fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
 fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
 fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
 fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"], optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
