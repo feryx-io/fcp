@@ -10,6 +10,7 @@ description = "Cluster membership, call ownership, and inter-node communication 
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
 fcp-storage-redis = { path = "../fcp-storage-redis" }
 
 # Redis

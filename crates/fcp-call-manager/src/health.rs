@@ -1457,7 +1457,9 @@ async fn internal_unpark_handler(
                 let cp = Arc::clone(cp);
                 let orbit = req.orbit;
                 tokio::spawn(async move {
-                    let _ = cp.cluster_unpark(orbit).await;
+                    if let Err(e) = cp.cluster_unpark(orbit).await {
+                        tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                    }
                 });
             }
 

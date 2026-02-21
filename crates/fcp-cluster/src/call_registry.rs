@@ -93,4 +93,21 @@ impl CallRegistry {
             None => Ok(false),
         }
     }
+
+    /// Refresh the TTL on a call ownership key.
+    ///
+    /// Should be called periodically for long-running calls to prevent the
+    /// ownership key from expiring while the call is still active.
+    pub async fn refresh_call(&self, call_id: &str) -> anyhow::Result<()> {
+        let key = self.call_key(call_id);
+        let mut conn = self.storage.connection();
+
+        let _: bool = conn
+            .expire(&key, self.call_ttl_secs as i64)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to refresh call TTL: {}", e))?;
+
+        debug!(call_id = %call_id, ttl_secs = self.call_ttl_secs, "Refreshed call ownership TTL");
+        Ok(())
+    }
 }

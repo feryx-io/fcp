@@ -149,6 +149,9 @@ async fn main() -> Result<()> {
         storage::apply_cached_stores(dyn_storage, cache_ttl);
     let dyn_storage = cached_storage;
 
+    // 4b3. Create event bus early (needed by cluster membership and registrar)
+    let event_bus = Arc::new(InMemoryEventBus::new());
+
     // 4c. Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
     let _cluster_manager = if config.cluster.enabled {
@@ -167,13 +170,16 @@ async fn main() -> Result<()> {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             };
 
-            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member);
+            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
+                .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
+                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
             let _handle = cm.start();
             info!("Cluster membership started");
 
-            let call_registry = fcp_cluster::CallRegistry::new(
+            let call_registry = fcp_cluster::CallRegistry::with_ttl(
                 redis.clone(),
                 config.service.node_id.clone(),
+                config.cluster.call_ttl_secs,
             );
             Some((cm, call_registry))
         } else {
@@ -243,10 +249,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // 12. Create event bus (needed by registrar and call manager)
-    let event_bus = Arc::new(InMemoryEventBus::new());
-
-    // If Redis event bus is configured, bridge local ↔ cluster events
+    // 12. If Redis event bus is configured, bridge local ↔ cluster events
     #[cfg(feature = "storage-redis")]
     let redis_event_publisher: Option<Arc<dyn EventPublisher>> = if config.events.use_redis {
         if let Some(ref redis) = redis_storage {

@@ -4,6 +4,7 @@
 //! refreshed every 5s. Nodes discover each other via SCAN.
 
 use dashmap::DashMap;
+use fcp_events::EventPublisher;
 use fcp_storage_redis::RedisStorage;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,7 @@ pub struct ClusterManager {
     heartbeat_interval_secs: u64,
     heartbeat_ttl_secs: u64,
     shutdown_tx: Arc<watch::Sender<bool>>,
+    event_publisher: Option<Arc<dyn EventPublisher>>,
 }
 
 impl ClusterManager {
@@ -55,7 +57,21 @@ impl ClusterManager {
             heartbeat_interval_secs: 5,
             heartbeat_ttl_secs: 15,
             shutdown_tx: Arc::new(shutdown_tx),
+            event_publisher: None,
         }
+    }
+
+    /// Set custom heartbeat interval and TTL (builder pattern).
+    pub fn with_intervals(mut self, interval_secs: u64, ttl_secs: u64) -> Self {
+        self.heartbeat_interval_secs = interval_secs;
+        self.heartbeat_ttl_secs = ttl_secs;
+        self
+    }
+
+    /// Set an event publisher for emitting NodeJoined/NodeLeft events.
+    pub fn with_event_publisher(mut self, publisher: Arc<dyn EventPublisher>) -> Self {
+        self.event_publisher = Some(publisher);
+        self
     }
 
     /// Start the heartbeat and discovery loops. Returns a JoinHandle.
@@ -66,6 +82,7 @@ impl ClusterManager {
         let interval = self.heartbeat_interval_secs;
         let ttl = self.heartbeat_ttl_secs;
         let mut shutdown_rx = self.shutdown_tx.subscribe();
+        let event_publisher = self.event_publisher.clone();
 
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
@@ -87,7 +104,7 @@ impl ClusterManager {
                 }
 
                 // Discover members
-                if let Err(e) = discover_members(&storage, &self_info.node_id, &members).await {
+                if let Err(e) = discover_members(&storage, &self_info.node_id, &members, event_publisher.as_ref()).await {
                     error!(error = %e, "Failed to discover cluster members");
                 }
             }
@@ -175,15 +192,20 @@ async fn publish_heartbeat(
 }
 
 /// Discover cluster members by scanning Redis keys.
+///
+/// Emits `NodeJoined` / `NodeLeft` events when the set of known members changes.
 async fn discover_members(
     storage: &RedisStorage,
     self_node_id: &str,
     members: &DashMap<String, ClusterMember>,
+    event_publisher: Option<&Arc<dyn EventPublisher>>,
 ) -> anyhow::Result<()> {
     let mut conn = storage.connection();
     let pattern = storage.key("cluster:node:*");
 
     let mut seen_ids = std::collections::HashSet::new();
+    // Collect newly seen members for event emission
+    let mut new_members: Vec<ClusterMember> = Vec::new();
     let mut cursor = 0u64;
 
     loop {
@@ -208,6 +230,9 @@ async fn discover_members(
                     Ok(member) => {
                         if member.node_id != self_node_id {
                             seen_ids.insert(member.node_id.clone());
+                            if !members.contains_key(&member.node_id) {
+                                new_members.push(member.clone());
+                            }
                             members.insert(member.node_id.clone(), member);
                         }
                     }
@@ -224,8 +249,49 @@ async fn discover_members(
         }
     }
 
+    // Detect departed members before retain
+    let departed: Vec<String> = members
+        .iter()
+        .filter(|e| !seen_ids.contains(e.key()))
+        .map(|e| e.key().clone())
+        .collect();
+
     // Remove members whose keys have expired (no longer seen)
     members.retain(|node_id, _| seen_ids.contains(node_id));
+
+    // Emit events
+    if let Some(publisher) = event_publisher {
+        let now = std::time::SystemTime::now();
+
+        for member in &new_members {
+            let event = fcp_events::PlatformEvent::System(
+                fcp_events::SystemEvent::NodeJoined {
+                    node_id: member.node_id.clone(),
+                    node_type: member.node_type.clone(),
+                    address: member.http_address.to_string(),
+                    timestamp: now,
+                },
+            );
+            info!(node_id = %member.node_id, node_type = %member.node_type, "Cluster member joined");
+            if let Err(e) = publisher.publish(event).await {
+                warn!(error = %e, "Failed to publish NodeJoined event");
+            }
+        }
+
+        for node_id in &departed {
+            let event = fcp_events::PlatformEvent::System(
+                fcp_events::SystemEvent::NodeLeft {
+                    node_id: node_id.clone(),
+                    reason: "heartbeat_expired".to_string(),
+                    timestamp: now,
+                },
+            );
+            info!(node_id = %node_id, "Cluster member left (heartbeat expired)");
+            if let Err(e) = publisher.publish(event).await {
+                warn!(error = %e, "Failed to publish NodeLeft event");
+            }
+        }
+    }
 
     debug!(member_count = seen_ids.len(), "Cluster discovery complete");
     Ok(())

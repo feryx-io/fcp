@@ -85,7 +85,7 @@ pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,
 };
-pub use crate::cached_storage::{CachedCredentialStore, CachedDeviceStore, CachedExtensionStore};
+pub use crate::cached_storage::{CacheStats, CachedCredentialStore, CachedDeviceStore, CachedExtensionStore};
 pub use crate::voicemail::{
     GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
     VoicemailMailbox, VoicemailMessage, VoicemailStats,

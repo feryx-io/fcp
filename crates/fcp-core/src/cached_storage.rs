@@ -9,9 +9,20 @@ use crate::storage::{CredentialStore, User};
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::debug;
+
+/// Cache performance statistics.
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub size: usize,
+    pub max_entries: usize,
+}
 
 /// A cache entry with a timestamp for TTL expiry.
 #[derive(Clone)]
@@ -45,15 +56,23 @@ pub struct CachedCredentialStore {
     inner: Arc<dyn CredentialStore>,
     cache: DashMap<String, CacheEntry<Option<User>>>,
     ttl: Duration,
+    max_entries: usize,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    evictions: AtomicU64,
 }
 
 impl CachedCredentialStore {
     /// Create a new cached credential store.
-    pub fn new(inner: Arc<dyn CredentialStore>, ttl: Duration) -> Self {
+    pub fn new(inner: Arc<dyn CredentialStore>, ttl: Duration, max_entries: usize) -> Self {
         Self {
             inner,
             cache: DashMap::new(),
             ttl,
+            max_entries,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
         }
     }
 
@@ -69,9 +88,48 @@ impl CachedCredentialStore {
         debug!("Cleared entire credential cache");
     }
 
-    /// Get cache statistics.
+    /// Get cache size.
     pub fn cache_size(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Get cache performance statistics.
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+            size: self.cache.len(),
+            max_entries: self.max_entries,
+        }
+    }
+
+    fn enforce_capacity(&self) {
+        if self.cache.len() <= self.max_entries {
+            return;
+        }
+        let before = self.cache.len();
+        // First pass: remove expired entries
+        self.cache.retain(|_, entry| !entry.is_expired(self.ttl));
+        // If still over, remove oldest entries down to 75% capacity
+        if self.cache.len() > self.max_entries {
+            let target = self.max_entries * 3 / 4;
+            let mut entries: Vec<_> = self
+                .cache
+                .iter()
+                .map(|e| (e.key().clone(), e.value().inserted_at))
+                .collect();
+            entries.sort_by_key(|(_, t)| *t);
+            for (key, _) in entries.iter().take(self.cache.len() - target) {
+                self.cache.remove(key);
+            }
+        }
+        let evicted = before.saturating_sub(self.cache.len());
+        if evicted > 0 {
+            self.evictions
+                .fetch_add(evicted as u64, Ordering::Relaxed);
+            debug!(evicted, remaining = self.cache.len(), "Credential cache capacity enforced");
+        }
     }
 }
 
@@ -81,6 +139,7 @@ impl CredentialStore for CachedCredentialStore {
         // Check cache
         if let Some(entry) = self.cache.get(username) {
             if !entry.is_expired(self.ttl) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 debug!(username = %username, "Credential cache HIT");
                 return Ok(entry.value.clone());
             }
@@ -90,12 +149,14 @@ impl CredentialStore for CachedCredentialStore {
         }
 
         // Cache miss — query inner store
+        self.misses.fetch_add(1, Ordering::Relaxed);
         debug!(username = %username, "Credential cache MISS");
         let result = self.inner.get_user(username).await?;
 
         // Cache the result (including None for negative caching)
         self.cache
             .insert(username.to_string(), CacheEntry::new(result.clone()));
+        self.enforce_capacity();
 
         Ok(result)
     }
@@ -135,14 +196,22 @@ pub struct CachedExtensionStore {
     // Key: "tenant_id:number"
     cache: DashMap<String, CacheEntry<Option<crate::Extension>>>,
     ttl: Duration,
+    max_entries: usize,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    evictions: AtomicU64,
 }
 
 impl CachedExtensionStore {
-    pub fn new(inner: Arc<dyn ExtensionStore>, ttl: Duration) -> Self {
+    pub fn new(inner: Arc<dyn ExtensionStore>, ttl: Duration, max_entries: usize) -> Self {
         Self {
             inner,
             cache: DashMap::new(),
             ttl,
+            max_entries,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
         }
     }
 
@@ -165,6 +234,43 @@ impl CachedExtensionStore {
     pub fn cache_size(&self) -> usize {
         self.cache.len()
     }
+
+    /// Get cache performance statistics.
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+            size: self.cache.len(),
+            max_entries: self.max_entries,
+        }
+    }
+
+    fn enforce_capacity(&self) {
+        if self.cache.len() <= self.max_entries {
+            return;
+        }
+        let before = self.cache.len();
+        self.cache.retain(|_, entry| !entry.is_expired(self.ttl));
+        if self.cache.len() > self.max_entries {
+            let target = self.max_entries * 3 / 4;
+            let mut entries: Vec<_> = self
+                .cache
+                .iter()
+                .map(|e| (e.key().clone(), e.value().inserted_at))
+                .collect();
+            entries.sort_by_key(|(_, t)| *t);
+            for (key, _) in entries.iter().take(self.cache.len() - target) {
+                self.cache.remove(key);
+            }
+        }
+        let evicted = before.saturating_sub(self.cache.len());
+        if evicted > 0 {
+            self.evictions
+                .fetch_add(evicted as u64, Ordering::Relaxed);
+            debug!(evicted, remaining = self.cache.len(), "Extension cache capacity enforced");
+        }
+    }
 }
 
 #[async_trait]
@@ -186,6 +292,7 @@ impl ExtensionStore for CachedExtensionStore {
 
         if let Some(entry) = self.cache.get(&key) {
             if !entry.is_expired(self.ttl) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 debug!(tenant_id = %tenant_id, number = %number, "Extension cache HIT");
                 return Ok(entry.value.clone());
             }
@@ -193,10 +300,12 @@ impl ExtensionStore for CachedExtensionStore {
             self.cache.remove(&key);
         }
 
+        self.misses.fetch_add(1, Ordering::Relaxed);
         debug!(tenant_id = %tenant_id, number = %number, "Extension cache MISS");
         let result = self.inner.get_extension_by_number(tenant_id, number).await?;
 
         self.cache.insert(key, CacheEntry::new(result.clone()));
+        self.enforce_capacity();
         Ok(result)
     }
 
@@ -236,14 +345,22 @@ pub struct CachedDeviceStore {
     // Key: sip_uri
     cache: DashMap<String, CacheEntry<Option<crate::Device>>>,
     ttl: Duration,
+    max_entries: usize,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    evictions: AtomicU64,
 }
 
 impl CachedDeviceStore {
-    pub fn new(inner: Arc<dyn DeviceStore>, ttl: Duration) -> Self {
+    pub fn new(inner: Arc<dyn DeviceStore>, ttl: Duration, max_entries: usize) -> Self {
         Self {
             inner,
             cache: DashMap::new(),
             ttl,
+            max_entries,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
         }
     }
 
@@ -260,6 +377,43 @@ impl CachedDeviceStore {
 
     pub fn cache_size(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Get cache performance statistics.
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+            size: self.cache.len(),
+            max_entries: self.max_entries,
+        }
+    }
+
+    fn enforce_capacity(&self) {
+        if self.cache.len() <= self.max_entries {
+            return;
+        }
+        let before = self.cache.len();
+        self.cache.retain(|_, entry| !entry.is_expired(self.ttl));
+        if self.cache.len() > self.max_entries {
+            let target = self.max_entries * 3 / 4;
+            let mut entries: Vec<_> = self
+                .cache
+                .iter()
+                .map(|e| (e.key().clone(), e.value().inserted_at))
+                .collect();
+            entries.sort_by_key(|(_, t)| *t);
+            for (key, _) in entries.iter().take(self.cache.len() - target) {
+                self.cache.remove(key);
+            }
+        }
+        let evicted = before.saturating_sub(self.cache.len());
+        if evicted > 0 {
+            self.evictions
+                .fetch_add(evicted as u64, Ordering::Relaxed);
+            debug!(evicted, remaining = self.cache.len(), "Device cache capacity enforced");
+        }
     }
 }
 
@@ -279,6 +433,7 @@ impl DeviceStore for CachedDeviceStore {
     ) -> Result<Option<crate::Device>> {
         if let Some(entry) = self.cache.get(sip_uri) {
             if !entry.is_expired(self.ttl) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
                 debug!(sip_uri = %sip_uri, "Device cache HIT");
                 return Ok(entry.value.clone());
             }
@@ -286,11 +441,13 @@ impl DeviceStore for CachedDeviceStore {
             self.cache.remove(sip_uri);
         }
 
+        self.misses.fetch_add(1, Ordering::Relaxed);
         debug!(sip_uri = %sip_uri, "Device cache MISS");
         let result = self.inner.get_device_by_sip_uri(sip_uri).await?;
 
         self.cache
             .insert(sip_uri.to_string(), CacheEntry::new(result.clone()));
+        self.enforce_capacity();
         Ok(result)
     }
 
@@ -367,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn test_cached_credential_store_hit() {
         let mock = Arc::new(MockCredentialStore::new());
-        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_secs(60));
+        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_secs(60), 10_000);
 
         // First call — miss
         let _ = cached.get_user("alice").await.unwrap();
@@ -376,12 +533,17 @@ mod tests {
         // Second call — hit (should not increment inner calls)
         let _ = cached.get_user("alice").await.unwrap();
         assert_eq!(mock.calls(), 1);
+
+        // Verify stats
+        let stats = cached.stats();
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
     }
 
     #[tokio::test]
     async fn test_cached_credential_store_evict() {
         let mock = Arc::new(MockCredentialStore::new());
-        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_secs(60));
+        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_secs(60), 10_000);
 
         let _ = cached.get_user("alice").await.unwrap();
         assert_eq!(mock.calls(), 1);
@@ -398,7 +560,7 @@ mod tests {
     async fn test_cached_credential_store_ttl_expiry() {
         let mock = Arc::new(MockCredentialStore::new());
         // Very short TTL
-        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_millis(10));
+        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_millis(10), 10_000);
 
         let _ = cached.get_user("alice").await.unwrap();
         assert_eq!(mock.calls(), 1);
@@ -409,5 +571,28 @@ mod tests {
         // Should miss again
         let _ = cached.get_user("alice").await.unwrap();
         assert_eq!(mock.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cached_credential_store_capacity_eviction() {
+        let mock = Arc::new(MockCredentialStore::new());
+        // Max 5 entries
+        let cached = CachedCredentialStore::new(mock.clone(), Duration::from_secs(60), 5);
+
+        // Fill cache to capacity
+        for i in 0..5 {
+            let _ = cached.get_user(&format!("user{}", i)).await.unwrap();
+        }
+        assert_eq!(cached.cache_size(), 5);
+
+        // Insert one more — should trigger enforce_capacity
+        let _ = cached.get_user("user_overflow").await.unwrap();
+
+        // Cache should be trimmed to 75% of max (3 or 4)
+        assert!(cached.cache_size() <= 5);
+
+        // Eviction counter should be non-zero
+        let stats = cached.stats();
+        assert!(stats.evictions > 0, "Expected evictions but got 0");
     }
 }

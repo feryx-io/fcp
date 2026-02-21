@@ -487,6 +487,11 @@ pub struct ClusterSection {
     /// heartbeats, it is considered dead (default: 15).
     #[serde(default = "default_heartbeat_ttl")]
     pub heartbeat_ttl_secs: u64,
+
+    /// Call registry TTL in seconds — maximum time a call ownership key
+    /// persists in Redis before expiring (default: 7200 = 2 hours).
+    #[serde(default = "default_call_ttl")]
+    pub call_ttl_secs: u64,
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -497,6 +502,10 @@ fn default_heartbeat_ttl() -> u64 {
     15
 }
 
+fn default_call_ttl() -> u64 {
+    7200
+}
+
 impl Default for ClusterSection {
     fn default() -> Self {
         Self {
@@ -504,6 +513,7 @@ impl Default for ClusterSection {
             cluster_secret: None,
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
+            call_ttl_secs: default_call_ttl(),
         }
     }
 }

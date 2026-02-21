@@ -214,14 +214,17 @@ pub fn apply_cached_stores(
     let cached_creds = Arc::new(fcp_core::CachedCredentialStore::new(
         Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
         cache_ttl,
+        10_000,
     ));
     let cached_exts = Arc::new(fcp_core::CachedExtensionStore::new(
         Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::ExtensionStore>,
         cache_ttl,
+        10_000,
     ));
     let cached_devs = Arc::new(fcp_core::CachedDeviceStore::new(
         Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::DeviceStore>,
         cache_ttl,
+        10_000,
     ));
 
     let inner = Arc::try_unwrap(dyn_storage).unwrap_or_else(|arc| (*arc).clone());

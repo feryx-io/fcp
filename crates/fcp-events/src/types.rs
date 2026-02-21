@@ -345,6 +345,23 @@ pub enum SystemEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// A new node joined the cluster (discovered via heartbeat).
+    NodeJoined {
+        node_id: String,
+        node_type: String,
+        address: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A node left the cluster (heartbeat expired or graceful shutdown).
+    NodeLeft {
+        node_id: String,
+        reason: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// User lifecycle events.
@@ -1016,6 +1033,8 @@ impl PlatformEvent {
                 SystemEvent::Stopping { .. } => "system.stopping",
                 SystemEvent::HealthCheck { .. } => "system.health_check",
                 SystemEvent::ConfigChanged { .. } => "system.config_changed",
+                SystemEvent::NodeJoined { .. } => "system.node_joined",
+                SystemEvent::NodeLeft { .. } => "system.node_left",
             },
             PlatformEvent::User(e) => match e {
                 UserEvent::Created { .. } => "user.created",
@@ -1159,7 +1178,11 @@ impl PlatformEvent {
             },
             PlatformEvent::System(e) => match e {
                 SystemEvent::ConfigChanged { tenant_id, .. } => Some(tenant_id),
-                _ => None,
+                SystemEvent::Started { .. }
+                | SystemEvent::Stopping { .. }
+                | SystemEvent::HealthCheck { .. }
+                | SystemEvent::NodeJoined { .. }
+                | SystemEvent::NodeLeft { .. } => None,
             },
             PlatformEvent::Media(_)
             | PlatformEvent::Ivr(_)
@@ -1344,7 +1367,9 @@ impl SystemEvent {
             SystemEvent::Started { timestamp, .. }
             | SystemEvent::Stopping { timestamp, .. }
             | SystemEvent::HealthCheck { timestamp, .. }
-            | SystemEvent::ConfigChanged { timestamp, .. } => *timestamp,
+            | SystemEvent::ConfigChanged { timestamp, .. }
+            | SystemEvent::NodeJoined { timestamp, .. }
+            | SystemEvent::NodeLeft { timestamp, .. } => *timestamp,
         }
     }
 }

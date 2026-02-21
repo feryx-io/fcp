@@ -7375,7 +7375,9 @@ impl SipMessageHandler {
                 if let Some(ref cp) = self.cluster_parking {
                     let cp = Arc::clone(cp);
                     tokio::spawn(async move {
-                        let _ = cp.cluster_unpark(orbit).await;
+                        if let Err(e) = cp.cluster_unpark(orbit).await {
+                            tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                        }
                     });
                 }
                 p
@@ -7411,7 +7413,9 @@ impl SipMessageHandler {
                             warn!(orbit = orbit, "Stale cluster parking entry for this node, cleaning up");
                             let cp = Arc::clone(cp);
                             tokio::spawn(async move {
-                                let _ = cp.cluster_unpark(orbit).await;
+                                if let Err(e) = cp.cluster_unpark(orbit).await {
+                                    tracing::warn!(orbit = orbit, error = %e, "Failed to clean up cluster parking entry");
+                                }
                             });
                         }
                         _ => {} // Not found in cluster either, or error
