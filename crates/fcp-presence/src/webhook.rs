@@ -11,6 +11,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 /// A registered webhook endpoint.
+#[deprecated(note = "Use fcp-webhooks for general-purpose webhook delivery")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookEndpoint {
     /// Unique endpoint identifier.
@@ -55,6 +56,7 @@ struct RetryEntry {
 
 /// Webhook dispatcher that subscribes to the event bus and delivers
 /// events to registered endpoints.
+#[deprecated(note = "Use fcp-webhooks for general-purpose webhook delivery")]
 pub struct WebhookDispatcher {
     endpoints: Arc<RwLock<Vec<WebhookEndpoint>>>,
     retry_queue: Arc<DashMap<String, RetryEntry>>,
@@ -265,6 +267,7 @@ impl WebhookDispatcher {
 ///
 /// Subscribes to presence events from the event bus and delivers them
 /// to registered webhook endpoints.
+#[deprecated(note = "Use fcp-webhooks for general-purpose webhook delivery")]
 pub fn spawn_webhook_consumer(
     event_bus: Arc<dyn fcp_events::EventSubscriber>,
     dispatcher: Arc<WebhookDispatcher>,

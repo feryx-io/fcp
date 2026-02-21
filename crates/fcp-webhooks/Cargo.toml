@@ -1,0 +1,37 @@
+[package]
+name = "fcp-webhooks"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "General-purpose webhook dispatcher for FCP platform events"
+
+[dependencies]
+# FCP crates
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# HMAC signing
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

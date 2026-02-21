@@ -11,6 +11,7 @@ mod cli;
 mod config;
 mod connection;
 mod nodes;
+mod routes;
 mod state;
 
 use anyhow::{Context, Result};
@@ -23,7 +24,8 @@ use axum::{
 };
 use clap::Parser;
 use fcp_core::TenantId;
-use fcp_events::{CallEvent, EventPublisher, InMemoryEventBus, PlatformEvent, SystemEvent};
+use fcp_events::{CallEvent, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent, SystemEvent};
+use fcp_webhooks::{WebhookDispatcher, WebhookDispatcherConfig};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,6 +50,8 @@ struct AppState {
     call_store: Arc<CallStateStore>,
     registration_store: Arc<RegistrationStateStore>,
     node_registry: Arc<NodeRegistry>,
+    #[allow(dead_code)]
+    webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
 }
 
 #[tokio::main]
@@ -96,6 +100,46 @@ async fn main() -> Result<()> {
     let registration_store = Arc::new(RegistrationStateStore::new());
     let node_registry = Arc::new(NodeRegistry::new());
 
+    // Create webhook dispatcher if enabled
+    let webhook_dispatcher = if config.webhook.enabled {
+        info!("Webhook dispatching enabled, initializing...");
+
+        // Initialize SQLite storage for webhooks
+        let sqlite_config =
+            fcp_storage_sqlite::SqliteConfig::new(&config.webhook.database_path);
+        let sqlite_storage = fcp_storage_sqlite::SqliteStorage::new(sqlite_config)
+            .await
+            .context("Failed to initialize SQLite storage for webhooks")?;
+        let webhook_store: Arc<dyn fcp_core::storage::WebhookStore> =
+            Arc::new(sqlite_storage);
+
+        let dispatcher_config = WebhookDispatcherConfig {
+            request_timeout: Duration::from_secs(config.webhook.request_timeout_secs),
+            max_retries: config.webhook.max_retries,
+            base_retry_delay: Duration::from_secs(config.webhook.base_retry_delay_secs),
+            max_retry_delay: Duration::from_secs(config.webhook.max_retry_delay_secs),
+            max_concurrent: config.webhook.max_concurrent,
+            retry_interval: Duration::from_secs(config.webhook.retry_interval_secs),
+        };
+
+        let dispatcher = Arc::new(WebhookDispatcher::new(webhook_store, dispatcher_config));
+
+        // Spawn event consumer that dispatches to webhooks
+        fcp_webhooks::spawn_webhook_consumer(
+            event_bus.clone() as Arc<dyn EventSubscriber>,
+            dispatcher.clone(),
+        );
+
+        // Spawn retry processor
+        fcp_webhooks::dispatcher::spawn_retry_processor(dispatcher.clone());
+
+        info!("Webhook dispatcher initialized");
+        Some(dispatcher)
+    } else {
+        info!("Webhook dispatching disabled");
+        None
+    };
+
     // Create application state
     let state = AppState {
         config: config.clone(),
@@ -104,6 +148,7 @@ async fn main() -> Result<()> {
         call_store: call_store.clone(),
         registration_store: registration_store.clone(),
         node_registry: node_registry.clone(),
+        webhook_dispatcher: webhook_dispatcher.clone(),
     };
 
     // Build router with new endpoints
@@ -128,6 +173,16 @@ async fn main() -> Result<()> {
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
+
+    // Merge webhook routes if dispatcher is available
+    let app = if let Some(ref dispatcher) = webhook_dispatcher {
+        let webhook_state = routes::webhooks::WebhookRouteState {
+            dispatcher: dispatcher.clone(),
+        };
+        app.merge(routes::webhooks::webhook_router(webhook_state))
+    } else {
+        app
+    };
 
     // Start background tasks
     let manager_clone = manager.clone();

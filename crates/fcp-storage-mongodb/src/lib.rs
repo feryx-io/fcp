@@ -29,12 +29,13 @@ use fcp_core::storage::{
     CredentialStore, DeviceStore, EmergencyContact, ExtensionStore, HangupCause, HangupParty,
     LineBindingStore, MediaPreferences, PhoneNumberStore, PresenceStore, QueueStore, Registration,
     RegistrationStore, ResourceListStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-    StoredResourceList, StoredSubscription, TenantStore, User,
+    StoredResourceList, StoredSubscription, TenantStore, User, WebhookDeliveryLog,
+    WebhookEndpoint, WebhookStore,
 };
 use fcp_core::{
     AudioCodec, CallId, Device, DeviceBinding, DeviceId, DeviceType, Extension, ExtensionId,
     ExtensionTarget, LineBinding, LineBindingId, PhoneNumber, PhoneNumberId, RegistrationState,
-    RingStrategy, ServiceId, Tenant, TenantId, UserId, VoicemailBoxId,
+    RingStrategy, ServiceId, Tenant, TenantId, UserId, VoicemailBoxId, WebhookId,
 };
 use fcp_core::{BindingType, NumberState};
 use mongodb::{
@@ -3172,6 +3173,45 @@ impl ResourceListStore for MongodbStorage {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to delete resource list: {}", e))?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl WebhookStore for MongodbStorage {
+    async fn create_endpoint(&self, _endpoint: WebhookEndpoint) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn get_endpoint(&self, _id: &WebhookId) -> Result<Option<WebhookEndpoint>> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn list_endpoints(&self, _tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn update_endpoint(&self, _endpoint: WebhookEndpoint) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn delete_endpoint(&self, _id: &WebhookId) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn log_delivery(&self, _log: WebhookDeliveryLog) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn get_pending_retries(&self, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn update_delivery_log(&self, _log: WebhookDeliveryLog) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
+    }
+
+    async fn get_delivery_logs(&self, _endpoint_id: &WebhookId, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        anyhow::bail!("Webhook store not yet implemented for Mongodb backend")
     }
 }
 

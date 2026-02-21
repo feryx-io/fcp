@@ -76,6 +76,7 @@ pub use crate::storage::{
     CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
     MediaPreferences, PresenceStore, QueueStore, Registration, RegistrationStore, StoredAgent,
     StoredAuthPolicy, StoredPresentity, StoredSubscription, TenantStore, User, UserFileEntry,
+    WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
 };
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{

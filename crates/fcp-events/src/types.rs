@@ -958,6 +958,200 @@ mod system_time_serde {
 }
 
 impl PlatformEvent {
+    /// Get a dotted event type name suitable for webhook filter matching.
+    ///
+    /// Returns names like `"call.initiated"`, `"voicemail.message_recorded"`,
+    /// `"presence.status_changed"`, etc.
+    pub fn event_type_name(&self) -> &'static str {
+        match self {
+            PlatformEvent::Call(e) => match e {
+                CallEvent::Initiated { .. } => "call.initiated",
+                CallEvent::Ringing { .. } => "call.ringing",
+                CallEvent::Progress { .. } => "call.progress",
+                CallEvent::Answered { .. } => "call.answered",
+                CallEvent::Ended { .. } => "call.ended",
+                CallEvent::Failed { .. } => "call.failed",
+                CallEvent::Parked { .. } => "call.parked",
+                CallEvent::Unparked { .. } => "call.unparked",
+            },
+            PlatformEvent::Media(e) => match e {
+                MediaEvent::SessionStarted { .. } => "media.session_started",
+                MediaEvent::SessionEnded { .. } => "media.session_ended",
+                MediaEvent::DtmfReceived { .. } => "media.dtmf_received",
+                MediaEvent::QualityWarning { .. } => "media.quality_warning",
+            },
+            PlatformEvent::Ivr(e) => match e {
+                IvrEvent::PromptStarted { .. } => "ivr.prompt_started",
+                IvrEvent::PromptCompleted { .. } => "ivr.prompt_completed",
+                IvrEvent::InputGathered { .. } => "ivr.input_gathered",
+                IvrEvent::GatherTimeout { .. } => "ivr.gather_timeout",
+            },
+            PlatformEvent::Recording(e) => match e {
+                RecordingEvent::Started { .. } => "recording.started",
+                RecordingEvent::Completed { .. } => "recording.completed",
+                RecordingEvent::Failed { .. } => "recording.failed",
+            },
+            PlatformEvent::Flow(e) => match e {
+                FlowEvent::Started { .. } => "flow.started",
+                FlowEvent::NodeExecuted { .. } => "flow.node_executed",
+                FlowEvent::WaitingForInput { .. } => "flow.waiting_for_input",
+                FlowEvent::Completed { .. } => "flow.completed",
+                FlowEvent::Failed { .. } => "flow.failed",
+            },
+            PlatformEvent::System(e) => match e {
+                SystemEvent::Started { .. } => "system.started",
+                SystemEvent::Stopping { .. } => "system.stopping",
+                SystemEvent::HealthCheck { .. } => "system.health_check",
+            },
+            PlatformEvent::User(e) => match e {
+                UserEvent::Created { .. } => "user.created",
+                UserEvent::Updated { .. } => "user.updated",
+                UserEvent::Deleted { .. } => "user.deleted",
+                UserEvent::Enabled { .. } => "user.enabled",
+                UserEvent::Disabled { .. } => "user.disabled",
+            },
+            PlatformEvent::Registration(e) => match e {
+                RegistrationEvent::Registered { .. } => "registration.registered",
+                RegistrationEvent::Refreshed { .. } => "registration.refreshed",
+                RegistrationEvent::Unregistered { .. } => "registration.unregistered",
+                RegistrationEvent::Expired { .. } => "registration.expired",
+                RegistrationEvent::Failed { .. } => "registration.failed",
+            },
+            PlatformEvent::Voicemail(e) => match e {
+                VoicemailEvent::MessageRecorded { .. } => "voicemail.message_recorded",
+                VoicemailEvent::MessageDeleted { .. } => "voicemail.message_deleted",
+                VoicemailEvent::MessagePlayed { .. } => "voicemail.message_played",
+                VoicemailEvent::MwiUpdated { .. } => "voicemail.mwi_updated",
+            },
+            PlatformEvent::Conference(e) => match e {
+                ConferenceEvent::ParticipantJoined { .. } => "conference.participant_joined",
+                ConferenceEvent::ParticipantLeft { .. } => "conference.participant_left",
+                ConferenceEvent::RoomLocked { .. } => "conference.room_locked",
+                ConferenceEvent::RoomUnlocked { .. } => "conference.room_unlocked",
+                ConferenceEvent::RecordingStarted { .. } => "conference.recording_started",
+                ConferenceEvent::RecordingStopped { .. } => "conference.recording_stopped",
+                ConferenceEvent::PinFailed { .. } => "conference.pin_failed",
+                ConferenceEvent::RoomDestroyed { .. } => "conference.room_destroyed",
+                ConferenceEvent::MeetingCreated { .. } => "conference.meeting_created",
+                ConferenceEvent::MeetingUpdated { .. } => "conference.meeting_updated",
+                ConferenceEvent::MeetingDeleted { .. } => "conference.meeting_deleted",
+                ConferenceEvent::MeetingStarted { .. } => "conference.meeting_started",
+                ConferenceEvent::MeetingEnded { .. } => "conference.meeting_ended",
+            },
+            PlatformEvent::Queue(e) => match e {
+                QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
+                QueueEvent::CallerDequeued { .. } => "queue.caller_dequeued",
+                QueueEvent::CallerAbandoned { .. } => "queue.caller_abandoned",
+                QueueEvent::CallerOverflowed { .. } => "queue.caller_overflowed",
+                QueueEvent::AgentLoggedIn { .. } => "queue.agent_logged_in",
+                QueueEvent::AgentLoggedOut { .. } => "queue.agent_logged_out",
+                QueueEvent::AgentStateChanged { .. } => "queue.agent_state_changed",
+                QueueEvent::AgentKicked { .. } => "queue.agent_kicked",
+                QueueEvent::CallbackInitiated { .. } => "queue.callback_initiated",
+                QueueEvent::StatsSnapshot { .. } => "queue.stats_snapshot",
+                QueueEvent::CallerTransferred { .. } => "queue.caller_transferred",
+                QueueEvent::SupervisorJoined { .. } => "queue.supervisor_joined",
+                QueueEvent::SupervisorLeft { .. } => "queue.supervisor_left",
+                QueueEvent::CallbackAttempted { .. } => "queue.callback_attempted",
+                QueueEvent::CallbackCompleted { .. } => "queue.callback_completed",
+                QueueEvent::CallbackFailed { .. } => "queue.callback_failed",
+                QueueEvent::ServiceLevelWarning { .. } => "queue.service_level_warning",
+                QueueEvent::QueueDraining { .. } => "queue.queue_draining",
+                QueueEvent::QueueDrained { .. } => "queue.queue_drained",
+                QueueEvent::CampaignCallPlaced { .. } => "queue.campaign_call_placed",
+                QueueEvent::CampaignCallConnected { .. } => "queue.campaign_call_connected",
+                QueueEvent::CampaignCallFailed { .. } => "queue.campaign_call_failed",
+            },
+            PlatformEvent::Presence(e) => match e {
+                PresenceEvent::StatusChanged { .. } => "presence.status_changed",
+                PresenceEvent::WatcherAdded { .. } => "presence.watcher_added",
+                PresenceEvent::WatcherRemoved { .. } => "presence.watcher_removed",
+                PresenceEvent::PublishReceived { .. } => "presence.publish_received",
+                PresenceEvent::DialogChanged { .. } => "presence.dialog_changed",
+                PresenceEvent::PublishExpiryWarning { .. } => "presence.publish_expiry_warning",
+                PresenceEvent::PublishExpired { .. } => "presence.publish_expired",
+            },
+        }
+    }
+
+    /// Extract the tenant ID from this event, if the event variant carries one.
+    pub fn tenant_id(&self) -> Option<&TenantId> {
+        match self {
+            PlatformEvent::Call(e) => match e {
+                CallEvent::Initiated { tenant_id, .. } => Some(tenant_id),
+                _ => None,
+            },
+            PlatformEvent::User(e) => match e {
+                UserEvent::Created { tenant_id, .. }
+                | UserEvent::Updated { tenant_id, .. }
+                | UserEvent::Deleted { tenant_id, .. }
+                | UserEvent::Enabled { tenant_id, .. }
+                | UserEvent::Disabled { tenant_id, .. } => Some(tenant_id),
+            },
+            PlatformEvent::Registration(e) => match e {
+                RegistrationEvent::Registered { tenant_id, .. }
+                | RegistrationEvent::Refreshed { tenant_id, .. }
+                | RegistrationEvent::Unregistered { tenant_id, .. }
+                | RegistrationEvent::Expired { tenant_id, .. }
+                | RegistrationEvent::Failed { tenant_id, .. } => Some(tenant_id),
+            },
+            PlatformEvent::Conference(e) => match e {
+                ConferenceEvent::ParticipantJoined { tenant_id, .. }
+                | ConferenceEvent::ParticipantLeft { tenant_id, .. }
+                | ConferenceEvent::RoomLocked { tenant_id, .. }
+                | ConferenceEvent::RoomUnlocked { tenant_id, .. }
+                | ConferenceEvent::RecordingStarted { tenant_id, .. }
+                | ConferenceEvent::RecordingStopped { tenant_id, .. }
+                | ConferenceEvent::PinFailed { tenant_id, .. }
+                | ConferenceEvent::RoomDestroyed { tenant_id, .. }
+                | ConferenceEvent::MeetingCreated { tenant_id, .. }
+                | ConferenceEvent::MeetingUpdated { tenant_id, .. }
+                | ConferenceEvent::MeetingDeleted { tenant_id, .. }
+                | ConferenceEvent::MeetingStarted { tenant_id, .. }
+                | ConferenceEvent::MeetingEnded { tenant_id, .. } => Some(tenant_id),
+            },
+            PlatformEvent::Queue(e) => match e {
+                QueueEvent::CallerEnqueued { tenant_id, .. }
+                | QueueEvent::CallerDequeued { tenant_id, .. }
+                | QueueEvent::CallerAbandoned { tenant_id, .. }
+                | QueueEvent::CallerOverflowed { tenant_id, .. }
+                | QueueEvent::AgentLoggedIn { tenant_id, .. }
+                | QueueEvent::AgentLoggedOut { tenant_id, .. }
+                | QueueEvent::AgentStateChanged { tenant_id, .. }
+                | QueueEvent::AgentKicked { tenant_id, .. }
+                | QueueEvent::CallbackInitiated { tenant_id, .. }
+                | QueueEvent::StatsSnapshot { tenant_id, .. }
+                | QueueEvent::CallerTransferred { tenant_id, .. }
+                | QueueEvent::SupervisorJoined { tenant_id, .. }
+                | QueueEvent::SupervisorLeft { tenant_id, .. }
+                | QueueEvent::CallbackAttempted { tenant_id, .. }
+                | QueueEvent::CallbackCompleted { tenant_id, .. }
+                | QueueEvent::CallbackFailed { tenant_id, .. }
+                | QueueEvent::ServiceLevelWarning { tenant_id, .. }
+                | QueueEvent::QueueDraining { tenant_id, .. }
+                | QueueEvent::QueueDrained { tenant_id, .. }
+                | QueueEvent::CampaignCallPlaced { tenant_id, .. }
+                | QueueEvent::CampaignCallConnected { tenant_id, .. }
+                | QueueEvent::CampaignCallFailed { tenant_id, .. } => Some(tenant_id),
+            },
+            PlatformEvent::Presence(e) => match e {
+                PresenceEvent::StatusChanged { tenant_id, .. }
+                | PresenceEvent::WatcherAdded { tenant_id, .. }
+                | PresenceEvent::WatcherRemoved { tenant_id, .. }
+                | PresenceEvent::PublishReceived { tenant_id, .. }
+                | PresenceEvent::DialogChanged { tenant_id, .. }
+                | PresenceEvent::PublishExpiryWarning { tenant_id, .. }
+                | PresenceEvent::PublishExpired { tenant_id, .. } => Some(tenant_id),
+            },
+            PlatformEvent::Media(_)
+            | PlatformEvent::Ivr(_)
+            | PlatformEvent::Recording(_)
+            | PlatformEvent::Flow(_)
+            | PlatformEvent::System(_)
+            | PlatformEvent::Voicemail(_) => None,
+        }
+    }
+
     /// Get the call ID associated with this event, if any.
     pub fn call_id(&self) -> Option<&CallId> {
         match self {

@@ -72,6 +72,7 @@ define_id!(VoicemailBoxId, "vm");
 define_id!(ServiceId, "svc");
 define_id!(UserId, "user");
 define_id!(MeetingId, "mtg");
+define_id!(WebhookId, "whk");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

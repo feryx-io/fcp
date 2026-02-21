@@ -33,12 +33,12 @@ use fcp_core::{
         CdrStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
         PresenceStore, QueueStore, RegistrationStore, ResourceListStore, StoredAgent,
         StoredAuthPolicy, StoredPresentity, StoredQueueSnapshot, StoredResourceList,
-        StoredSubscription,
+        StoredSubscription, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
     LineBinding, LineBindingId, MediaPreferences, NumberState, PhoneNumber, PhoneNumberId,
-    Registration, RegistrationState, RingStrategy, TenantId, User, UserId, VoicemailBoxId,
+    Registration, RegistrationState, RingStrategy, TenantId, User, UserId, VoicemailBoxId, WebhookId,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
@@ -3799,6 +3799,248 @@ impl ResourceListStore for SqliteStorage {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+// ============================================================================
+// WebhookStore implementation
+// ============================================================================
+
+#[async_trait]
+impl WebhookStore for SqliteStorage {
+    async fn create_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        let events_json = serde_json::to_string(&endpoint.events)?;
+        let now_epoch = endpoint
+            .created_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        sqlx::query(
+            "INSERT INTO webhook_endpoints (id, tenant_id, url, secret, events, enabled, description, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(endpoint.id.to_string())
+        .bind(endpoint.tenant_id.to_string())
+        .bind(&endpoint.url)
+        .bind(&endpoint.secret)
+        .bind(&events_json)
+        .bind(endpoint.enabled)
+        .bind(&endpoint.description)
+        .bind(now_epoch)
+        .bind(now_epoch)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_endpoint(&self, id: &WebhookId) -> Result<Option<WebhookEndpoint>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, url, secret, events, enabled, description, created_at, updated_at
+             FROM webhook_endpoints WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| row_to_webhook_endpoint(&r)))
+    }
+
+    async fn list_endpoints(&self, tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, url, secret, events, enabled, description, created_at, updated_at
+             FROM webhook_endpoints WHERE tenant_id = ?",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(row_to_webhook_endpoint).collect())
+    }
+
+    async fn update_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        let events_json = serde_json::to_string(&endpoint.events)?;
+        let updated_epoch = endpoint
+            .updated_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        sqlx::query(
+            "UPDATE webhook_endpoints SET url = ?, secret = ?, events = ?, enabled = ?, description = ?, updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(&endpoint.url)
+        .bind(&endpoint.secret)
+        .bind(&events_json)
+        .bind(endpoint.enabled)
+        .bind(&endpoint.description)
+        .bind(updated_epoch)
+        .bind(endpoint.id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_endpoint(&self, id: &WebhookId) -> Result<()> {
+        sqlx::query("DELETE FROM webhook_endpoints WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()> {
+        let created_epoch = log
+            .created_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let last_attempt_epoch = log
+            .last_attempt_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let next_retry_epoch = log
+            .next_retry_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+
+        sqlx::query(
+            "INSERT INTO webhook_delivery_log
+             (id, endpoint_id, event_type, payload, status_code, attempts, last_attempt_at, next_retry_at, delivered, error, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&log.id)
+        .bind(log.endpoint_id.to_string())
+        .bind(&log.event_type)
+        .bind(&log.payload)
+        .bind(log.status_code.map(|c| c as i32))
+        .bind(log.attempts as i32)
+        .bind(last_attempt_epoch)
+        .bind(next_retry_epoch)
+        .bind(log.delivered)
+        .bind(&log.error)
+        .bind(created_epoch)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        let now_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let rows = sqlx::query(
+            "SELECT id, endpoint_id, event_type, payload, status_code, attempts,
+                    last_attempt_at, next_retry_at, delivered, error, created_at
+             FROM webhook_delivery_log
+             WHERE delivered = 0 AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+             ORDER BY next_retry_at ASC
+             LIMIT ?",
+        )
+        .bind(now_epoch)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(row_to_delivery_log).collect())
+    }
+
+    async fn update_delivery_log(&self, log: WebhookDeliveryLog) -> Result<()> {
+        let last_attempt_epoch = log
+            .last_attempt_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+        let next_retry_epoch = log
+            .next_retry_at
+            .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64);
+
+        sqlx::query(
+            "UPDATE webhook_delivery_log
+             SET status_code = ?, attempts = ?, last_attempt_at = ?, next_retry_at = ?,
+                 delivered = ?, error = ?
+             WHERE id = ?",
+        )
+        .bind(log.status_code.map(|c| c as i32))
+        .bind(log.attempts as i32)
+        .bind(last_attempt_epoch)
+        .bind(next_retry_epoch)
+        .bind(log.delivered)
+        .bind(&log.error)
+        .bind(&log.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_delivery_logs(
+        &self,
+        endpoint_id: &WebhookId,
+        limit: usize,
+    ) -> Result<Vec<WebhookDeliveryLog>> {
+        let rows = sqlx::query(
+            "SELECT id, endpoint_id, event_type, payload, status_code, attempts,
+                    last_attempt_at, next_retry_at, delivered, error, created_at
+             FROM webhook_delivery_log
+             WHERE endpoint_id = ?
+             ORDER BY created_at DESC
+             LIMIT ?",
+        )
+        .bind(endpoint_id.to_string())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(row_to_delivery_log).collect())
+    }
+}
+
+fn row_to_webhook_endpoint(r: &sqlx::sqlite::SqliteRow) -> WebhookEndpoint {
+    let events_str: String = r.get("events");
+    let events: Vec<String> = serde_json::from_str(&events_str).unwrap_or_default();
+    let created_epoch: i64 = r.get("created_at");
+    let updated_epoch: i64 = r.get("updated_at");
+
+    WebhookEndpoint {
+        id: r
+            .get::<String, _>("id")
+            .parse()
+            .unwrap_or_else(|_| WebhookId::new()),
+        tenant_id: r
+            .get::<String, _>("tenant_id")
+            .parse()
+            .unwrap_or_default(),
+        url: r.get("url"),
+        secret: r.get("secret"),
+        events,
+        enabled: r.get("enabled"),
+        description: r.get("description"),
+        created_at: UNIX_EPOCH + Duration::from_secs(created_epoch as u64),
+        updated_at: UNIX_EPOCH + Duration::from_secs(updated_epoch as u64),
+    }
+}
+
+fn row_to_delivery_log(r: &sqlx::sqlite::SqliteRow) -> WebhookDeliveryLog {
+    let created_epoch: i64 = r.get("created_at");
+    let last_attempt_epoch: Option<i64> = r.get("last_attempt_at");
+    let next_retry_epoch: Option<i64> = r.get("next_retry_at");
+    let status_code: Option<i32> = r.get("status_code");
+    let attempts: i32 = r.get("attempts");
+
+    WebhookDeliveryLog {
+        id: r.get("id"),
+        endpoint_id: r
+            .get::<String, _>("endpoint_id")
+            .parse()
+            .unwrap_or_else(|_| WebhookId::new()),
+        event_type: r.get("event_type"),
+        payload: r.get("payload"),
+        status_code: status_code.map(|c| c as u16),
+        attempts: attempts as u32,
+        last_attempt_at: last_attempt_epoch
+            .map(|e| UNIX_EPOCH + Duration::from_secs(e as u64)),
+        next_retry_at: next_retry_epoch
+            .map(|e| UNIX_EPOCH + Duration::from_secs(e as u64)),
+        delivered: r.get("delivered"),
+        error: r.get("error"),
+        created_at: UNIX_EPOCH + Duration::from_secs(created_epoch as u64),
     }
 }
 

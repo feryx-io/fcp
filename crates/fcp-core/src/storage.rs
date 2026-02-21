@@ -1411,6 +1411,96 @@ pub trait PresenceHistoryStore: Send + Sync {
     ) -> Result<Vec<PresenceSummary>>;
 }
 
+/// A registered webhook endpoint for receiving platform event notifications.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookEndpoint {
+    /// Unique webhook endpoint identifier
+    pub id: crate::WebhookId,
+    /// Tenant ID for multi-tenancy
+    pub tenant_id: crate::TenantId,
+    /// HTTP(S) URL to POST events to
+    pub url: String,
+    /// HMAC-SHA256 secret for signing payloads
+    pub secret: String,
+    /// Event type filter (e.g., `["call.initiated", "voicemail.new_message"]`). Empty = all events.
+    pub events: Vec<String>,
+    /// Whether this endpoint is currently enabled
+    pub enabled: bool,
+    /// Optional description for this endpoint
+    pub description: Option<String>,
+    /// Creation timestamp
+    #[serde(with = "system_time_serde")]
+    pub created_at: SystemTime,
+    /// Last modified timestamp
+    #[serde(with = "system_time_serde")]
+    pub updated_at: SystemTime,
+}
+
+/// A delivery log entry for a webhook invocation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookDeliveryLog {
+    /// Unique delivery log ID (UUID string)
+    pub id: String,
+    /// The webhook endpoint this delivery is for
+    pub endpoint_id: crate::WebhookId,
+    /// The event type that triggered this delivery
+    pub event_type: String,
+    /// The serialized JSON payload
+    pub payload: String,
+    /// HTTP status code from the endpoint (if received)
+    pub status_code: Option<u16>,
+    /// Number of delivery attempts so far
+    pub attempts: u32,
+    /// When the last attempt was made
+    #[serde(with = "optional_system_time_serde")]
+    pub last_attempt_at: Option<SystemTime>,
+    /// When the next retry is scheduled
+    #[serde(with = "optional_system_time_serde")]
+    pub next_retry_at: Option<SystemTime>,
+    /// Whether the delivery was successful
+    pub delivered: bool,
+    /// Error message from the last failed attempt
+    pub error: Option<String>,
+    /// When this delivery log was created
+    #[serde(with = "system_time_serde")]
+    pub created_at: SystemTime,
+}
+
+/// Storage backend for webhook endpoints and delivery logs.
+#[async_trait]
+pub trait WebhookStore: Send + Sync {
+    /// Create a new webhook endpoint.
+    async fn create_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()>;
+
+    /// Get a webhook endpoint by ID.
+    async fn get_endpoint(&self, id: &crate::WebhookId) -> Result<Option<WebhookEndpoint>>;
+
+    /// List all webhook endpoints for a tenant.
+    async fn list_endpoints(&self, tenant_id: &crate::TenantId) -> Result<Vec<WebhookEndpoint>>;
+
+    /// Update an existing webhook endpoint.
+    async fn update_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()>;
+
+    /// Delete a webhook endpoint by ID.
+    async fn delete_endpoint(&self, id: &crate::WebhookId) -> Result<()>;
+
+    /// Log a webhook delivery attempt.
+    async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()>;
+
+    /// Get pending retries (undelivered, next_retry_at <= now, ordered by next_retry_at).
+    async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>>;
+
+    /// Update a delivery log entry (e.g., after retry attempt).
+    async fn update_delivery_log(&self, log: WebhookDeliveryLog) -> Result<()>;
+
+    /// Get recent delivery logs for an endpoint.
+    async fn get_delivery_logs(
+        &self,
+        endpoint_id: &crate::WebhookId,
+        limit: usize,
+    ) -> Result<Vec<WebhookDeliveryLog>>;
+}
+
 /// Serde helper for Optional<SystemTime>
 mod optional_system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1725,6 +1815,7 @@ pub struct DynStorage {
     queue_store: Arc<dyn QueueStore>,
     presence_store: Arc<dyn PresenceStore>,
     resource_list_store: Arc<dyn ResourceListStore>,
+    webhook_store: Arc<dyn WebhookStore>,
 }
 
 impl DynStorage {
@@ -1745,6 +1836,7 @@ impl DynStorage {
         queue_store: Arc<dyn QueueStore>,
         presence_store: Arc<dyn PresenceStore>,
         resource_list_store: Arc<dyn ResourceListStore>,
+        webhook_store: Arc<dyn WebhookStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1762,6 +1854,7 @@ impl DynStorage {
             queue_store,
             presence_store,
             resource_list_store,
+            webhook_store,
         }
     }
 
@@ -1786,6 +1879,7 @@ impl DynStorage {
             + QueueStore
             + PresenceStore
             + ResourceListStore
+            + WebhookStore
             + 'static,
     {
         Self {
@@ -1803,7 +1897,8 @@ impl DynStorage {
             conference_store: storage.clone(),
             queue_store: storage.clone(),
             presence_store: storage.clone(),
-            resource_list_store: storage,
+            resource_list_store: storage.clone(),
+            webhook_store: storage,
         }
     }
 
@@ -1815,6 +1910,11 @@ impl DynStorage {
     /// Get the resource list store.
     pub fn resource_list_store(&self) -> &Arc<dyn ResourceListStore> {
         &self.resource_list_store
+    }
+
+    /// Get the webhook store.
+    pub fn webhook_store(&self) -> &Arc<dyn WebhookStore> {
+        &self.webhook_store
     }
 }
 
@@ -2372,6 +2472,51 @@ impl ResourceListStore for DynStorage {
 
     async fn delete_resource_list(&self, uri: &str) -> Result<()> {
         self.resource_list_store.delete_resource_list(uri).await
+    }
+}
+
+#[async_trait]
+impl WebhookStore for DynStorage {
+    async fn create_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        self.webhook_store.create_endpoint(endpoint).await
+    }
+
+    async fn get_endpoint(&self, id: &crate::WebhookId) -> Result<Option<WebhookEndpoint>> {
+        self.webhook_store.get_endpoint(id).await
+    }
+
+    async fn list_endpoints(&self, tenant_id: &crate::TenantId) -> Result<Vec<WebhookEndpoint>> {
+        self.webhook_store.list_endpoints(tenant_id).await
+    }
+
+    async fn update_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        self.webhook_store.update_endpoint(endpoint).await
+    }
+
+    async fn delete_endpoint(&self, id: &crate::WebhookId) -> Result<()> {
+        self.webhook_store.delete_endpoint(id).await
+    }
+
+    async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()> {
+        self.webhook_store.log_delivery(log).await
+    }
+
+    async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        self.webhook_store.get_pending_retries(limit).await
+    }
+
+    async fn update_delivery_log(&self, log: WebhookDeliveryLog) -> Result<()> {
+        self.webhook_store.update_delivery_log(log).await
+    }
+
+    async fn get_delivery_logs(
+        &self,
+        endpoint_id: &crate::WebhookId,
+        limit: usize,
+    ) -> Result<Vec<WebhookDeliveryLog>> {
+        self.webhook_store
+            .get_delivery_logs(endpoint_id, limit)
+            .await
     }
 }
 

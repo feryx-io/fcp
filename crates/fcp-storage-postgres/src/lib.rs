@@ -35,13 +35,13 @@ use fcp_core::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
         PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore, ResourceListStore,
         StoredAgent, StoredAuthPolicy, StoredPresentity, StoredResourceList, StoredSubscription,
-        TenantStore,
+        TenantStore, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
     HangupCause, HangupParty, LineBinding, LineBindingId, MediaPreferences, NumberState,
     PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, Tenant, TenantId,
-    User, UserId,
+    User, UserId, WebhookId,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Pool, Postgres, Row};
@@ -2443,6 +2443,45 @@ impl ResourceListStore for PostgresStorage {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl WebhookStore for PostgresStorage {
+    async fn create_endpoint(&self, _endpoint: WebhookEndpoint) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn get_endpoint(&self, _id: &WebhookId) -> Result<Option<WebhookEndpoint>> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn list_endpoints(&self, _tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn update_endpoint(&self, _endpoint: WebhookEndpoint) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn delete_endpoint(&self, _id: &WebhookId) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn log_delivery(&self, _log: WebhookDeliveryLog) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn get_pending_retries(&self, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn update_delivery_log(&self, _log: WebhookDeliveryLog) -> Result<()> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+
+    async fn get_delivery_logs(&self, _endpoint_id: &WebhookId, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
     }
 }
 

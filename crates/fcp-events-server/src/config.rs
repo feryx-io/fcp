@@ -34,6 +34,10 @@ pub struct EventsConfig {
     /// Upstream services configuration
     #[serde(default)]
     pub upstream: UpstreamConfig,
+
+    /// Webhook dispatcher configuration
+    #[serde(default)]
+    pub webhook: WebhookConfig,
 }
 
 /// Upstream services configuration
@@ -56,6 +60,65 @@ impl Default for UpstreamConfig {
     }
 }
 
+/// Webhook dispatcher configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebhookConfig {
+    /// Whether webhook dispatching is enabled
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// HTTP request timeout in seconds
+    #[serde(default = "default_webhook_request_timeout")]
+    pub request_timeout_secs: u64,
+
+    /// Maximum number of delivery retries
+    #[serde(default = "default_webhook_max_retries")]
+    pub max_retries: u32,
+
+    /// Base retry delay in seconds (doubles with each attempt)
+    #[serde(default = "default_webhook_base_retry_delay")]
+    pub base_retry_delay_secs: u64,
+
+    /// Maximum retry delay in seconds
+    #[serde(default = "default_webhook_max_retry_delay")]
+    pub max_retry_delay_secs: u64,
+
+    /// Maximum concurrent webhook deliveries
+    #[serde(default = "default_webhook_max_concurrent")]
+    pub max_concurrent: usize,
+
+    /// How often to poll for pending retries (seconds)
+    #[serde(default = "default_webhook_retry_interval")]
+    pub retry_interval_secs: u64,
+
+    /// SQLite database path for webhook storage
+    #[serde(default = "default_webhook_db_path")]
+    pub database_path: String,
+}
+
+fn default_webhook_request_timeout() -> u64 { 10 }
+fn default_webhook_max_retries() -> u32 { 5 }
+fn default_webhook_base_retry_delay() -> u64 { 30 }
+fn default_webhook_max_retry_delay() -> u64 { 3600 }
+fn default_webhook_max_concurrent() -> usize { 50 }
+fn default_webhook_retry_interval() -> u64 { 60 }
+fn default_webhook_db_path() -> String { "/var/lib/fcp/fcp.db".to_string() }
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            request_timeout_secs: default_webhook_request_timeout(),
+            max_retries: default_webhook_max_retries(),
+            base_retry_delay_secs: default_webhook_base_retry_delay(),
+            max_retry_delay_secs: default_webhook_max_retry_delay(),
+            max_concurrent: default_webhook_max_concurrent(),
+            retry_interval_secs: default_webhook_retry_interval(),
+            database_path: default_webhook_db_path(),
+        }
+    }
+}
+
 impl Default for EventsConfig {
     fn default() -> Self {
         Self {
@@ -65,6 +128,7 @@ impl Default for EventsConfig {
             limits: LimitsConfig::default(),
             logging: LoggingConfig::default(),
             upstream: UpstreamConfig::default(),
+            webhook: WebhookConfig::default(),
         }
     }
 }
@@ -345,6 +409,8 @@ mod tests {
         assert_eq!(config.websocket.bind_address.port(), 8081);
         assert_eq!(config.event_bus.bus_type, "in-memory");
         assert_eq!(config.limits.max_connections, 10000);
+        assert!(!config.webhook.enabled);
+        assert_eq!(config.webhook.max_retries, 5);
     }
 
     #[test]
