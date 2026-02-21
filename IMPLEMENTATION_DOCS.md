@@ -20,6 +20,7 @@ This document provides implementation details for all major features in the Ferr
 12. [REST API](#12-rest-api)
 13. [Storage Backends](#13-storage-backends)
 14. [Standalone Binaries](#14-standalone-binaries)
+15. [Webhooks](#15-webhooks)
 
 ---
 
@@ -568,6 +569,7 @@ Pluggable storage backends implementing the trait-based storage layer defined in
 | `ExtensionStore` | Extension definitions and routing targets |
 | `DeviceStore` | Device provisioning data |
 | `VoicemailStore` | Mailbox and message management |
+| `WebhookStore` | Webhook endpoint CRUD and delivery logs |
 | `GeoRoutingStore` | Geographic routing rules |
 | `PortingStore` | Number porting records |
 | `TenantStore` | Multi-tenant configuration |
@@ -655,6 +657,154 @@ API gateway for routing REST requests to appropriate backend services. Handles a
 
 ---
 
+## 15. Webhooks
+
+**Crate:** `fcp-webhooks` (dispatcher), `fcp-core` (storage trait + types), `fcp-events-server` (REST API)
+**Path:** `crates/fcp-webhooks/src/`, `crates/fcp-events-server/src/routes/webhooks.rs`
+
+### Overview
+
+General-purpose webhook delivery system that subscribes to the FCP event bus, matches events against per-tenant endpoint filters, signs payloads with HMAC-SHA256, and delivers them via HTTP POST with exponential-backoff retries. Replaces the earlier presence-specific webhook implementation in `fcp-presence` (now deprecated).
+
+### Architecture
+
+```
+Event Bus (all PlatformEvents)
+        |
+        v
+  spawn_webhook_consumer()     ← subscribes to all events
+        |
+        v
+  WebhookDispatcher::dispatch()
+        |
+        ├─ extract tenant_id from event
+        ├─ WebhookStore::list_endpoints(tenant_id)
+        ├─ filter by enabled + event type match
+        └─ deliver_to_endpoint() for each match
+                |
+                ├─ HMAC-SHA256 sign payload
+                ├─ HTTP POST with headers:
+                │     Content-Type: application/json
+                │     X-FCP-Event: <event_type>
+                │     X-FCP-Signature: sha256=<hex>
+                └─ Log delivery result to WebhookStore
+                        |
+                        └─ On failure: schedule retry with backoff
+```
+
+### Key Components
+
+| File | Purpose |
+|------|---------|
+| `fcp-webhooks/src/dispatcher.rs` | `WebhookDispatcher` — core dispatch and retry logic with concurrency-limited delivery via semaphore |
+| `fcp-webhooks/src/consumer.rs` | `spawn_webhook_consumer()` — subscribes to event bus and feeds events to dispatcher |
+| `fcp-webhooks/src/payload.rs` | `WebhookPayload` struct and `compute_signature()` HMAC-SHA256 signing |
+| `fcp-core/src/storage.rs` | `WebhookStore` trait, `WebhookEndpoint` and `WebhookDeliveryLog` types |
+| `fcp-events-server/src/routes/webhooks.rs` | REST API for endpoint CRUD, test delivery, and delivery log inspection |
+| `fcp-storage-sqlite/migrations/019_add_webhooks.sql` | SQLite schema for `webhook_endpoints` and `webhook_delivery_log` tables |
+
+### WebhookStore Trait
+
+```rust
+#[async_trait]
+pub trait WebhookStore: Send + Sync {
+    async fn create_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()>;
+    async fn get_endpoint(&self, id: &WebhookId) -> Result<Option<WebhookEndpoint>>;
+    async fn list_endpoints(&self, tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>>;
+    async fn update_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()>;
+    async fn delete_endpoint(&self, id: &WebhookId) -> Result<()>;
+    async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()>;
+    async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>>;
+    async fn update_delivery_log(&self, log: WebhookDeliveryLog) -> Result<()>;
+    async fn get_delivery_logs(&self, endpoint_id: &WebhookId, limit: usize) -> Result<Vec<WebhookDeliveryLog>>;
+}
+```
+
+Implemented by all four storage backends (SQLite, PostgreSQL, MySQL, MongoDB).
+
+### Event Type Matching
+
+Endpoints specify an `events` filter list. Matching rules:
+
+- Empty list or `["*"]` — matches all events
+- Exact match — e.g., `"call.initiated"` matches only that event
+- Category wildcard — e.g., `"call.*"` matches `call.initiated`, `call.ended`, etc.
+
+Event type names use dotted notation derived from `PlatformEvent::event_type_name()`:
+
+| Category | Example Types |
+|----------|---------------|
+| Call | `call.initiated`, `call.ringing`, `call.answered`, `call.ended`, `call.failed` |
+| Media | `media.session_started`, `media.dtmf_received` |
+| Registration | `registration.registered`, `registration.unregistered` |
+| Voicemail | `voicemail.message_recorded`, `voicemail.mwi_updated` |
+| System | `system.started`, `system.stopping`, `system.health_check` |
+| Presence | `presence.status_changed`, `presence.dialog_changed` |
+
+### Webhook Payload
+
+Every delivery sends a JSON payload with this structure:
+
+```json
+{
+    "event_id": "uuid",
+    "event_type": "call.initiated",
+    "timestamp": "2026-02-20T15:30:00Z",
+    "tenant_id": "tenant-...",
+    "data": { /* full serialized PlatformEvent */ }
+}
+```
+
+### Retry Logic
+
+Failed deliveries are persisted to `WebhookDeliveryLog` with a `next_retry_at` timestamp. A background task (`spawn_retry_processor`) polls periodically and re-attempts delivery:
+
+- **Backoff**: exponential — `base_delay * 2^(attempt-1)`, capped at `max_retry_delay`
+- **Default**: 30s base, 1h max, 5 retries → 30s, 60s, 120s, 240s, 480s
+- **Concurrency**: limited by semaphore (default 50 concurrent deliveries)
+- **Exhaustion**: after max retries, marked permanently failed with `next_retry_at = NULL`
+
+### REST API
+
+All endpoints are served by `fcp-events-server` when webhook dispatching is enabled in configuration.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/webhooks` | Create a new webhook endpoint |
+| `GET` | `/v1/webhooks?tenant_id=...` | List endpoints for a tenant |
+| `GET` | `/v1/webhooks/:id` | Get endpoint by ID |
+| `PUT` | `/v1/webhooks/:id` | Update endpoint (partial update) |
+| `DELETE` | `/v1/webhooks/:id` | Delete endpoint |
+| `POST` | `/v1/webhooks/:id/test` | Send a test event to the endpoint |
+| `GET` | `/v1/webhooks/:id/deliveries` | List recent delivery logs |
+
+### Configuration
+
+Webhook dispatching is configured in the events server TOML config:
+
+```toml
+[webhook]
+enabled = true
+request_timeout_secs = 10
+max_retries = 5
+base_retry_delay_secs = 30
+max_retry_delay_secs = 3600
+max_concurrent = 50
+retry_interval_secs = 60
+database_path = "/var/lib/fcp/fcp.db"
+```
+
+### Database Schema
+
+Two tables created by migration `019_add_webhooks.sql`:
+
+- `webhook_endpoints` — endpoint registration with tenant scoping, event filters, and HMAC secret
+- `webhook_delivery_log` — delivery attempt history with status codes, retry scheduling, and error messages
+
+Indexed for efficient tenant lookups and pending retry polling.
+
+---
+
 ## Cross-Cutting Concerns
 
 ### Multi-Tenancy
@@ -678,6 +828,7 @@ Strongly-typed UUID-backed identifiers with prefix formatting:
 | `VoicemailBoxId` | `vmbox-{uuid}` | `vmbox-...` |
 | `DeviceId` | `dev-{uuid}` | `dev-...` |
 | `ExtensionId` | `ext-{uuid}` | `ext-...` |
+| `WebhookId` | `whk-{uuid}` | `whk-...` |
 
 ### Observability
 
