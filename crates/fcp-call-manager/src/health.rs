@@ -84,6 +84,8 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // Presence endpoints
         .route("/presence", get(list_presence_handler))
         .route("/presence/{aor}", get(get_presence_handler).put(update_presence_handler))
+        // Prometheus metrics endpoint
+        .route("/metrics", get(metrics_handler))
         // Internal cluster endpoints (authenticated via cluster secret)
         .route("/internal/hangup", post(internal_hangup_handler))
         .route("/internal/supervisor", post(internal_supervisor_handler))
@@ -440,6 +442,29 @@ async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
         "codec_pairs": codec_pairs,
         "sessions": transcoding_details,
     }))
+}
+
+// ---- Prometheus Metrics Endpoint ----
+
+/// Serve Prometheus metrics in text exposition format.
+///
+/// Returns all registered Prometheus metrics. When the `storage-redis`
+/// feature is enabled with `metrics`, Redis operation and cache metrics
+/// are included.
+///
+/// GET /metrics
+async fn metrics_handler() -> impl IntoResponse {
+    use prometheus::Encoder;
+    let encoder = prometheus::TextEncoder::new();
+    let families = prometheus::default_registry().gather();
+    let mut buffer = Vec::new();
+    encoder.encode(&families, &mut buffer).unwrap_or_default();
+    let body = String::from_utf8(buffer).unwrap_or_default();
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
 }
 
 // ---- Queue/Agent Management Endpoints ----
@@ -1278,6 +1303,27 @@ async fn update_presence_handler(
 // Internal cluster endpoints (cross-node operations)
 // ---------------------------------------------------------------------------
 
+/// Log distributed tracing context from incoming internal request headers.
+///
+/// Extracts `traceparent` (W3C Trace Context) and `x-fcp-node-id` headers
+/// and logs them for cross-node request correlation.
+fn log_trace_context(headers: &HeaderMap) {
+    let trace_id = headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
+    let source_node = headers
+        .get("x-fcp-node-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
+    tracing::debug!(
+        trace_id = %trace_id,
+        source_node = %source_node,
+        "Internal cluster request received"
+    );
+}
+
 /// Request body for POST /internal/hangup
 #[derive(Deserialize)]
 struct InternalHangupRequest {
@@ -1297,6 +1343,8 @@ async fn internal_hangup_handler(
     if let Err(resp) = verify_cluster_secret(&state, &headers) {
         return resp;
     }
+
+    log_trace_context(&headers);
 
     let call_id = match req.call_id.parse::<fcp_b2bua_core::CallId>() {
         Ok(id) => id,
@@ -1336,6 +1384,8 @@ async fn internal_supervisor_handler(
     if let Err(resp) = verify_cluster_secret(&state, &headers) {
         return resp;
     }
+
+    log_trace_context(&headers);
 
     let mode = match req.mode.as_str() {
         "monitor" => SupervisorMode::Monitor,
@@ -1431,6 +1481,8 @@ async fn internal_unpark_handler(
     if let Err(resp) = verify_cluster_secret(&state, &headers) {
         return resp;
     }
+
+    log_trace_context(&headers);
 
     let pbx = match &state.pbx_handler {
         Some(p) => p,

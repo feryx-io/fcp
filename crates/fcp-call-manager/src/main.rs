@@ -129,7 +129,12 @@ async fn main() -> Result<()> {
     // 4b. Initialize Redis + split backend (if configured)
     #[cfg(feature = "storage-redis")]
     let redis_storage = {
-        let rs = storage::initialize_redis(&config.storage).await?;
+        let rs = storage::initialize_redis(&config.storage, &config.cluster).await?;
+
+        // Register Prometheus metrics for Redis operations
+        if rs.is_some() {
+            fcp_storage_redis::metrics::register_metrics();
+        }
 
         // Swap registration store to Redis if configured
         if config.storage.registration_backend.as_deref() == Some("redis") {

@@ -492,6 +492,14 @@ pub struct ClusterSection {
     /// persists in Redis before expiring (default: 7200 = 2 hours).
     #[serde(default = "default_call_ttl")]
     pub call_ttl_secs: u64,
+
+    /// Circuit breaker: number of consecutive Redis failures before opening.
+    #[serde(default = "default_cb_threshold")]
+    pub redis_circuit_breaker_threshold: u32,
+
+    /// Circuit breaker: cooldown in seconds before allowing a probe request.
+    #[serde(default = "default_cb_cooldown")]
+    pub redis_circuit_breaker_cooldown_secs: u64,
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -506,6 +514,14 @@ fn default_call_ttl() -> u64 {
     7200
 }
 
+fn default_cb_threshold() -> u32 {
+    5
+}
+
+fn default_cb_cooldown() -> u64 {
+    30
+}
+
 impl Default for ClusterSection {
     fn default() -> Self {
         Self {
@@ -514,6 +530,8 @@ impl Default for ClusterSection {
             heartbeat_interval_secs: default_heartbeat_interval(),
             heartbeat_ttl_secs: default_heartbeat_ttl(),
             call_ttl_secs: default_call_ttl(),
+            redis_circuit_breaker_threshold: default_cb_threshold(),
+            redis_circuit_breaker_cooldown_secs: default_cb_cooldown(),
         }
     }
 }

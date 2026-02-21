@@ -33,19 +33,35 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorag
 
 /// Initialize Redis storage if configured.
 ///
-/// Returns None if `redis_url` is not set.
+/// Returns None if `redis_url` is not set. When the cluster section has
+/// circuit breaker settings, attaches a `RedisCircuitBreaker` to the storage.
 #[cfg(feature = "storage-redis")]
 pub async fn initialize_redis(
     config: &StorageSection,
+    cluster_config: &crate::config::ClusterSection,
 ) -> Result<Option<fcp_storage_redis::RedisStorage>> {
     if let Some(ref redis_url) = config.redis_url {
         let redis_config = fcp_storage_redis::RedisConfig {
             url: redis_url.clone(),
             key_prefix: "fcp:".to_string(),
         };
-        let storage = fcp_storage_redis::RedisStorage::new(redis_config)
+        let mut storage = fcp_storage_redis::RedisStorage::new(redis_config)
             .await
             .context("Failed to initialize Redis storage")?;
+
+        // Attach circuit breaker if cluster is enabled
+        if cluster_config.enabled {
+            storage = storage.with_circuit_breaker(
+                cluster_config.redis_circuit_breaker_threshold,
+                std::time::Duration::from_secs(cluster_config.redis_circuit_breaker_cooldown_secs),
+            );
+            info!(
+                threshold = cluster_config.redis_circuit_breaker_threshold,
+                cooldown_secs = cluster_config.redis_circuit_breaker_cooldown_secs,
+                "Redis circuit breaker enabled"
+            );
+        }
+
         Ok(Some(storage))
     } else {
         Ok(None)

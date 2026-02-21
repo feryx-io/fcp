@@ -48,7 +48,7 @@ fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
 fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
 fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
 fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
-fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"], optional = true }
+fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus", "metrics"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # SIP stack from siphon-rs
@@ -93,6 +93,9 @@ parking_lot = "0.12"
 smol_str = "0.3"
 socket2 = "0.5"
 uuid = { workspace = true }
+
+# Prometheus metrics
+prometheus = "0.13"
 
 # HTTP client for event forwarding
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

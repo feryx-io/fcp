@@ -10,6 +10,7 @@ description = "Redis storage backend for FCP — registrations, event bus, parki
 [features]
 default = []
 event-bus = ["dep:futures-util"]
+metrics = ["dep:prometheus", "dep:lazy_static"]
 
 [dependencies]
 # FCP crates
@@ -36,3 +37,7 @@ anyhow = { workspace = true }
 # Utilities
 uuid = { workspace = true }
 futures-util = { version = "0.3", optional = true }
+
+# Metrics (optional, behind "metrics" feature)
+prometheus = { version = "0.13", optional = true }
+lazy_static = { version = "1", optional = true }

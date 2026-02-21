@@ -5,15 +5,22 @@
 //! - `RedisEventBus` — distributed event bus via Pub/Sub + Streams
 //! - Parking store — Redis-backed call parking for cross-node pickup
 
+pub mod circuit_breaker;
 pub mod registration;
 
 #[cfg(feature = "event-bus")]
 pub mod event_bus;
 
+#[cfg(feature = "metrics")]
+pub mod metrics;
+
 pub mod parking;
 
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use tracing::info;
+
+pub use circuit_breaker::{CircuitState, RedisCircuitBreaker};
 
 /// Shared Redis connection manager used by all Redis-backed stores.
 #[derive(Clone)]
@@ -21,6 +28,7 @@ pub struct RedisStorage {
     client: redis::Client,
     conn: redis::aio::ConnectionManager,
     key_prefix: String,
+    circuit_breaker: Option<Arc<RedisCircuitBreaker>>,
 }
 
 /// Configuration for connecting to Redis.
@@ -64,7 +72,53 @@ impl RedisStorage {
             client,
             conn,
             key_prefix: config.key_prefix,
+            circuit_breaker: None,
         })
+    }
+
+    /// Attach a circuit breaker to this storage instance (builder pattern).
+    pub fn with_circuit_breaker(
+        mut self,
+        threshold: u32,
+        cooldown: std::time::Duration,
+    ) -> Self {
+        self.circuit_breaker = Some(Arc::new(RedisCircuitBreaker::new(threshold, cooldown)));
+        self
+    }
+
+    /// Get a reference to the circuit breaker, if configured.
+    pub fn circuit_breaker(&self) -> Option<&Arc<RedisCircuitBreaker>> {
+        self.circuit_breaker.as_ref()
+    }
+
+    /// Execute an operation through the circuit breaker.
+    ///
+    /// If no circuit breaker is configured, the operation runs directly.
+    /// When the breaker is open, returns an error immediately without
+    /// executing the operation.
+    pub async fn execute<F, Fut, T>(&self, op: &str, f: F) -> Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        if let Some(ref cb) = self.circuit_breaker {
+            if !cb.allow_request() {
+                anyhow::bail!("Redis circuit breaker open (operation: {})", op);
+            }
+
+            match f().await {
+                Ok(val) => {
+                    cb.record_success();
+                    Ok(val)
+                }
+                Err(e) => {
+                    cb.record_failure();
+                    Err(e)
+                }
+            }
+        } else {
+            f().await
+        }
     }
 
     /// Check Redis connectivity by issuing a PING command.
