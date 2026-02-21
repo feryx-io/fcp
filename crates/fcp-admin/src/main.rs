@@ -204,16 +204,24 @@ async fn main() -> Result<()> {
         fcp_core::TenantId::nil(),
     );
 
-    // Start API server
+    // Start API server with admin UI
     info!(
         bind = %config.api.bind_address,
         auth_enabled = config.api.auth_enabled,
-        "Starting Admin API server"
+        "Starting Admin API server (with web UI at /admin/)"
     );
 
     let bind_addr = config.api.bind_address;
-    let api_handle =
-        tokio::spawn(async move { fcp_api_core::serve(bind_addr, api_state, &api_config).await });
+    let api_handle = tokio::spawn(async move {
+        // Build the API router and merge in the admin UI
+        let mut app = fcp_api_core::create_router(api_state, &api_config);
+        app = app.merge(fcp_admin_ui::admin_ui_router());
+
+        let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+        tracing::info!("API server listening on {}", bind_addr);
+        axum::serve(listener, app).await?;
+        Ok::<(), anyhow::Error>(())
+    });
 
     // Start event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {

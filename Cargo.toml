@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/fcp-core", "crates/fcp-sip", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-cli", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb", "crates/fcp-storage-redis", "crates/fcp-events", "crates/fcp-flow", "crates/fcp-voicemail", "crates/fcp-b2bua-core", "crates/fcp-api-core", "crates/fcp-admin", "crates/fcp-api-gateway", "crates/fcp-events-server", "crates/fcp-jobs", "crates/fcp-registrar", "crates/fcp-call-manager", "crates/fcp-sbc-core", "crates/fcp-sbc", "crates/fcp-ivr", "crates/fcp-voicemail-server", "crates/fcp-pbx", "crates/fcp-conference-server", "crates/fcp-media-server", "crates/fcp-queue", "crates/fcp-presence", "crates/fcp-presence-server", "crates/fcp-webrtc-gateway", "crates/fcp-webhooks", "crates/fcp-cluster",
+    "crates/fcp-core", "crates/fcp-sip", "crates/fcp-routing", "crates/fcp-media", "crates/fcp-cli", "crates/fcp-storage-sqlite", "crates/fcp-storage-postgres", "crates/fcp-storage-mysql", "crates/fcp-storage-mongodb", "crates/fcp-storage-redis", "crates/fcp-events", "crates/fcp-flow", "crates/fcp-voicemail", "crates/fcp-b2bua-core", "crates/fcp-api-core", "crates/fcp-admin", "crates/fcp-admin-ui", "crates/fcp-api-gateway", "crates/fcp-events-server", "crates/fcp-jobs", "crates/fcp-registrar", "crates/fcp-call-manager", "crates/fcp-sbc-core", "crates/fcp-sbc", "crates/fcp-ivr", "crates/fcp-voicemail-server", "crates/fcp-pbx", "crates/fcp-conference-server", "crates/fcp-media-server", "crates/fcp-queue", "crates/fcp-presence", "crates/fcp-presence-server", "crates/fcp-webrtc-gateway", "crates/fcp-webhooks", "crates/fcp-cluster",
 ]
 exclude = [
     "external/siphon-rs",
@@ -10,7 +10,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.14.97"
+version = "0.14.98"
 license = "MIT OR Apache-2.0"
 authors = ["FCP Team"]
 repository = "https://github.com/thevoiceguy/fcp.git"

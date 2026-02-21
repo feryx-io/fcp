@@ -23,6 +23,7 @@ path = "src/main.rs"
 # FCP crates
 fcp-core = { path = "../fcp-core" }
 fcp-api-core = { path = "../fcp-api-core" }
+fcp-admin-ui = { path = "../fcp-admin-ui" }
 fcp-sip = { path = "../fcp-sip" }
 fcp-media = { path = "../fcp-media" }
 fcp-b2bua-core = { path = "../fcp-b2bua-core" }
@@ -37,6 +38,9 @@ fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
 fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
 fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
 fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+
+# Web framework (for merging admin UI router)
+axum = "0.7"
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

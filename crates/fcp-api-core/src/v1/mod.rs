@@ -1,6 +1,8 @@
 //! API v1 routes.
 
+pub mod auth_session;
 pub mod cdrs;
+pub mod dashboard;
 pub mod debug;
 pub mod devices;
 pub mod events;
@@ -27,6 +29,13 @@ use axum::{
 /// Create the v1 API router.
 pub fn router() -> Router<ApiState> {
     Router::new()
+        // Auth session endpoints (for admin UI)
+        .route("/auth/login", post(auth_session::login))
+        .route("/auth/logout", post(auth_session::logout))
+        .route("/auth/me", get(auth_session::me))
+        .route("/auth/refresh", post(auth_session::refresh))
+        // Dashboard endpoints (for admin UI)
+        .route("/dashboard/summary", get(dashboard::summary))
         // System endpoints
         .route("/health", get(system::health))
         .route("/status", get(system::status))
