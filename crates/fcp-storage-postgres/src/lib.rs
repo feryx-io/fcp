@@ -32,10 +32,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
-        CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, LineBindingStore,
-        PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore, ResourceListStore,
-        StoredAgent, StoredAuthPolicy, StoredPresentity, StoredResourceList, StoredSubscription,
-        TenantStore, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
+        CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
+        LineBindingStore, PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore,
+        ResourceListStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredResourceList,
+        StoredSubscription, TenantStore, VoicemailStore, WebhookDeliveryLog, WebhookEndpoint,
+        WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -43,8 +44,13 @@ use fcp_core::{
     PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, Tenant, TenantId,
     User, UserId, WebhookId,
 };
+use fcp_core::porting::PortingStore;
+use fcp_flow::schema::{FlowDefinition, FlowNode};
+use fcp_flow::storage::{FlowQuery, FlowQueryResult, FlowStore, SortField, SortOrder};
+use fcp_flow::FlowError;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Pool, Postgres, Row};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
@@ -2482,6 +2488,981 @@ impl WebhookStore for PostgresStorage {
 
     async fn get_delivery_logs(&self, _endpoint_id: &WebhookId, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
         anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    }
+}
+
+// ============================================================================
+// FlowStore Implementation
+// ============================================================================
+
+/// Parse a flow from a PostgreSQL database row.
+fn parse_flow_from_row_pg(
+    row: &sqlx::postgres::PgRow,
+) -> std::result::Result<FlowDefinition, FlowError> {
+    let id: String = row.get("id");
+    let name: String = row.get("name");
+    let description: Option<String> = row.get("description");
+    let version: i32 = row.get("version");
+    let initial_node: String = row.get("initial_node");
+    let nodes_json: serde_json::Value = row.get("nodes");
+    let variables_json: serde_json::Value = row.get("variables");
+    let tenant_id: Option<String> = row.get("tenant_id");
+    let enabled: bool = row.get("enabled");
+    let webhook_url: Option<String> = row.get("webhook_url");
+    let created_at: DateTime<Utc> = row.get("created_at");
+    let updated_at: DateTime<Utc> = row.get("updated_at");
+
+    let nodes: HashMap<String, FlowNode> = serde_json::from_value(nodes_json)?;
+    let variables: HashMap<String, String> = serde_json::from_value(variables_json)?;
+
+    Ok(FlowDefinition {
+        id,
+        name,
+        description,
+        version: version as u32,
+        initial_node,
+        nodes,
+        variables,
+        tenant_id,
+        enabled,
+        webhook_url,
+        created_at: Some(created_at),
+        updated_at: Some(updated_at),
+    })
+}
+
+#[async_trait]
+impl FlowStore for PostgresStorage {
+    async fn get_flow(&self, id: &str) -> std::result::Result<Option<FlowDefinition>, FlowError> {
+        let row = sqlx::query(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             WHERE id = $1
+             ORDER BY version DESC
+             LIMIT 1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        match row {
+            Some(row) => Ok(Some(parse_flow_from_row_pg(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_flow_version(
+        &self,
+        id: &str,
+        version: u32,
+    ) -> std::result::Result<Option<FlowDefinition>, FlowError> {
+        let row = sqlx::query(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             WHERE id = $1 AND version = $2",
+        )
+        .bind(id)
+        .bind(version as i32)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        match row {
+            Some(row) => Ok(Some(parse_flow_from_row_pg(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_flows(
+        &self,
+        tenant_id: Option<&str>,
+    ) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
+        let rows = if let Some(tid) = tenant_id {
+            sqlx::query(
+                "SELECT id, name, description, version, initial_node, nodes, variables,
+                        tenant_id, enabled, webhook_url, created_at, updated_at
+                 FROM flows
+                 WHERE tenant_id = $1
+                 ORDER BY updated_at DESC",
+            )
+            .bind(tid)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?
+        } else {
+            sqlx::query(
+                "SELECT id, name, description, version, initial_node, nodes, variables,
+                        tenant_id, enabled, webhook_url, created_at, updated_at
+                 FROM flows
+                 ORDER BY updated_at DESC",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?
+        };
+
+        let mut flows = Vec::new();
+        for row in &rows {
+            flows.push(parse_flow_from_row_pg(row)?);
+        }
+
+        Ok(flows)
+    }
+
+    async fn query_flows(
+        &self,
+        query: &FlowQuery,
+    ) -> std::result::Result<FlowQueryResult, FlowError> {
+        // Build WHERE clause with numbered PostgreSQL placeholders
+        let mut where_clauses = Vec::new();
+        let mut param_num = 0usize;
+
+        if query.tenant_id.is_some() {
+            param_num += 1;
+            where_clauses.push(format!("tenant_id = ${}", param_num));
+        }
+        if query.enabled.is_some() {
+            param_num += 1;
+            where_clauses.push(format!("enabled = ${}", param_num));
+        }
+        if query.name_contains.is_some() {
+            param_num += 1;
+            where_clauses.push(format!("name LIKE ${}", param_num));
+        }
+        if query.description_contains.is_some() {
+            param_num += 1;
+            where_clauses.push(format!("description LIKE ${}", param_num));
+        }
+
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Build ORDER BY clause
+        let order_by = match query.sort_by.unwrap_or(SortField::UpdatedAt) {
+            SortField::Name => "name",
+            SortField::CreatedAt => "created_at",
+            SortField::UpdatedAt => "updated_at",
+            SortField::Version => "version",
+        };
+
+        let order_direction = match query.sort_order {
+            SortOrder::Asc => "ASC",
+            SortOrder::Desc => "DESC",
+        };
+
+        // Count total matching rows
+        let count_query = format!("SELECT COUNT(*) as count FROM flows {}", where_clause);
+        let mut count_q = sqlx::query(&count_query);
+
+        if let Some(ref tid) = query.tenant_id {
+            count_q = count_q.bind(tid.clone());
+        }
+        if let Some(enabled) = query.enabled {
+            count_q = count_q.bind(enabled);
+        }
+        if let Some(ref name) = query.name_contains {
+            count_q = count_q.bind(format!("%{}%", name));
+        }
+        if let Some(ref desc) = query.description_contains {
+            count_q = count_q.bind(format!("%{}%", desc));
+        }
+
+        let count_row = count_q
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let total: i64 = count_row.get("count");
+
+        // Query with pagination
+        let limit_param = param_num + 1;
+        let offset_param = param_num + 2;
+        let select_query = format!(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             {}
+             ORDER BY {} {}
+             LIMIT ${} OFFSET ${}",
+            where_clause, order_by, order_direction, limit_param, offset_param
+        );
+
+        let mut select_q = sqlx::query(&select_query);
+
+        if let Some(ref tid) = query.tenant_id {
+            select_q = select_q.bind(tid.clone());
+        }
+        if let Some(enabled) = query.enabled {
+            select_q = select_q.bind(enabled);
+        }
+        if let Some(ref name) = query.name_contains {
+            select_q = select_q.bind(format!("%{}%", name));
+        }
+        if let Some(ref desc) = query.description_contains {
+            select_q = select_q.bind(format!("%{}%", desc));
+        }
+
+        select_q = select_q.bind(query.limit as i64);
+        select_q = select_q.bind(query.offset as i64);
+
+        let rows = select_q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        let mut flows = Vec::new();
+        for row in &rows {
+            flows.push(parse_flow_from_row_pg(row)?);
+        }
+
+        Ok(FlowQueryResult {
+            flows,
+            total: total as usize,
+            limit: query.limit,
+            offset: query.offset,
+        })
+    }
+
+    async fn insert_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
+        let nodes_json = serde_json::to_value(&flow.nodes)?;
+        let variables_json = serde_json::to_value(&flow.variables)?;
+        let now = Utc::now();
+
+        sqlx::query(
+            "INSERT INTO flows (
+                id, name, description, version, initial_node, nodes, variables,
+                tenant_id, enabled, webhook_url, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        )
+        .bind(&flow.id)
+        .bind(&flow.name)
+        .bind(&flow.description)
+        .bind(flow.version as i32)
+        .bind(&flow.initial_node)
+        .bind(&nodes_json)
+        .bind(&variables_json)
+        .bind(&flow.tenant_id)
+        .bind(flow.enabled)
+        .bind(&flow.webhook_url)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        debug!(flow_id = %flow.id, version = flow.version, "Flow inserted into PostgreSQL");
+        Ok(())
+    }
+
+    async fn update_flow(&self, flow: FlowDefinition) -> std::result::Result<(), FlowError> {
+        let nodes_json = serde_json::to_value(&flow.nodes)?;
+        let variables_json = serde_json::to_value(&flow.variables)?;
+
+        let result = sqlx::query(
+            "UPDATE flows SET
+                name = $1, description = $2, version = version + 1,
+                initial_node = $3, nodes = $4, variables = $5,
+                tenant_id = $6, enabled = $7, webhook_url = $8, updated_at = NOW()
+             WHERE id = $9",
+        )
+        .bind(&flow.name)
+        .bind(&flow.description)
+        .bind(&flow.initial_node)
+        .bind(&nodes_json)
+        .bind(&variables_json)
+        .bind(&flow.tenant_id)
+        .bind(flow.enabled)
+        .bind(&flow.webhook_url)
+        .bind(&flow.id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", flow.id)));
+        }
+
+        debug!(flow_id = %flow.id, "Flow updated in PostgreSQL");
+        Ok(())
+    }
+
+    async fn delete_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
+        let result =
+            sqlx::query("UPDATE flows SET enabled = false, updated_at = NOW() WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
+        }
+
+        debug!(flow_id = %id, "Flow deleted (soft delete) in PostgreSQL");
+        Ok(())
+    }
+
+    async fn list_flow_versions(
+        &self,
+        id: &str,
+    ) -> std::result::Result<Vec<FlowDefinition>, FlowError> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, version, initial_node, nodes, variables,
+                    tenant_id, enabled, webhook_url, created_at, updated_at
+             FROM flows
+             WHERE id = $1
+             ORDER BY version DESC",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        let mut flows = Vec::new();
+        for row in &rows {
+            flows.push(parse_flow_from_row_pg(row)?);
+        }
+
+        Ok(flows)
+    }
+
+    async fn enable_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
+        let result =
+            sqlx::query("UPDATE flows SET enabled = true, updated_at = NOW() WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
+        }
+
+        debug!(flow_id = %id, "Flow enabled in PostgreSQL");
+        Ok(())
+    }
+
+    async fn disable_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
+        let result =
+            sqlx::query("UPDATE flows SET enabled = false, updated_at = NOW() WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| FlowError::StorageError(e.to_string()))?;
+
+        if result.rows_affected() == 0 {
+            return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
+        }
+
+        debug!(flow_id = %id, "Flow disabled in PostgreSQL");
+        Ok(())
+    }
+}
+
+// ============================================================================
+// VoicemailStore Implementation
+// ============================================================================
+
+impl PostgresStorage {
+    /// Map a mailbox row from PostgreSQL to VoicemailMailbox
+    async fn map_mailbox_row_pg(
+        &self,
+        row: sqlx::postgres::PgRow,
+    ) -> Result<fcp_core::VoicemailMailbox> {
+        let id: String = row.try_get("id")?;
+        let tenant_id = fcp_core::TenantId::from_str(&row.try_get::<String, _>("tenant_id")?)?;
+        let user_id = fcp_core::UserId::from_str(&row.try_get::<String, _>("user_id")?)?;
+        let line_binding_id =
+            fcp_core::LineBindingId::from_str(&row.try_get::<String, _>("line_binding_id")?)?;
+        let extension: String = row.try_get("extension")?;
+        let pin: String = row.try_get("pin")?;
+        let enabled: bool = row.try_get("enabled")?;
+        let max_message_duration: i32 = row.try_get("max_message_duration")?;
+        let max_messages: i32 = row.try_get("max_messages")?;
+        let email_notification: bool = row.try_get("email_notification")?;
+        let email_address: Option<String> = row.try_get("email_address")?;
+        let attach_audio: bool = row.try_get("attach_audio")?;
+        let include_transcription: bool = row.try_get("include_transcription")?;
+        let transcription_enabled: bool = row.try_get("transcription_enabled")?;
+        let created_at: DateTime<Utc> = row.try_get("created_at")?;
+        let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+
+        // Fetch greetings for this mailbox
+        let greeting_rows = sqlx::query(
+            "SELECT greeting_type, audio_path, created_at, expires_at
+             FROM voicemail_greetings WHERE mailbox_id = $1",
+        )
+        .bind(&id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut greetings = Vec::new();
+        for greeting_row in greeting_rows {
+            let greeting_type_str: String = greeting_row.try_get("greeting_type")?;
+            let greeting_type = match greeting_type_str.as_str() {
+                "unavailable" => fcp_core::GreetingType::Unavailable,
+                "busy" => fcp_core::GreetingType::Busy,
+                "name" => fcp_core::GreetingType::Name,
+                "temporary" => fcp_core::GreetingType::Temporary,
+                _ => continue,
+            };
+
+            let audio_path: String = greeting_row.try_get("audio_path")?;
+            let g_created_at: DateTime<Utc> = greeting_row.try_get("created_at")?;
+            let expires_at: Option<DateTime<Utc>> = greeting_row.try_get("expires_at")?;
+
+            greetings.push(fcp_core::VoicemailGreeting {
+                greeting_type,
+                audio_path: std::path::PathBuf::from(audio_path),
+                created_at: datetime_to_system_time(g_created_at),
+                expires_at: expires_at.map(datetime_to_system_time),
+            });
+        }
+
+        Ok(fcp_core::VoicemailMailbox {
+            id,
+            tenant_id,
+            user_id,
+            line_binding_id,
+            extension,
+            pin,
+            enabled,
+            max_message_duration: max_message_duration as u32,
+            max_messages: max_messages as u32,
+            email_notification,
+            email_address,
+            attach_audio,
+            include_transcription,
+            transcription_enabled,
+            greetings,
+            created_at: datetime_to_system_time(created_at),
+            updated_at: datetime_to_system_time(updated_at),
+        })
+    }
+
+    /// Map a message row from PostgreSQL to VoicemailMessage
+    fn map_message_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::VoicemailMessage> {
+        let id: String = row.try_get("id")?;
+        let mailbox_id: String = row.try_get("mailbox_id")?;
+        let caller: String = row.try_get("caller")?;
+        let caller_name: Option<String> = row.try_get("caller_name")?;
+        let status_str: String = row.try_get("status")?;
+        let priority_str: String = row.try_get("priority")?;
+        let duration: i32 = row.try_get("duration")?;
+        let recording_path: String = row.try_get("recording_path")?;
+        let transcription: Option<String> = row.try_get("transcription")?;
+        let created_at: DateTime<Utc> = row.try_get("created_at")?;
+        let accessed_at: Option<DateTime<Utc>> = row.try_get("accessed_at")?;
+
+        let status = match status_str.as_str() {
+            "new" => fcp_core::MessageStatus::New,
+            "heard" => fcp_core::MessageStatus::Heard,
+            "saved" => fcp_core::MessageStatus::Saved,
+            "deleted" => fcp_core::MessageStatus::Deleted,
+            _ => fcp_core::MessageStatus::New,
+        };
+
+        let priority = match priority_str.as_str() {
+            "urgent" => fcp_core::MessagePriority::Urgent,
+            _ => fcp_core::MessagePriority::Normal,
+        };
+
+        Ok(fcp_core::VoicemailMessage {
+            id,
+            mailbox_id,
+            caller,
+            caller_name,
+            status,
+            priority,
+            duration: duration as u32,
+            recording_path: std::path::PathBuf::from(recording_path),
+            transcription,
+            created_at: datetime_to_system_time(created_at),
+            accessed_at: accessed_at.map(datetime_to_system_time),
+        })
+    }
+}
+
+#[async_trait]
+impl VoicemailStore for PostgresStorage {
+    async fn get_mailbox(&self, id: &str) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row_pg(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_mailbox_by_line_binding(
+        &self,
+        line_binding_id: &fcp_core::LineBindingId,
+    ) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE line_binding_id = $1",
+        )
+        .bind(line_binding_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row_pg(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_mailbox_by_user(
+        &self,
+        user_id: &fcp_core::UserId,
+    ) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE user_id = $1",
+        )
+        .bind(user_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row_pg(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn get_mailbox_by_extension(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        extension: &str,
+    ) -> Result<Option<fcp_core::VoicemailMailbox>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE tenant_id = $1 AND extension = $2",
+        )
+        .bind(tenant_id.to_string())
+        .bind(extension)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let mailbox = self.map_mailbox_row_pg(row).await?;
+                Ok(Some(mailbox))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_mailboxes(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::VoicemailMailbox>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+                    max_message_duration, max_messages, email_notification, email_address,
+                    attach_audio, include_transcription, transcription_enabled,
+                    created_at, updated_at
+             FROM voicemail_mailboxes WHERE tenant_id = $1 ORDER BY extension",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut mailboxes = Vec::new();
+        for row in rows {
+            let mailbox = self.map_mailbox_row_pg(row).await?;
+            mailboxes.push(mailbox);
+        }
+        Ok(mailboxes)
+    }
+
+    async fn put_mailbox(&self, mailbox: fcp_core::VoicemailMailbox) -> Result<()> {
+        let now = Utc::now();
+        let created_at = system_time_to_datetime(mailbox.created_at);
+
+        sqlx::query(
+            "INSERT INTO voicemail_mailboxes
+             (id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
+              max_message_duration, max_messages, email_notification, email_address,
+              attach_audio, include_transcription, transcription_enabled,
+              created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             ON CONFLICT (id) DO UPDATE SET
+                 tenant_id = EXCLUDED.tenant_id,
+                 user_id = EXCLUDED.user_id,
+                 line_binding_id = EXCLUDED.line_binding_id,
+                 extension = EXCLUDED.extension,
+                 pin = EXCLUDED.pin,
+                 enabled = EXCLUDED.enabled,
+                 max_message_duration = EXCLUDED.max_message_duration,
+                 max_messages = EXCLUDED.max_messages,
+                 email_notification = EXCLUDED.email_notification,
+                 email_address = EXCLUDED.email_address,
+                 attach_audio = EXCLUDED.attach_audio,
+                 include_transcription = EXCLUDED.include_transcription,
+                 transcription_enabled = EXCLUDED.transcription_enabled,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&mailbox.id)
+        .bind(mailbox.tenant_id.to_string())
+        .bind(mailbox.user_id.to_string())
+        .bind(mailbox.line_binding_id.to_string())
+        .bind(&mailbox.extension)
+        .bind(&mailbox.pin)
+        .bind(mailbox.enabled)
+        .bind(mailbox.max_message_duration as i32)
+        .bind(mailbox.max_messages as i32)
+        .bind(mailbox.email_notification)
+        .bind(mailbox.email_address.as_deref())
+        .bind(mailbox.attach_audio)
+        .bind(mailbox.include_transcription)
+        .bind(mailbox.transcription_enabled)
+        .bind(created_at)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete existing greetings for this mailbox
+        sqlx::query("DELETE FROM voicemail_greetings WHERE mailbox_id = $1")
+            .bind(&mailbox.id)
+            .execute(&self.pool)
+            .await?;
+
+        // Insert greetings
+        for greeting in &mailbox.greetings {
+            let greeting_created_at = system_time_to_datetime(greeting.created_at);
+            let expires_at = greeting.expires_at.map(system_time_to_datetime);
+
+            sqlx::query(
+                "INSERT INTO voicemail_greetings
+                 (mailbox_id, greeting_type, audio_path, created_at, expires_at)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(&mailbox.id)
+            .bind(greeting.greeting_type.to_string())
+            .bind(greeting.audio_path.to_string_lossy().as_ref())
+            .bind(greeting_created_at)
+            .bind(expires_at)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_mailbox(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM voicemail_mailboxes WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_message(&self, id: &str) -> Result<Option<fcp_core::VoicemailMessage>> {
+        let row = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at
+             FROM voicemail_messages WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_message_row_pg(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_messages(&self, mailbox_id: &str) -> Result<Vec<fcp_core::VoicemailMessage>> {
+        let rows = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at
+             FROM voicemail_messages
+             WHERE mailbox_id = $1 AND status != 'deleted'
+             ORDER BY created_at DESC",
+        )
+        .bind(mailbox_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(Self::map_message_row_pg(row)?);
+        }
+        Ok(messages)
+    }
+
+    async fn put_message(&self, message: fcp_core::VoicemailMessage) -> Result<()> {
+        let created_at = system_time_to_datetime(message.created_at);
+        let accessed_at = message.accessed_at.map(system_time_to_datetime);
+
+        sqlx::query(
+            "INSERT INTO voicemail_messages
+             (id, mailbox_id, caller, caller_name, status, priority, duration,
+              recording_path, transcription, created_at, accessed_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT (id) DO UPDATE SET
+                 mailbox_id = EXCLUDED.mailbox_id,
+                 caller = EXCLUDED.caller,
+                 caller_name = EXCLUDED.caller_name,
+                 status = EXCLUDED.status,
+                 priority = EXCLUDED.priority,
+                 duration = EXCLUDED.duration,
+                 recording_path = EXCLUDED.recording_path,
+                 transcription = EXCLUDED.transcription,
+                 accessed_at = EXCLUDED.accessed_at",
+        )
+        .bind(&message.id)
+        .bind(&message.mailbox_id)
+        .bind(&message.caller)
+        .bind(message.caller_name.as_deref())
+        .bind(message.status.to_string())
+        .bind(match message.priority {
+            fcp_core::MessagePriority::Normal => "normal",
+            fcp_core::MessagePriority::Urgent => "urgent",
+        })
+        .bind(message.duration as i32)
+        .bind(message.recording_path.to_string_lossy().as_ref())
+        .bind(message.transcription.as_deref())
+        .bind(created_at)
+        .bind(accessed_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_message(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM voicemail_messages WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn list_messages_by_status(
+        &self,
+        mailbox_id: &str,
+        status: fcp_core::MessageStatus,
+    ) -> Result<Vec<fcp_core::VoicemailMessage>> {
+        let rows = sqlx::query(
+            "SELECT id, mailbox_id, caller, caller_name, status, priority, duration,
+                    recording_path, transcription, created_at, accessed_at
+             FROM voicemail_messages
+             WHERE mailbox_id = $1 AND status = $2
+             ORDER BY created_at DESC",
+        )
+        .bind(mailbox_id)
+        .bind(status.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(Self::map_message_row_pg(row)?);
+        }
+        Ok(messages)
+    }
+
+    async fn get_mwi_status(&self, mailbox_id: &str) -> Result<fcp_core::MwiStatus> {
+        let mailbox = self
+            .get_mailbox(mailbox_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Mailbox not found"))?;
+
+        let row = sqlx::query(
+            "SELECT
+                COUNT(CASE WHEN status = 'new' AND priority = 'normal' THEN 1 END) as new_normal,
+                COUNT(CASE WHEN status = 'new' AND priority = 'urgent' THEN 1 END) as new_urgent,
+                COUNT(CASE WHEN status IN ('heard', 'saved') AND priority = 'normal' THEN 1 END) as old_normal,
+                COUNT(CASE WHEN status IN ('heard', 'saved') AND priority = 'urgent' THEN 1 END) as old_urgent
+             FROM voicemail_messages
+             WHERE mailbox_id = $1",
+        )
+        .bind(mailbox_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let new_normal: i64 = row.try_get("new_normal")?;
+        let new_urgent: i64 = row.try_get("new_urgent")?;
+        let old_normal: i64 = row.try_get("old_normal")?;
+        let old_urgent: i64 = row.try_get("old_urgent")?;
+
+        Ok(fcp_core::MwiStatus {
+            mailbox_id: mailbox_id.to_string(),
+            line_binding_id: mailbox.line_binding_id,
+            new_messages: new_normal as u32,
+            old_messages: old_normal as u32,
+            urgent_new_messages: new_urgent as u32,
+            urgent_old_messages: old_urgent as u32,
+        })
+    }
+
+    async fn get_mailbox_stats(&self, mailbox_id: &str) -> Result<fcp_core::VoicemailStats> {
+        let row = sqlx::query(
+            "SELECT
+                COUNT(*) as total,
+                COUNT(CASE WHEN status = 'new' THEN 1 END) as new_count,
+                COUNT(CASE WHEN status = 'heard' THEN 1 END) as heard,
+                COUNT(CASE WHEN status = 'saved' THEN 1 END) as saved,
+                COALESCE(AVG(duration)::FLOAT8, 0.0) as avg_duration
+             FROM voicemail_messages
+             WHERE mailbox_id = $1 AND status != 'deleted'",
+        )
+        .bind(mailbox_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let total: i64 = row.try_get("total")?;
+        let new_count: i64 = row.try_get("new_count")?;
+        let heard: i64 = row.try_get("heard")?;
+        let saved: i64 = row.try_get("saved")?;
+        let avg_duration: f64 = row.try_get("avg_duration")?;
+
+        Ok(fcp_core::VoicemailStats {
+            total_messages: total as u32,
+            new_messages: new_count as u32,
+            heard_messages: heard as u32,
+            saved_messages: saved as u32,
+            storage_used: 0, // TODO: Calculate actual storage from file sizes
+            avg_duration: avg_duration as u32,
+        })
+    }
+}
+
+// ============================================================================
+// GeoRoutingStore Implementation (stub)
+// ============================================================================
+
+#[async_trait]
+impl GeoRoutingStore for PostgresStorage {
+    async fn get_geo_rule(&self, _id: &str) -> Result<Option<fcp_core::GeoRoutingRule>> {
+        Ok(None)
+    }
+
+    async fn list_geo_rules(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::GeoRoutingRule>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_geo_rule(&self, _rule: fcp_core::GeoRoutingRule) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
+    }
+
+    async fn delete_geo_rule(&self, _id: &str) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
+    }
+
+    async fn get_phone_number_location(
+        &self,
+        _phone_number_id: &fcp_core::PhoneNumberId,
+    ) -> Result<Option<fcp_core::PhoneNumberLocation>> {
+        Ok(None)
+    }
+
+    async fn list_phone_number_locations(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::PhoneNumberLocation>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_phone_number_location(
+        &self,
+        _location: fcp_core::PhoneNumberLocation,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
+    }
+
+    async fn delete_phone_number_location(
+        &self,
+        _phone_number_id: &fcp_core::PhoneNumberId,
+    ) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Geographic routing storage not yet implemented"
+        ))
+    }
+}
+
+// ============================================================================
+// PortingStore Implementation (stub)
+// ============================================================================
+
+#[async_trait]
+impl PortingStore for PostgresStorage {
+    async fn get_port_request(
+        &self,
+        _id: &fcp_core::PortRequestId,
+    ) -> Result<Option<fcp_core::PortRequest>> {
+        Ok(None)
+    }
+
+    async fn list_port_requests(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<fcp_core::PortRequest>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_port_request(&self, _request: fcp_core::PortRequest) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Number porting storage not yet implemented"
+        ))
+    }
+
+    async fn delete_port_request(&self, _id: &fcp_core::PortRequestId) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "Number porting storage not yet implemented"
+        ))
+    }
+
+    async fn list_port_requests_by_status(
+        &self,
+        _tenant_id: &fcp_core::TenantId,
+        _status: fcp_core::PortStatus,
+    ) -> Result<Vec<fcp_core::PortRequest>> {
+        Ok(Vec::new())
     }
 }
 

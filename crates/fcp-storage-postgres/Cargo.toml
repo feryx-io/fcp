@@ -10,6 +10,7 @@ description = "PostgreSQL storage backend for FCP"
 [dependencies]
 # Core dependencies
 fcp-core = { path = "../fcp-core" }
+fcp-flow = { path = "../fcp-flow" }
 anyhow = "1.0"
 thiserror = "1.0"
 async-trait = "0.1"
