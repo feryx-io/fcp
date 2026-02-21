@@ -141,6 +141,11 @@ impl ParkingManager {
         self.config.enabled
     }
 
+    /// Get the parking configuration.
+    pub fn config(&self) -> &ParkingConfig {
+        &self.config
+    }
+
     /// Find the next available orbit number.
     fn next_available_orbit(&self) -> Result<u16, PbxError> {
         for orbit in self.config.orbit_start..=self.config.orbit_end {

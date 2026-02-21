@@ -9,6 +9,8 @@
 
 use crate::RedisStorage;
 use anyhow::Result;
+use async_trait::async_trait;
+use fcp_core::storage::{ClusterParkedCall, ClusterParkingStore};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -113,5 +115,54 @@ impl RedisParkingStore {
             }
             None => Ok(None),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClusterParkingStore trait implementation
+// ---------------------------------------------------------------------------
+
+impl RedisParkedCall {
+    /// Convert from the fcp-core cluster type.
+    pub fn from_cluster(info: &ClusterParkedCall) -> Self {
+        Self {
+            call_id: info.call_id.clone(),
+            node_id: info.node_id.clone(),
+            parker_extension: info.parker_extension.clone(),
+            tenant_id: info.tenant_id.clone(),
+            parked_at: info.parked_at_unix,
+        }
+    }
+
+    /// Convert to the fcp-core cluster type.
+    pub fn to_cluster(&self) -> ClusterParkedCall {
+        ClusterParkedCall {
+            call_id: self.call_id.clone(),
+            node_id: self.node_id.clone(),
+            parker_extension: self.parker_extension.clone(),
+            tenant_id: self.tenant_id.clone(),
+            parked_at_unix: self.parked_at,
+        }
+    }
+}
+
+#[async_trait]
+impl ClusterParkingStore for RedisParkingStore {
+    async fn cluster_park(
+        &self,
+        orbit: u16,
+        info: ClusterParkedCall,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        let redis_call = RedisParkedCall::from_cluster(&info);
+        self.park(orbit, redis_call, Some(timeout_secs)).await
+    }
+
+    async fn cluster_lookup(&self, orbit: u16) -> Result<Option<ClusterParkedCall>> {
+        Ok(self.get(orbit).await?.map(|r| r.to_cluster()))
+    }
+
+    async fn cluster_unpark(&self, orbit: u16) -> Result<Option<ClusterParkedCall>> {
+        Ok(self.unpark(orbit).await?.map(|r| r.to_cluster()))
     }
 }

@@ -311,6 +311,8 @@ async fn main() -> Result<()> {
         Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
         None, // No queue handler
         None, // presence_handler
+        None, // cluster_parking
+        String::new(), // node_id
     )?);
 
     // 19. Create and start TransportListener

@@ -73,11 +73,12 @@ pub use crate::sip_handler::{
     InviteContext, InviteHandler, InviteResponse, SipError, SipResponseCode, SipResult,
 };
 pub use crate::storage::{
-    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ConferenceStore,
-    CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
-    MediaPreferences, PresenceStore, QueueStore, Registration, RegistrationStore, StoredAgent,
-    StoredAuthPolicy, StoredPresentity, StoredSubscription, TenantStore, User, UserFileEntry,
-    WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
+    AccountStatus, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ClusterParkedCall,
+    ClusterParkingStore, ConferenceStore, CredentialStore, DynStorage, EmergencyContact,
+    FileBackedStorage, HangupCause, HangupParty, MediaPreferences, PresenceStore, QueueStore,
+    Registration, RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
+    StoredSubscription, TenantStore, User, UserFileEntry, WebhookDeliveryLog, WebhookEndpoint,
+    WebhookStore,
 };
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{

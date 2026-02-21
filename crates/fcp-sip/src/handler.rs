@@ -336,6 +336,12 @@ pub struct SipMessageHandler {
     /// Optional presence handler for SUBSCRIBE/PUBLISH/NOTIFY (RFC 3856/3903/4235).
     presence_handler: Option<Arc<dyn crate::presence::PresenceHandler>>,
 
+    /// Optional cluster-wide parking store for cross-node park/pickup.
+    cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
+
+    /// This node's identifier (for cluster parking writes).
+    node_id: String,
+
     /// Flow registry for RFC 5626 TLS connection reuse.
     /// Maps flow tokens to connection writers for NAT'd clients.
     flow_registry: Arc<crate::flow::FlowRegistry>,
@@ -464,6 +470,8 @@ impl SipMessageHandler {
         conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
         queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
         presence_handler: Option<Arc<dyn crate::presence::PresenceHandler>>,
+        cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
+        node_id: String,
     ) -> anyhow::Result<Self> {
         let settings = ServerSettings::from_env();
         Self::new_with_settings(
@@ -488,6 +496,8 @@ impl SipMessageHandler {
             conference_handler,
             queue_handler,
             presence_handler,
+            cluster_parking,
+            node_id,
         )
     }
 
@@ -513,6 +523,8 @@ impl SipMessageHandler {
         conference_handler: Option<Arc<dyn crate::conference::ConferenceHandler>>,
         queue_handler: Option<Arc<dyn crate::queue::QueueHandler>>,
         presence_handler: Option<Arc<dyn crate::presence::PresenceHandler>>,
+        cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
+        node_id: String,
     ) -> anyhow::Result<Self> {
         // Validate settings early to catch configuration errors at startup
         settings.validate().map_err(|e| anyhow::anyhow!("Invalid ServerSettings: {}", e))?;
@@ -649,6 +661,8 @@ impl SipMessageHandler {
             outbound_route_provider,
             pbx_handler,
             presence_handler,
+            cluster_parking,
+            node_id,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
         };
 
@@ -7249,6 +7263,27 @@ impl SipMessageHandler {
             "Call parked in orbit"
         );
 
+        // Dual-write to cluster parking store (Redis) for cross-node pickup
+        if let Some(ref cluster_parking) = self.cluster_parking {
+            let info = fcp_core::ClusterParkedCall {
+                call_id: active_call_id.to_string(),
+                node_id: self.node_id.clone(),
+                parker_extension: caller_ext.clone(),
+                tenant_id: tenant_id.to_string(),
+                parked_at_unix: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+            let timeout_secs = pbx.parking_manager().config().timeout_seconds;
+            let cp = Arc::clone(cluster_parking);
+            tokio::spawn(async move {
+                if let Err(e) = cp.cluster_park(orbit, info, timeout_secs).await {
+                    warn!(orbit = orbit, error = %e, "Failed to write parked call to cluster store");
+                }
+            });
+        }
+
         // BYE the B-leg (if present)
         if let Some(uac) = &self.uac {
             if let Some(b_leg) = &active_call.b_leg {
@@ -7333,14 +7368,60 @@ impl SipMessageHandler {
             }
         };
 
-        // Retrieve from parking manager (removes from orbit)
+        // Retrieve from local parking manager (removes from orbit)
         let parked = match pbx.retrieve_parked_call(orbit) {
-            Ok(p) => p,
-            Err(e) => {
-                info!(call_id = %call_id, orbit = orbit, error = %e, "Failed to retrieve parked call");
+            Ok(p) => {
+                // Also remove from cluster store (fire-and-forget)
+                if let Some(ref cp) = self.cluster_parking {
+                    let cp = Arc::clone(cp);
+                    tokio::spawn(async move {
+                        let _ = cp.cluster_unpark(orbit).await;
+                    });
+                }
+                p
+            }
+            Err(_local_err) => {
+                // Local orbit is empty — check cluster store for cross-node parked calls
+                if let Some(ref cp) = self.cluster_parking {
+                    match cp.cluster_lookup(orbit).await {
+                        Ok(Some(remote)) if remote.node_id != self.node_id => {
+                            // Call is parked on a different node.
+                            // Respond 302 with the owning node's info so the caller
+                            // or a higher-level proxy can redirect, or log it.
+                            info!(
+                                orbit = orbit,
+                                remote_node = %remote.node_id,
+                                call_id = %remote.call_id,
+                                "Parked call is on remote node — cross-node pickup not yet supported inline"
+                            );
+                            let response = self.create_simple_response(
+                                request, 480,
+                                &format!("Parked on node {}", remote.node_id),
+                            );
+                            handle.send_final(response).await;
+                            let _ = self.call_manager.terminate_call(
+                                call_id,
+                                Some(format!("Parked call on remote node {}", remote.node_id)),
+                            );
+                            return Ok(());
+                        }
+                        Ok(Some(_stale)) => {
+                            // Redis says this node owns it, but it's not in local DashMap.
+                            // Stale entry — clean it up.
+                            warn!(orbit = orbit, "Stale cluster parking entry for this node, cleaning up");
+                            let cp = Arc::clone(cp);
+                            tokio::spawn(async move {
+                                let _ = cp.cluster_unpark(orbit).await;
+                            });
+                        }
+                        _ => {} // Not found in cluster either, or error
+                    }
+                }
+
+                info!(call_id = %call_id, orbit = orbit, "Failed to retrieve parked call (not found locally or in cluster)");
                 let response = self.create_simple_response(request, 480, "Orbit Not Occupied");
                 handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(call_id, Some(format!("Retrieve failed: {}", e)));
+                let _ = self.call_manager.terminate_call(call_id, Some("Orbit not occupied".to_string()));
                 return Ok(());
             }
         };
@@ -9529,6 +9610,8 @@ mod tests {
             None, // No conference handler
             None, // No queue handler
             None, // presence_handler
+            None, // No cluster parking
+            String::new(), // node_id
         ).unwrap();
 
         // Create a REGISTER request
@@ -9598,6 +9681,8 @@ mod tests {
             None, // No conference handler
             None, // No queue handler
             None, // presence_handler
+            None, // No cluster parking
+            String::new(), // node_id
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9667,6 +9752,8 @@ mod tests {
             None, // No conference handler
             None, // No queue handler
             None, // presence_handler
+            None, // No cluster parking
+            String::new(), // node_id
         ).unwrap();
 
         let mut headers = Headers::new();
@@ -9839,6 +9926,8 @@ mod tests {
             None, // No conference handler
             None, // No queue handler
             None, // presence_handler
+            None, // No cluster parking
+            String::new(), // node_id
         ).unwrap();
 
         // Create a REGISTER request

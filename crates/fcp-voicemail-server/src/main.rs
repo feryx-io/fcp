@@ -338,6 +338,8 @@ async fn main() -> Result<()> {
         None, // No conference handler
         None, // No queue handler
         None, // presence_handler
+        None, // cluster_parking
+        String::new(), // node_id
     )?);
 
     // 20. Create and start TransportListener

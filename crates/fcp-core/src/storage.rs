@@ -1530,6 +1530,48 @@ mod optional_system_time_serde {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cluster parking (cross-node park/pickup)
+// ---------------------------------------------------------------------------
+
+/// A parked call entry stored in the cluster (Redis) for cross-node pickup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterParkedCall {
+    /// Internal call ID (string form of fcp_b2bua_core::CallId).
+    pub call_id: String,
+    /// Node that owns the parked A-leg.
+    pub node_id: String,
+    /// Extension of the user who parked the call.
+    pub parker_extension: String,
+    /// Tenant ID (string form).
+    pub tenant_id: String,
+    /// Unix timestamp (seconds) when the call was parked.
+    pub parked_at_unix: u64,
+}
+
+/// Distributed parking store for cross-node park/pickup.
+///
+/// The local `ParkingManager` (in-memory DashMap) handles the primary parking
+/// state on each node. This trait provides a cluster-wide secondary store
+/// (backed by Redis) so that any node can discover parked calls and route
+/// cross-node pickups.
+#[async_trait]
+pub trait ClusterParkingStore: Send + Sync {
+    /// Store a parked call in the cluster.
+    async fn cluster_park(
+        &self,
+        orbit: u16,
+        info: ClusterParkedCall,
+        timeout_secs: u64,
+    ) -> Result<()>;
+
+    /// Look up a parked call by orbit across the cluster.
+    async fn cluster_lookup(&self, orbit: u16) -> Result<Option<ClusterParkedCall>>;
+
+    /// Remove a parked call from the cluster store. Returns it if it existed.
+    async fn cluster_unpark(&self, orbit: u16) -> Result<Option<ClusterParkedCall>>;
+}
+
 /// In-memory storage with JSON file persistence.
 ///
 /// **Note:** This implementation is intended for development and testing only.

@@ -169,6 +169,8 @@ async fn main() -> Result<()> {
         None,                    // conference_handler
         None,                    // queue_handler
         None,                    // presence_handler
+        None,                    // cluster_parking
+        String::new(),           // node_id
     )?);
 
     let api_config = fcp_core::ApiConfig {

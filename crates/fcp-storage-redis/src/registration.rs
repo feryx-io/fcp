@@ -273,4 +273,220 @@ mod tests {
         assert_eq!(deserialized.aor, reg.aor);
         assert_eq!(deserialized.contact, reg.contact);
     }
+
+    // Integration tests that require a running Redis instance.
+    // Set REDIS_URL=redis://127.0.0.1:6379 to enable.
+    #[cfg(test)]
+    mod integration {
+        use super::*;
+        use crate::{RedisConfig, RedisStorage};
+        use crate::registration::RedisRegistrationStore;
+        use fcp_core::storage::RegistrationStore;
+
+        async fn connect_redis() -> Option<RedisRegistrationStore> {
+            let url = match std::env::var("REDIS_URL") {
+                Ok(u) => u,
+                Err(_) => return None,
+            };
+            let config = RedisConfig {
+                url,
+                // Use a unique prefix to avoid collisions with production data
+                key_prefix: format!("fcp_test_{}:", uuid::Uuid::new_v4().as_simple()),
+            };
+            let storage = RedisStorage::new(config).await.ok()?;
+            Some(RedisRegistrationStore::new(storage))
+        }
+
+        #[tokio::test]
+        async fn test_put_and_get_registration() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => {
+                    eprintln!("Skipping Redis integration test (REDIS_URL not set)");
+                    return;
+                }
+            };
+
+            let reg = make_registration(
+                "sip:alice@example.com",
+                "sip:alice@192.168.1.100:5060",
+                3600,
+            );
+            store.put_registration(reg.clone()).await.unwrap();
+
+            let regs = store.get_registrations("sip:alice@example.com").await.unwrap();
+            assert_eq!(regs.len(), 1);
+            assert_eq!(regs[0].aor, "sip:alice@example.com");
+            assert_eq!(regs[0].contact, "sip:alice@192.168.1.100:5060");
+            assert_eq!(regs[0].call_id, "test-call-id");
+
+            // Cleanup
+            store.delete_all_registrations("sip:alice@example.com").await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_multiple_contacts_per_aor() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor = "sip:bob@example.com";
+            let reg1 = make_registration(aor, "sip:bob@10.0.0.1:5060", 3600);
+            let mut reg2 = make_registration(aor, "sip:bob@10.0.0.2:5060", 3600);
+            reg2.call_id = "call-id-2".to_string();
+            reg2.q = Some(0.5);
+
+            store.put_registration(reg1).await.unwrap();
+            store.put_registration(reg2).await.unwrap();
+
+            let regs = store.get_registrations(aor).await.unwrap();
+            assert_eq!(regs.len(), 2);
+
+            // Cleanup
+            store.delete_all_registrations(aor).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_delete_single_registration() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor = "sip:carol@example.com";
+            store.put_registration(make_registration(aor, "sip:carol@10.0.0.1:5060", 3600)).await.unwrap();
+            store.put_registration(make_registration(aor, "sip:carol@10.0.0.2:5060", 3600)).await.unwrap();
+
+            // Delete one contact
+            store.delete_registration(aor, "sip:carol@10.0.0.1:5060").await.unwrap();
+
+            let regs = store.get_registrations(aor).await.unwrap();
+            assert_eq!(regs.len(), 1);
+            assert_eq!(regs[0].contact, "sip:carol@10.0.0.2:5060");
+
+            // Cleanup
+            store.delete_all_registrations(aor).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_delete_all_registrations() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor = "sip:dave@example.com";
+            store.put_registration(make_registration(aor, "sip:dave@10.0.0.1:5060", 3600)).await.unwrap();
+            store.put_registration(make_registration(aor, "sip:dave@10.0.0.2:5060", 3600)).await.unwrap();
+
+            store.delete_all_registrations(aor).await.unwrap();
+
+            let regs = store.get_registrations(aor).await.unwrap();
+            assert_eq!(regs.len(), 0);
+        }
+
+        #[tokio::test]
+        async fn test_expired_registration_filtered() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor = "sip:eve@example.com";
+            // Create a registration that expires immediately
+            let mut reg = make_registration(aor, "sip:eve@10.0.0.1:5060", 3600);
+            reg.expires_at = SystemTime::now() - Duration::from_secs(1);
+            // put_registration should detect it's expired and delete instead
+            store.put_registration(reg).await.unwrap();
+
+            let regs = store.get_registrations(aor).await.unwrap();
+            assert_eq!(regs.len(), 0, "Expired registration should be filtered");
+
+            // Cleanup
+            store.delete_all_registrations(aor).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_registration_count() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor1 = "sip:count1@example.com";
+            let aor2 = "sip:count2@example.com";
+            store.put_registration(make_registration(aor1, "sip:c1@10.0.0.1:5060", 3600)).await.unwrap();
+            store.put_registration(make_registration(aor2, "sip:c2@10.0.0.1:5060", 3600)).await.unwrap();
+            store.put_registration(make_registration(aor2, "sip:c2@10.0.0.2:5060", 3600)).await.unwrap();
+
+            let count = store.registration_count().await.unwrap();
+            // At least 3 from our test (may be more if other tests ran concurrently)
+            assert!(count >= 3, "Expected at least 3, got {}", count);
+
+            // Cleanup
+            store.delete_all_registrations(aor1).await.unwrap();
+            store.delete_all_registrations(aor2).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_get_all_registrations() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor1 = "sip:all1@example.com";
+            let aor2 = "sip:all2@example.com";
+            store.put_registration(make_registration(aor1, "sip:a1@10.0.0.1:5060", 3600)).await.unwrap();
+            store.put_registration(make_registration(aor2, "sip:a2@10.0.0.1:5060", 3600)).await.unwrap();
+
+            let all = store.get_all_registrations().await.unwrap();
+            assert!(all.len() >= 2, "Expected at least 2, got {}", all.len());
+
+            // Cleanup
+            store.delete_all_registrations(aor1).await.unwrap();
+            store.delete_all_registrations(aor2).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_empty_aor_returns_empty() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let regs = store.get_registrations("sip:nonexistent@example.com").await.unwrap();
+            assert!(regs.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_put_updates_existing_contact() {
+            let store = match connect_redis().await {
+                Some(s) => s,
+                None => return,
+            };
+
+            let aor = "sip:update@example.com";
+            let contact = "sip:update@10.0.0.1:5060";
+
+            let mut reg1 = make_registration(aor, contact, 3600);
+            reg1.cseq = 1;
+            store.put_registration(reg1).await.unwrap();
+
+            // Update same contact with new cseq
+            let mut reg2 = make_registration(aor, contact, 3600);
+            reg2.cseq = 2;
+            reg2.call_id = "updated-call-id".to_string();
+            store.put_registration(reg2).await.unwrap();
+
+            let regs = store.get_registrations(aor).await.unwrap();
+            assert_eq!(regs.len(), 1, "Should have one contact, not duplicates");
+            assert_eq!(regs[0].cseq, 2);
+            assert_eq!(regs[0].call_id, "updated-call-id");
+
+            // Cleanup
+            store.delete_all_registrations(aor).await.unwrap();
+        }
+    }
 }

@@ -193,6 +193,8 @@ impl TestHarnessBuilder {
             None,                      // conference_handler
             None,                      // queue_handler
             None,                      // presence_handler
+            None,                      // cluster_parking
+            String::new(),             // node_id
         ).expect("Failed to create SipMessageHandler");
 
         TestHarness {

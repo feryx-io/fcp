@@ -34,6 +34,10 @@ pub struct AppState {
     pub start_time: Instant,
     pub config_path: Option<std::path::PathBuf>,
     pub api_token: Option<String>,
+    /// PBX handler for parking operations (used by /internal/unpark).
+    pub pbx_handler: Option<Arc<fcp_pbx::PbxHandler>>,
+    /// Cluster parking store for cross-node park/pickup.
+    pub cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
 }
 
 /// Run the HTTP health/status/calls server.
@@ -83,6 +87,7 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // Internal cluster endpoints (authenticated via cluster secret)
         .route("/internal/hangup", post(internal_hangup_handler))
         .route("/internal/supervisor", post(internal_supervisor_handler))
+        .route("/internal/unpark", post(internal_unpark_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -1392,5 +1397,88 @@ fn verify_cluster_secret(
             Json(serde_json::json!({"error": "Invalid cluster secret"})),
         )
             .into_response())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /internal/unpark — unpark a call on this node (cross-node pickup)
+// ---------------------------------------------------------------------------
+
+/// Request body for POST /internal/unpark
+#[derive(Deserialize)]
+struct InternalUnparkRequest {
+    orbit: u16,
+}
+
+/// Unpark a call on this node. Called by another node's retrieve handler.
+///
+/// This endpoint:
+/// 1. Retrieves the call from the local ParkingManager
+/// 2. Removes it from the cluster parking store (Redis)
+/// 3. Returns the parked call info so the calling node knows it succeeded
+///
+/// The actual SIP bridging (unhold A-leg, INVITE retriever) is handled by the
+/// calling node or a subsequent step — this endpoint only releases the parking
+/// state on the owning node.
+///
+/// POST /internal/unpark
+async fn internal_unpark_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<InternalUnparkRequest>,
+) -> impl IntoResponse {
+    // Authenticate via cluster secret
+    if let Err(resp) = verify_cluster_secret(&state, &headers) {
+        return resp;
+    }
+
+    let pbx = match &state.pbx_handler {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "PBX handler not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Retrieve from local parking manager
+    match pbx.retrieve_parked_call(req.orbit) {
+        Ok(parked) => {
+            info!(
+                orbit = req.orbit,
+                call_id = %parked.call_id,
+                "Internal unpark: retrieved parked call"
+            );
+
+            // Also remove from cluster store
+            if let Some(ref cp) = state.cluster_parking {
+                let cp = Arc::clone(cp);
+                let orbit = req.orbit;
+                tokio::spawn(async move {
+                    let _ = cp.cluster_unpark(orbit).await;
+                });
+            }
+
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "call_id": parked.call_id.to_string(),
+                    "orbit": parked.orbit,
+                    "parker_extension": parked.parker_extension,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            info!(orbit = req.orbit, error = %e, "Internal unpark: orbit not occupied");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("Orbit not occupied: {}", e)})),
+            )
+                .into_response()
+        }
     }
 }

@@ -184,6 +184,24 @@ async fn main() -> Result<()> {
         None
     };
 
+    // 4d. Create cluster parking store (if Redis is available and parking is enabled)
+    #[cfg(feature = "storage-redis")]
+    let cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>> =
+        if let Some(ref redis) = redis_storage {
+            let parking_timeout = config.pbx.parking.timeout_seconds;
+            let store = fcp_storage_redis::parking::RedisParkingStore::new(
+                redis.clone(),
+                parking_timeout,
+            );
+            info!("Cluster parking store initialized (Redis)");
+            Some(Arc::new(store) as Arc<dyn fcp_core::ClusterParkingStore>)
+        } else {
+            None
+        };
+
+    #[cfg(not(feature = "storage-redis"))]
+    let cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>> = None;
+
     // 5. Create SIP components
     let dialog_manager = DialogManager::new();
     let subscription_manager = SubscriptionManager::new();
@@ -529,6 +547,8 @@ async fn main() -> Result<()> {
         None, // No conference handler
         queue_handler,
         presence_handler.clone(),
+        cluster_parking.clone(),
+        config.service.node_id.clone(),
     )?);
 
     // 16. Create and start TransportListener
@@ -630,6 +650,8 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         config_path: cli.config.clone(),
         api_token: config.http.api_token.clone(),
+        pbx_handler: pbx_handler.clone(),
+        cluster_parking: cluster_parking.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {
@@ -699,16 +721,23 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 21. Spawn event forwarding task (if configured)
+    // 21. Spawn event forwarding task (if configured AND Redis is not active)
+    // When Redis event bus is enabled, events flow via Pub/Sub + Streams.
+    // HTTP forwarding is disabled to prevent duplicate event delivery.
+    let skip_http_forwarding = config.events.use_redis;
     if let Some(ref events_url) = config.events.server_url {
-        let events_url = events_url.clone();
-        let event_bus_clone = Arc::clone(&event_bus);
-        tokio::spawn(async move {
-            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
-                tracing::error!(%e, "Event forwarder task failed");
-            }
-        });
-        info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
+        if skip_http_forwarding {
+            info!("HTTP event forwarding disabled (Redis event bus is active)");
+        } else {
+            let events_url = events_url.clone();
+            let event_bus_clone = Arc::clone(&event_bus);
+            tokio::spawn(async move {
+                if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
+                    tracing::error!(%e, "Event forwarder task failed");
+                }
+            });
+            info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
+        }
     }
 
     // 21b. Spawn webhook dispatcher tasks (one per configured webhook)

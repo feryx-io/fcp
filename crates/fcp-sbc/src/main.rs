@@ -412,6 +412,8 @@ async fn main() -> Result<()> {
         None, // No conference handler
         None, // No queue handler
         None, // presence_handler
+        None, // cluster_parking
+        String::new(), // node_id
     )?);
 
     // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared
