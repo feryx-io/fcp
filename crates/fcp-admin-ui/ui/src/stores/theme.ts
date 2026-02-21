@@ -34,3 +34,8 @@ export const useThemeStore = create<ThemeState>()(
 
 // Apply theme on page load
 applyTheme(useThemeStore.getState().theme)
+
+// Re-apply when OS preference changes (for 'system' mode)
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  applyTheme(useThemeStore.getState().theme)
+})

@@ -2,10 +2,10 @@ import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone,
-  Link2, Building2, Settings, LogOut, Moon, Sun, Menu,
+  Link2, Building2, Settings, LogOut, Moon, Sun, Monitor, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
   Radio, Server, Shield, Workflow, Globe, Key,
-  ScrollText, Search,
+  ScrollText, Search, X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -52,8 +52,33 @@ const navItems: NavItem[] = [
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },
 ]
 
+const themeIcon = (theme: string) => {
+  switch (theme) {
+    case 'dark': return Sun
+    case 'light': return Moon
+    default: return Monitor
+  }
+}
+
+const nextTheme = (current: string): 'light' | 'dark' | 'system' => {
+  switch (current) {
+    case 'light': return 'dark'
+    case 'dark': return 'system'
+    default: return 'light'
+  }
+}
+
+const themeLabel = (theme: string) => {
+  switch (theme) {
+    case 'dark': return 'Dark'
+    case 'light': return 'Light'
+    default: return 'System'
+  }
+}
+
 export function AdminLayout() {
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileOpen, setMobileOpen] = useState(false)
   const location = useLocation()
   const { user, logout } = useAuthStore()
   const { theme, setTheme } = useThemeStore()
@@ -64,6 +89,11 @@ export function AdminLayout() {
     connect()
     return () => disconnect()
   }, [connect, disconnect])
+
+  // Close mobile drawer on navigation
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [location.pathname])
 
   const isActive = (href: string) => {
     if (href === '/admin') return location.pathname === '/admin'
@@ -82,13 +112,125 @@ export function AdminLayout() {
     sections[sections.length - 1].items.push(item)
   })
 
+  const ThemeIcon = themeIcon(theme)
+
+  const sidebarContent = (
+    <>
+      {/* Navigation */}
+      <nav className="flex-1 overflow-y-auto p-2" aria-label="Main navigation">
+        {sections.map((section, sectionIdx) => (
+          <div key={sectionIdx}>
+            {section.label && !collapsed && (
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 pt-4 pb-1">
+                {section.label}
+              </p>
+            )}
+            {section.label && collapsed && sectionIdx > 0 && (
+              <div className="my-2 border-t" />
+            )}
+            {section.items.map((item) => {
+              const Icon = item.icon
+              const active = isActive(item.href)
+
+              if (collapsed && !mobileOpen) {
+                return (
+                  <Tooltip key={item.href}>
+                    <TooltipTrigger asChild>
+                      <Link
+                        to={item.href}
+                        aria-current={active ? 'page' : undefined}
+                        className={cn(
+                          'flex items-center justify-center rounded-md p-2 my-1 transition-colors',
+                          active
+                            ? 'bg-primary text-primary-foreground'
+                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                        )}
+                      >
+                        <Icon className="h-5 w-5" />
+                      </Link>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">{item.label}</TooltipContent>
+                  </Tooltip>
+                )
+              }
+
+              return (
+                <Link
+                  key={item.href}
+                  to={item.href}
+                  aria-current={active ? 'page' : undefined}
+                  className={cn(
+                    'flex items-center gap-3 rounded-md px-3 py-2 my-1 text-sm font-medium transition-colors',
+                    active
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )}
+                >
+                  <Icon className="h-5 w-5" />
+                  {item.label}
+                </Link>
+              )
+            })}
+          </div>
+        ))}
+      </nav>
+
+      {/* Footer */}
+      <div className="border-t p-2">
+        {collapsed && !mobileOpen ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="w-full"
+                aria-label={`Switch theme (current: ${themeLabel(theme)})`}
+                onClick={() => setTheme(nextTheme(theme))}
+              >
+                <ThemeIcon className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="right">Theme: {themeLabel(theme)}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2"
+            aria-label={`Switch theme (current: ${themeLabel(theme)})`}
+            onClick={() => setTheme(nextTheme(theme))}
+          >
+            <ThemeIcon className="h-4 w-4" />
+            {themeLabel(theme)} Mode
+          </Button>
+        )}
+      </div>
+    </>
+  )
+
   return (
     <TooltipProvider>
+      {/* Skip to content link */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[70] focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
+      >
+        Skip to content
+      </a>
+
       <div className="flex h-screen overflow-hidden">
-        {/* Sidebar */}
+        {/* Mobile overlay */}
+        {mobileOpen && (
+          <div
+            className="fixed inset-0 z-40 bg-black/50 md:hidden"
+            onClick={() => setMobileOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Sidebar — desktop */}
         <aside
           className={cn(
-            'flex flex-col border-r bg-card transition-all duration-200',
+            'hidden md:flex flex-col border-r bg-card transition-all duration-200',
             collapsed ? 'w-16' : 'w-64',
           )}
         >
@@ -104,107 +246,61 @@ export function AdminLayout() {
               variant="ghost"
               size="icon"
               className={cn('ml-auto', collapsed && 'mx-auto')}
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               onClick={() => setCollapsed(!collapsed)}
             >
               {collapsed ? <Menu className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
             </Button>
           </div>
+          {sidebarContent}
+        </aside>
 
-          {/* Navigation */}
-          <nav className="flex-1 overflow-y-auto p-2">
-            {sections.map((section, sectionIdx) => (
-              <div key={sectionIdx}>
-                {section.label && !collapsed && (
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 pt-4 pb-1">
-                    {section.label}
-                  </p>
-                )}
-                {section.label && collapsed && sectionIdx > 0 && (
-                  <div className="my-2 border-t" />
-                )}
-                {section.items.map((item) => {
-                  const Icon = item.icon
-                  const active = isActive(item.href)
-
-                  if (collapsed) {
-                    return (
-                      <Tooltip key={item.href}>
-                        <TooltipTrigger asChild>
-                          <Link
-                            to={item.href}
-                            className={cn(
-                              'flex items-center justify-center rounded-md p-2 my-1 transition-colors',
-                              active
-                                ? 'bg-primary text-primary-foreground'
-                                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                            )}
-                          >
-                            <Icon className="h-5 w-5" />
-                          </Link>
-                        </TooltipTrigger>
-                        <TooltipContent side="right">{item.label}</TooltipContent>
-                      </Tooltip>
-                    )
-                  }
-
-                  return (
-                    <Link
-                      key={item.href}
-                      to={item.href}
-                      className={cn(
-                        'flex items-center gap-3 rounded-md px-3 py-2 my-1 text-sm font-medium transition-colors',
-                        active
-                          ? 'bg-primary text-primary-foreground'
-                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                      )}
-                    >
-                      <Icon className="h-5 w-5" />
-                      {item.label}
-                    </Link>
-                  )
-                })}
-              </div>
-            ))}
-          </nav>
-
-          {/* Footer */}
-          <div className="border-t p-2">
-            {collapsed ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="w-full"
-                    onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-                  >
-                    {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="right">Toggle theme</TooltipContent>
-              </Tooltip>
-            ) : (
-              <Button
-                variant="ghost"
-                className="w-full justify-start gap-2"
-                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              >
-                {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
-              </Button>
-            )}
+        {/* Sidebar — mobile drawer */}
+        <aside
+          className={cn(
+            'fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r bg-card transition-transform duration-200 md:hidden',
+            mobileOpen ? 'translate-x-0' : '-translate-x-full',
+          )}
+        >
+          <div className="flex h-14 items-center justify-between border-b px-4">
+            <Link to="/admin" className="flex items-center gap-2">
+              <Boxes className="h-6 w-6 text-primary" />
+              <span className="text-lg font-bold">FCP Admin</span>
+            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Close menu"
+              onClick={() => setMobileOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
           </div>
+          {sidebarContent}
         </aside>
 
         {/* Main content */}
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Header */}
-          <header className="flex h-14 items-center justify-between border-b bg-card px-6">
-            <Breadcrumbs />
-            <div className="flex items-center gap-4">
+          <header className="flex h-14 items-center justify-between border-b bg-card px-4 md:px-6">
+            <div className="flex items-center gap-3">
+              {/* Mobile menu button */}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="md:hidden"
+                aria-label="Open menu"
+                onClick={() => setMobileOpen(true)}
+              >
+                <Menu className="h-5 w-5" />
+              </Button>
+              <Breadcrumbs />
+            </div>
+            <div className="flex items-center gap-2 md:gap-4">
               {/* Search hint */}
               <button
                 className="hidden md:flex items-center gap-2 text-xs text-muted-foreground bg-muted rounded-md px-3 py-1.5 hover:bg-accent transition-colors"
+                aria-label="Open search (Ctrl+K)"
                 onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
               >
                 <Search className="h-3 w-3" />
@@ -217,15 +313,16 @@ export function AdminLayout() {
                   'h-2 w-2 rounded-full',
                   connected ? 'bg-green-500' : 'bg-muted-foreground',
                 )}
-                title={connected ? 'Live connection active' : 'Disconnected'}
+                role="status"
+                aria-label={connected ? 'Live connection active' : 'Disconnected'}
               />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" className="gap-2">
+                  <Button variant="ghost" className="gap-2" aria-label="User menu">
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
                       {(user?.display_name || user?.username || 'U').charAt(0).toUpperCase()}
                     </div>
-                    {user?.username}
+                    <span className="hidden md:inline">{user?.username}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
@@ -251,7 +348,7 @@ export function AdminLayout() {
           </header>
 
           {/* Page content */}
-          <main className="flex-1 overflow-y-auto p-6">
+          <main id="main-content" className="flex-1 overflow-y-auto p-4 md:p-6">
             <Outlet />
           </main>
         </div>
@@ -279,12 +376,12 @@ function Breadcrumbs() {
   })
 
   return (
-    <nav className="flex items-center gap-1 text-sm text-muted-foreground">
+    <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-sm text-muted-foreground">
       {breadcrumbs.map((crumb, i) => (
         <span key={crumb.href} className="flex items-center gap-1">
-          {i > 0 && <span>/</span>}
+          {i > 0 && <span aria-hidden="true">/</span>}
           {i === breadcrumbs.length - 1 ? (
-            <span className="font-medium text-foreground">{crumb.label}</span>
+            <span className="font-medium text-foreground" aria-current="page">{crumb.label}</span>
           ) : (
             <Link to={crumb.href} className="hover:text-foreground transition-colors">
               {crumb.label}
