@@ -4,7 +4,8 @@ import {
   LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone,
   Link2, Building2, Settings, LogOut, Moon, Sun, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
-  Radio,
+  Radio, Server, Shield, Workflow, Globe, Key,
+  ScrollText, Search,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -17,6 +18,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { useWebSocketStore } from '@/stores/websocket'
 import { ToastContainer } from '@/components/ToastContainer'
+import { CommandPalette } from '@/components/CommandPalette'
 
 interface NavItem {
   label: string
@@ -40,6 +42,14 @@ const navItems: NavItem[] = [
   { label: 'Queues', href: '/admin/queues', icon: Headphones, section: 'Operations' },
   { label: 'Voicemail', href: '/admin/voicemail', icon: Voicemail, section: 'Operations' },
   { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
+  // Advanced
+  { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, section: 'Advanced' },
+  { label: 'Routing Rules', href: '/admin/routing', icon: Shield, section: 'Advanced' },
+  { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, section: 'Advanced' },
+  { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'Advanced' },
+  { label: 'Number Porting', href: '/admin/porting', icon: Phone, section: 'Advanced' },
+  { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },
+  { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },
 ]
 
 export function AdminLayout() {
@@ -192,6 +202,15 @@ export function AdminLayout() {
           <header className="flex h-14 items-center justify-between border-b bg-card px-6">
             <Breadcrumbs />
             <div className="flex items-center gap-4">
+              {/* Search hint */}
+              <button
+                className="hidden md:flex items-center gap-2 text-xs text-muted-foreground bg-muted rounded-md px-3 py-1.5 hover:bg-accent transition-colors"
+                onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
+              >
+                <Search className="h-3 w-3" />
+                Search...
+                <kbd className="bg-background rounded px-1 py-0.5 text-[10px]">⌘K</kbd>
+              </button>
               {/* WebSocket indicator */}
               <span
                 className={cn(
@@ -239,6 +258,9 @@ export function AdminLayout() {
 
         {/* Toast notifications */}
         <ToastContainer />
+
+        {/* Command palette (Cmd+K) */}
+        <CommandPalette />
       </div>
     </TooltipProvider>
   )

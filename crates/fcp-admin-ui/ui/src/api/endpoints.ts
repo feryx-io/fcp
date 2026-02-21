@@ -14,6 +14,13 @@ import type {
   MailboxResponse, VoicemailMessage, MailboxStats,
   PresenceResponse, PresenceStats,
   Registration,
+  TrunkSummary, TrunkDetail, QualityMetrics,
+  PolicyRule, CreatePolicyRuleRequest,
+  FlowResponse, CreateFlowRequest, UpdateFlowRequest, ListFlowsResponse, ListFlowsQuery,
+  SystemStatus,
+  PortRequest, CreatePortRequest,
+  AuditEntry, AuditQueryParams, ListAuditResponse,
+  ApiToken, CreateApiTokenRequest, CreateApiTokenResponse,
 } from '@/types'
 
 // Auth
@@ -172,4 +179,92 @@ export const registrations = {
   list: () => apiClient.get<Registration[]>('/registrations'),
   get: (aor: string) => apiClient.get<Registration>(`/registrations/${encodeURIComponent(aor)}`),
   delete: (aor: string) => apiClient.delete<void>(`/registrations/${encodeURIComponent(aor)}`),
+}
+
+// --- Phase 3: Advanced Features ---
+
+// SIP Trunks (SBC admin API - different base path)
+const SBC_BASE = '/admin'
+export const trunks = {
+  list: () => apiClient.get<TrunkSummary[]>(`${SBC_BASE}/trunks`),
+  get: (name: string) => apiClient.get<TrunkDetail>(`${SBC_BASE}/trunks/${encodeURIComponent(name)}`),
+  enable: (name: string) => apiClient.post<void>(`${SBC_BASE}/trunks/${encodeURIComponent(name)}/enable`),
+  disable: (name: string) => apiClient.post<void>(`${SBC_BASE}/trunks/${encodeURIComponent(name)}/disable`),
+  register: (name: string) => apiClient.post<void>(`${SBC_BASE}/trunks/${encodeURIComponent(name)}/register`),
+  quality: (name: string) => apiClient.get<QualityMetrics>(`${SBC_BASE}/quality/${encodeURIComponent(name)}`),
+  qualityAll: () => apiClient.get<QualityMetrics[]>(`${SBC_BASE}/quality`),
+}
+
+// Routing / Policy Rules
+export const routing = {
+  list: () => apiClient.get<PolicyRule[]>('/routing/rules'),
+  get: (id: string) => apiClient.get<PolicyRule>(`/routing/rules/${id}`),
+  create: (data: CreatePolicyRuleRequest) => apiClient.post<PolicyRule>('/routing/rules', data),
+  update: (id: string, data: Partial<CreatePolicyRuleRequest>) =>
+    apiClient.put<PolicyRule>(`/routing/rules/${id}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/routing/rules/${id}`),
+}
+
+// IVR Flows
+export const flows = {
+  list: (params?: ListFlowsQuery) => {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          searchParams.set(key, String(value))
+        }
+      })
+    }
+    const query = searchParams.toString()
+    return apiClient.get<ListFlowsResponse>(`/flows${query ? `?${query}` : ''}`)
+  },
+  get: (id: string) => apiClient.get<FlowResponse>(`/flows/${id}`),
+  create: (data: CreateFlowRequest) => apiClient.post<FlowResponse>('/flows', data),
+  update: (id: string, data: UpdateFlowRequest) =>
+    apiClient.put<FlowResponse>(`/flows/${id}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/flows/${id}`),
+  versions: (id: string) => apiClient.get<FlowResponse[]>(`/flows/${id}/versions`),
+}
+
+// System / Cluster
+export const cluster = {
+  status: () => apiClient.get<SystemStatus>('/status'),
+  health: () => apiClient.get<{ status: string; version: string }>('/health'),
+}
+
+// Number Porting
+export const porting = {
+  list: () => apiClient.get<PortRequest[]>('/porting/requests'),
+  get: (id: string) => apiClient.get<PortRequest>(`/porting/requests/${id}`),
+  create: (data: CreatePortRequest) => apiClient.post<PortRequest>('/porting/requests', data),
+  update: (id: string, data: Partial<CreatePortRequest>) =>
+    apiClient.put<PortRequest>(`/porting/requests/${id}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/porting/requests/${id}`),
+  submit: (id: string) => apiClient.post<void>(`/porting/requests/${id}/submit`),
+  cancel: (id: string) => apiClient.post<void>(`/porting/requests/${id}/cancel`),
+}
+
+// Audit Log
+export const auditLog = {
+  list: (params?: AuditQueryParams) => {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          searchParams.set(key, String(value))
+        }
+      })
+    }
+    const query = searchParams.toString()
+    return apiClient.get<ListAuditResponse>(`/audit-logs${query ? `?${query}` : ''}`)
+  },
+  get: (id: string) => apiClient.get<AuditEntry>(`/audit-logs/${id}`),
+}
+
+// API Tokens
+export const apiTokens = {
+  list: () => apiClient.get<ApiToken[]>('/api-tokens'),
+  create: (data: CreateApiTokenRequest) => apiClient.post<CreateApiTokenResponse>('/api-tokens', data),
+  delete: (id: string) => apiClient.delete<void>(`/api-tokens/${id}`),
 }

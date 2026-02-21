@@ -437,3 +437,272 @@ export interface ToastMessage {
   variant: 'default' | 'success' | 'warning' | 'destructive'
   timestamp: number
 }
+
+// --- Phase 3: Advanced Features ---
+
+// SIP Trunks (matches fcp-sbc admin.rs)
+export interface TrunkSummary {
+  name: string
+  enabled: boolean
+  admin_disabled: boolean
+  health_status: string // "healthy" | "degraded" | "down" | "unknown"
+  direction: string // "upstream" | "downstream" | "bidirectional"
+  concurrent_calls: number
+  max_concurrent_calls: number
+  priority: number
+  weight: number
+  registration_state: string | null
+}
+
+export interface TrunkDetail extends TrunkSummary {
+  hosts: string[]
+  transport_protocol: string
+  transport_port: number | null
+  consecutive_failures: number
+  has_credentials: boolean
+  register: boolean
+  registration_error: string | null
+}
+
+// Routing / Policy Rules (matches fcp-routing policy.rs)
+export interface PolicyRule {
+  id: string
+  name: string
+  tenant_id: string
+  priority: number
+  enabled: boolean
+  applies_to: AppliesTo
+  destination_match: DestinationMatch | null
+  time_windows: TimeWindow[]
+  source_ip_ranges: string[]
+  action: 'allow' | 'deny'
+  reason: string | null
+}
+
+export interface AppliesTo {
+  all_users: boolean
+  users: string[] | null
+  roles: string[] | null
+  groups: string[] | null
+}
+
+export interface DestinationMatch {
+  pattern: string
+  tags: string[] | null
+}
+
+export interface TimeWindow {
+  days: string[]
+  start_time: string
+  end_time: string
+  timezone: string
+}
+
+export interface CreatePolicyRuleRequest {
+  name: string
+  priority?: number
+  enabled?: boolean
+  applies_to?: Partial<AppliesTo>
+  destination_match?: DestinationMatch
+  time_windows?: TimeWindow[]
+  source_ip_ranges?: string[]
+  action: 'allow' | 'deny'
+  reason?: string
+}
+
+// IVR Flows (matches fcp-api-core flows.rs)
+export interface FlowResponse {
+  id: string
+  name: string
+  description: string | null
+  version: number
+  initial_node: string
+  nodes: Record<string, FlowNode>
+  variables: Record<string, unknown>
+  tenant_id: string | null
+  enabled: boolean
+  webhook_url: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface FlowNode {
+  type: string
+  label?: string
+  [key: string]: unknown
+}
+
+export interface CreateFlowRequest {
+  id: string
+  name: string
+  description?: string
+  initial_node: string
+  nodes: Record<string, FlowNode>
+  variables?: Record<string, unknown>
+  tenant_id?: string
+  enabled?: boolean
+  webhook_url?: string
+}
+
+export interface UpdateFlowRequest {
+  name?: string
+  description?: string
+  initial_node?: string
+  nodes?: Record<string, FlowNode>
+  variables?: Record<string, unknown>
+  enabled?: boolean
+  webhook_url?: string
+}
+
+export interface ListFlowsResponse {
+  flows: FlowResponse[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface ListFlowsQuery {
+  tenant_id?: string
+  enabled?: boolean
+  name?: string
+  limit?: number
+  offset?: number
+}
+
+// Cluster (matches cluster health endpoints)
+export interface ClusterNode {
+  node_id: string
+  address: string
+  status: string // "healthy" | "degraded" | "down"
+  uptime_seconds: number
+  active_calls: number
+  last_heartbeat: string
+  version: string
+}
+
+export interface SystemStatus {
+  status: string
+  version: string
+  uptime_seconds: number
+  users_count: number
+  active_registrations_count: number
+}
+
+// Number Porting (matches fcp-core porting.rs)
+export type PortStatus = 'draft' | 'submitted' | 'pending' | 'approved' | 'scheduled'
+  | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'failed'
+
+export interface PortRequest {
+  id: string
+  tenant_id: string
+  phone_numbers: string[]
+  port_type: string
+  status: PortStatus
+  rejection_reason: string | null
+  customer_name: string
+  account_number: string
+  pin: string | null
+  service_address: PortAddress
+  authorized_contact_name: string
+  authorized_contact_phone: string
+  authorized_contact_email: string
+  losing_carrier: string
+  winning_carrier: string
+  requested_foc_date: string | null
+  actual_foc_date: string | null
+  submitted_at: string | null
+  completed_at: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface PortAddress {
+  street: string
+  city: string
+  state: string
+  postal_code: string
+  country: string
+}
+
+export interface CreatePortRequest {
+  phone_numbers: string[]
+  port_type?: string
+  customer_name: string
+  account_number: string
+  pin?: string
+  service_address: PortAddress
+  authorized_contact_name: string
+  authorized_contact_phone: string
+  authorized_contact_email: string
+  losing_carrier: string
+  winning_carrier?: string
+  requested_foc_date?: string
+  notes?: string
+}
+
+// Audit Log
+export interface AuditEntry {
+  id: string
+  tenant_id: string
+  actor_id: string
+  actor_type: string
+  action: string
+  resource_type: string
+  resource_id: string
+  changes: Record<string, unknown> | null
+  ip_address: string | null
+  timestamp: string
+}
+
+export interface AuditQueryParams {
+  actor_id?: string
+  resource_type?: string
+  action?: string
+  start_time?: string
+  end_time?: string
+  limit?: number
+  offset?: number
+}
+
+export interface ListAuditResponse {
+  entries: AuditEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
+// API Tokens
+export interface ApiToken {
+  id: string
+  name: string
+  prefix: string
+  user_id: string
+  tenant_id: string
+  permissions: string[]
+  expires_at: string | null
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface CreateApiTokenRequest {
+  name: string
+  permissions?: string[]
+  expires_at?: string
+}
+
+export interface CreateApiTokenResponse {
+  token: ApiToken
+  secret: string // Only returned once
+}
+
+// SBC Quality Metrics
+export interface QualityMetrics {
+  trunk_name: string
+  asr: number // Answer-Seizure Ratio
+  acd: number // Average Call Duration
+  pdd: number // Post-Dial Delay (ms)
+  ner: number // Network Effectiveness Ratio
+  total_calls: number
+  failed_calls: number
+}
