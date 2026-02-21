@@ -9,6 +9,11 @@ import { DevicesPage } from '@/pages/DevicesPage'
 import { PhoneNumbersPage } from '@/pages/PhoneNumbersPage'
 import { LineBindingsPage } from '@/pages/LineBindingsPage'
 import { TenantsPage } from '@/pages/TenantsPage'
+import { ActiveCallsPage } from '@/pages/ActiveCallsPage'
+import { CDRsPage } from '@/pages/CDRsPage'
+import { QueuesPage } from '@/pages/QueuesPage'
+import { VoicemailPage } from '@/pages/VoicemailPage'
+import { PresencePage } from '@/pages/PresencePage'
 import { useAuthStore } from '@/stores/auth'
 
 const queryClient = new QueryClient({
@@ -48,6 +53,11 @@ export function App() {
             <Route path="phone-numbers" element={<PhoneNumbersPage />} />
             <Route path="line-bindings" element={<LineBindingsPage />} />
             <Route path="tenants" element={<TenantsPage />} />
+            <Route path="calls" element={<ActiveCallsPage />} />
+            <Route path="cdrs" element={<CDRsPage />} />
+            <Route path="queues" element={<QueuesPage />} />
+            <Route path="voicemail" element={<VoicemailPage />} />
+            <Route path="presence" element={<PresencePage />} />
           </Route>
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>

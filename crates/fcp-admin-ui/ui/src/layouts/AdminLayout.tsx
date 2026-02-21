@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone,
   Link2, Building2, Settings, LogOut, Moon, Sun, Menu,
-  ChevronLeft,
+  ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
+  Radio,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -14,21 +15,31 @@ import {
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { useWebSocketStore } from '@/stores/websocket'
+import { ToastContainer } from '@/components/ToastContainer'
 
 interface NavItem {
   label: string
   href: string
   icon: React.ElementType
+  section?: string
 }
 
 const navItems: NavItem[] = [
   { label: 'Dashboard', href: '/admin', icon: LayoutDashboard },
-  { label: 'Users', href: '/admin/users', icon: Users },
-  { label: 'Extensions', href: '/admin/extensions', icon: Phone },
-  { label: 'Devices', href: '/admin/devices', icon: MonitorSmartphone },
-  { label: 'Phone Numbers', href: '/admin/phone-numbers', icon: Phone },
-  { label: 'Line Bindings', href: '/admin/line-bindings', icon: Link2 },
-  { label: 'Tenants', href: '/admin/tenants', icon: Building2 },
+  // Management
+  { label: 'Users', href: '/admin/users', icon: Users, section: 'Management' },
+  { label: 'Extensions', href: '/admin/extensions', icon: Phone, section: 'Management' },
+  { label: 'Devices', href: '/admin/devices', icon: MonitorSmartphone, section: 'Management' },
+  { label: 'Phone Numbers', href: '/admin/phone-numbers', icon: Phone, section: 'Management' },
+  { label: 'Line Bindings', href: '/admin/line-bindings', icon: Link2, section: 'Management' },
+  { label: 'Tenants', href: '/admin/tenants', icon: Building2, section: 'Management' },
+  // Operations
+  { label: 'Active Calls', href: '/admin/calls', icon: PhoneCall, section: 'Operations' },
+  { label: 'Call History', href: '/admin/cdrs', icon: FileText, section: 'Operations' },
+  { label: 'Queues', href: '/admin/queues', icon: Headphones, section: 'Operations' },
+  { label: 'Voicemail', href: '/admin/voicemail', icon: Voicemail, section: 'Operations' },
+  { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
 ]
 
 export function AdminLayout() {
@@ -36,11 +47,30 @@ export function AdminLayout() {
   const location = useLocation()
   const { user, logout } = useAuthStore()
   const { theme, setTheme } = useThemeStore()
+  const { connected, connect, disconnect } = useWebSocketStore()
+
+  // Connect WebSocket on mount
+  useEffect(() => {
+    connect()
+    return () => disconnect()
+  }, [connect, disconnect])
 
   const isActive = (href: string) => {
     if (href === '/admin') return location.pathname === '/admin'
     return location.pathname.startsWith(href)
   }
+
+  // Group nav items by section
+  const sections: { label: string | null; items: NavItem[] }[] = []
+  let currentSection: string | null = null
+  navItems.forEach((item) => {
+    const section = item.section ?? null
+    if (section !== currentSection) {
+      sections.push({ label: section, items: [] })
+      currentSection = section
+    }
+    sections[sections.length - 1].items.push(item)
+  })
 
   return (
     <TooltipProvider>
@@ -72,47 +102,59 @@ export function AdminLayout() {
 
           {/* Navigation */}
           <nav className="flex-1 overflow-y-auto p-2">
-            {navItems.map((item) => {
-              const Icon = item.icon
-              const active = isActive(item.href)
+            {sections.map((section, sectionIdx) => (
+              <div key={sectionIdx}>
+                {section.label && !collapsed && (
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 pt-4 pb-1">
+                    {section.label}
+                  </p>
+                )}
+                {section.label && collapsed && sectionIdx > 0 && (
+                  <div className="my-2 border-t" />
+                )}
+                {section.items.map((item) => {
+                  const Icon = item.icon
+                  const active = isActive(item.href)
 
-              if (collapsed) {
-                return (
-                  <Tooltip key={item.href}>
-                    <TooltipTrigger asChild>
-                      <Link
-                        to={item.href}
-                        className={cn(
-                          'flex items-center justify-center rounded-md p-2 my-1 transition-colors',
-                          active
-                            ? 'bg-primary text-primary-foreground'
-                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                        )}
-                      >
-                        <Icon className="h-5 w-5" />
-                      </Link>
-                    </TooltipTrigger>
-                    <TooltipContent side="right">{item.label}</TooltipContent>
-                  </Tooltip>
-                )
-              }
+                  if (collapsed) {
+                    return (
+                      <Tooltip key={item.href}>
+                        <TooltipTrigger asChild>
+                          <Link
+                            to={item.href}
+                            className={cn(
+                              'flex items-center justify-center rounded-md p-2 my-1 transition-colors',
+                              active
+                                ? 'bg-primary text-primary-foreground'
+                                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                            )}
+                          >
+                            <Icon className="h-5 w-5" />
+                          </Link>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">{item.label}</TooltipContent>
+                      </Tooltip>
+                    )
+                  }
 
-              return (
-                <Link
-                  key={item.href}
-                  to={item.href}
-                  className={cn(
-                    'flex items-center gap-3 rounded-md px-3 py-2 my-1 text-sm font-medium transition-colors',
-                    active
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                  )}
-                >
-                  <Icon className="h-5 w-5" />
-                  {item.label}
-                </Link>
-              )
-            })}
+                  return (
+                    <Link
+                      key={item.href}
+                      to={item.href}
+                      className={cn(
+                        'flex items-center gap-3 rounded-md px-3 py-2 my-1 text-sm font-medium transition-colors',
+                        active
+                          ? 'bg-primary text-primary-foreground'
+                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                      )}
+                    >
+                      <Icon className="h-5 w-5" />
+                      {item.label}
+                    </Link>
+                  )
+                })}
+              </div>
+            ))}
           </nav>
 
           {/* Footer */}
@@ -150,6 +192,14 @@ export function AdminLayout() {
           <header className="flex h-14 items-center justify-between border-b bg-card px-6">
             <Breadcrumbs />
             <div className="flex items-center gap-4">
+              {/* WebSocket indicator */}
+              <span
+                className={cn(
+                  'h-2 w-2 rounded-full',
+                  connected ? 'bg-green-500' : 'bg-muted-foreground',
+                )}
+                title={connected ? 'Live connection active' : 'Disconnected'}
+              />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" className="gap-2">
@@ -186,6 +236,9 @@ export function AdminLayout() {
             <Outlet />
           </main>
         </div>
+
+        {/* Toast notifications */}
+        <ToastContainer />
       </div>
     </TooltipProvider>
   )

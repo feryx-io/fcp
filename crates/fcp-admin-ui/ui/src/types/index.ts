@@ -242,3 +242,198 @@ export interface ApiError {
   error: string
   details?: string
 }
+
+// --- Phase 2: Operations & Live Features ---
+
+// Calls (matches media.rs CallInfo)
+export interface CallInfo {
+  id: string
+  state: string
+  from_uri: string
+  to_uri: string
+  from_display_name: string | null
+  to_display_name: string | null
+  created_at: string
+  established_at: string | null
+  ended_at: string | null
+  duration_seconds: number | null
+  media_anchored: boolean
+  failure_reason: string | null
+}
+
+export interface OriginateCallRequest {
+  from: string
+  to: string
+  from_display_name?: string
+  tenant_id?: string
+}
+
+// CDRs (matches cdrs.rs CdrResponse)
+export interface CdrResponse {
+  call_id: string
+  tenant_id: string
+  sip_call_id: string
+  from_uri: string
+  from_display_name: string | null
+  to_uri: string
+  to_display_name: string | null
+  start_time: number
+  answer_time: number | null
+  end_time: number | null
+  setup_duration_ms: number | null
+  call_duration_ms: number | null
+  total_duration_ms: number | null
+  disposition: string
+  hangup_cause: string
+  hangup_party: string | null
+  sip_status_code: number | null
+  sip_reason: string | null
+  media_anchored: boolean
+  codec_a_leg: string | null
+  codec_b_leg: string | null
+  recording_url: string | null
+  cost: number | null
+  currency: string | null
+}
+
+export interface ListCdrsResponse {
+  cdrs: CdrResponse[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface CdrQueryParams {
+  tenant_id?: string
+  call_id?: string
+  from_uri?: string
+  to_uri?: string
+  disposition?: string
+  start_time_from?: string
+  start_time_to?: string
+  limit?: number
+  offset?: number
+}
+
+// Queues (matches queues.rs)
+export interface QueueResponse {
+  name: string
+  display_name: string
+  extension: string
+  strategy: string
+  max_wait_time_secs: number
+  max_queue_depth: number
+  overflow_destination: string | null
+  agents_configured: number
+  calls_waiting: number
+}
+
+export interface QueueStatsResponse {
+  queue_name: string
+  calls_waiting: number
+  agents_available: number
+  agents_on_call: number
+  agents_total: number
+  avg_wait_time_secs: number
+  longest_wait_secs: number
+  calls_handled_today: number
+  calls_abandoned_today: number
+  service_level_pct: number
+}
+
+export interface AgentResponse {
+  id: string
+  extension: string
+  state: string
+  queues: string[]
+  calls_handled: number
+  priority: number
+}
+
+export interface AgentLoginRequest {
+  agent_id: string
+  extension: string
+  skills?: string[]
+}
+
+// Voicemail (matches voicemail.rs)
+export interface MailboxResponse {
+  id: string
+  tenant_id: string
+  user_id: string
+  line_binding_id: string
+  extension: string
+  enabled: boolean
+  max_message_duration: number
+  max_messages: number
+  email_notification: boolean
+  email_address: string | null
+  attach_audio: boolean
+  include_transcription: boolean
+  transcription_enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface VoicemailMessage {
+  id: string
+  mailbox_id: string
+  caller: string
+  caller_name: string | null
+  status: string
+  priority: string
+  duration: number
+  recording_path: string
+  transcription: string | null
+  created_at: number
+  accessed_at: number | null
+}
+
+export interface MailboxStats {
+  mailbox_id: string
+  total_messages: number
+  new_messages: number
+  heard_messages: number
+  saved_messages: number
+  storage_used: number
+  avg_duration: number
+}
+
+// Presence (matches presence.rs)
+export interface PresenceResponse {
+  aor: string
+  state: string
+  note: string | null
+  watcher_count: number
+}
+
+export interface PresenceStats {
+  total_presentities: number
+  total_watchers: number
+}
+
+// Platform Events (matches fcp-events types.rs)
+export interface PlatformEvent {
+  event_type: string
+  [key: string]: unknown
+}
+
+export interface CallEvent extends PlatformEvent {
+  call_id: string
+  timestamp: number
+}
+
+export interface QueueEvent extends PlatformEvent {
+  queue_name?: string
+  call_id?: string
+  agent_id?: string
+  timestamp: number
+}
+
+export interface ToastMessage {
+  id: string
+  title: string
+  description: string
+  variant: 'default' | 'success' | 'warning' | 'destructive'
+  timestamp: number
+}

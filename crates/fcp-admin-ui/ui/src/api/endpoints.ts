@@ -6,9 +6,14 @@ import type {
   Device, CreateDeviceRequest,
   PhoneNumber, CreatePhoneNumberRequest,
   LineBinding, CreateLineBindingRequest,
-  CallDetailRecord, ActiveCall,
   DashboardSummary, SystemHealth,
   LoginRequest, LoginResponse, AuthUser,
+  CallInfo, OriginateCallRequest,
+  CdrResponse, ListCdrsResponse, CdrQueryParams,
+  QueueResponse, QueueStatsResponse, AgentResponse, AgentLoginRequest,
+  MailboxResponse, VoicemailMessage, MailboxStats,
+  PresenceResponse, PresenceStats,
+  Registration,
 } from '@/types'
 
 // Auth
@@ -93,18 +98,78 @@ export const lineBindings = {
   delete: (id: string) => apiClient.delete<void>(`/line-bindings/${id}`),
 }
 
-// Calls
+// Calls (Phase 2 - live operations)
 export const calls = {
-  list: () => apiClient.get<ActiveCall[]>('/calls'),
-  get: (callId: string) => apiClient.get<ActiveCall>(`/calls/${callId}`),
-  hangup: (callId: string) => apiClient.delete<void>(`/calls/${callId}`),
+  list: () => apiClient.get<CallInfo[]>('/media/calls'),
+  get: (callId: string) => apiClient.get<CallInfo>(`/media/calls/${callId}`),
+  originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/media/calls', data),
+  hangup: (callId: string) => apiClient.delete<void>(`/media/calls/${callId}`),
+  hold: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/hold`),
+  resume: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/resume`),
+  transfer: (callId: string, target: string) =>
+    apiClient.post<void>(`/media/calls/${callId}/transfer`, { target }),
+  mute: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/mute`),
+  unmute: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/unmute`),
 }
 
-// CDRs
+// CDRs (Phase 2 - call detail records)
 export const cdrs = {
-  list: (params?: Record<string, string>) => {
-    const query = params ? '?' + new URLSearchParams(params).toString() : ''
-    return apiClient.get<CallDetailRecord[]>(`/cdrs${query}`)
+  list: (params?: CdrQueryParams) => {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          searchParams.set(key, String(value))
+        }
+      })
+    }
+    const query = searchParams.toString()
+    return apiClient.get<ListCdrsResponse>(`/cdrs${query ? `?${query}` : ''}`)
   },
-  get: (callId: string) => apiClient.get<CallDetailRecord>(`/cdrs/${callId}`),
+  get: (callId: string) => apiClient.get<CdrResponse>(`/cdrs/${callId}`),
+}
+
+// Queues (Phase 2 - ACD queues)
+export const queues = {
+  list: () => apiClient.get<QueueResponse[]>('/queues'),
+  get: (name: string) => apiClient.get<QueueResponse>(`/queues/${encodeURIComponent(name)}`),
+  stats: (name: string) => apiClient.get<QueueStatsResponse>(`/queues/${encodeURIComponent(name)}/stats`),
+  agents: (name: string) => apiClient.get<AgentResponse[]>(`/queues/${encodeURIComponent(name)}/agents`),
+  loginAgent: (name: string, data: AgentLoginRequest) =>
+    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents`, data),
+  logoutAgent: (name: string, agentId: string) =>
+    apiClient.delete<void>(`/queues/${encodeURIComponent(name)}/agents/${agentId}`),
+  pauseAgent: (name: string, agentId: string) =>
+    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents/${agentId}/pause`),
+  resumeAgent: (name: string, agentId: string) =>
+    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents/${agentId}/resume`),
+}
+
+// Voicemail (Phase 2)
+export const voicemail = {
+  listMailboxes: () => apiClient.get<MailboxResponse[]>('/voicemail/mailboxes'),
+  getMailbox: (id: string) => apiClient.get<MailboxResponse>(`/voicemail/mailboxes/${id}`),
+  getMailboxStats: (id: string) => apiClient.get<MailboxStats>(`/voicemail/mailboxes/${id}/stats`),
+  listMessages: (mailboxId: string) =>
+    apiClient.get<VoicemailMessage[]>(`/voicemail/mailboxes/${mailboxId}/messages`),
+  getMessage: (mailboxId: string, messageId: string) =>
+    apiClient.get<VoicemailMessage>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}`),
+  deleteMessage: (mailboxId: string, messageId: string) =>
+    apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}`),
+  markHeard: (mailboxId: string, messageId: string) =>
+    apiClient.post<void>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}/heard`),
+}
+
+// Presence (Phase 2)
+export const presence = {
+  list: () => apiClient.get<PresenceResponse[]>('/presence'),
+  get: (aor: string) => apiClient.get<PresenceResponse>(`/presence/${encodeURIComponent(aor)}`),
+  stats: () => apiClient.get<PresenceStats>('/presence/stats'),
+}
+
+// Registrations
+export const registrations = {
+  list: () => apiClient.get<Registration[]>('/registrations'),
+  get: (aor: string) => apiClient.get<Registration>(`/registrations/${encodeURIComponent(aor)}`),
+  delete: (aor: string) => apiClient.delete<void>(`/registrations/${encodeURIComponent(aor)}`),
 }
