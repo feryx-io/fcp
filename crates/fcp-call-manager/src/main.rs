@@ -928,6 +928,12 @@ async fn main() -> Result<()> {
     }
 
     // 21. Graceful shutdown
+    // Signal cluster manager to shutdown (removes heartbeat key)
+    #[cfg(feature = "storage-redis")]
+    if let Some((cm, _)) = &_cluster_manager {
+        cm.shutdown().await;
+    }
+
     // Signal presence manager to shutdown (persists state, signals cleanup task)
     if let Some(ref pm) = presence_manager {
         pm.shutdown().await;

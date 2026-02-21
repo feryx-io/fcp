@@ -51,6 +51,13 @@ impl RedisStorage {
             .await
             .with_context(|| format!("Failed to connect to Redis at {}", config.url))?;
 
+        // Validate connectivity with a PING before returning
+        let mut test_conn = conn.clone();
+        let _: String = redis::cmd("PING")
+            .query_async(&mut test_conn)
+            .await
+            .with_context(|| format!("Redis health check failed at {}", config.url))?;
+
         info!(url = %config.url, prefix = %config.key_prefix, "Redis storage connected");
 
         Ok(Self {
@@ -58,6 +65,19 @@ impl RedisStorage {
             conn,
             key_prefix: config.key_prefix,
         })
+    }
+
+    /// Check Redis connectivity by issuing a PING command.
+    pub async fn health_check(&self) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let pong: String = redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
+            .context("Redis health check failed")?;
+        if pong != "PONG" {
+            anyhow::bail!("Redis PING returned unexpected response: {}", pong);
+        }
+        Ok(())
     }
 
     /// Get a clone of the connection manager.

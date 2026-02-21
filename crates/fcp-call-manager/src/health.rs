@@ -1389,7 +1389,7 @@ fn verify_cluster_secret(
 
     let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
 
-    if token == secret {
+    if constant_time_compare(token, secret) {
         Ok(())
     } else {
         Err((

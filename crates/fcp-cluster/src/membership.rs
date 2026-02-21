@@ -9,8 +9,9 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 /// Information about a cluster member node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,17 +41,20 @@ pub struct ClusterManager {
     members: Arc<DashMap<String, ClusterMember>>,
     heartbeat_interval_secs: u64,
     heartbeat_ttl_secs: u64,
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl ClusterManager {
     /// Create a new cluster manager.
     pub fn new(storage: RedisStorage, self_info: ClusterMember) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
         Self {
             storage,
             self_info,
             members: Arc::new(DashMap::new()),
             heartbeat_interval_secs: 5,
             heartbeat_ttl_secs: 15,
+            shutdown_tx: Arc::new(shutdown_tx),
         }
     }
 
@@ -61,11 +65,21 @@ impl ClusterManager {
         let members = Arc::clone(&self.members);
         let interval = self.heartbeat_interval_secs;
         let ttl = self.heartbeat_ttl_secs;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
             loop {
-                tick.tick().await;
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = shutdown_rx.changed() => {
+                        info!(node_id = %self_info.node_id, "Cluster shutdown signal received");
+                        if let Err(e) = remove_heartbeat(&storage, &self_info.node_id).await {
+                            error!(error = %e, "Failed to remove heartbeat on shutdown");
+                        }
+                        break;
+                    }
+                }
 
                 // Publish heartbeat
                 if let Err(e) = publish_heartbeat(&storage, &self_info, ttl).await {
@@ -78,6 +92,13 @@ impl ClusterManager {
                 }
             }
         })
+    }
+
+    /// Signal the heartbeat loop to stop and remove this node's heartbeat key.
+    pub async fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+        // Give the background task a moment to clean up
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     /// Get all known cluster members (excluding self).
@@ -113,6 +134,21 @@ impl ClusterManager {
     pub fn members_map(&self) -> &Arc<DashMap<String, ClusterMember>> {
         &self.members
     }
+}
+
+/// Remove this node's heartbeat key from Redis (graceful shutdown).
+async fn remove_heartbeat(storage: &RedisStorage, node_id: &str) -> anyhow::Result<()> {
+    let key = storage.key(&format!("cluster:node:{}", node_id));
+    let mut conn = storage.connection();
+
+    let _: () = redis::cmd("DEL")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to remove heartbeat: {}", e))?;
+
+    info!(node_id = %node_id, "Removed cluster heartbeat on shutdown");
+    Ok(())
 }
 
 /// Publish this node's heartbeat to Redis.

@@ -95,17 +95,30 @@ impl RedisParkingStore {
     }
 
     /// Unpark (remove) a call from an orbit. Returns the parked call if it existed.
+    ///
+    /// Uses a Lua script for true atomicity — only one caller can retrieve the
+    /// value even when multiple nodes race to unpark the same orbit.
     pub async fn unpark(&self, orbit: u16) -> Result<Option<RedisParkedCall>> {
         let key = self.park_key(orbit);
         let mut conn = self.storage.connection();
 
-        // GET + DEL in a pipeline for atomicity
-        let (json, _): (Option<String>, ()) = redis::pipe()
-            .get(&key)
-            .del(&key)
-            .query_async(&mut conn)
+        // Lua script runs atomically on the Redis server.
+        // Only one caller can get the value — others see nil.
+        let script = redis::Script::new(
+            r#"
+            local val = redis.call('GET', KEYS[1])
+            if val then
+                redis.call('DEL', KEYS[1])
+            end
+            return val
+            "#,
+        );
+
+        let json: Option<String> = script
+            .key(&key)
+            .invoke_async(&mut conn)
             .await
-            .map_err(|e| anyhow::anyhow!("Redis unpark GET+DEL failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Redis unpark failed: {}", e))?;
 
         match json {
             Some(j) => {

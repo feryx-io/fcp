@@ -80,12 +80,30 @@ impl RedisEventBus {
         let client = self.storage.client().clone();
 
         tokio::spawn(async move {
+            let mut backoff_secs: u64 = 1;
+            let max_backoff_secs: u64 = 60;
+            let mut attempt: u64 = 0;
+
             loop {
+                let start = std::time::Instant::now();
+
                 if let Err(e) =
                     run_subscriber_loop(&client, &channel, &node_id, &local_bus).await
                 {
-                    error!(error = %e, "Redis subscriber loop failed, reconnecting in 2s...");
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    attempt += 1;
+                    // Reset backoff if connection was healthy (lasted >30s)
+                    if start.elapsed() > std::time::Duration::from_secs(30) {
+                        backoff_secs = 1;
+                        attempt = 1;
+                    }
+                    error!(
+                        error = %e,
+                        attempt = attempt,
+                        reconnect_delay_secs = backoff_secs,
+                        "Redis subscriber disconnected, reconnecting..."
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(max_backoff_secs);
                 }
             }
         })
