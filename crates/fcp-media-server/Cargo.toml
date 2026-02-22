@@ -7,6 +7,10 @@ authors.workspace = true
 repository.workspace = true
 description = "Standalone media processing server for the Ferrous Communications Platform"
 
+[features]
+default = []
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
+
 [[bin]]
 name = "fcp-media"
 path = "src/main.rs"
@@ -36,3 +40,7 @@ serde_json = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
+
+fcp-events = { path = "../fcp-events" }
+fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }

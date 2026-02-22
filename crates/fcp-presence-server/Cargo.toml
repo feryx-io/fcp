@@ -11,6 +11,7 @@ description = "Standalone SIP presence server for the Ferrous Communications Pla
 default = []
 redis = ["fcp-presence/redis"]
 webhook = ["fcp-presence/webhook"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 
 [[bin]]
 name = "fcp-presence"
@@ -25,6 +26,8 @@ fcp-events = { path = "../fcp-events" }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # HTTP API
 axum = "0.7"

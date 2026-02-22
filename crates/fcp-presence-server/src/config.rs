@@ -32,16 +32,24 @@ pub struct PresenceServerConfig {
 
     #[serde(default)]
     pub webhooks: Option<WebhookSection>,
+
+    #[serde(default)]
+    pub cluster: ClusterSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServiceSection {
+    #[serde(default = "default_service_type")]
+    pub service_type: String,
+
     #[serde(default = "default_node_id")]
     pub node_id: String,
 
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
 }
+
+fn default_service_type() -> String { "presence".to_string() }
 
 fn default_node_id() -> String {
     format!("presence-{}", uuid::Uuid::new_v4())
@@ -54,6 +62,7 @@ fn default_shutdown_timeout_secs() -> u64 {
 impl Default for ServiceSection {
     fn default() -> Self {
         Self {
+            service_type: default_service_type(),
             node_id: default_node_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
         }
@@ -69,6 +78,10 @@ pub struct StorageSection {
     /// Maximum database connections
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+
+    /// Redis connection URL for cluster membership.
+    #[serde(default)]
+    pub redis_url: Option<String>,
 }
 
 fn default_database_url() -> String {
@@ -84,6 +97,7 @@ impl Default for StorageSection {
         Self {
             database_url: default_database_url(),
             max_connections: default_max_connections(),
+            redis_url: None,
         }
     }
 }
@@ -235,6 +249,30 @@ impl Default for WebhookSection {
             max_retries: default_webhook_max_retries(),
             base_delay_ms: default_webhook_base_delay_ms(),
             max_delay_ms: default_webhook_max_delay_ms(),
+        }
+    }
+}
+
+/// Cluster configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+    #[serde(default = "default_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_heartbeat_interval() -> u64 { 5 }
+fn default_heartbeat_ttl() -> u64 { 15 }
+
+impl Default for ClusterSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            heartbeat_interval_secs: default_heartbeat_interval(),
+            heartbeat_ttl_secs: default_heartbeat_ttl(),
         }
     }
 }

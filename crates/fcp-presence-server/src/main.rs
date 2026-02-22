@@ -65,6 +65,50 @@ async fn main() -> Result<()> {
     // Create event bus for presence events + analytics
     let event_bus = Arc::new(fcp_events::InMemoryEventBus::new());
 
+    // Initialize cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if config.cluster.enabled {
+        if let Some(ref url) = config.storage.redis_url {
+            match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+            .await
+            {
+                Ok(redis) => {
+                    let member = fcp_cluster::ClusterMember {
+                        node_id: config.service.node_id.clone(),
+                        node_type: config.service.service_type.clone(),
+                        http_address: config.http.bind_address,
+                        sip_address: "0.0.0.0:0".parse().unwrap(),
+                        capabilities: vec!["presence".to_string(), "blf".to_string()],
+                        active_calls: 0,
+                        started_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    };
+                    let cm = fcp_cluster::ClusterManager::new(redis, member)
+                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
+                        .with_event_publisher(event_bus.clone() as Arc<dyn fcp_events::EventPublisher>);
+                    let _handle = cm.start();
+                    info!("Cluster membership started");
+                    Some(cm)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to connect to Redis; cluster disabled");
+                    None
+                }
+            }
+        } else {
+            tracing::warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     // Create PresenceManager
     let mut manager = fcp_presence::PresenceManager::new(
         presence_config,
@@ -188,6 +232,12 @@ async fn main() -> Result<()> {
         _ = sigterm.recv() => {
             info!("Received SIGTERM, shutting down...");
         }
+    }
+
+    // Shutdown cluster manager
+    #[cfg(feature = "storage-redis")]
+    if let Some(ref cm) = _cluster_manager {
+        cm.shutdown().await;
     }
 
     // Graceful shutdown

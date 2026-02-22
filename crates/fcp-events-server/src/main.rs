@@ -87,6 +87,51 @@ async fn main() -> Result<()> {
     // Create event bus
     let event_bus = Arc::new(InMemoryEventBus::new());
 
+    // Initialize cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if config.cluster.enabled {
+        let redis_url = config.cluster.redis_url.as_ref()
+            .or(config.event_bus.redis_url.as_ref());
+        if let Some(url) = redis_url {
+            match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+            .await
+            {
+                Ok(redis) => {
+                    let member = fcp_cluster::ClusterMember {
+                        node_id: config.service.node_id.clone(),
+                        node_type: config.service.service_type.clone(),
+                        http_address: config.websocket.bind_address,
+                        sip_address: "0.0.0.0:0".parse().unwrap(),
+                        capabilities: vec!["events".to_string(), "websocket".to_string()],
+                        active_calls: 0,
+                        started_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    };
+                    let cm = fcp_cluster::ClusterManager::new(redis, member)
+                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs);
+                    let _handle = cm.start();
+                    info!("Cluster membership started");
+                    Some(cm)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to connect to Redis; cluster disabled");
+                    None
+                }
+            }
+        } else {
+            warn!("cluster.enabled = true but no redis_url configured; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     // Create connection manager
     let manager = Arc::new(ConnectionManager::new(
         config.websocket.heartbeat_interval,
@@ -268,6 +313,12 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("Server error")?;
+
+    // Shutdown cluster manager
+    #[cfg(feature = "storage-redis")]
+    if let Some(ref cm) = _cluster_manager {
+        cm.shutdown().await;
+    }
 
     info!("FCP Events Server shutdown complete");
     Ok(())

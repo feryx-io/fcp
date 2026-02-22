@@ -13,7 +13,8 @@ path = "src/main.rs"
 
 [features]
 default = []
-redis-events = ["fcp-storage-redis"]
+redis-events = ["dep:fcp-storage-redis"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 
 [dependencies]
 # FCP crates
@@ -22,6 +23,7 @@ fcp-events = { path = "../fcp-events" }
 fcp-webhooks = { path = "../fcp-webhooks" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"], optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # WebSocket and HTTP server
 axum = { version = "0.7", features = ["ws"] }

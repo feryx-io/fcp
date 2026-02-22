@@ -153,6 +153,56 @@ async fn main() -> Result<()> {
     let event_bus = Arc::new(InMemoryEventBus::new());
     info!("Event bus initialized (in-memory)");
 
+    // Initialize Redis storage (if configured)
+    #[cfg(feature = "storage-redis")]
+    let redis_storage = if let Some(ref url) = config.storage.redis_url {
+        match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            ..Default::default()
+        })
+        .await
+        {
+            Ok(rs) => Some(rs),
+            Err(e) => {
+                warn!(error = %e, "Failed to connect to Redis; cluster disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Start cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if config.cluster.enabled {
+        if let Some(ref redis) = redis_storage {
+            let member = fcp_cluster::ClusterMember {
+                node_id: config.service.node_id.clone(),
+                node_type: config.service.service_type.clone(),
+                http_address: config.http.bind_address,
+                sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                capabilities: vec!["voicemail".to_string(), "mwi".to_string()],
+                active_calls: 0,
+                started_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            };
+            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
+                .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
+                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+            let _handle = cm.start();
+            info!("Cluster membership started");
+            Some(cm)
+        } else {
+            warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     // 13. Trunk infrastructure (optional)
     let trunk_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>;
     let outbound_route_provider: Option<Arc<dyn fcp_sip::OutboundRouteProvider>> =
@@ -455,6 +505,12 @@ async fn main() -> Result<()> {
     }
 
     // 26. Graceful shutdown
+    // Shutdown cluster manager
+    #[cfg(feature = "storage-redis")]
+    if let Some(ref cm) = _cluster_manager {
+        cm.shutdown().await;
+    }
+
     if let Some(tx) = trunk_shutdown_tx {
         let _ = tx.send(true);
         tokio::time::sleep(Duration::from_secs(4)).await;

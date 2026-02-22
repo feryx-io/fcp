@@ -40,6 +40,9 @@ pub struct ConferenceServerConfig {
 
     #[serde(default)]
     pub ai: AiSection,
+
+    #[serde(default)]
+    pub cluster: ClusterSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -124,6 +127,10 @@ pub struct StorageSection {
     /// Maximum database connections
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+
+    /// Redis connection URL for cluster membership.
+    #[serde(default)]
+    pub redis_url: Option<String>,
 }
 
 fn default_database_url() -> String {
@@ -139,6 +146,7 @@ impl Default for StorageSection {
         Self {
             database_url: default_database_url(),
             max_connections: default_max_connections(),
+            redis_url: None,
         }
     }
 }
@@ -553,6 +561,35 @@ impl Default for ConferenceSection {
             meeting_cache_max_size: default_meeting_cache_max_size(),
             recording_cleanup_interval_secs: default_recording_cleanup_interval_secs(),
             recording_size_check_interval_secs: default_recording_size_check_interval_secs(),
+        }
+    }
+}
+
+/// Cluster configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterSection {
+    /// Enable cluster mode. Requires `storage.redis_url`.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Heartbeat interval in seconds (default: 5).
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+
+    /// Heartbeat TTL in seconds (default: 15).
+    #[serde(default = "default_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_heartbeat_interval() -> u64 { 5 }
+fn default_heartbeat_ttl() -> u64 { 15 }
+
+impl Default for ClusterSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            heartbeat_interval_secs: default_heartbeat_interval(),
+            heartbeat_ttl_secs: default_heartbeat_ttl(),
         }
     }
 }

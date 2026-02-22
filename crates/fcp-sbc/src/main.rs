@@ -56,7 +56,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // 2. Load configuration from TOML (or defaults)
-    let sbc_config = config::load_config(cli.config.as_deref())?;
+    let deploy_config = config::load_config(cli.config.as_deref())?;
+    let sbc_config = deploy_config.core.clone();
 
     // 3. Initialize tracing subscriber
     init_tracing(&cli.log_level, &cli.log_format);
@@ -529,6 +530,49 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Initialize cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if deploy_config.cluster.enabled {
+        if let Some(ref url) = deploy_config.redis_url {
+            match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+            .await
+            {
+                Ok(redis) => {
+                    let member = fcp_cluster::ClusterMember {
+                        node_id: format!("sbc-{}", uuid::Uuid::new_v4()),
+                        node_type: "sbc".to_string(),
+                        http_address: cli.health_bind.parse().unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
+                        sip_address: bind_addr,
+                        capabilities: vec!["sbc".to_string(), "trunking".to_string()],
+                        active_calls: 0,
+                        started_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    };
+                    let cm = fcp_cluster::ClusterManager::new(redis, member)
+                        .with_intervals(deploy_config.cluster.heartbeat_interval_secs, deploy_config.cluster.heartbeat_ttl_secs);
+                    let _handle = cm.start();
+                    info!("Cluster membership started");
+                    Some(cm)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to connect to Redis; cluster disabled");
+                    None
+                }
+            }
+        } else {
+            warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     // 22. Spawn metrics snapshot background task
     let metrics_admission = Arc::clone(&admission);
     let metrics_ref = Arc::clone(&sbc_metrics);
@@ -604,6 +648,12 @@ async fn main() -> Result<()> {
         _ = sigterm.recv() => {
             info!("Received SIGTERM, initiating graceful shutdown...");
         }
+    }
+
+    // Shutdown cluster manager
+    #[cfg(feature = "storage-redis")]
+    if let Some(ref cm) = _cluster_manager {
+        cm.shutdown().await;
     }
 
     // 24. Graceful shutdown — signal registration task to de-register trunks,

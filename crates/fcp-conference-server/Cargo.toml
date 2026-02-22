@@ -10,6 +10,7 @@ description = "Standalone conference bridge server for the Ferrous Communication
 [features]
 default = ["tls"]
 tls = ["fcp-sip/tls"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 
 [[bin]]
 name = "fcp-conference"
@@ -27,6 +28,8 @@ fcp-events = { path = "../fcp-events" }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # forge-media crates (conference engine)
 forge-conference = { path = "../../external/forge-media/crates/forge-conference" }

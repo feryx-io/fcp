@@ -38,6 +38,10 @@ pub struct EventsConfig {
     /// Webhook dispatcher configuration
     #[serde(default)]
     pub webhook: WebhookConfig,
+
+    /// Cluster membership configuration
+    #[serde(default)]
+    pub cluster: ClusterConfig,
 }
 
 /// Upstream services configuration
@@ -129,6 +133,41 @@ impl Default for EventsConfig {
             logging: LoggingConfig::default(),
             upstream: UpstreamConfig::default(),
             webhook: WebhookConfig::default(),
+            cluster: ClusterConfig::default(),
+        }
+    }
+}
+
+/// Cluster configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterConfig {
+    /// Enable cluster membership heartbeats.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Redis URL for cluster membership (if different from event_bus.redis_url).
+    #[serde(default)]
+    pub redis_url: Option<String>,
+
+    /// Heartbeat interval in seconds (default: 5).
+    #[serde(default = "default_cluster_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+
+    /// Heartbeat TTL in seconds (default: 15).
+    #[serde(default = "default_cluster_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_cluster_heartbeat_interval() -> u64 { 5 }
+fn default_cluster_heartbeat_ttl() -> u64 { 15 }
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            redis_url: None,
+            heartbeat_interval_secs: default_cluster_heartbeat_interval(),
+            heartbeat_ttl_secs: default_cluster_heartbeat_ttl(),
         }
     }
 }

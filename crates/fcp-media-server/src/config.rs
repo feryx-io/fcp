@@ -32,6 +32,12 @@ pub struct MediaServerConfig {
 
     #[serde(default)]
     pub logging: LoggingSection,
+
+    #[serde(default)]
+    pub storage: StorageConfigSection,
+
+    #[serde(default)]
+    pub cluster: ClusterSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -293,6 +299,43 @@ impl Default for LoggingSection {
         Self {
             level: default_log_level(),
             format: default_log_format(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StorageConfigSection {
+    /// Redis connection URL for cluster membership.
+    #[serde(default)]
+    pub redis_url: Option<String>,
+}
+
+impl Default for StorageConfigSection {
+    fn default() -> Self {
+        Self { redis_url: None }
+    }
+}
+
+/// Cluster configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+    #[serde(default = "default_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_heartbeat_interval() -> u64 { 5 }
+fn default_heartbeat_ttl() -> u64 { 15 }
+
+impl Default for ClusterSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            heartbeat_interval_secs: default_heartbeat_interval(),
+            heartbeat_ttl_secs: default_heartbeat_ttl(),
         }
     }
 }

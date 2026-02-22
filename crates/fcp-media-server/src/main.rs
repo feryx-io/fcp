@@ -120,6 +120,49 @@ async fn main() -> Result<()> {
     // 6. Create ApiServer
     let server = ApiServer::new(api_config).await;
 
+    // Initialize cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if config.cluster.enabled {
+        if let Some(ref url) = config.storage.redis_url {
+            match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+            .await
+            {
+                Ok(redis) => {
+                    let member = fcp_cluster::ClusterMember {
+                        node_id: config.service.node_id.clone(),
+                        node_type: config.service.service_type.clone(),
+                        http_address: config.http.bind_address,
+                        sip_address: "0.0.0.0:0".parse().unwrap(),
+                        capabilities: vec!["media".to_string(), "rtp".to_string(), "transcoding".to_string(), "recording".to_string()],
+                        active_calls: 0,
+                        started_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    };
+                    let cm = fcp_cluster::ClusterManager::new(redis, member)
+                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs);
+                    let _handle = cm.start();
+                    info!("Cluster membership started");
+                    Some(cm)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to connect to Redis; cluster disabled");
+                    None
+                }
+            }
+        } else {
+            tracing::warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     info!(
         http = %config.http.bind_address,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
@@ -154,6 +197,12 @@ async fn main() -> Result<()> {
         .serve_with_shutdown(shutdown_signal)
         .await
         .context("API server error")?;
+
+    // Shutdown cluster manager
+    #[cfg(feature = "storage-redis")]
+    if let Some(ref cm) = _cluster_manager {
+        cm.shutdown().await;
+    }
 
     info!("Shutdown complete");
     Ok(())

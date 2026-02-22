@@ -211,6 +211,49 @@ async fn main() -> Result<()> {
         public_ip,
     ));
 
+    // Initialize cluster membership (if configured)
+    #[cfg(feature = "storage-redis")]
+    let _cluster_manager = if config.cluster.enabled {
+        if let Some(ref url) = config.storage.redis_url {
+            match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+                url: url.clone(),
+                ..Default::default()
+            })
+            .await
+            {
+                Ok(redis) => {
+                    let member = fcp_cluster::ClusterMember {
+                        node_id: config.service.node_id.clone(),
+                        node_type: config.service.service_type.clone(),
+                        http_address: config.http.bind_address,
+                        sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                        capabilities: vec!["webrtc".to_string(), "oap_session".to_string()],
+                        active_calls: 0,
+                        started_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    };
+                    let cm = fcp_cluster::ClusterManager::new(redis, member)
+                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs);
+                    let _handle = cm.start();
+                    info!("Cluster membership started");
+                    Some(cm)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to connect to Redis; cluster disabled");
+                    None
+                }
+            }
+        } else {
+            tracing::warn!("cluster.enabled = true but redis_url is not set; cluster disabled");
+            None
+        }
+    } else {
+        None
+    };
+
     // 10. Build combined router: forge-api routes + call control routes
     let forge_router = routes::create_router().with_state(app_state);
     let call_router = http_api::call_routes(bridge_mgr);
@@ -260,6 +303,12 @@ async fn main() -> Result<()> {
     .with_graceful_shutdown(shutdown_signal)
     .await
     .context("HTTP server error")?;
+
+    // Shutdown cluster manager
+    #[cfg(feature = "storage-redis")]
+    if let Some(ref cm) = _cluster_manager {
+        cm.shutdown().await;
+    }
 
     info!("Shutdown complete");
     Ok(())

@@ -42,6 +42,10 @@ pub struct IvrConfig {
     #[serde(default)]
     pub flows: FlowsSection,
 
+    /// Cluster configuration
+    #[serde(default)]
+    pub cluster: ClusterSection,
+
     /// B2BUA behavior configuration (extension threshold, topology hiding, etc.)
     #[serde(default)]
     pub b2bua: fcp_b2bua_core::B2buaConfig,
@@ -121,6 +125,10 @@ pub struct StorageSection {
     /// Maximum database connections
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+
+    /// Redis connection URL for cluster membership.
+    #[serde(default)]
+    pub redis_url: Option<String>,
 }
 
 fn default_database_url() -> String {
@@ -136,6 +144,7 @@ impl Default for StorageSection {
         Self {
             database_url: default_database_url(),
             max_connections: default_max_connections(),
+            redis_url: None,
         }
     }
 }
@@ -303,6 +312,35 @@ pub struct DidRoute {
 
     /// Flow ID to execute (e.g. "main-menu")
     pub flow_id: String,
+}
+
+/// Cluster configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterSection {
+    /// Enable cluster mode. Requires `storage.redis_url`.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Heartbeat interval in seconds (default: 5).
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+
+    /// Heartbeat TTL in seconds (default: 15).
+    #[serde(default = "default_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_heartbeat_interval() -> u64 { 5 }
+fn default_heartbeat_ttl() -> u64 { 15 }
+
+impl Default for ClusterSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            heartbeat_interval_secs: default_heartbeat_interval(),
+            heartbeat_ttl_secs: default_heartbeat_ttl(),
+        }
+    }
 }
 
 /// Load configuration from file or use defaults.

@@ -10,6 +10,7 @@ description = "Standalone voicemail server for the Ferrous Communications Platfo
 [features]
 default = ["tls"]
 tls = ["fcp-sip/tls"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 
 [[bin]]
 name = "fcp-voicemail"
@@ -29,6 +30,8 @@ fcp-api-core = { path = "../fcp-api-core" }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
