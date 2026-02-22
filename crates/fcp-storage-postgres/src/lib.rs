@@ -541,9 +541,9 @@ impl TenantStore for PostgresStorage {
             "INSERT INTO tenants (
                 id, name, description, status, contact_email, contact_phone,
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-                created_at, updated_at, trial_expires_at, metadata
+                created_at, updated_at, trial_expires_at, metadata, data
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, '{}'::jsonb)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
