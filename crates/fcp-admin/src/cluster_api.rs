@@ -4,12 +4,12 @@
 //! When Redis is not configured, endpoints return `{ available: false }` with
 //! setup instructions.
 
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::Extension, routing::get, Json, Router};
 use fcp_cluster::ClusterReader;
 use serde::Serialize;
 use std::sync::Arc;
 
-/// Shared state for cluster API handlers.
+/// Shared state for cluster API handlers, injected via Extension.
 #[derive(Clone)]
 pub struct ClusterApiState {
     /// None when Redis is not configured.
@@ -36,14 +36,23 @@ pub struct ClusterStatsResponse {
 }
 
 /// Build the cluster API router.
-pub fn cluster_router() -> Router<ClusterApiState> {
+///
+/// Uses `Extension<ClusterApiState>` for state injection so it can be
+/// merged into any `Router<S>` regardless of the outer state type.
+/// The returned router has routes at `/cluster/nodes` and `/cluster/stats`,
+/// intended to be nested under `/api/v1`.
+pub fn cluster_router<S>(state: ClusterApiState) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new()
-        .route("/nodes", get(list_nodes))
-        .route("/stats", get(get_stats))
+        .route("/cluster/nodes", get(list_nodes))
+        .route("/cluster/stats", get(get_stats))
+        .layer(Extension(state))
 }
 
 async fn list_nodes(
-    State(state): State<ClusterApiState>,
+    Extension(state): Extension<ClusterApiState>,
 ) -> Json<ClusterNodesResponse> {
     let Some(reader) = &state.reader else {
         return Json(ClusterNodesResponse {
@@ -73,7 +82,7 @@ async fn list_nodes(
 }
 
 async fn get_stats(
-    State(state): State<ClusterApiState>,
+    Extension(state): Extension<ClusterApiState>,
 ) -> Json<ClusterStatsResponse> {
     let Some(reader) = &state.reader else {
         return Json(ClusterStatsResponse {

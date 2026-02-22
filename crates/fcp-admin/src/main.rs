@@ -241,13 +241,51 @@ async fn main() -> Result<()> {
 
     let bind_addr = config.api.bind_address;
     let api_handle = tokio::spawn(async move {
-        // Build the API router and merge in the admin UI + cluster API
-        let mut app = fcp_api_core::create_router(api_state, &api_config);
-        app = app.merge(fcp_admin_ui::admin_ui_router());
+        // Build the API router with cluster routes merged into the v1 namespace.
+        // We inline fcp_api_core::create_router logic here so we can inject the
+        // cluster routes *inside* the /api/v1 nest (routes merged outside the
+        // nest would be shadowed by axum's prefix matching).
+        let cluster_routes: axum::Router<fcp_api_core::ApiState> =
+            cluster_api::cluster_router(cluster_state);
+        let v1 = fcp_api_core::v1::router().merge(cluster_routes);
 
-        // Mount cluster API under /api/v1/cluster
-        let cluster_router = cluster_api::cluster_router().with_state(cluster_state);
-        app = app.nest("/api/v1/cluster", cluster_router);
+        let cors = tower_http::cors::CorsLayer::new()
+            .allow_origin(tower_http::cors::Any)
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+            ]);
+
+        let mut router = axum::Router::new()
+            .route(
+                "/metrics",
+                axum::routing::get(fcp_api_core::v1::metrics::prometheus_metrics),
+            )
+            .nest("/api/v1", v1);
+
+        if api_config.auth_enabled {
+            if let Some(auth_token) = &api_config.auth_token {
+                tracing::info!("API authentication enabled");
+                let auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
+                router = router.layer(axum::middleware::from_fn(move |req, next| {
+                    let config = auth_config.clone();
+                    fcp_api_core::auth::validate_bearer_token(config, req, next)
+                }));
+            }
+        }
+
+        let mut app = router
+            .layer(cors)
+            .layer(tower_http::trace::TraceLayer::new_for_http())
+            .with_state(api_state);
+
+        app = app.merge(fcp_admin_ui::admin_ui_router());
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         tracing::info!("API server listening on {}", bind_addr);

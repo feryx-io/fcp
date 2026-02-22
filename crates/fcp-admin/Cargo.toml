@@ -33,7 +33,8 @@ fcp-storage-redis = { path = "../fcp-storage-redis" }
 fcp-cluster = { path = "../fcp-cluster" }
 
 # Web framework (for merging admin UI router)
-axum = "0.7"
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 serde_json = { workspace = true }
 
 # CLI and configuration
