@@ -8,14 +8,9 @@ repository.workspace = true
 description = "Combined SIP registrar and B2BUA call handler for the Ferrous Communications Platform"
 
 [features]
-default = ["storage-sqlite", "tls"]
+default = ["tls"]
 tls = ["fcp-sip/tls"]
-storage-sqlite = ["dep:fcp-storage-sqlite"]
-storage-postgres = ["dep:fcp-storage-postgres"]
-storage-mysql = ["dep:fcp-storage-mysql"]
-storage-mongodb = ["dep:fcp-storage-mongodb"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
-storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb", "storage-redis"]
 
 [[bin]]
 name = "fcp-call-manager"
@@ -43,11 +38,8 @@ forge-recorder = { path = "../../external/forge-media/crates/forge-recorder" }
 forge-core = { path = "../../external/forge-media/crates/forge-core" }
 forge-transcoder = { path = "../../external/forge-media/crates/forge-transcoder" }
 
-# Storage backends (optional)
-fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
-fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
-fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
-fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+# Storage backend
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus", "metrics"], optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 

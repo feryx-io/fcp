@@ -114,33 +114,28 @@ impl Default for SipSection {
 /// Storage backend configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageSection {
-    /// Backend type: "sqlite", "postgres", "mysql", "mongodb"
-    #[serde(default = "default_backend")]
-    pub backend: String,
+    /// PostgreSQL connection URL
+    #[serde(default = "default_database_url")]
+    pub database_url: String,
 
-    /// Backend-specific connection string
-    #[serde(default = "default_connection_string")]
-    pub connection_string: String,
-
-    /// Connection pool size (for PG/MySQL/Mongo)
-    #[serde(default)]
-    pub max_connections: Option<u32>,
+    /// Maximum database connections
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
 }
 
-fn default_backend() -> String {
-    "sqlite".to_string()
+fn default_database_url() -> String {
+    "postgresql://localhost/fcp".to_string()
 }
 
-fn default_connection_string() -> String {
-    "sqlite://data/fcp-voicemail.db".to_string()
+fn default_max_connections() -> u32 {
+    50
 }
 
 impl Default for StorageSection {
     fn default() -> Self {
         Self {
-            backend: default_backend(),
-            connection_string: default_connection_string(),
-            max_connections: None,
+            database_url: default_database_url(),
+            max_connections: default_max_connections(),
         }
     }
 }
@@ -356,7 +351,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<VoicemailServerConfig> 
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
         tcp_bind = %config.sip.tcp_bind,
-        storage_backend = %config.storage.backend,
+        database_url = %config.storage.database_url,
         http_bind = %config.http.bind_address,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
         voicemail_routes = config.voicemail.routes.len(),
@@ -389,11 +384,7 @@ mod tests {
         assert_eq!(config.service.service_type, "voicemail");
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
-        assert_eq!(config.storage.backend, "sqlite");
-        assert_eq!(
-            config.storage.connection_string,
-            "sqlite://data/fcp-voicemail.db"
-        );
+        assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address.port(), 8087);
         assert_eq!(config.media.rtp_port_start, 10000);
         assert_eq!(config.media.rtp_port_end, 20000);
@@ -422,8 +413,7 @@ tcp_bind = "0.0.0.0:5060"
 local_ip = "192.168.1.100"
 
 [storage]
-backend = "sqlite"
-connection_string = "sqlite:///app/data/fcp-voicemail.db"
+database_url = "postgresql://localhost/fcp"
 
 [http]
 bind_address = "0.0.0.0:8087"

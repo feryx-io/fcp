@@ -17,8 +17,7 @@ min_expires = 60
 max_expires = 7200
 
 [storage]
-backend = "sqlite"
-connection_string = "sqlite://data/fcp.db"
+database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
 [media]
 rtp_port_start = 10000

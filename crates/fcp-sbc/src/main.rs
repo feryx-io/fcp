@@ -320,17 +320,18 @@ async fn main() -> Result<()> {
     };
     // 12d. Initialize optional storage for CDR persistence
     let dyn_storage = if sbc_config.storage.enabled {
-        use fcp_storage_sqlite::{SqliteConfig, SqliteStorage};
-
-        let sqlite_config =
-            SqliteConfig::new(std::path::PathBuf::from(&sbc_config.storage.database_path));
-        let sqlite_storage = SqliteStorage::new(sqlite_config)
+        let pg_config = fcp_storage_postgres::PostgresConfig {
+            connection_string: sbc_config.storage.database_url.clone(),
+            max_connections: 10,
+            connection_timeout: std::time::Duration::from_secs(30),
+        };
+        let pg_storage = fcp_storage_postgres::PostgresStorage::new(pg_config)
             .await
-            .context("Failed to initialize SQLite storage for CDR")?;
+            .context("Failed to initialize PostgreSQL storage for CDR")?;
         let storage = Arc::new(fcp_core::DynStorage::from_all_in_one(Arc::new(
-            sqlite_storage,
+            pg_storage,
         )));
-        info!(db = %sbc_config.storage.database_path, "CDR storage initialized");
+        info!(db = %sbc_config.storage.database_url, "CDR storage initialized");
         Some(storage)
     } else {
         None

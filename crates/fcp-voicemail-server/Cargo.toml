@@ -8,13 +8,8 @@ repository.workspace = true
 description = "Standalone voicemail server for the Ferrous Communications Platform"
 
 [features]
-default = ["storage-sqlite", "tls"]
+default = ["tls"]
 tls = ["fcp-sip/tls"]
-storage-sqlite = ["dep:fcp-storage-sqlite"]
-storage-postgres = ["dep:fcp-storage-postgres"]
-storage-mysql = ["dep:fcp-storage-mysql"]
-storage-mongodb = ["dep:fcp-storage-mongodb"]
-storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
 
 [[bin]]
 name = "fcp-voicemail"
@@ -32,11 +27,8 @@ fcp-flow = { path = "../fcp-flow" }
 fcp-voicemail = { path = "../fcp-voicemail" }
 fcp-api-core = { path = "../fcp-api-core" }
 
-# Storage backends (optional)
-fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
-fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
-fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
-fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+# Storage backend
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

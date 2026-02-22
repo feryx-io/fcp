@@ -109,25 +109,9 @@ impl Default for ApiConfig {
 /// Storage configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
-    /// Storage backend type (sqlite, postgres, mysql, mongodb)
-    #[serde(default = "default_storage_type")]
-    pub storage_type: String,
-
-    /// SQLite database path
-    #[serde(default = "default_sqlite_path")]
-    pub sqlite_path: String,
-
     /// PostgreSQL connection URL
-    #[serde(default)]
-    pub postgres_url: Option<String>,
-
-    /// MySQL connection URL
-    #[serde(default)]
-    pub mysql_url: Option<String>,
-
-    /// MongoDB connection URL
-    #[serde(default)]
-    pub mongodb_url: Option<String>,
+    #[serde(default = "default_database_url")]
+    pub database_url: String,
 
     /// Maximum database connections
     #[serde(default = "default_max_connections")]
@@ -138,12 +122,8 @@ pub struct StorageConfig {
     pub min_connections: u32,
 }
 
-fn default_storage_type() -> String {
-    "sqlite".to_string()
-}
-
-fn default_sqlite_path() -> String {
-    "fcp-admin.db".to_string()
+fn default_database_url() -> String {
+    "postgresql://localhost/fcp".to_string()
 }
 
 fn default_max_connections() -> u32 {
@@ -151,17 +131,13 @@ fn default_max_connections() -> u32 {
 }
 
 fn default_min_connections() -> u32 {
-    10
+    5
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            storage_type: default_storage_type(),
-            sqlite_path: default_sqlite_path(),
-            postgres_url: None,
-            mysql_url: None,
-            mongodb_url: None,
+            database_url: default_database_url(),
             max_connections: default_max_connections(),
             min_connections: default_min_connections(),
         }
@@ -235,7 +211,6 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
     info!(
         bind_address = %config.api.bind_address,
         auth_enabled = config.api.auth_enabled,
-        storage_type = %config.storage.storage_type,
         "Configuration loaded successfully"
     );
 
@@ -263,7 +238,7 @@ mod tests {
         let config = AdminConfig::default();
         assert_eq!(config.service.service_type, "admin");
         assert_eq!(config.api.bind_address.port(), 8080);
-        assert_eq!(config.storage.storage_type, "sqlite");
+        assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.logging.level, "info");
     }
 

@@ -33,20 +33,20 @@ pub struct SbcStorageConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// SQLite database path. Default: "data/fcp-sbc.db"
-    #[serde(default = "default_storage_db_path")]
-    pub database_path: String,
+    /// PostgreSQL connection URL. Default: "postgresql://localhost/fcp"
+    #[serde(default = "default_storage_database_url")]
+    pub database_url: String,
 }
 
-fn default_storage_db_path() -> String {
-    "data/fcp-sbc.db".to_string()
+fn default_storage_database_url() -> String {
+    "postgresql://localhost/fcp".to_string()
 }
 
 impl Default for SbcStorageConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            database_path: default_storage_db_path(),
+            database_url: default_storage_database_url(),
         }
     }
 }
@@ -415,14 +415,14 @@ mod tests {
     fn test_sbc_storage_config_defaults() {
         let cfg = SbcStorageConfig::default();
         assert!(!cfg.enabled);
-        assert_eq!(cfg.database_path, "data/fcp-sbc.db");
+        assert_eq!(cfg.database_url, "postgresql://localhost/fcp");
     }
 
     #[test]
     fn test_sbc_storage_config_serde_roundtrip() {
         let cfg = SbcStorageConfig {
             enabled: true,
-            database_path: "/tmp/test-sbc.db".to_string(),
+            database_url: "postgresql://localhost/test_sbc".to_string(),
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: SbcStorageConfig = serde_json::from_str(&json).unwrap();
@@ -433,7 +433,7 @@ mod tests {
     fn test_sbc_config_includes_storage_default() {
         let cfg = SbcConfig::default();
         assert!(!cfg.storage.enabled);
-        assert_eq!(cfg.storage.database_path, "data/fcp-sbc.db");
+        assert_eq!(cfg.storage.database_url, "postgresql://localhost/fcp");
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
         let json = "{}";
         let cfg: SbcStorageConfig = serde_json::from_str(json).unwrap();
         assert!(!cfg.enabled);
-        assert_eq!(cfg.database_path, "data/fcp-sbc.db");
+        assert_eq!(cfg.database_url, "postgresql://localhost/fcp");
     }
 
     #[test]

@@ -223,21 +223,17 @@ impl Default for RegistrarSection {
 /// Storage backend configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageSection {
-    /// Backend type: "sqlite", "postgres", "mysql", "mongodb"
-    #[serde(default = "default_backend")]
-    pub backend: String,
+    /// PostgreSQL connection URL
+    #[serde(default = "default_database_url")]
+    pub database_url: String,
 
-    /// Backend-specific connection string
-    #[serde(default = "default_connection_string")]
-    pub connection_string: String,
-
-    /// Connection pool size (for PG/MySQL/Mongo)
-    #[serde(default)]
-    pub max_connections: Option<u32>,
+    /// Maximum database connections
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
 
     /// Redis connection URL for registration store and cluster state.
     /// When set alongside `registration_backend = "redis"`, registrations
-    /// are stored in Redis while other data remains in the primary backend.
+    /// are stored in Redis while other data remains in PostgreSQL.
     /// Example: "redis://redis:6379"
     #[serde(default)]
     pub redis_url: Option<String>,
@@ -249,20 +245,19 @@ pub struct StorageSection {
     pub registration_backend: Option<String>,
 }
 
-fn default_backend() -> String {
-    "sqlite".to_string()
+fn default_database_url() -> String {
+    "postgresql://localhost/fcp".to_string()
 }
 
-fn default_connection_string() -> String {
-    "sqlite://data/fcp.db".to_string()
+fn default_max_connections() -> u32 {
+    50
 }
 
 impl Default for StorageSection {
     fn default() -> Self {
         Self {
-            backend: default_backend(),
-            connection_string: default_connection_string(),
-            max_connections: None,
+            database_url: default_database_url(),
+            max_connections: default_max_connections(),
             redis_url: None,
             registration_backend: None,
         }
@@ -579,7 +574,6 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
         registrar_enabled = config.registrar.enabled,
         auth_enabled = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
-        storage_backend = %config.storage.backend,
         http_bind = %config.http.bind_address,
         max_calls = config.calls.max_concurrent_calls,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
@@ -615,7 +609,7 @@ mod tests {
         assert!(!config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "fcp.local");
         assert_eq!(config.registrar.default_expires, 3600);
-        assert_eq!(config.storage.backend, "sqlite");
+        assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address.port(), 8084);
         assert_eq!(config.calls.max_concurrent_calls, 1000);
         assert_eq!(config.calls.call_timeout_seconds, 60);
@@ -655,8 +649,7 @@ realm = "test.local"
 default_expires = 1800
 
 [storage]
-backend = "sqlite"
-connection_string = "sqlite:///app/data/fcp.db"
+database_url = "postgresql://localhost/fcp"
 
 [http]
 bind_address = "0.0.0.0:9090"

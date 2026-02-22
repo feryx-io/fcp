@@ -91,9 +91,9 @@ pub struct WebhookConfig {
     #[serde(default = "default_webhook_retry_interval")]
     pub retry_interval_secs: u64,
 
-    /// SQLite database path for webhook storage
-    #[serde(default = "default_webhook_db_path")]
-    pub database_path: String,
+    /// PostgreSQL connection URL for webhook storage
+    #[serde(default = "default_webhook_database_url")]
+    pub database_url: String,
 }
 
 fn default_webhook_request_timeout() -> u64 { 10 }
@@ -102,7 +102,7 @@ fn default_webhook_base_retry_delay() -> u64 { 30 }
 fn default_webhook_max_retry_delay() -> u64 { 3600 }
 fn default_webhook_max_concurrent() -> usize { 50 }
 fn default_webhook_retry_interval() -> u64 { 60 }
-fn default_webhook_db_path() -> String { "/var/lib/fcp/fcp.db".to_string() }
+fn default_webhook_database_url() -> String { "postgresql://localhost/fcp".to_string() }
 
 impl Default for WebhookConfig {
     fn default() -> Self {
@@ -114,7 +114,7 @@ impl Default for WebhookConfig {
             max_retry_delay_secs: default_webhook_max_retry_delay(),
             max_concurrent: default_webhook_max_concurrent(),
             retry_interval_secs: default_webhook_retry_interval(),
-            database_path: default_webhook_db_path(),
+            database_url: default_webhook_database_url(),
         }
     }
 }

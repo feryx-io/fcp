@@ -1579,7 +1579,7 @@ pub trait ClusterParkingStore: Send + Sync {
 ///
 /// This implementation keeps data in memory and saves to JSON files. It does not
 /// persist CDRs (Call Detail Records) - they are discarded. For full CDR support
-/// and ACID compliance, use the SQLite backend (fcp-storage-sqlite).
+/// and ACID compliance, use the PostgreSQL backend (fcp-storage-postgres).
 pub struct FileBackedStorage {
     /// In-memory user store
     users: Arc<RwLock<HashMap<String, User>>>,
@@ -1902,7 +1902,7 @@ impl DynStorage {
 
     /// Create a new DynStorage from a storage backend that implements all traits.
     ///
-    /// This is a convenience method for backends like SqliteStorage that implement
+    /// This is a convenience method for backends like PostgresStorage that implement
     /// all storage traits.
     pub fn from_all_in_one<T>(storage: Arc<T>) -> Self
     where

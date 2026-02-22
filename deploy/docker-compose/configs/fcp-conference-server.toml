@@ -11,8 +11,7 @@ tcp_bind = "0.0.0.0:5060"
 # local_uri = "sip:conference@10.0.0.1:5060"
 
 [storage]
-backend = "sqlite"
-# connection_string = "postgres://user:pass@db:5432/fcp"
+database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
 [http]
 bind_address = "0.0.0.0:8090"

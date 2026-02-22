@@ -150,7 +150,7 @@ impl FlowQueryResult {
 ///
 /// This is a simple implementation that stores flows in memory.
 /// For production use, implement FlowStore for your database backend
-/// (SqliteStorage, PostgresStorage, etc.)
+/// (PostgresStorage, etc.)
 pub struct InMemoryFlowStore {
     flows: Arc<RwLock<HashMap<String, Vec<FlowDefinition>>>>,
 }

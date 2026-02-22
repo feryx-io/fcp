@@ -104,14 +104,14 @@ async fn main() -> Result<()> {
     let webhook_dispatcher = if config.webhook.enabled {
         info!("Webhook dispatching enabled, initializing...");
 
-        // Initialize SQLite storage for webhooks
-        let sqlite_config =
-            fcp_storage_sqlite::SqliteConfig::new(&config.webhook.database_path);
-        let sqlite_storage = fcp_storage_sqlite::SqliteStorage::new(sqlite_config)
+        // Initialize PostgreSQL storage for webhooks
+        let pg_config =
+            fcp_storage_postgres::PostgresConfig::new(&config.webhook.database_url);
+        let pg_storage = fcp_storage_postgres::PostgresStorage::new(pg_config)
             .await
-            .context("Failed to initialize SQLite storage for webhooks")?;
+            .context("Failed to initialize PostgreSQL storage for webhooks")?;
         let webhook_store: Arc<dyn fcp_core::storage::WebhookStore> =
-            Arc::new(sqlite_storage);
+            Arc::new(pg_storage);
 
         let dispatcher_config = WebhookDispatcherConfig {
             request_timeout: Duration::from_secs(config.webhook.request_timeout_secs),
@@ -573,6 +573,13 @@ fn process_event_for_state(
                 }
                 SystemEvent::ConfigChanged { .. } => {
                     // Config changes are handled by call-manager nodes via cache invalidation
+                }
+                SystemEvent::NodeJoined { node_id, .. } => {
+                    info!(node_id = %node_id, "Node joined cluster");
+                    node_registry.register_or_update(node_id, Some(NodeType::CallManager));
+                }
+                SystemEvent::NodeLeft { node_id, .. } => {
+                    info!(node_id = %node_id, "Node left cluster");
                 }
             }
         }

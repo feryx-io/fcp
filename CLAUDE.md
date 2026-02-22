@@ -435,7 +435,7 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 **Next Steps** (see `Phase1 plan.md`):
 1. Complete fcp-core service traits and abstractions
 2. Build runtime that integrates siphon-rs components
-3. Add SQLite storage backend
+3. Add PostgreSQL storage backend
 4. Create REST API for management
 5. Docker deployment
 

@@ -22,7 +22,7 @@ fn test_minimal_config_defaults() {
     assert_eq!(config.service.service_type, "conference");
     assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
     assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
-    assert_eq!(config.storage.backend, "sqlite");
+    assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
     assert_eq!(config.http.bind_address.port(), 8090);
     assert_eq!(config.conference.sample_rate, 8000);
     assert_eq!(config.conference.frame_size, 160);
@@ -60,8 +60,7 @@ local_ip = "10.0.0.1"
 local_uri = "sip:conference@10.0.0.1:5080"
 
 [storage]
-backend = "postgres"
-connection_string = "postgres://user:pass@db:5432/fcp"
+database_url = "postgres://user:pass@db:5432/fcp"
 max_connections = 20
 
 [http]
@@ -114,8 +113,8 @@ format = "compact"
         config.sip.local_uri.as_deref(),
         Some("sip:conference@10.0.0.1:5080")
     );
-    assert_eq!(config.storage.backend, "postgres");
-    assert_eq!(config.storage.max_connections, Some(20));
+    assert_eq!(config.storage.database_url, "postgres://user:pass@db:5432/fcp");
+    assert_eq!(config.storage.max_connections, 20);
     assert_eq!(config.http.bind_address.port(), 9090);
     assert!(config.http.auth_enabled);
     assert_eq!(config.http.auth_token.as_deref(), Some("secret-token-123"));
@@ -262,18 +261,16 @@ fn test_config_load_invalid_file() {
 // =========================================================================
 
 #[test]
-fn test_storage_backend_variants() {
-    for backend in &["sqlite", "postgres", "mysql", "mongodb"] {
-        let config = parse_config(&format!(
-            r#"
+fn test_storage_config_custom_url() {
+    let config = parse_config(
+        r#"
 [storage]
-backend = "{}"
-connection_string = "test://localhost/{}"
+database_url = "postgresql://user:pass@db:5432/mydb"
+max_connections = 100
 "#,
-            backend, backend
-        ));
-        assert_eq!(config.storage.backend, *backend);
-    }
+    );
+    assert_eq!(config.storage.database_url, "postgresql://user:pass@db:5432/mydb");
+    assert_eq!(config.storage.max_connections, 100);
 }
 
 // =========================================================================
@@ -482,16 +479,9 @@ allowed_codecs = ["PCMU", "INVALID_CODEC"]
 }
 
 #[test]
-fn test_validate_unknown_storage_backend() {
-    let config = parse_config(
-        r#"
-[storage]
-backend = "cassandra"
-"#,
-    );
-    let result = fcp_conference_server::validate_config(&config);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("cassandra"));
+fn test_storage_default_url() {
+    let config = parse_config("");
+    assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
 }
 
 #[test]

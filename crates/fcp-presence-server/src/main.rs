@@ -172,7 +172,7 @@ async fn main() -> Result<()> {
     // Log startup summary
     info!(
         http = %config.http.bind_address,
-        storage = %config.storage.backend,
+        storage = "postgres",
         redis = config.redis.is_some(),
         "fcp-presence ready"
     );
@@ -198,76 +198,26 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Initialize storage backend based on configuration.
+/// Initialize PostgreSQL storage backend based on configuration.
 async fn initialize_storage(
     config: &PresenceServerConfig,
 ) -> Result<Arc<fcp_core::storage::DynStorage>> {
-    match config.storage.backend.as_str() {
-        #[cfg(feature = "storage-sqlite")]
-        "sqlite" => {
-            // Ensure data directory exists
-            if let Some(path) = config
-                .storage
-                .connection_string
-                .strip_prefix("sqlite://")
-            {
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-            }
+    use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 
-            let sqlite_config =
-                fcp_storage_sqlite::SqliteConfig::new(&config.storage.connection_string);
-            let storage = fcp_storage_sqlite::SqliteStorage::new(sqlite_config)
-                .await
-                .context("Failed to initialize SQLite storage")?;
-            info!(backend = "sqlite", "Storage initialized");
-            Ok(Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
-                Arc::new(storage),
-            )))
-        }
+    let pg_config = PostgresConfig {
+        connection_string: config.storage.database_url.clone(),
+        max_connections: config.storage.max_connections,
+        connection_timeout: Duration::from_secs(30),
+    };
 
-        #[cfg(feature = "storage-postgres")]
-        "postgres" => {
-            let pg_config =
-                fcp_storage_postgres::PostgresConfig::new(&config.storage.connection_string);
-            let storage = fcp_storage_postgres::PostgresStorage::new(pg_config)
-                .await
-                .context("Failed to initialize PostgreSQL storage")?;
-            info!(backend = "postgres", "Storage initialized");
-            Ok(Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
-                Arc::new(storage),
-            )))
-        }
+    let storage = PostgresStorage::new(pg_config)
+        .await
+        .context("Failed to initialize PostgreSQL storage")?;
 
-        #[cfg(feature = "storage-mysql")]
-        "mysql" => {
-            let mysql_config =
-                fcp_storage_mysql::MysqlConfig::new(&config.storage.connection_string);
-            let storage = fcp_storage_mysql::MysqlStorage::new(mysql_config)
-                .await
-                .context("Failed to initialize MySQL storage")?;
-            info!(backend = "mysql", "Storage initialized");
-            Ok(Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
-                Arc::new(storage),
-            )))
-        }
-
-        #[cfg(feature = "storage-mongodb")]
-        "mongodb" => {
-            let mongo_config =
-                fcp_storage_mongodb::MongodbConfig::new(&config.storage.connection_string);
-            let storage = fcp_storage_mongodb::MongodbStorage::new(mongo_config)
-                .await
-                .context("Failed to initialize MongoDB storage")?;
-            info!(backend = "mongodb", "Storage initialized");
-            Ok(Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
-                Arc::new(storage),
-            )))
-        }
-
-        other => anyhow::bail!("Unsupported storage backend: {other}"),
-    }
+    info!("PostgreSQL storage initialized successfully");
+    Ok(Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
+        Arc::new(storage),
+    )))
 }
 
 /// Set up Redis Pub/Sub for cross-node clustering.

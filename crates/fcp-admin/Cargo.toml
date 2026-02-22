@@ -7,14 +7,6 @@ authors.workspace = true
 repository.workspace = true
 description = "FCP Admin API binary - management and administration endpoints"
 
-[features]
-default = ["storage-sqlite"]
-storage-sqlite = ["fcp-storage-sqlite"]
-storage-postgres = ["fcp-storage-postgres"]
-storage-mysql = ["fcp-storage-mysql"]
-storage-mongodb = ["fcp-storage-mongodb"]
-storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
-
 [[bin]]
 name = "fcp-admin"
 path = "src/main.rs"
@@ -33,11 +25,8 @@ fcp-events = { path = "../fcp-events" }
 async-trait = "0.1"
 bytes = { workspace = true }
 
-# Storage backends (optional)
-fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
-fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
-fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
-fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+# Storage backend
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 
 # Web framework (for merging admin UI router)
 axum = "0.7"

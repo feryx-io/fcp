@@ -117,30 +117,28 @@ impl Default for SipSection {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageSection {
-    #[serde(default = "default_backend")]
-    pub backend: String,
+    /// PostgreSQL connection URL
+    #[serde(default = "default_database_url")]
+    pub database_url: String,
 
-    #[serde(default = "default_connection_string")]
-    pub connection_string: String,
-
-    #[serde(default)]
-    pub max_connections: Option<u32>,
+    /// Maximum database connections
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
 }
 
-fn default_backend() -> String {
-    "sqlite".to_string()
+fn default_database_url() -> String {
+    "postgresql://localhost/fcp".to_string()
 }
 
-fn default_connection_string() -> String {
-    "sqlite://data/fcp-conference.db".to_string()
+fn default_max_connections() -> u32 {
+    50
 }
 
 impl Default for StorageSection {
     fn default() -> Self {
         Self {
-            backend: default_backend(),
-            connection_string: default_connection_string(),
-            max_connections: None,
+            database_url: default_database_url(),
+            max_connections: default_max_connections(),
         }
     }
 }
@@ -623,15 +621,6 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
         anyhow::bail!("http.auth_enabled is true but no auth_token is configured — either set auth_token or disable auth");
     }
 
-    // Storage backend must be recognized
-    match config.storage.backend.as_str() {
-        "sqlite" | "postgres" | "mysql" | "mongodb" => {}
-        other => anyhow::bail!(
-            "storage.backend '{}' is not supported (sqlite, postgres, mysql, mongodb)",
-            other
-        ),
-    }
-
     Ok(())
 }
 
@@ -654,7 +643,6 @@ pub fn load_config(config_path: Option<&Path>) -> Result<ConferenceServerConfig>
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
         tcp_bind = %config.sip.tcp_bind,
-        storage_backend = %config.storage.backend,
         http_bind = %config.http.bind_address,
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
         trunks = config.trunks.len(),
@@ -684,11 +672,7 @@ mod tests {
         let config = ConferenceServerConfig::default();
         assert_eq!(config.service.service_type, "conference");
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
-        assert_eq!(config.storage.backend, "sqlite");
-        assert_eq!(
-            config.storage.connection_string,
-            "sqlite://data/fcp-conference.db"
-        );
+        assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address.port(), 8090);
         assert_eq!(config.conference.sample_rate, 8000);
         assert_eq!(config.conference.frame_size, 160);
@@ -710,8 +694,7 @@ tcp_bind = "0.0.0.0:5060"
 local_ip = "192.168.1.100"
 
 [storage]
-backend = "sqlite"
-connection_string = "sqlite:///app/data/fcp-conference.db"
+database_url = "postgresql://localhost/fcp"
 
 [http]
 bind_address = "0.0.0.0:8090"

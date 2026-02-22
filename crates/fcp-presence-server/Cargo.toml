@@ -8,12 +8,7 @@ repository.workspace = true
 description = "Standalone SIP presence server for the Ferrous Communications Platform"
 
 [features]
-default = ["storage-sqlite"]
-storage-sqlite = ["dep:fcp-storage-sqlite"]
-storage-postgres = ["dep:fcp-storage-postgres"]
-storage-mysql = ["dep:fcp-storage-mysql"]
-storage-mongodb = ["dep:fcp-storage-mongodb"]
-storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
+default = []
 redis = ["fcp-presence/redis"]
 webhook = ["fcp-presence/webhook"]
 
@@ -28,11 +23,8 @@ fcp-sip = { path = "../fcp-sip" }
 fcp-presence = { path = "../fcp-presence" }
 fcp-events = { path = "../fcp-events" }
 
-# Storage backends (optional)
-fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
-fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
-fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
-fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+# Storage backend
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 
 # HTTP API
 axum = "0.7"

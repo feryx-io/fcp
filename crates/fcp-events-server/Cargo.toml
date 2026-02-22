@@ -20,7 +20,7 @@ redis-events = ["fcp-storage-redis"]
 fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
 fcp-webhooks = { path = "../fcp-webhooks" }
-fcp-storage-sqlite = { path = "../fcp-storage-sqlite" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"], optional = true }
 
 # WebSocket and HTTP server

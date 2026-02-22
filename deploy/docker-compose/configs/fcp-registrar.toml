@@ -14,20 +14,7 @@ min_expires = 60
 max_expires = 86400
 
 [storage]
-backend = "sqlite"
-connection_string = "sqlite:///app/data/fcp.db"
-
-# Alternative backends (uncomment to use):
-# backend = "postgres"
-# connection_string = "postgresql://fcp:password@postgres:5432/fcp"
-# max_connections = 20
-
-# backend = "mysql"
-# connection_string = "mysql://fcp:password@mysql:3306/fcp"
-# max_connections = 20
-
-# backend = "mongodb"
-# connection_string = "mongodb://fcp:password@mongo:27017/fcp"
+database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
 [http]
 bind_address = "0.0.0.0:8083"

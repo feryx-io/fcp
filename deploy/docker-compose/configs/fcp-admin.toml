@@ -10,8 +10,7 @@ auth_enabled = false  # Disabled for testing
 cors_enabled = true
 
 [storage]
-backend = "sqlite"
-sqlite_path = "/app/data/fcp.db"
+database_url = "postgresql://postgres:password@postgres:5432/fcp"
 
 [logging]
 level = "info"

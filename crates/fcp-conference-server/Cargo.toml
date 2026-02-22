@@ -8,13 +8,8 @@ repository.workspace = true
 description = "Standalone conference bridge server for the Ferrous Communications Platform"
 
 [features]
-default = ["storage-sqlite", "tls"]
+default = ["tls"]
 tls = ["fcp-sip/tls"]
-storage-sqlite = ["dep:fcp-storage-sqlite"]
-storage-postgres = ["dep:fcp-storage-postgres"]
-storage-mysql = ["dep:fcp-storage-mysql"]
-storage-mongodb = ["dep:fcp-storage-mongodb"]
-storage-all = ["storage-sqlite", "storage-postgres", "storage-mysql", "storage-mongodb"]
 
 [[bin]]
 name = "fcp-conference"
@@ -30,11 +25,8 @@ fcp-b2bua-core = { path = "../fcp-b2bua-core" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
 
-# Storage backends (optional)
-fcp-storage-sqlite = { path = "../fcp-storage-sqlite", optional = true }
-fcp-storage-postgres = { path = "../fcp-storage-postgres", optional = true }
-fcp-storage-mysql = { path = "../fcp-storage-mysql", optional = true }
-fcp-storage-mongodb = { path = "../fcp-storage-mongodb", optional = true }
+# Storage backend
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 
 # forge-media crates (conference engine)
 forge-conference = { path = "../../external/forge-media/crates/forge-conference" }

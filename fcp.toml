@@ -22,8 +22,7 @@ min_expires = 60
 max_expires = 86400
 
 [storage]
-backend = "sqlite"
-connection_string = "sqlite://fcp.db"
+database_url = "postgresql://localhost/fcp"
 max_connections = 10
 connection_timeout = { secs = 30, nanos = 0 }
 
