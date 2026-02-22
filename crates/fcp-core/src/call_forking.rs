@@ -207,24 +207,18 @@ impl CallForker {
             let sleep = tokio::time::sleep(time_left);
             tokio::pin!(sleep);
 
-            let mut completed_idx = None;
-            let mut completed_result = None;
+            // Wait for the first task to complete or timeout
+            let Some(task) = fork_tasks.first_mut() else {
+                break;
+            };
 
-            for (idx, task) in fork_tasks.iter_mut().enumerate() {
-                tokio::select! {
-                    result = task => {
-                        completed_idx = Some(idx);
-                        completed_result = Some(result);
-                        break;
-                    }
-                    _ = &mut sleep => {
-                        // Timeout reached
-                        break;
-                    }
-                }
-            }
+            let result = tokio::select! {
+                result = task => Some(result),
+                _ = &mut sleep => None,
+            };
 
-            if let (Some(idx), Some(result)) = (completed_idx, completed_result) {
+            if let Some(result) = result {
+                let idx = 0;
                 fork_tasks.remove(idx);
 
                 match result {
