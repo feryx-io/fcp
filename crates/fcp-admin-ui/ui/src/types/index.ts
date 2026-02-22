@@ -100,53 +100,88 @@ export interface CreateExtensionRequest {
 
 export interface Device {
   id: string
-  mac_address: string
-  tenant_id: string
-  vendor: string
-  model: string
-  name: string | null
+  name: string
+  device_type: string
+  mac_address: string | null
+  model: string | null
   firmware_version: string | null
-  provisioning_template: string | null
-  status: string
-  last_seen: string | null
+  tenant_id: string
+  owner_user_id: string | null
+  sip_uri: string | null
+  registration_state: string
+  last_registration: string | null
+  last_ip_address: string | null
+  user_agent: string | null
+  max_lines: number
+  supports_video: boolean
+  supports_blf: boolean
+  codec_support: string[]
+  location: string | null
+  provisioning_url: string | null
+  config_template_id: string | null
+  enabled: boolean
   created_at: string
+  updated_at: string
 }
 
 export interface CreateDeviceRequest {
-  mac_address: string
+  name: string
+  device_type: string
   tenant_id?: string
-  vendor: string
-  model: string
-  name?: string
-  firmware_version?: string
-  provisioning_template?: string
+  owner_user_id?: string
+  mac_address?: string
+  model?: string
+  sip_uri?: string
+  max_lines?: number
+  supports_video?: boolean
+  supports_blf?: boolean
+  location?: string
 }
 
 export interface PhoneNumber {
   id: string
-  number: string
-  tenant_id: string | null
-  type: string
-  status: string
-  display_name: string | null
-  assigned_to: string | null
+  e164: string
+  country_code: string
+  npa: string
+  nxx: string
+  line: string
+  state: string
+  tenant_id: string
   e911_address: E911Address | null
+  e911_callback: string | null
+  cnam: string | null
+  spam_score: number | null
+  carrier: string | null
+  lrn: string | null
+  rate_center: string | null
+  acquired_at: string
+  activated_at: string | null
+  recording_enabled: boolean
+  block_anonymous: boolean
+  tags: string[]
   created_at: string
+  updated_at: string
 }
 
 export interface E911Address {
-  street: string
+  address1: string
+  address2: string | null
   city: string
   state: string
-  zip: string
+  postal_code: string
   country: string
+  validated: boolean
+  validated_at: string | null
 }
 
 export interface CreatePhoneNumberRequest {
-  number: string
+  e164: string
   tenant_id?: string
-  type?: string
-  display_name?: string
+  e911_address?: E911Address
+  e911_callback?: string
+  cnam?: string
+  carrier?: string
+  tags?: string[]
 }
 
 export interface LineBinding {

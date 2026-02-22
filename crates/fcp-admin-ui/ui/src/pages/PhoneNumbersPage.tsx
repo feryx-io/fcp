@@ -11,7 +11,6 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
@@ -19,25 +18,27 @@ import { phoneNumbers } from '@/api/endpoints'
 import type { PhoneNumber } from '@/types'
 
 const createSchema = z.object({
-  number: z.string().min(1, 'Number is required').regex(/^\+?[0-9]+$/, 'Invalid phone number format'),
-  type: z.string().optional(),
-  display_name: z.string().optional(),
+  e164: z.string().min(1, 'E.164 number is required').regex(/^\+?[0-9]+$/, 'Invalid phone number format'),
+  cnam: z.string().optional(),
+  carrier: z.string().optional(),
 })
 
 const editSchema = z.object({
-  display_name: z.string().optional(),
-  type: z.string().optional(),
+  cnam: z.string().optional(),
+  recording_enabled: z.boolean().optional(),
+  block_anonymous: z.boolean().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
 type EditForm = z.infer<typeof editSchema>
 
-const statusBadge = (status: string) => {
-  switch (status) {
+const stateBadge = (state: string) => {
+  switch (state) {
     case 'active': return 'success' as const
-    case 'available': return 'secondary' as const
-    case 'reserved': return 'warning' as const
+    case 'available': case 'inventory': return 'secondary' as const
+    case 'reserved': case 'pending': return 'warning' as const
     case 'porting': return 'default' as const
+    case 'released': case 'disconnected': return 'destructive' as const
     default: return 'outline' as const
   }
 }
@@ -61,7 +62,7 @@ export function PhoneNumbersPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<EditForm> }) =>
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       phoneNumbers.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['phone-numbers'] })
@@ -76,7 +77,7 @@ export function PhoneNumbersPage() {
 
   const columns: ColumnDef<PhoneNumber>[] = [
     {
-      accessorKey: 'number',
+      accessorKey: 'e164',
       header: ({ column }) => (
         <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
           Number <ArrowUpDown className="ml-2 h-4 w-4" />
@@ -84,24 +85,24 @@ export function PhoneNumbersPage() {
       ),
     },
     {
-      accessorKey: 'display_name',
-      header: 'Display Name',
-      cell: ({ row }) => row.original.display_name || '-',
+      accessorKey: 'cnam',
+      header: 'CNAM',
+      cell: ({ row }) => row.original.cnam || '-',
     },
     {
-      accessorKey: 'type',
-      header: 'Type',
-      cell: ({ row }) => <Badge variant="outline">{row.original.type}</Badge>,
+      accessorKey: 'state',
+      header: 'State',
+      cell: ({ row }) => <Badge variant={stateBadge(row.original.state)}>{row.original.state}</Badge>,
     },
     {
-      accessorKey: 'status',
-      header: 'Status',
-      cell: ({ row }) => <Badge variant={statusBadge(row.original.status)}>{row.original.status}</Badge>,
+      accessorKey: 'carrier',
+      header: 'Carrier',
+      cell: ({ row }) => row.original.carrier || '-',
     },
     {
-      accessorKey: 'tenant_id',
-      header: 'Tenant',
-      cell: ({ row }) => row.original.tenant_id || 'Unassigned',
+      accessorKey: 'rate_center',
+      header: 'Rate Center',
+      cell: ({ row }) => row.original.rate_center || '-',
     },
     {
       accessorKey: 'e911_address',
@@ -111,6 +112,13 @@ export function PhoneNumbersPage() {
       ) : (
         <Badge variant="warning">Not set</Badge>
       ),
+    },
+    {
+      accessorKey: 'tags',
+      header: 'Tags',
+      cell: ({ row }) => row.original.tags?.length
+        ? row.original.tags.map((t) => <Badge key={t} variant="outline" className="mr-1">{t}</Badge>)
+        : '-',
     },
     {
       id: 'actions',
@@ -128,7 +136,7 @@ export function PhoneNumbersPage() {
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => {
-                if (confirm(`Delete number "${row.original.number}"?`)) {
+                if (confirm(`Delete number "${row.original.e164}"?`)) {
                   deleteMutation.mutate(row.original.id)
                 }
               }}
@@ -149,16 +157,17 @@ export function PhoneNumbersPage() {
   if (editItem && editItem.id !== lastEditId) {
     setLastEditId(editItem.id)
     editForm.reset({
-      display_name: editItem.display_name || '',
-      type: editItem.type || '',
+      cnam: editItem.cnam || '',
+      recording_enabled: editItem.recording_enabled,
+      block_anonymous: editItem.block_anonymous,
     })
   }
 
   const onCreateSubmit = (data: CreateForm) => {
     createMutation.mutate({
-      ...data,
-      type: data.type || undefined,
-      display_name: data.display_name || undefined,
+      e164: data.e164,
+      cnam: data.cnam || undefined,
+      carrier: data.carrier || undefined,
     })
   }
 
@@ -167,8 +176,9 @@ export function PhoneNumbersPage() {
     updateMutation.mutate({
       id: editItem.id,
       data: {
-        display_name: data.display_name || undefined,
-        type: data.type || undefined,
+        cnam: data.cnam || undefined,
+        recording_enabled: data.recording_enabled,
+        block_anonymous: data.block_anonymous,
       },
     })
   }
@@ -188,7 +198,7 @@ export function PhoneNumbersPage() {
       {isLoading ? (
         <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
       ) : (
-        <DataTable columns={columns} data={items} searchKey="number" searchPlaceholder="Search numbers..." />
+        <DataTable columns={columns} data={items} searchKey="e164" searchPlaceholder="Search numbers..." />
       )}
 
       {/* Create Dialog */}
@@ -200,24 +210,19 @@ export function PhoneNumbersPage() {
           </DialogHeader>
           <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="c-number">Phone Number *</Label>
-              <Input id="c-number" placeholder="+15551234567" {...createForm.register('number')} />
-              {createForm.formState.errors.number && <p className="text-sm text-destructive">{createForm.formState.errors.number.message}</p>}
+              <Label htmlFor="c-e164">E.164 Number *</Label>
+              <Input id="c-e164" placeholder="+15551234567" {...createForm.register('e164')} />
+              {createForm.formState.errors.e164 && <p className="text-sm text-destructive">{createForm.formState.errors.e164.message}</p>}
             </div>
-            <div className="space-y-2">
-              <Label>Type</Label>
-              <Select onValueChange={(v) => createForm.setValue('type', v)}>
-                <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="local">Local</SelectItem>
-                  <SelectItem value="toll_free">Toll Free</SelectItem>
-                  <SelectItem value="international">International</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="c-display_name">Display Name</Label>
-              <Input id="c-display_name" {...createForm.register('display_name')} />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="c-cnam">CNAM</Label>
+                <Input id="c-cnam" placeholder="Caller ID name" {...createForm.register('cnam')} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="c-carrier">Carrier</Label>
+                <Input id="c-carrier" {...createForm.register('carrier')} />
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -236,24 +241,23 @@ export function PhoneNumbersPage() {
       <Dialog open={!!editItem} onOpenChange={(v) => { if (!v) { setEditItem(null); setLastEditId(null); editForm.reset() } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Edit Number: {editItem?.number}</DialogTitle>
-            <DialogDescription>Update phone number details.</DialogDescription>
+            <DialogTitle>Edit Number: {editItem?.e164}</DialogTitle>
+            <DialogDescription>Update phone number settings.</DialogDescription>
           </DialogHeader>
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="e-display_name">Display Name</Label>
-              <Input id="e-display_name" {...editForm.register('display_name')} />
+              <Label htmlFor="e-cnam">CNAM</Label>
+              <Input id="e-cnam" placeholder="Caller ID name" {...editForm.register('cnam')} />
             </div>
-            <div className="space-y-2">
-              <Label>Type</Label>
-              <Select defaultValue={editItem?.type} onValueChange={(v) => editForm.setValue('type', v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="local">Local</SelectItem>
-                  <SelectItem value="toll_free">Toll Free</SelectItem>
-                  <SelectItem value="international">International</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" {...editForm.register('recording_enabled')} className="rounded" />
+                Recording enabled
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" {...editForm.register('block_anonymous')} className="rounded" />
+                Block anonymous
+              </label>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

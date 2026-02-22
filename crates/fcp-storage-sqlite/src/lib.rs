@@ -35,6 +35,7 @@ use fcp_core::{
         StoredAuthPolicy, StoredPresentity, StoredQueueSnapshot, StoredResourceList,
         StoredSubscription, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
+    TenantStatus, Tenant,
     AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device, DeviceBinding,
     DeviceId, DeviceType, Extension, ExtensionId, ExtensionTarget, HangupCause, HangupParty,
     LineBinding, LineBindingId, MediaPreferences, NumberState, PhoneNumber, PhoneNumberId,
@@ -222,6 +223,12 @@ impl SqliteStorage {
 
         let migration_018 = include_str!("../migrations/018_add_resource_lists.sql");
         Self::execute_migration(pool, migration_018, "018").await?;
+
+        let migration_019 = include_str!("../migrations/019_add_webhooks.sql");
+        Self::execute_migration(pool, migration_019, "019").await?;
+
+        let migration_020 = include_str!("../migrations/020_add_tenants.sql");
+        Self::execute_migration(pool, migration_020, "020").await?;
 
         info!("SQLite migrations completed successfully");
         Ok(())
@@ -3125,47 +3132,154 @@ impl PortingStore for SqliteStorage {
     }
 }
 
+fn parse_tenant_row(row: &sqlx::sqlite::SqliteRow) -> Result<Tenant> {
+    let id = TenantId::from_str(&row.get::<String, _>("id"))
+        .map_err(|e| anyhow::anyhow!("Invalid tenant ID: {}", e))?;
+    let status_str: String = row.get("status");
+    let status = match status_str.to_lowercase().as_str() {
+        "active" => TenantStatus::Active,
+        "suspended" => TenantStatus::Suspended,
+        "trial" => TenantStatus::Trial,
+        "closed" => TenantStatus::Closed,
+        _ => TenantStatus::Active,
+    };
+    let created_secs: i64 = row.get("created_at");
+    let updated_secs: i64 = row.get("updated_at");
+    let trial_secs: Option<i64> = row.get("trial_expires_at");
+
+    Ok(Tenant {
+        id,
+        name: row.get("name"),
+        description: row.get("description"),
+        status,
+        contact_email: row.get("contact_email"),
+        contact_phone: row.get("contact_phone"),
+        max_users: row.get::<Option<i64>, _>("max_users").map(|v| v as u32),
+        max_phone_numbers: row.get::<Option<i64>, _>("max_phone_numbers").map(|v| v as u32),
+        max_concurrent_calls: row.get::<Option<i64>, _>("max_concurrent_calls").map(|v| v as u32),
+        billing_id: row.get("billing_id"),
+        created_at: UNIX_EPOCH + Duration::from_secs(created_secs as u64),
+        updated_at: UNIX_EPOCH + Duration::from_secs(updated_secs as u64),
+        trial_expires_at: trial_secs.map(|s| UNIX_EPOCH + Duration::from_secs(s as u64)),
+        metadata: row.get("metadata"),
+    })
+}
+
 #[async_trait]
 impl TenantStore for SqliteStorage {
-    async fn get_tenant(&self, _id: &fcp_core::TenantId) -> Result<Option<fcp_core::Tenant>> {
-        // Return default tenant for single-tenant MVP
-        Ok(Some(fcp_core::Tenant {
-            id: fcp_core::TenantId::nil(),
-            name: "default".to_string(),
-            description: Some("Default tenant (single-tenant mode)".to_string()),
-            status: fcp_core::TenantStatus::Active,
-            contact_email: None,
-            contact_phone: None,
-            max_users: None,
-            max_phone_numbers: None,
-            max_concurrent_calls: None,
-            billing_id: None,
-            created_at: std::time::SystemTime::now(),
-            updated_at: std::time::SystemTime::now(),
-            trial_expires_at: None,
-            metadata: None,
-        }))
+    async fn get_tenant(&self, id: &fcp_core::TenantId) -> Result<Option<fcp_core::Tenant>> {
+        let row = sqlx::query(
+            "SELECT id, name, description, status, contact_email, contact_phone,
+                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                    created_at, updated_at, trial_expires_at, metadata
+             FROM tenants WHERE id = ?"
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(parse_tenant_row(&row)?)),
+            None => Ok(None),
+        }
     }
 
-    async fn get_tenant_by_name(&self, _name: &str) -> Result<Option<fcp_core::Tenant>> {
-        // Always return default tenant for MVP
-        self.get_tenant(&fcp_core::TenantId::nil()).await
+    async fn get_tenant_by_name(&self, name: &str) -> Result<Option<fcp_core::Tenant>> {
+        let row = sqlx::query(
+            "SELECT id, name, description, status, contact_email, contact_phone,
+                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                    created_at, updated_at, trial_expires_at, metadata
+             FROM tenants WHERE name = ?"
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(parse_tenant_row(&row)?)),
+            None => Ok(None),
+        }
     }
 
     async fn list_tenants(&self) -> Result<Vec<fcp_core::Tenant>> {
-        // Return single default tenant for MVP
-        Ok(vec![self
-            .get_tenant(&fcp_core::TenantId::nil())
-            .await?
-            .unwrap()])
+        let rows = sqlx::query(
+            "SELECT id, name, description, status, contact_email, contact_phone,
+                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                    created_at, updated_at, trial_expires_at, metadata
+             FROM tenants ORDER BY name"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut tenants = Vec::new();
+        for row in rows {
+            tenants.push(parse_tenant_row(&row)?);
+        }
+        Ok(tenants)
     }
 
-    async fn put_tenant(&self, _tenant: fcp_core::Tenant) -> Result<()> {
-        Err(anyhow::anyhow!("Multi-tenant storage not yet implemented"))
+    async fn put_tenant(&self, tenant: fcp_core::Tenant) -> Result<()> {
+        let id = tenant.id.to_string();
+        let status = tenant.status.to_string().to_lowercase();
+        let created_at = tenant.created_at
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let updated_at = tenant.updated_at
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let trial_expires_at = tenant.trial_expires_at.map(|t| {
+            t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64
+        });
+
+        sqlx::query(
+            "INSERT INTO tenants (id, name, description, status, contact_email, contact_phone,
+                                  max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+                                  created_at, updated_at, trial_expires_at, metadata)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                status = excluded.status,
+                contact_email = excluded.contact_email,
+                contact_phone = excluded.contact_phone,
+                max_users = excluded.max_users,
+                max_phone_numbers = excluded.max_phone_numbers,
+                max_concurrent_calls = excluded.max_concurrent_calls,
+                billing_id = excluded.billing_id,
+                updated_at = excluded.updated_at,
+                trial_expires_at = excluded.trial_expires_at,
+                metadata = excluded.metadata"
+        )
+        .bind(&id)
+        .bind(&tenant.name)
+        .bind(&tenant.description)
+        .bind(&status)
+        .bind(&tenant.contact_email)
+        .bind(&tenant.contact_phone)
+        .bind(tenant.max_users.map(|v| v as i64))
+        .bind(tenant.max_phone_numbers.map(|v| v as i64))
+        .bind(tenant.max_concurrent_calls.map(|v| v as i64))
+        .bind(&tenant.billing_id)
+        .bind(created_at)
+        .bind(updated_at)
+        .bind(trial_expires_at)
+        .bind(&tenant.metadata)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
-    async fn delete_tenant(&self, _id: &fcp_core::TenantId) -> Result<()> {
-        Err(anyhow::anyhow!("Multi-tenant storage not yet implemented"))
+    async fn delete_tenant(&self, id: &fcp_core::TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM tenants WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
