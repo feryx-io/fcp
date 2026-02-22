@@ -25,10 +25,10 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/admin/assets/{*path}", get(serve_asset))
+        .route("/admin/assets/*path", get(serve_asset))
         .route("/admin", get(serve_index))
         .route("/admin/", get(serve_index))
-        .route("/admin/{*path}", get(serve_spa_fallback))
+        .route("/admin/*path", get(serve_spa_fallback))
 }
 
 /// Serve a static asset from the embedded dist directory.

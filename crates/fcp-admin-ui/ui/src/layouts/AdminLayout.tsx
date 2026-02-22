@@ -102,7 +102,7 @@ export function AdminLayout() {
 
   // Group nav items by section
   const sections: { label: string | null; items: NavItem[] }[] = []
-  let currentSection: string | null = null
+  let currentSection: string | null | undefined = undefined
   navItems.forEach((item) => {
     const section = item.section ?? null
     if (section !== currentSection) {
