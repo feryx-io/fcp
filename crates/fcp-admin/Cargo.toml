@@ -27,9 +27,14 @@ bytes = { workspace = true }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-storage-redis = { path = "../fcp-storage-redis" }
+
+# Cluster monitoring
+fcp-cluster = { path = "../fcp-cluster" }
 
 # Web framework (for merging admin UI router)
 axum = "0.7"
+serde_json = { workspace = true }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

@@ -622,6 +622,39 @@ export interface SystemStatus {
   active_registrations_count: number
 }
 
+// Cluster node monitoring (matches fcp-cluster reader types)
+export interface ClusterNodeInfo {
+  node_id: string
+  node_type: string
+  http_address: string
+  sip_address: string
+  capabilities: string[]
+  active_calls: number
+  started_at: number
+  version: string
+  status: 'healthy' | 'degraded' | 'offline'
+  uptime_seconds: number
+}
+
+export interface ClusterNodesResponse {
+  available: boolean
+  message?: string
+  nodes: ClusterNodeInfo[]
+}
+
+export interface ClusterStatsResponse {
+  available: boolean
+  message?: string
+  stats?: {
+    total_nodes: number
+    healthy_nodes: number
+    degraded_nodes: number
+    offline_nodes: number
+    total_active_calls: number
+    nodes_by_type: Record<string, number>
+  }
+}
+
 // Number Porting (matches fcp-core porting.rs)
 export type PortStatus = 'draft' | 'submitted' | 'pending' | 'approved' | 'scheduled'
   | 'in_progress' | 'completed' | 'rejected' | 'cancelled' | 'failed'

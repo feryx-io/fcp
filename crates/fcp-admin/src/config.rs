@@ -29,6 +29,10 @@ pub struct AdminConfig {
     /// Events configuration
     #[serde(default)]
     pub events: EventsConfig,
+
+    /// Cluster monitoring configuration
+    #[serde(default)]
+    pub cluster: ClusterConfig,
 }
 
 impl Default for AdminConfig {
@@ -39,6 +43,7 @@ impl Default for AdminConfig {
             storage: StorageConfig::default(),
             logging: LoggingConfig::default(),
             events: EventsConfig::default(),
+            cluster: ClusterConfig::default(),
         }
     }
 }
@@ -185,6 +190,36 @@ pub struct EventsConfig {
 impl Default for EventsConfig {
     fn default() -> Self {
         Self { server_url: None }
+    }
+}
+
+/// Cluster monitoring configuration.
+///
+/// When `redis_url` is set, the admin API connects to Redis to read
+/// cluster heartbeat keys written by other FCP services. When absent,
+/// cluster monitoring is disabled and the UI shows setup instructions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterConfig {
+    /// Redis connection URL (e.g. "redis://localhost:6379").
+    /// When None, cluster monitoring is disabled.
+    #[serde(default)]
+    pub redis_url: Option<String>,
+
+    /// Key prefix for Redis keys (default: "fcp:").
+    #[serde(default = "default_key_prefix")]
+    pub key_prefix: String,
+}
+
+fn default_key_prefix() -> String {
+    "fcp:".to_string()
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            redis_url: None,
+            key_prefix: default_key_prefix(),
+        }
     }
 }
 

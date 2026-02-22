@@ -21,6 +21,7 @@ import type {
   PortRequest, CreatePortRequest,
   AuditEntry, AuditQueryParams, ListAuditResponse,
   ApiToken, CreateApiTokenRequest, CreateApiTokenResponse,
+  ClusterNodesResponse, ClusterStatsResponse,
 } from '@/types'
 
 // Auth
@@ -231,6 +232,8 @@ export const flows = {
 export const cluster = {
   status: () => apiClient.get<SystemStatus>('/status'),
   health: () => apiClient.get<{ status: string; version: string }>('/health'),
+  nodes: () => apiClient.get<ClusterNodesResponse>('/cluster/nodes'),
+  stats: () => apiClient.get<ClusterStatsResponse>('/cluster/stats'),
 }
 
 // Number Porting

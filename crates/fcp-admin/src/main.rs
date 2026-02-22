@@ -43,6 +43,7 @@ impl TransportDispatcher for NoopDispatcher {
 }
 
 mod cli;
+mod cluster_api;
 mod config;
 mod storage;
 
@@ -204,6 +205,33 @@ async fn main() -> Result<()> {
         fcp_core::TenantId::nil(),
     );
 
+    // Initialize cluster reader (optional — only when Redis is configured)
+    let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
+        match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
+            url: redis_url.clone(),
+            key_prefix: config.cluster.key_prefix.clone(),
+        })
+        .await
+        {
+            Ok(redis_storage) => {
+                let reader = fcp_cluster::ClusterReader::new(redis_storage, 15);
+                info!(redis_url = %redis_url, "Cluster monitoring enabled via Redis");
+                Some(std::sync::Arc::new(reader))
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to connect to Redis for cluster monitoring — disabled");
+                None
+            }
+        }
+    } else {
+        info!("Cluster monitoring disabled (no [cluster] redis_url configured)");
+        None
+    };
+
+    let cluster_state = cluster_api::ClusterApiState {
+        reader: cluster_reader,
+    };
+
     // Start API server with admin UI
     info!(
         bind = %config.api.bind_address,
@@ -213,9 +241,13 @@ async fn main() -> Result<()> {
 
     let bind_addr = config.api.bind_address;
     let api_handle = tokio::spawn(async move {
-        // Build the API router and merge in the admin UI
+        // Build the API router and merge in the admin UI + cluster API
         let mut app = fcp_api_core::create_router(api_state, &api_config);
         app = app.merge(fcp_admin_ui::admin_ui_router());
+
+        // Mount cluster API under /api/v1/cluster
+        let cluster_router = cluster_api::cluster_router().with_state(cluster_state);
+        app = app.nest("/api/v1/cluster", cluster_router);
 
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         tracing::info!("API server listening on {}", bind_addr);

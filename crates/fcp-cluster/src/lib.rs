@@ -8,7 +8,9 @@
 pub mod call_registry;
 pub mod membership;
 pub mod node_client;
+pub mod reader;
 
 pub use call_registry::CallRegistry;
 pub use membership::{ClusterManager, ClusterMember};
 pub use node_client::NodeClient;
+pub use reader::{ClusterNodeInfo, ClusterNodeStatus, ClusterReader, ClusterStats};
