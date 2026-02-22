@@ -609,12 +609,12 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         status,
         contact_email: row.get("contact_email"),
         contact_phone: row.get("contact_phone"),
-        max_users: row.get::<Option<i64>, _>("max_users").map(|u| u as u32),
+        max_users: row.get::<Option<i32>, _>("max_users").map(|u| u as u32),
         max_phone_numbers: row
-            .get::<Option<i64>, _>("max_phone_numbers")
+            .get::<Option<i32>, _>("max_phone_numbers")
             .map(|p| p as u32),
         max_concurrent_calls: row
-            .get::<Option<i64>, _>("max_concurrent_calls")
+            .get::<Option<i32>, _>("max_concurrent_calls")
             .map(|c| c as u32),
         billing_id: row.get("billing_id"),
         created_at,
@@ -952,7 +952,7 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
         contact: row.get("contact"),
         expires_at,
         call_id: row.get("call_id"),
-        cseq: row.get::<i64, _>("cseq") as u32,
+        cseq: row.get::<i32, _>("cseq") as u32,
         user_agent: row.get("user_agent"),
         q: row.get("q"),
         registered_at,
@@ -1021,7 +1021,7 @@ fn row_to_cdr(row: sqlx::postgres::PgRow) -> Result<CallDetailRecord> {
         hangup_cause,
         hangup_party,
         sip_status_code: row
-            .get::<Option<i64>, _>("sip_status_code")
+            .get::<Option<i32>, _>("sip_status_code")
             .map(|c| c as u16),
         sip_reason: row.get("sip_reason"),
         route_id: row.get("route_id"),
@@ -1978,7 +1978,7 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
         _ => RingStrategy::Simultaneous,
     };
 
-    let no_answer_timeout = Duration::from_secs(row.get::<i64, _>("no_answer_timeout_secs") as u64);
+    let no_answer_timeout = Duration::from_secs(row.get::<i32, _>("no_answer_timeout_secs") as u64);
     let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
     let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
 
@@ -2108,7 +2108,7 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         last_registration,
         last_ip_address: row.get("last_ip_address"),
         user_agent: row.get("user_agent"),
-        max_lines: row.get::<i64, _>("max_lines") as u8,
+        max_lines: row.get::<i32, _>("max_lines") as u8,
         supports_video: row.get::<bool, _>("supports_video"),
         supports_blf: row.get::<bool, _>("supports_blf"),
         codec_support,
