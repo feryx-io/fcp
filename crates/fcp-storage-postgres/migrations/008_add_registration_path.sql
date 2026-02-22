@@ -3,4 +3,4 @@
 
 -- Add path column to registrations table
 -- Stores serialized Path header for routing through proxies
-ALTER TABLE registrations ADD COLUMN path TEXT;
+ALTER TABLE registrations ADD COLUMN IF NOT EXISTS path TEXT;

@@ -51,6 +51,53 @@ CREATE INDEX IF NOT EXISTS idx_phone_numbers_state ON phone_numbers(state);
 CREATE INDEX IF NOT EXISTS idx_phone_numbers_e911_address ON phone_numbers USING GIN (e911_address_json);
 CREATE INDEX IF NOT EXISTS idx_phone_numbers_tags ON phone_numbers USING GIN (tags);
 
+-- Devices table (must be created before device_bindings which references it)
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    device_type TEXT NOT NULL,
+    mac_address TEXT,
+    model TEXT,
+    firmware_version TEXT,
+    tenant_id TEXT NOT NULL,
+    owner_user_id TEXT,
+
+    -- SIP configuration
+    sip_uri TEXT,
+    registration_state TEXT NOT NULL,
+    last_registration TIMESTAMPTZ,
+    last_ip_address TEXT,
+    user_agent TEXT,
+
+    -- Capabilities
+    max_lines INTEGER NOT NULL DEFAULT 1,
+    supports_video BOOLEAN NOT NULL DEFAULT false,
+    supports_blf BOOLEAN NOT NULL DEFAULT false,
+    codec_support JSONB, -- JSON array of codec names
+
+    -- Location/E911
+    location TEXT,
+    e911_override_json JSONB, -- JSON serialized E911Address
+
+    -- Provisioning
+    provisioning_url TEXT,
+    config_template_id TEXT,
+
+    -- Status
+    enabled BOOLEAN NOT NULL DEFAULT true,
+
+    -- Audit
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_tenant ON devices(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_devices_owner_user ON devices(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_devices_mac_address ON devices(mac_address);
+CREATE INDEX IF NOT EXISTS idx_devices_registration_state ON devices(registration_state);
+CREATE INDEX IF NOT EXISTS idx_devices_codec_support ON devices USING GIN (codec_support);
+CREATE INDEX IF NOT EXISTS idx_devices_e911_override ON devices USING GIN (e911_override_json);
+
 -- Line bindings table (connects phone numbers to users/devices)
 CREATE TABLE IF NOT EXISTS line_bindings (
     id TEXT PRIMARY KEY,
@@ -118,53 +165,6 @@ CREATE TABLE IF NOT EXISTS extensions (
 CREATE INDEX IF NOT EXISTS idx_extensions_tenant ON extensions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_extensions_number ON extensions(number);
 CREATE INDEX IF NOT EXISTS idx_extensions_target ON extensions(target_type, target_id);
-
--- Devices table
-CREATE TABLE IF NOT EXISTS devices (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    device_type TEXT NOT NULL,
-    mac_address TEXT,
-    model TEXT,
-    firmware_version TEXT,
-    tenant_id TEXT NOT NULL,
-    owner_user_id TEXT,
-
-    -- SIP configuration
-    sip_uri TEXT,
-    registration_state TEXT NOT NULL,
-    last_registration TIMESTAMPTZ,
-    last_ip_address TEXT,
-    user_agent TEXT,
-
-    -- Capabilities
-    max_lines INTEGER NOT NULL DEFAULT 1,
-    supports_video BOOLEAN NOT NULL DEFAULT false,
-    supports_blf BOOLEAN NOT NULL DEFAULT false,
-    codec_support JSONB, -- JSON array of codec names
-
-    -- Location/E911
-    location TEXT,
-    e911_override_json JSONB, -- JSON serialized E911Address
-
-    -- Provisioning
-    provisioning_url TEXT,
-    config_template_id TEXT,
-
-    -- Status
-    enabled BOOLEAN NOT NULL DEFAULT true,
-
-    -- Audit
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_devices_tenant ON devices(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_devices_owner_user ON devices(owner_user_id);
-CREATE INDEX IF NOT EXISTS idx_devices_mac_address ON devices(mac_address);
-CREATE INDEX IF NOT EXISTS idx_devices_registration_state ON devices(registration_state);
-CREATE INDEX IF NOT EXISTS idx_devices_codec_support ON devices USING GIN (codec_support);
-CREATE INDEX IF NOT EXISTS idx_devices_e911_override ON devices USING GIN (e911_override_json);
 
 -- Update users table to add phone number support fields
 ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_phone_number_id TEXT;

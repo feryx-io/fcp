@@ -33,7 +33,7 @@ CREATE INDEX IF NOT EXISTS idx_flows_nodes ON flows USING GIN (nodes);
 CREATE INDEX IF NOT EXISTS idx_flows_variables ON flows USING GIN (variables);
 
 -- View to get latest version of each flow
-CREATE VIEW IF NOT EXISTS flows_latest AS
+CREATE OR REPLACE VIEW flows_latest AS
 SELECT f.*
 FROM flows f
 INNER JOIN (
