@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -11,7 +11,9 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { tenants } from '@/api/endpoints'
 import type { Tenant } from '@/types'
 import { formatDateTime } from '@/lib/utils'
@@ -26,7 +28,18 @@ const createSchema = z.object({
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
 })
 
+const editSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(255),
+  description: z.string().optional(),
+  contact_email: z.string().email().optional().or(z.literal('')),
+  contact_phone: z.string().optional(),
+  max_users: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
+  max_phone_numbers: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
+  max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
+})
+
 type CreateForm = z.infer<typeof createSchema>
+type EditForm = z.infer<typeof editSchema>
 
 const statusBadge = (status: string) => {
   switch (status) {
@@ -38,7 +51,8 @@ const statusBadge = (status: string) => {
 }
 
 export function TenantsPage() {
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [editItem, setEditItem] = useState<Tenant | null>(null)
   const queryClient = useQueryClient()
 
   const { data: items = [], isLoading } = useQuery({
@@ -50,7 +64,16 @@ export function TenantsPage() {
     mutationFn: tenants.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenants'] })
-      setDialogOpen(false)
+      setCreateOpen(false)
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<EditForm> }) =>
+      tenants.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tenants'] })
+      setEditItem(null)
     },
   })
 
@@ -101,6 +124,11 @@ export function TenantsPage() {
             <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setEditItem(row.original)}>
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => {
@@ -109,6 +137,7 @@ export function TenantsPage() {
                 }
               }}
             >
+              <Trash2 className="mr-2 h-4 w-4" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -117,16 +146,42 @@ export function TenantsPage() {
     },
   ]
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<CreateForm>({
-    resolver: zodResolver(createSchema),
-  })
+  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
-  const onSubmit = (data: CreateForm) => {
+  const [lastEditId, setLastEditId] = useState<string | null>(null)
+  if (editItem && editItem.id !== lastEditId) {
+    setLastEditId(editItem.id)
+    editForm.reset({
+      name: editItem.name,
+      description: editItem.description || '',
+      contact_email: editItem.contact_email || '',
+      contact_phone: editItem.contact_phone || '',
+      max_users: editItem.max_users ?? undefined,
+      max_phone_numbers: editItem.max_phone_numbers ?? undefined,
+      max_concurrent_calls: editItem.max_concurrent_calls ?? undefined,
+    })
+  }
+
+  const onCreateSubmit = (data: CreateForm) => {
     createMutation.mutate({
       ...data,
       description: data.description || undefined,
       contact_email: data.contact_email || undefined,
       contact_phone: data.contact_phone || undefined,
+    })
+  }
+
+  const onEditSubmit = (data: EditForm) => {
+    if (!editItem) return
+    updateMutation.mutate({
+      id: editItem.id,
+      data: {
+        ...data,
+        description: data.description || undefined,
+        contact_email: data.contact_email || undefined,
+        contact_phone: data.contact_phone || undefined,
+      },
     })
   }
 
@@ -137,7 +192,7 @@ export function TenantsPage() {
           <h1 className="text-3xl font-bold tracking-tight">Tenants</h1>
           <p className="text-muted-foreground">Manage tenant organizations</p>
         </div>
-        <Button onClick={() => { reset(); setDialogOpen(true) }}>
+        <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Tenant
         </Button>
       </div>
@@ -148,55 +203,109 @@ export function TenantsPage() {
         <DataTable columns={columns} data={items} searchKey="name" searchPlaceholder="Search tenants..." />
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {/* Create Dialog */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Create Tenant</DialogTitle>
             <DialogDescription>Add a new tenant organization.</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="name">Name *</Label>
-              <Input id="name" {...register('name')} />
-              {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
+              <Label htmlFor="c-name">Name *</Label>
+              <Input id="c-name" {...createForm.register('name')} />
+              {createForm.formState.errors.name && <p className="text-sm text-destructive">{createForm.formState.errors.name.message}</p>}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
-              <Input id="description" {...register('description')} />
+              <Label htmlFor="c-description">Description</Label>
+              <Input id="c-description" {...createForm.register('description')} />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="contact_email">Contact Email</Label>
-                <Input id="contact_email" type="email" {...register('contact_email')} />
-                {errors.contact_email && <p className="text-sm text-destructive">{errors.contact_email.message}</p>}
+                <Label htmlFor="c-contact_email">Contact Email</Label>
+                <Input id="c-contact_email" type="email" {...createForm.register('contact_email')} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="contact_phone">Contact Phone</Label>
-                <Input id="contact_phone" {...register('contact_phone')} />
+                <Label htmlFor="c-contact_phone">Contact Phone</Label>
+                <Input id="c-contact_phone" {...createForm.register('contact_phone')} />
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="max_users">Max Users</Label>
-                <Input id="max_users" type="number" min="0" {...register('max_users')} />
+                <Label htmlFor="c-max_users">Max Users</Label>
+                <Input id="c-max_users" type="number" min="0" {...createForm.register('max_users')} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="max_phone_numbers">Max Numbers</Label>
-                <Input id="max_phone_numbers" type="number" min="0" {...register('max_phone_numbers')} />
+                <Label htmlFor="c-max_phone_numbers">Max Numbers</Label>
+                <Input id="c-max_phone_numbers" type="number" min="0" {...createForm.register('max_phone_numbers')} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="max_concurrent_calls">Max Calls</Label>
-                <Input id="max_concurrent_calls" type="number" min="0" {...register('max_concurrent_calls')} />
+                <Label htmlFor="c-max_concurrent_calls">Max Calls</Label>
+                <Input id="c-max_concurrent_calls" type="number" min="0" {...createForm.register('max_concurrent_calls')} />
               </div>
             </div>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
                 {createMutation.isPending ? 'Creating...' : 'Create Tenant'}
               </Button>
             </div>
             {createMutation.isError && (
               <p className="text-sm text-destructive">{(createMutation.error as Error).message}</p>
+            )}
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editItem} onOpenChange={(v) => { if (!v) { setEditItem(null); setLastEditId(null); editForm.reset() } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Tenant: {editItem?.name}</DialogTitle>
+            <DialogDescription>Update tenant details and quotas.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="e-name">Name *</Label>
+              <Input id="e-name" {...editForm.register('name')} />
+              {editForm.formState.errors.name && <p className="text-sm text-destructive">{editForm.formState.errors.name.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-description">Description</Label>
+              <Input id="e-description" {...editForm.register('description')} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="e-contact_email">Contact Email</Label>
+                <Input id="e-contact_email" type="email" {...editForm.register('contact_email')} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-contact_phone">Contact Phone</Label>
+                <Input id="e-contact_phone" {...editForm.register('contact_phone')} />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="e-max_users">Max Users</Label>
+                <Input id="e-max_users" type="number" min="0" {...editForm.register('max_users')} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-max_phone_numbers">Max Numbers</Label>
+                <Input id="e-max_phone_numbers" type="number" min="0" {...editForm.register('max_phone_numbers')} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-max_concurrent_calls">Max Calls</Label>
+                <Input id="e-max_concurrent_calls" type="number" min="0" {...editForm.register('max_concurrent_calls')} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
+              <Button type="submit" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+              </Button>
+            </div>
+            {updateMutation.isError && (
+              <p className="text-sm text-destructive">{(updateMutation.error as Error).message}</p>
             )}
           </form>
         </DialogContent>

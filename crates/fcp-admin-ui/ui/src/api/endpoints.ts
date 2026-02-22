@@ -39,7 +39,7 @@ export const dashboard = {
 // System
 export const system = {
   health: () => apiClient.get<SystemHealth>('/health'),
-  status: () => apiClient.get<Record<string, unknown>>('/status'),
+  status: () => apiClient.get<SystemStatus>('/status'),
 }
 
 // Users

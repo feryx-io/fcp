@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -17,7 +17,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { users } from '@/api/endpoints'
 import type { User } from '@/types'
@@ -32,13 +32,32 @@ const createUserSchema = z.object({
   department: z.string().optional(),
 })
 
+const editUserSchema = z.object({
+  display_name: z.string().optional(),
+  email: z.string().email().optional().or(z.literal('')),
+  role: z.string().optional(),
+  extension: z.string().optional(),
+  department: z.string().optional(),
+  account_status: z.string().optional(),
+})
+
+const changePasswordSchema = z.object({
+  password: z.string().min(8, 'Password must be at least 8 characters').max(128),
+  confirm_password: z.string(),
+}).refine((data) => data.password === data.confirm_password, {
+  message: 'Passwords do not match',
+  path: ['confirm_password'],
+})
+
 type CreateUserForm = z.infer<typeof createUserSchema>
+type EditUserForm = z.infer<typeof editUserSchema>
+type ChangePasswordForm = z.infer<typeof changePasswordSchema>
 
 const roleBadgeVariant = (role: string) => {
   switch (role) {
-    case 'super_admin': return 'destructive' as const
-    case 'telecom_admin': return 'default' as const
-    case 'tenant_admin': return 'default' as const
+    case 'super_admin': case 'superadmin': return 'destructive' as const
+    case 'telecom_admin': case 'telecomadmin': return 'default' as const
+    case 'tenant_admin': case 'tenantadmin': return 'default' as const
     case 'operator': return 'secondary' as const
     default: return 'outline' as const
   }
@@ -54,7 +73,9 @@ const statusBadgeVariant = (status: string) => {
 }
 
 export function UsersPage() {
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [editUser, setEditUser] = useState<User | null>(null)
+  const [passwordUser, setPasswordUser] = useState<User | null>(null)
   const queryClient = useQueryClient()
 
   const { data: userList = [], isLoading } = useQuery({
@@ -66,7 +87,24 @@ export function UsersPage() {
     mutationFn: users.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] })
-      setDialogOpen(false)
+      setCreateOpen(false)
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ username, data }: { username: string; data: EditUserForm }) =>
+      users.update(username, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+      setEditUser(null)
+    },
+  })
+
+  const passwordMutation = useMutation({
+    mutationFn: ({ username, password }: { username: string; password: string }) =>
+      users.updatePassword(username, password),
+    onSuccess: () => {
+      setPasswordUser(null)
     },
   })
 
@@ -127,6 +165,15 @@ export function UsersPage() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setEditUser(row.original)}>
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setPasswordUser(row.original)}>
+              <KeyRound className="mr-2 h-4 w-4" />
+              Change Password
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => {
@@ -135,6 +182,7 @@ export function UsersPage() {
                 }
               }}
             >
+              <Trash2 className="mr-2 h-4 w-4" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -143,6 +191,58 @@ export function UsersPage() {
     },
   ]
 
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Users</h1>
+          <p className="text-muted-foreground">Manage user accounts and credentials</p>
+        </div>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Add User
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
+      ) : (
+        <DataTable columns={columns} data={userList} searchKey="username" searchPlaceholder="Search users..." />
+      )}
+
+      {/* Create User Dialog */}
+      <CreateUserDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        mutation={createMutation}
+      />
+
+      {/* Edit User Dialog */}
+      <EditUserDialog
+        user={editUser}
+        onOpenChange={(open) => { if (!open) setEditUser(null) }}
+        mutation={updateMutation}
+      />
+
+      {/* Change Password Dialog */}
+      <ChangePasswordDialog
+        user={passwordUser}
+        onOpenChange={(open) => { if (!open) setPasswordUser(null) }}
+        mutation={passwordMutation}
+      />
+    </div>
+  )
+}
+
+function CreateUserDialog({
+  open,
+  onOpenChange,
+  mutation,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  mutation: ReturnType<typeof useMutation<User, Error, Parameters<typeof users.create>[0]>>
+}) {
   const {
     register,
     handleSubmit,
@@ -155,7 +255,7 @@ export function UsersPage() {
   })
 
   const onSubmit = (data: CreateUserForm) => {
-    createMutation.mutate({
+    mutation.mutate({
       ...data,
       email: data.email || undefined,
       display_name: data.display_name || undefined,
@@ -165,85 +265,240 @@ export function UsersPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Users</h1>
-          <p className="text-muted-foreground">Manage user accounts and credentials</p>
-        </div>
-        <Button onClick={() => { reset(); setDialogOpen(true) }}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add User
-        </Button>
-      </div>
+    <Dialog open={open} onOpenChange={(v) => { if (!v) reset(); onOpenChange(v) }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Create User</DialogTitle>
+          <DialogDescription>Add a new user account to the system.</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="create-username">Username *</Label>
+            <Input id="create-username" {...register('username')} />
+            {errors.username && <p className="text-sm text-destructive">{errors.username.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="create-password">Password *</Label>
+            <Input id="create-password" type="password" {...register('password')} />
+            {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="create-display_name">Display Name</Label>
+            <Input id="create-display_name" {...register('display_name')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="create-email">Email</Label>
+            <Input id="create-email" type="email" {...register('email')} />
+            {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label>Role</Label>
+            <Select defaultValue="user" onValueChange={(v) => setValue('role', v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="enduser">User</SelectItem>
+                <SelectItem value="operator">Operator</SelectItem>
+                <SelectItem value="tenantadmin">Tenant Admin</SelectItem>
+                <SelectItem value="telecomadmin">Telecom Admin</SelectItem>
+                <SelectItem value="superadmin">Super Admin</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="create-extension">Extension</Label>
+              <Input id="create-extension" {...register('extension')} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="create-department">Department</Label>
+              <Input id="create-department" {...register('department')} />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending ? 'Creating...' : 'Create User'}
+            </Button>
+          </div>
+          {mutation.isError && (
+            <p className="text-sm text-destructive">{(mutation.error as Error).message}</p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
-      {isLoading ? (
-        <div className="flex h-32 items-center justify-center text-muted-foreground">Loading...</div>
-      ) : (
-        <DataTable columns={columns} data={userList} searchKey="username" searchPlaceholder="Search users..." />
-      )}
+function EditUserDialog({
+  user,
+  onOpenChange,
+  mutation,
+}: {
+  user: User | null
+  onOpenChange: (open: boolean) => void
+  mutation: ReturnType<typeof useMutation<unknown, Error, { username: string; data: EditUserForm }>>
+}) {
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    reset,
+    formState: { errors },
+  } = useForm<EditUserForm>({
+    resolver: zodResolver(editUserSchema),
+  })
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Create User</DialogTitle>
-            <DialogDescription>Add a new user account to the system.</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="username">Username *</Label>
-              <Input id="username" {...register('username')} />
-              {errors.username && <p className="text-sm text-destructive">{errors.username.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password *</Label>
-              <Input id="password" type="password" {...register('password')} />
-              {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="display_name">Display Name</Label>
-              <Input id="display_name" {...register('display_name')} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" {...register('email')} />
-              {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
-            </div>
+  // Reset form when user changes
+  const [lastUser, setLastUser] = useState<string | null>(null)
+  if (user && user.username !== lastUser) {
+    setLastUser(user.username)
+    reset({
+      display_name: user.display_name || '',
+      email: user.email || '',
+      role: user.role || '',
+      extension: user.extension || '',
+      department: user.department || '',
+      account_status: user.account_status || 'active',
+    })
+  }
+
+  const onSubmit = (data: EditUserForm) => {
+    if (!user) return
+    mutation.mutate({
+      username: user.username,
+      data: {
+        ...data,
+        email: data.email || undefined,
+        display_name: data.display_name || undefined,
+        extension: data.extension || undefined,
+        department: data.department || undefined,
+      },
+    })
+  }
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => { if (!v) { setLastUser(null); reset() } onOpenChange(v) }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit User: {user?.username}</DialogTitle>
+          <DialogDescription>Update user account details.</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="edit-display_name">Display Name</Label>
+            <Input id="edit-display_name" {...register('display_name')} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit-email">Email</Label>
+            <Input id="edit-email" type="email" {...register('email')} />
+            {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Role</Label>
-              <Select defaultValue="user" onValueChange={(v) => setValue('role', v)}>
+              <Select value={undefined} defaultValue={user?.role} onValueChange={(v) => setValue('role', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="enduser">User</SelectItem>
                   <SelectItem value="operator">Operator</SelectItem>
-                  <SelectItem value="tenant_admin">Tenant Admin</SelectItem>
-                  <SelectItem value="telecom_admin">Telecom Admin</SelectItem>
-                  <SelectItem value="super_admin">Super Admin</SelectItem>
+                  <SelectItem value="tenantadmin">Tenant Admin</SelectItem>
+                  <SelectItem value="telecomadmin">Telecom Admin</SelectItem>
+                  <SelectItem value="superadmin">Super Admin</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="extension">Extension</Label>
-                <Input id="extension" {...register('extension')} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="department">Department</Label>
-                <Input id="department" {...register('department')} />
-              </div>
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select defaultValue={user?.account_status || 'active'} onValueChange={(v) => setValue('account_status', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="suspended">Suspended</SelectItem>
+                  <SelectItem value="disabled">Disabled</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={createMutation.isPending}>
-                {createMutation.isPending ? 'Creating...' : 'Create User'}
-              </Button>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-extension">Extension</Label>
+              <Input id="edit-extension" {...register('extension')} />
             </div>
-            {createMutation.isError && (
-              <p className="text-sm text-destructive">{(createMutation.error as Error).message}</p>
-            )}
-          </form>
-        </DialogContent>
-      </Dialog>
-    </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-department">Department</Label>
+              <Input id="edit-department" {...register('department')} />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </div>
+          {mutation.isError && (
+            <p className="text-sm text-destructive">{(mutation.error as Error).message}</p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ChangePasswordDialog({
+  user,
+  onOpenChange,
+  mutation,
+}: {
+  user: User | null
+  onOpenChange: (open: boolean) => void
+  mutation: ReturnType<typeof useMutation<unknown, Error, { username: string; password: string }>>
+}) {
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<ChangePasswordForm>({
+    resolver: zodResolver(changePasswordSchema),
+  })
+
+  const onSubmit = (data: ChangePasswordForm) => {
+    if (!user) return
+    mutation.mutate({ username: user.username, password: data.password })
+  }
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => { if (!v) reset(); onOpenChange(v) }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Change Password</DialogTitle>
+          <DialogDescription>Set a new password for {user?.username}.</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="new-password">New Password *</Label>
+            <Input id="new-password" type="password" {...register('password')} />
+            {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirm-password">Confirm Password *</Label>
+            <Input id="confirm-password" type="password" {...register('confirm_password')} />
+            {errors.confirm_password && <p className="text-sm text-destructive">{errors.confirm_password.message}</p>}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending ? 'Updating...' : 'Update Password'}
+            </Button>
+          </div>
+          {mutation.isError && (
+            <p className="text-sm text-destructive">{(mutation.error as Error).message}</p>
+          )}
+          {mutation.isSuccess && (
+            <p className="text-sm text-green-600">Password updated successfully.</p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

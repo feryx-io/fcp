@@ -217,7 +217,6 @@ export interface DashboardSummary {
 
 export interface SystemHealth {
   status: string
-  uptime_secs: number
   version: string
 }
 

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -12,7 +12,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { phoneNumbers } from '@/api/endpoints'
 import type { PhoneNumber } from '@/types'
 
@@ -22,7 +24,13 @@ const createSchema = z.object({
   display_name: z.string().optional(),
 })
 
+const editSchema = z.object({
+  display_name: z.string().optional(),
+  type: z.string().optional(),
+})
+
 type CreateForm = z.infer<typeof createSchema>
+type EditForm = z.infer<typeof editSchema>
 
 const statusBadge = (status: string) => {
   switch (status) {
@@ -35,7 +43,8 @@ const statusBadge = (status: string) => {
 }
 
 export function PhoneNumbersPage() {
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [editItem, setEditItem] = useState<PhoneNumber | null>(null)
   const queryClient = useQueryClient()
 
   const { data: items = [], isLoading } = useQuery({
@@ -47,7 +56,16 @@ export function PhoneNumbersPage() {
     mutationFn: phoneNumbers.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['phone-numbers'] })
-      setDialogOpen(false)
+      setCreateOpen(false)
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<EditForm> }) =>
+      phoneNumbers.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['phone-numbers'] })
+      setEditItem(null)
     },
   })
 
@@ -102,6 +120,11 @@ export function PhoneNumbersPage() {
             <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setEditItem(row.original)}>
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => {
@@ -110,6 +133,7 @@ export function PhoneNumbersPage() {
                 }
               }}
             >
+              <Trash2 className="mr-2 h-4 w-4" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -118,15 +142,34 @@ export function PhoneNumbersPage() {
     },
   ]
 
-  const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<CreateForm>({
-    resolver: zodResolver(createSchema),
-  })
+  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
-  const onSubmit = (data: CreateForm) => {
+  const [lastEditId, setLastEditId] = useState<string | null>(null)
+  if (editItem && editItem.id !== lastEditId) {
+    setLastEditId(editItem.id)
+    editForm.reset({
+      display_name: editItem.display_name || '',
+      type: editItem.type || '',
+    })
+  }
+
+  const onCreateSubmit = (data: CreateForm) => {
     createMutation.mutate({
       ...data,
       type: data.type || undefined,
       display_name: data.display_name || undefined,
+    })
+  }
+
+  const onEditSubmit = (data: EditForm) => {
+    if (!editItem) return
+    updateMutation.mutate({
+      id: editItem.id,
+      data: {
+        display_name: data.display_name || undefined,
+        type: data.type || undefined,
+      },
     })
   }
 
@@ -137,7 +180,7 @@ export function PhoneNumbersPage() {
           <h1 className="text-3xl font-bold tracking-tight">Phone Numbers</h1>
           <p className="text-muted-foreground">Manage DID numbers and E911 addresses</p>
         </div>
-        <Button onClick={() => { reset(); setDialogOpen(true) }}>
+        <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Number
         </Button>
       </div>
@@ -148,21 +191,22 @@ export function PhoneNumbersPage() {
         <DataTable columns={columns} data={items} searchKey="number" searchPlaceholder="Search numbers..." />
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {/* Create Dialog */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Add Phone Number</DialogTitle>
             <DialogDescription>Add a new DID number to the inventory.</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="number">Phone Number *</Label>
-              <Input id="number" placeholder="+15551234567" {...register('number')} />
-              {errors.number && <p className="text-sm text-destructive">{errors.number.message}</p>}
+              <Label htmlFor="c-number">Phone Number *</Label>
+              <Input id="c-number" placeholder="+15551234567" {...createForm.register('number')} />
+              {createForm.formState.errors.number && <p className="text-sm text-destructive">{createForm.formState.errors.number.message}</p>}
             </div>
             <div className="space-y-2">
               <Label>Type</Label>
-              <Select onValueChange={(v) => setValue('type', v)}>
+              <Select onValueChange={(v) => createForm.setValue('type', v)}>
                 <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="local">Local</SelectItem>
@@ -172,17 +216,53 @@ export function PhoneNumbersPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="display_name">Display Name</Label>
-              <Input id="display_name" {...register('display_name')} />
+              <Label htmlFor="c-display_name">Display Name</Label>
+              <Input id="c-display_name" {...createForm.register('display_name')} />
             </div>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
                 {createMutation.isPending ? 'Adding...' : 'Add Number'}
               </Button>
             </div>
             {createMutation.isError && (
               <p className="text-sm text-destructive">{(createMutation.error as Error).message}</p>
+            )}
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editItem} onOpenChange={(v) => { if (!v) { setEditItem(null); setLastEditId(null); editForm.reset() } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Number: {editItem?.number}</DialogTitle>
+            <DialogDescription>Update phone number details.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="e-display_name">Display Name</Label>
+              <Input id="e-display_name" {...editForm.register('display_name')} />
+            </div>
+            <div className="space-y-2">
+              <Label>Type</Label>
+              <Select defaultValue={editItem?.type} onValueChange={(v) => editForm.setValue('type', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local">Local</SelectItem>
+                  <SelectItem value="toll_free">Toll Free</SelectItem>
+                  <SelectItem value="international">International</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
+              <Button type="submit" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+              </Button>
+            </div>
+            {updateMutation.isError && (
+              <p className="text-sm text-destructive">{(updateMutation.error as Error).message}</p>
             )}
           </form>
         </DialogContent>

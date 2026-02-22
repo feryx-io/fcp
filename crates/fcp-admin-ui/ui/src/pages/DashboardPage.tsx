@@ -11,9 +11,9 @@ export function DashboardPage() {
     refetchInterval: 10_000,
   })
 
-  const { data: health } = useQuery({
-    queryKey: ['system', 'health'],
-    queryFn: system.health,
+  const { data: status } = useQuery({
+    queryKey: ['system', 'status'],
+    queryFn: system.status,
     refetchInterval: 30_000,
   })
 
@@ -52,9 +52,9 @@ export function DashboardPage() {
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-muted-foreground">
           System overview and key metrics
-          {health && (
+          {status && (
             <span className="ml-2">
-              &middot; Uptime: {formatDuration(health.uptime_secs)} &middot; v{health.version}
+              &middot; Uptime: {formatDuration(status.uptime_seconds)} &middot; v{status.version}
             </span>
           )}
         </p>

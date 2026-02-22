@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -12,7 +12,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { devices } from '@/api/endpoints'
 import type { Device } from '@/types'
 import { formatDateTime } from '@/lib/utils'
@@ -25,10 +27,19 @@ const createSchema = z.object({
   firmware_version: z.string().optional(),
 })
 
+const editSchema = z.object({
+  name: z.string().optional(),
+  vendor: z.string().min(1, 'Vendor is required'),
+  model: z.string().min(1, 'Model is required'),
+  firmware_version: z.string().optional(),
+})
+
 type CreateForm = z.infer<typeof createSchema>
+type EditForm = z.infer<typeof editSchema>
 
 export function DevicesPage() {
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [editItem, setEditItem] = useState<Device | null>(null)
   const queryClient = useQueryClient()
 
   const { data: items = [], isLoading } = useQuery({
@@ -40,7 +51,16 @@ export function DevicesPage() {
     mutationFn: devices.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] })
-      setDialogOpen(false)
+      setCreateOpen(false)
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<EditForm> }) =>
+      devices.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] })
+      setEditItem(null)
     },
   })
 
@@ -93,6 +113,11 @@ export function DevicesPage() {
             <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setEditItem(row.original)}>
+              <Pencil className="mr-2 h-4 w-4" />
+              Edit
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => {
@@ -101,6 +126,7 @@ export function DevicesPage() {
                 }
               }}
             >
+              <Trash2 className="mr-2 h-4 w-4" />
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -109,15 +135,38 @@ export function DevicesPage() {
     },
   ]
 
-  const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<CreateForm>({
-    resolver: zodResolver(createSchema),
-  })
+  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
-  const onSubmit = (data: CreateForm) => {
+  const [lastEditId, setLastEditId] = useState<string | null>(null)
+  if (editItem && editItem.id !== lastEditId) {
+    setLastEditId(editItem.id)
+    editForm.reset({
+      name: editItem.name || '',
+      vendor: editItem.vendor,
+      model: editItem.model,
+      firmware_version: editItem.firmware_version || '',
+    })
+  }
+
+  const onCreateSubmit = (data: CreateForm) => {
     createMutation.mutate({
       ...data,
       name: data.name || undefined,
       firmware_version: data.firmware_version || undefined,
+    })
+  }
+
+  const onEditSubmit = (data: EditForm) => {
+    if (!editItem) return
+    updateMutation.mutate({
+      id: editItem.id,
+      data: {
+        name: data.name || undefined,
+        vendor: data.vendor,
+        model: data.model,
+        firmware_version: data.firmware_version || undefined,
+      },
     })
   }
 
@@ -128,7 +177,7 @@ export function DevicesPage() {
           <h1 className="text-3xl font-bold tracking-tight">Devices</h1>
           <p className="text-muted-foreground">Manage SIP phones and devices</p>
         </div>
-        <Button onClick={() => { reset(); setDialogOpen(true) }}>
+        <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Device
         </Button>
       </div>
@@ -139,22 +188,23 @@ export function DevicesPage() {
         <DataTable columns={columns} data={items} searchKey="name" searchPlaceholder="Search devices..." />
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      {/* Create Dialog */}
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Add Device</DialogTitle>
             <DialogDescription>Register a new SIP device.</DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="mac_address">MAC Address *</Label>
-              <Input id="mac_address" placeholder="AA:BB:CC:DD:EE:FF" {...register('mac_address')} />
-              {errors.mac_address && <p className="text-sm text-destructive">{errors.mac_address.message}</p>}
+              <Label htmlFor="c-mac_address">MAC Address *</Label>
+              <Input id="c-mac_address" placeholder="AA:BB:CC:DD:EE:FF" {...createForm.register('mac_address')} />
+              {createForm.formState.errors.mac_address && <p className="text-sm text-destructive">{createForm.formState.errors.mac_address.message}</p>}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Vendor *</Label>
-                <Select onValueChange={(v) => setValue('vendor', v)}>
+                <Select onValueChange={(v) => createForm.setValue('vendor', v)}>
                   <SelectTrigger><SelectValue placeholder="Select vendor" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="polycom">Polycom</SelectItem>
@@ -164,30 +214,78 @@ export function DevicesPage() {
                     <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
-                {errors.vendor && <p className="text-sm text-destructive">{errors.vendor.message}</p>}
+                {createForm.formState.errors.vendor && <p className="text-sm text-destructive">{createForm.formState.errors.vendor.message}</p>}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="model">Model *</Label>
-                <Input id="model" {...register('model')} />
-                {errors.model && <p className="text-sm text-destructive">{errors.model.message}</p>}
+                <Label htmlFor="c-model">Model *</Label>
+                <Input id="c-model" {...createForm.register('model')} />
+                {createForm.formState.errors.model && <p className="text-sm text-destructive">{createForm.formState.errors.model.message}</p>}
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="name">Name</Label>
-              <Input id="name" placeholder="e.g., Lobby Phone" {...register('name')} />
+              <Label htmlFor="c-name">Name</Label>
+              <Input id="c-name" placeholder="e.g., Lobby Phone" {...createForm.register('name')} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="firmware_version">Firmware Version</Label>
-              <Input id="firmware_version" {...register('firmware_version')} />
+              <Label htmlFor="c-firmware_version">Firmware Version</Label>
+              <Input id="c-firmware_version" {...createForm.register('firmware_version')} />
             </div>
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
                 {createMutation.isPending ? 'Adding...' : 'Add Device'}
               </Button>
             </div>
             {createMutation.isError && (
               <p className="text-sm text-destructive">{(createMutation.error as Error).message}</p>
+            )}
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editItem} onOpenChange={(v) => { if (!v) { setEditItem(null); setLastEditId(null); editForm.reset() } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Device: {editItem?.name || editItem?.mac_address}</DialogTitle>
+            <DialogDescription>Update device details.</DialogDescription>
+          </DialogHeader>
+          <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="e-name">Name</Label>
+              <Input id="e-name" {...editForm.register('name')} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Vendor *</Label>
+                <Select defaultValue={editItem?.vendor} onValueChange={(v) => editForm.setValue('vendor', v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="polycom">Polycom</SelectItem>
+                    <SelectItem value="yealink">Yealink</SelectItem>
+                    <SelectItem value="cisco">Cisco</SelectItem>
+                    <SelectItem value="grandstream">Grandstream</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="e-model">Model *</Label>
+                <Input id="e-model" {...editForm.register('model')} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-firmware_version">Firmware Version</Label>
+              <Input id="e-firmware_version" {...editForm.register('firmware_version')} />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
+              <Button type="submit" disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
+              </Button>
+            </div>
+            {updateMutation.isError && (
+              <p className="text-sm text-destructive">{(updateMutation.error as Error).message}</p>
             )}
           </form>
         </DialogContent>
