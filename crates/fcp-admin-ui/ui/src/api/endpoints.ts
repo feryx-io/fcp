@@ -112,16 +112,16 @@ export const lineBindings = {
 
 // Calls (Phase 2 - live operations)
 export const calls = {
-  list: () => apiClient.get<CallInfo[]>('/media/calls'),
-  get: (callId: string) => apiClient.get<CallInfo>(`/media/calls/${callId}`),
-  originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/media/calls', data),
-  hangup: (callId: string) => apiClient.delete<void>(`/media/calls/${callId}`),
-  hold: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/hold`),
-  resume: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/resume`),
+  list: () => apiClient.get<CallInfo[]>('/calls'),
+  get: (callId: string) => apiClient.get<CallInfo>(`/calls/${callId}`),
+  originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/calls', data),
+  hangup: (callId: string) => apiClient.delete<void>(`/calls/${callId}`),
+  hold: (callId: string) => apiClient.post<void>(`/calls/${callId}/hold`),
+  resume: (callId: string) => apiClient.post<void>(`/calls/${callId}/resume`),
   transfer: (callId: string, target: string) =>
-    apiClient.post<void>(`/media/calls/${callId}/transfer`, { target }),
-  mute: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/mute`),
-  unmute: (callId: string) => apiClient.post<void>(`/media/calls/${callId}/unmute`),
+    apiClient.post<void>(`/calls/${callId}/transfer`, { target }),
+  mute: (callId: string) => apiClient.post<void>(`/calls/${callId}/mute`),
+  unmute: (callId: string) => apiClient.post<void>(`/calls/${callId}/unmute`),
 }
 
 // CDRs (Phase 2 - call detail records)
