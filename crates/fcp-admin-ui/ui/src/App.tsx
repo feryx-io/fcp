@@ -22,6 +22,7 @@ const TrunksPage = lazy(() => import('@/pages/TrunksPage').then((m) => ({ defaul
 const RoutingPage = lazy(() => import('@/pages/RoutingPage').then((m) => ({ default: m.RoutingPage })))
 const FlowsPage = lazy(() => import('@/pages/FlowsPage').then((m) => ({ default: m.FlowsPage })))
 const FlowBuilderPage = lazy(() => import('@/pages/FlowBuilderPage').then((m) => ({ default: m.FlowBuilderPage })))
+const RegistrationsPage = lazy(() => import('@/pages/RegistrationsPage').then((m) => ({ default: m.RegistrationsPage })))
 const ClusterPage = lazy(() => import('@/pages/ClusterPage').then((m) => ({ default: m.ClusterPage })))
 const PortingPage = lazy(() => import('@/pages/PortingPage').then((m) => ({ default: m.PortingPage })))
 const AuditLogPage = lazy(() => import('@/pages/AuditLogPage').then((m) => ({ default: m.AuditLogPage })))
@@ -76,6 +77,7 @@ export function App() {
               <Route path="line-bindings" element={<Suspense fallback={<PageLoader />}><LineBindingsPage /></Suspense>} />
               <Route path="tenants" element={<Suspense fallback={<PageLoader />}><TenantsPage /></Suspense>} />
               {/* Operations */}
+              <Route path="registrations" element={<Suspense fallback={<PageLoader />}><RegistrationsPage /></Suspense>} />
               <Route path="calls" element={<Suspense fallback={<PageLoader />}><ActiveCallsPage /></Suspense>} />
               <Route path="cdrs" element={<Suspense fallback={<PageLoader />}><CDRsPage /></Suspense>} />
               <Route path="queues" element={<Suspense fallback={<PageLoader />}><QueuesPage /></Suspense>} />

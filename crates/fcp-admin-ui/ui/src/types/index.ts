@@ -230,14 +230,14 @@ export interface ActiveCall {
 
 export interface Registration {
   aor: string
-  contacts: RegistrationContact[]
-}
-
-export interface RegistrationContact {
-  uri: string
-  expires: number
-  q: number
+  contact: string
+  expires_at: { secs_since_epoch: number; nanos_since_epoch: number }
+  call_id: string
+  cseq: number
   user_agent: string | null
+  q: number | null
+  registered_at: { secs_since_epoch: number; nanos_since_epoch: number }
+  expires_in_seconds: number
 }
 
 export interface DashboardSummary {

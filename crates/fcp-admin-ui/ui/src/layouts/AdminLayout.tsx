@@ -37,6 +37,7 @@ const navItems: NavItem[] = [
   { label: 'Line Bindings', href: '/admin/line-bindings', icon: Link2, section: 'Management' },
   { label: 'Tenants', href: '/admin/tenants', icon: Building2, section: 'Management' },
   // Operations
+  { label: 'Registrations', href: '/admin/registrations', icon: MonitorSmartphone, section: 'Operations' },
   { label: 'Active Calls', href: '/admin/calls', icon: PhoneCall, section: 'Operations' },
   { label: 'Call History', href: '/admin/cdrs', icon: FileText, section: 'Operations' },
   { label: 'Queues', href: '/admin/queues', icon: Headphones, section: 'Operations' },
