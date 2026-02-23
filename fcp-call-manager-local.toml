@@ -1,0 +1,34 @@
+[service]
+service_type = "call_manager"
+node_id = "cm-local-01"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+
+[registrar]
+auth_enabled = false
+realm = "fcp.local"
+
+[storage]
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+redis_url = "redis://localhost:6379"
+
+[http]
+bind_address = "0.0.0.0:8084"
+
+[media]
+rtp_port_start = 20000
+rtp_port_end = 30000
+
+[events]
+server_url = "http://localhost:8081/ingest"
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15
