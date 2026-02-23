@@ -186,8 +186,9 @@ async fn main() -> Result<()> {
 
     info!(node_id = %config.service.node_id, "SIP components initialized (lightweight, no transport)");
 
-    // Clone event_bus for event forwarding before moving into api_state
+    // Clone event_bus for event forwarding and subscribing before moving into api_state
     let event_bus_for_forward = Arc::clone(&event_bus);
+    let event_bus_for_subscribe: Arc<dyn EventBus> = Arc::clone(&event_bus);
 
     // Derive events server base URL from ingest URL (strip /ingest suffix)
     let events_server_url = config.events.server_url.as_ref().map(|url| {
@@ -211,7 +212,7 @@ async fn main() -> Result<()> {
         realm,
         fcp_core::TenantId::nil(),
     )
-    .with_events_server_url(events_server_url);
+    .with_events_server_url(events_server_url.clone());
 
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
@@ -312,6 +313,20 @@ async fn main() -> Result<()> {
         info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
     }
 
+    // Start events server subscriber (receives cluster-wide events for the admin UI WebSocket)
+    if let Some(ref events_url) = events_server_url {
+        let ws_url = events_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+        let tenant_id = "tenant-00000000-0000-0000-0000-000000000000";
+        let ws_url = format!("{}/ws/{}", ws_url, tenant_id);
+        let event_bus_sub = Arc::clone(&event_bus_for_subscribe);
+        tokio::spawn(async move {
+            run_events_subscriber(event_bus_sub, &ws_url).await;
+        });
+        info!("Events server subscriber started");
+    }
+
     // Wait for shutdown signal
     info!("FCP Admin API running. Press Ctrl+C to shutdown.");
     signal::ctrl_c()
@@ -385,5 +400,75 @@ async fn run_event_forwarder(
                 }
             }
         }
+    }
+}
+
+/// Subscribe to the events server's WebSocket and republish events to the local event bus.
+///
+/// This allows the admin UI's WebSocket to see cluster-wide events (calls, registrations, etc.)
+/// that originate from other services (e.g. fcp-call-manager).
+async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url: &str) {
+    use futures_util::StreamExt;
+
+    loop {
+        info!(url = %ws_url, "Connecting to events server WebSocket");
+        match tokio_tungstenite::connect_async(ws_url).await {
+            Ok((ws_stream, _)) => {
+                info!("Connected to events server WebSocket");
+                let (_write, mut read) = ws_stream.split();
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                            // Events server sends batch-wrapped messages:
+                            //   {"type":"connected", ...}
+                            //   {"type":"events", "count":N, "events":[...]}
+                            // Parse the wrapper and extract individual PlatformEvents.
+                            if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
+                                match wrapper.get("type").and_then(|t| t.as_str()) {
+                                    Some("events") => {
+                                        if let Some(events) = wrapper.get("events").and_then(|e| e.as_array()) {
+                                            for event_val in events {
+                                                match serde_json::from_value::<fcp_events::PlatformEvent>(event_val.clone()) {
+                                                    Ok(event) => {
+                                                        if let Err(e) = event_bus.publish(event).await {
+                                                            tracing::debug!(%e, "Failed to republish event to local bus");
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::debug!(%e, "Failed to parse event from batch");
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some("connected") => {
+                                        tracing::debug!("Events server confirmed connection");
+                                    }
+                                    other => {
+                                        tracing::debug!(msg_type = ?other, "Unknown message type from events server");
+                                    }
+                                }
+                            }
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                            info!("Events server WebSocket closed");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(%e, "Events server WebSocket error");
+                            break;
+                        }
+                        _ => {} // Ignore ping/pong/binary
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(%e, "Failed to connect to events server WebSocket");
+            }
+        }
+
+        // Reconnect after delay
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }

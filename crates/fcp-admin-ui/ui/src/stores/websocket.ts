@@ -91,6 +91,8 @@ export const useWebSocketStore = create<WebSocketState>()((set, get) => ({
       ws.onmessage = (msg) => {
         try {
           const event = JSON.parse(msg.data) as PlatformEvent
+          // Skip control messages (e.g. {"type":"connected",...}) that aren't real events
+          if (!event.event_type) return
           const { events } = get()
           const newEvents = [event, ...events].slice(0, MAX_EVENTS)
           set({ events: newEvents })
