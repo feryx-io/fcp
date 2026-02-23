@@ -136,12 +136,69 @@ impl CallInfo {
 }
 
 /// GET /v1/calls
-/// List active calls
+/// List active calls.
+///
+/// When an events server URL is configured, proxies to the events server
+/// for a cluster-wide view. Otherwise falls back to the local call manager.
 pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+    // Try events server first for cluster-wide view
+    if let Some(ref events_url) = state.events_server_url {
+        let url = format!("{}/calls", events_url);
+        tracing::debug!(%url, "Proxying calls request to events server");
+        let client = reqwest::Client::new();
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("Events server parse error: {}", e)))?;
+                // The events server returns { calls: [...], count: N }
+                if let Some(calls) = body.get("calls").and_then(|c| c.as_array()) {
+                    let call_infos: Vec<CallInfo> = calls
+                        .iter()
+                        .filter_map(|c| {
+                            let state_str = c.get("state")?.as_str()?;
+                            if state_str == "ended" || state_str == "failed" {
+                                return None;
+                            }
+                            let epoch_to_rfc3339 = |v: &serde_json::Value| -> Option<String> {
+                                let ts = v.as_u64()?;
+                                Some(
+                                    chrono::DateTime::from_timestamp(ts as i64, 0)?
+                                        .to_rfc3339(),
+                                )
+                            };
+                            Some(CallInfo {
+                                id: c.get("call_id")?.as_str()?.to_string(),
+                                state: state_str.to_string(),
+                                from_uri: c.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                to_uri: c.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                from_display_name: None,
+                                to_display_name: None,
+                                created_at: c.get("initiated_at").and_then(epoch_to_rfc3339).unwrap_or_default(),
+                                established_at: c.get("answered_at").and_then(epoch_to_rfc3339),
+                                ended_at: None,
+                                duration_seconds: c.get("duration_ms").and_then(|v| v.as_u64()).map(|ms| ms / 1000),
+                                media_anchored: true,
+                                failure_reason: c.get("failure_reason").and_then(|v| v.as_str()).map(String::from),
+                            })
+                        })
+                        .collect();
+                    return Ok(Json(call_infos));
+                }
+            }
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), "Events server returned error, falling back to local");
+            }
+            Err(e) => {
+                tracing::warn!(%e, "Failed to reach events server, falling back to local");
+            }
+        }
+    }
+
+    // Fallback: local call manager (works when admin is co-located with call-manager)
     let calls = state.call_manager.active_calls();
-
     let call_infos: Vec<CallInfo> = calls.iter().map(CallInfo::from_call).collect();
-
     Ok(Json(call_infos))
 }
 

@@ -50,6 +50,10 @@ pub struct ApiState {
 
     /// Server start time for uptime tracking
     pub start_time: std::time::Instant,
+
+    /// URL of fcp-events-server (e.g. "http://localhost:8081") for proxying
+    /// cluster-wide queries (active calls, etc.)
+    pub events_server_url: Option<String>,
 }
 
 impl ApiState {
@@ -81,6 +85,13 @@ impl ApiState {
             realm,
             default_tenant_id,
             start_time: std::time::Instant::now(),
+            events_server_url: None,
         }
+    }
+
+    /// Set the events server URL for proxying cluster-wide queries.
+    pub fn with_events_server_url(mut self, url: Option<String>) -> Self {
+        self.events_server_url = url;
+        self
     }
 }

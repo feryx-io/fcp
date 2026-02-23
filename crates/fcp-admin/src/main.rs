@@ -189,6 +189,13 @@ async fn main() -> Result<()> {
     // Clone event_bus for event forwarding before moving into api_state
     let event_bus_for_forward = Arc::clone(&event_bus);
 
+    // Derive events server base URL from ingest URL (strip /ingest suffix)
+    let events_server_url = config.events.server_url.as_ref().map(|url| {
+        url.trim_end_matches("/ingest")
+            .trim_end_matches('/')
+            .to_string()
+    });
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -203,7 +210,8 @@ async fn main() -> Result<()> {
         None, // presence_manager (admin doesn't run presence)
         realm,
         fcp_core::TenantId::nil(),
-    );
+    )
+    .with_events_server_url(events_server_url);
 
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {

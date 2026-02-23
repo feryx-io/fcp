@@ -34,8 +34,20 @@ pub async fn summary(
         avg_call_duration_secs: 0.0,
     };
 
-    // Active calls from call manager
-    summary.active_calls = state.call_manager.active_call_count();
+    // Active calls: try events server first, fall back to local call manager
+    if let Some(ref events_url) = state.events_server_url {
+        let url = format!("{}/stats", events_url);
+        if let Ok(resp) = reqwest::get(&url).await {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                if let Some(count) = body.pointer("/calls/active").and_then(|v| v.as_u64()) {
+                    summary.active_calls = count as usize;
+                }
+            }
+        }
+    }
+    if summary.active_calls == 0 {
+        summary.active_calls = state.call_manager.active_call_count();
+    }
 
     // Get counts from storage
     if let Some(storage) = &state.storage {
