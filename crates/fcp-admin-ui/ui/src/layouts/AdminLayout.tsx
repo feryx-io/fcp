@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone,
   Link2, Building2, Settings, LogOut, Moon, Sun, Monitor, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
-  Radio, Server, Shield, Workflow, Globe, Key,
+  Radio, Activity, Server, Shield, Workflow, Globe, Key,
   ScrollText, Search, X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -43,6 +43,7 @@ const navItems: NavItem[] = [
   { label: 'Queues', href: '/admin/queues', icon: Headphones, section: 'Operations' },
   { label: 'Voicemail', href: '/admin/voicemail', icon: Voicemail, section: 'Operations' },
   { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
+  { label: 'Events', href: '/admin/events', icon: Activity, section: 'Operations' },
   // Advanced
   { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, section: 'Advanced' },
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, section: 'Advanced' },
