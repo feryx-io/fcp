@@ -53,6 +53,10 @@ export const users = {
   delete: (username: string) => apiClient.delete<void>(`/users/${encodeURIComponent(username)}`),
   updatePassword: (username: string, password: string) =>
     apiClient.put<void>(`/users/${encodeURIComponent(username)}/password`, { password }),
+  updateDigestPassword: (username: string, digest_password: string) =>
+    apiClient.put<void>(`/users/${encodeURIComponent(username)}/digest-password`, { digest_password }),
+  deleteDigestPassword: (username: string) =>
+    apiClient.delete<void>(`/users/${encodeURIComponent(username)}/digest-password`),
 }
 
 // Tenants

@@ -465,6 +465,32 @@ impl RegistrationStore for PostgresStorage {
 
         Ok(count)
     }
+
+    async fn registration_count(&self) -> Result<usize> {
+        let row =
+            sqlx::query("SELECT COUNT(*) as count FROM registrations WHERE expires_at > NOW()")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.get::<i64, _>("count") as usize)
+    }
+
+    async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
+        let rows = sqlx::query(
+            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path
+             FROM registrations
+             WHERE expires_at > NOW()
+             ORDER BY aor, q DESC NULLS LAST",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let registrations = rows
+            .into_iter()
+            .filter_map(|row| row_to_registration(row).ok())
+            .collect();
+
+        Ok(registrations)
+    }
 }
 
 // ============================================================================

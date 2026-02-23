@@ -72,6 +72,7 @@ pub fn router() -> Router<ApiState> {
             put(users::update_digest_password).delete(users::delete_digest_password),
         )
         // Registration viewing endpoints
+        .route("/registrations", get(registrations::list_registrations))
         .route(
             "/registrations/:aor",
             get(registrations::get_registrations).delete(registrations::delete_registrations),

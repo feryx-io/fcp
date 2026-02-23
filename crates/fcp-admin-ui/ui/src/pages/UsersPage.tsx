@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Trash2 } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2 } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -49,9 +49,18 @@ const changePasswordSchema = z.object({
   path: ['confirm_password'],
 })
 
+const digestCredentialsSchema = z.object({
+  digest_password: z.string().min(1, 'Password is required').max(128),
+  confirm_password: z.string(),
+}).refine((data) => data.digest_password === data.confirm_password, {
+  message: 'Passwords do not match',
+  path: ['confirm_password'],
+})
+
 type CreateUserForm = z.infer<typeof createUserSchema>
 type EditUserForm = z.infer<typeof editUserSchema>
 type ChangePasswordForm = z.infer<typeof changePasswordSchema>
+type DigestCredentialsForm = z.infer<typeof digestCredentialsSchema>
 
 const roleBadgeVariant = (role: string) => {
   switch (role) {
@@ -76,6 +85,7 @@ export function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editUser, setEditUser] = useState<User | null>(null)
   const [passwordUser, setPasswordUser] = useState<User | null>(null)
+  const [digestUser, setDigestUser] = useState<User | null>(null)
   const queryClient = useQueryClient()
 
   const { data: userList = [], isLoading } = useQuery({
@@ -106,6 +116,17 @@ export function UsersPage() {
     onSuccess: () => {
       setPasswordUser(null)
     },
+  })
+
+  const digestMutation = useMutation({
+    mutationFn: ({ username, digest_password }: { username: string; digest_password: string }) =>
+      users.updateDigestPassword(username, digest_password),
+    onSuccess: () => setDigestUser(null),
+  })
+
+  const deleteDigestMutation = useMutation({
+    mutationFn: users.deleteDigestPassword,
+    onSuccess: () => setDigestUser(null),
   })
 
   const deleteMutation = useMutation({
@@ -173,6 +194,10 @@ export function UsersPage() {
               <KeyRound className="mr-2 h-4 w-4" />
               Change Password
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setDigestUser(row.original)}>
+              <Phone className="mr-2 h-4 w-4" />
+              Set Digest Credentials
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"
@@ -229,6 +254,14 @@ export function UsersPage() {
         user={passwordUser}
         onOpenChange={(open) => { if (!open) setPasswordUser(null) }}
         mutation={passwordMutation}
+      />
+
+      {/* Digest Credentials Dialog */}
+      <DigestCredentialsDialog
+        user={digestUser}
+        onOpenChange={(open) => { if (!open) setDigestUser(null) }}
+        mutation={digestMutation}
+        deleteMutation={deleteDigestMutation}
       />
     </div>
   )
@@ -496,6 +529,91 @@ function ChangePasswordDialog({
           )}
           {mutation.isSuccess && (
             <p className="text-sm text-green-600">Password updated successfully.</p>
+          )}
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DigestCredentialsDialog({
+  user,
+  onOpenChange,
+  mutation,
+  deleteMutation,
+}: {
+  user: User | null
+  onOpenChange: (open: boolean) => void
+  mutation: ReturnType<typeof useMutation<unknown, Error, { username: string; digest_password: string }>>
+  deleteMutation: ReturnType<typeof useMutation<unknown, Error, string>>
+}) {
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<DigestCredentialsForm>({
+    resolver: zodResolver(digestCredentialsSchema),
+  })
+
+  const onSubmit = (data: DigestCredentialsForm) => {
+    if (!user) return
+    mutation.mutate({ username: user.username, digest_password: data.digest_password })
+  }
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => { if (!v) reset(); onOpenChange(v) }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Set Digest Credentials</DialogTitle>
+          <DialogDescription>
+            Set SIP digest credentials for {user?.username}. These are used for phone registration (separate from the web password).
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="digest-password">Digest Password *</Label>
+            <Input id="digest-password" type="password" {...register('digest_password')} />
+            {errors.digest_password && <p className="text-sm text-destructive">{errors.digest_password.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="digest-confirm-password">Confirm Password *</Label>
+            <Input id="digest-confirm-password" type="password" {...register('confirm_password')} />
+            {errors.confirm_password && <p className="text-sm text-destructive">{errors.confirm_password.message}</p>}
+          </div>
+          <div className="flex justify-between">
+            <Button
+              type="button"
+              variant="outline"
+              className="text-destructive"
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (!user) return
+                if (confirm(`Clear digest credentials for "${user.username}"? SIP auth will fall back to the main password.`)) {
+                  deleteMutation.mutate(user.username)
+                }
+              }}
+            >
+              {deleteMutation.isPending ? 'Clearing...' : 'Clear Credentials'}
+            </Button>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button type="submit" disabled={mutation.isPending}>
+                {mutation.isPending ? 'Setting...' : 'Set Credentials'}
+              </Button>
+            </div>
+          </div>
+          {mutation.isError && (
+            <p className="text-sm text-destructive">{(mutation.error as Error).message}</p>
+          )}
+          {deleteMutation.isError && (
+            <p className="text-sm text-destructive">{(deleteMutation.error as Error).message}</p>
+          )}
+          {mutation.isSuccess && (
+            <p className="text-sm text-green-600">Digest credentials set successfully.</p>
+          )}
+          {deleteMutation.isSuccess && (
+            <p className="text-sm text-green-600">Digest credentials cleared.</p>
           )}
         </form>
       </DialogContent>

@@ -45,6 +45,29 @@ impl From<Registration> for RegistrationResponse {
     }
 }
 
+/// List all active registrations.
+///
+/// GET /api/v1/registrations
+pub async fn list_registrations(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<RegistrationResponse>>, ApiError> {
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
+
+    let registrations = storage.get_all_registrations().await?;
+
+    let now = std::time::SystemTime::now();
+    let active: Vec<RegistrationResponse> = registrations
+        .into_iter()
+        .filter(|r| r.expires_at > now)
+        .map(RegistrationResponse::from)
+        .collect();
+
+    Ok(Json(active))
+}
+
 /// List registrations for a specific AOR.
 ///
 /// GET /api/v1/registrations/:aor
