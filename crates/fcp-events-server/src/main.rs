@@ -86,13 +86,24 @@ async fn main() -> Result<()> {
     );
 
     // Initialize PostgreSQL storage for config store (and webhooks)
-    let storage_result = storage::initialize_storage(&config.webhook.database_url).await?;
-    let config_store = storage_result.config_store;
+    // Only connect if webhooks are enabled (which requires a real database_url).
+    let storage_result = if config.webhook.enabled {
+        match storage::initialize_storage(&config.webhook.database_url).await {
+            Ok(result) => Some(result),
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize PostgreSQL storage — config store and webhooks disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let config_store: Option<Arc<dyn fcp_core::config_store::ConfigStore>> =
+        storage_result.as_ref().map(|r| Arc::clone(&r.config_store));
 
     // Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, logging) stay TOML-only.
-    {
-        let cs = config_store.as_ref();
+    if let Some(ref cs) = config_store {
         let svc = "events-server";
         let tid = "_system";
 
@@ -194,13 +205,13 @@ async fn main() -> Result<()> {
     let registration_store = Arc::new(RegistrationStateStore::new());
     let node_registry = Arc::new(NodeRegistry::new());
 
-    // Create webhook dispatcher if enabled
-    let webhook_dispatcher = if config.webhook.enabled {
+    // Create webhook dispatcher if enabled (requires PostgreSQL storage)
+    let webhook_dispatcher = if config.webhook.enabled && storage_result.is_some() {
         info!("Webhook dispatching enabled, initializing...");
 
         // Re-use the already-initialized PostgreSQL storage for webhooks
         let webhook_store: Arc<dyn fcp_core::storage::WebhookStore> =
-            storage_result.pg_storage.clone();
+            storage_result.as_ref().unwrap().pg_storage.clone();
 
         let dispatcher_config = WebhookDispatcherConfig {
             request_timeout: Duration::from_secs(config.webhook.request_timeout_secs),
@@ -344,8 +355,7 @@ async fn main() -> Result<()> {
     });
 
     // Spawn config poll loop (checks DB every 10s for config changes)
-    {
-        let cs = Arc::clone(&config_store);
+    if let Some(cs) = config_store {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
