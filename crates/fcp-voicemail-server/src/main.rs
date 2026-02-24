@@ -107,7 +107,51 @@ async fn main() -> Result<()> {
     }
 
     // 4. Initialize storage
-    let dyn_storage = storage::initialize_storage(&config.storage).await?;
+    let storage_result = storage::initialize_storage(&config.storage).await?;
+    let config_store = storage_result.config_store;
+    let dyn_storage = storage_result.dyn_storage;
+
+    // 4b. Seed operational config sections into database (DB primary, TOML seed)
+    // Bootstrap sections (service, sip, storage, http, logging) stay TOML-only.
+    {
+        let cs = config_store.as_ref();
+        let svc = "voicemail";
+        let tid = "_system";
+
+        let sections: Vec<(&str, serde_json::Value)> = vec![
+            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
+            ("events", serde_json::to_value(&config.events).unwrap_or_default()),
+            ("voicemail", serde_json::to_value(&config.voicemail).unwrap_or_default()),
+            ("b2bua", serde_json::to_value(&config.b2bua).unwrap_or_default()),
+            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+        ];
+
+        for (section, toml_val) in sections {
+            match cs.get_config(svc, section, tid).await {
+                Ok(Some(entry)) => {
+                    match section {
+                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
+                        "events" => if let Ok(v) = serde_json::from_value(entry.value) { config.events = v; },
+                        "voicemail" => if let Ok(v) = serde_json::from_value(entry.value) { config.voicemail = v; },
+                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { config.b2bua = v; },
+                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        _ => {}
+                    }
+                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                }
+                Ok(None) => {
+                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
+                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
+                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    }
+                }
+                Err(e) => {
+                    warn!(service = svc, section, error = %e, "failed to check DB config, using TOML");
+                }
+            }
+        }
+        info!("Operational config loading complete (DB primary, TOML seed)");
+    }
 
     // 5. Create SIP components
     let dialog_manager = DialogManager::new();
@@ -490,6 +534,29 @@ async fn main() -> Result<()> {
         events_forwarding = config.events.server_url.is_some(),
         "fcp-voicemail ready — listening for SIP INVITE messages"
     );
+
+    // 24b. Spawn config poll loop (checks DB every 10s for config changes)
+    {
+        let cs = Arc::clone(&config_store);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_version: i64 = 0;
+            loop {
+                interval.tick().await;
+                match cs.get_latest_version("voicemail", "_system").await {
+                    Ok(v) if v > last_version => {
+                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        last_version = v;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "config poll: failed to check version");
+                    }
+                }
+            }
+        });
+    }
 
     // 25. Wait for shutdown signal
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

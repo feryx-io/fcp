@@ -2,6 +2,7 @@
 
 pub mod auth_session;
 pub mod cdrs;
+pub mod config;
 pub mod dashboard;
 pub mod debug;
 pub mod devices;
@@ -192,6 +193,23 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/presence/:aor/pres-rules",
             get(presence::get_pres_rules).put(presence::set_pres_rules),
+        )
+        // Configuration management
+        .route("/config", get(config::list_configs))
+        .route("/config/audit", get(config::get_audit_log))
+        .route(
+            "/config/:service",
+            get(config::list_service_config),
+        )
+        .route(
+            "/config/:service/:section",
+            get(config::get_config)
+                .put(config::update_config)
+                .delete(config::delete_config),
+        )
+        .route(
+            "/config/:service/:section/validate",
+            post(config::validate_config),
         )
         // Voicemail
         .route(

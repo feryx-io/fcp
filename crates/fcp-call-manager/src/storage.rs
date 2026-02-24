@@ -13,8 +13,14 @@ use tracing::info;
 
 use crate::config::StorageSection;
 
+/// Storage initialization result with both DynStorage and ConfigStore.
+pub struct StorageResult {
+    pub dyn_storage: Arc<DynStorage>,
+    pub config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
+}
+
 /// Initialize PostgreSQL storage backend from configuration.
-pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorage>> {
+pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult> {
     let pg_config = PostgresConfig {
         connection_string: config.database_url.clone(),
         max_connections: config.max_connections,
@@ -25,8 +31,13 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<Arc<DynStorag
         .await
         .context("Failed to initialize PostgreSQL storage")?;
 
+    let storage = Arc::new(storage);
+
     info!("PostgreSQL storage initialized successfully");
-    Ok(Arc::new(DynStorage::from_all_in_one(Arc::new(storage))))
+    Ok(StorageResult {
+        dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
+        config_store: storage,
+    })
 }
 
 /// Initialize Redis storage if configured.

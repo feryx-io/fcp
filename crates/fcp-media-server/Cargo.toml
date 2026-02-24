@@ -41,6 +41,8 @@ serde_json = { workspace = true }
 # Utilities
 uuid = { workspace = true }
 
+fcp-core = { path = "../fcp-core" }
 fcp-events = { path = "../fcp-events" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }

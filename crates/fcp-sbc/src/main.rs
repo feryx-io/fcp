@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
 
     // 2. Load configuration from TOML (or defaults)
     let deploy_config = config::load_config(cli.config.as_deref())?;
-    let sbc_config = deploy_config.core.clone();
+    let mut sbc_config = deploy_config.core.clone();
 
     // 3. Initialize tracing subscriber
     init_tracing(&cli.log_level, &cli.log_format);
@@ -320,7 +320,10 @@ async fn main() -> Result<()> {
         Arc::new(hooks)
     };
     // 12d. Initialize optional storage for CDR persistence
-    let dyn_storage = if sbc_config.storage.enabled {
+    let (dyn_storage, config_store): (
+        Option<Arc<fcp_core::DynStorage>>,
+        Option<Arc<dyn fcp_core::config_store::ConfigStore>>,
+    ) = if sbc_config.storage.enabled {
         let pg_config = fcp_storage_postgres::PostgresConfig {
             connection_string: sbc_config.storage.database_url.clone(),
             max_connections: 10,
@@ -329,14 +332,65 @@ async fn main() -> Result<()> {
         let pg_storage = fcp_storage_postgres::PostgresStorage::new(pg_config)
             .await
             .context("Failed to initialize PostgreSQL storage for CDR")?;
-        let storage = Arc::new(fcp_core::DynStorage::from_all_in_one(Arc::new(
-            pg_storage,
-        )));
+        let pg_storage = Arc::new(pg_storage);
+        let storage = Arc::new(fcp_core::DynStorage::from_all_in_one(pg_storage.clone()));
         info!(db = %sbc_config.storage.database_url, "CDR storage initialized");
-        Some(storage)
+        (Some(storage), Some(pg_storage as Arc<dyn fcp_core::config_store::ConfigStore>))
     } else {
-        None
+        (None, None)
     };
+
+    // 12d2. Seed operational config sections into database (DB primary, TOML seed)
+    if let Some(ref config_store) = config_store {
+        let cs = config_store.as_ref();
+        let svc = "sbc";
+        let tid = "_system";
+
+        let sections: Vec<(&str, serde_json::Value)> = vec![
+            ("admission", serde_json::to_value(&sbc_config.admission).unwrap_or_default()),
+            ("rate_limit", serde_json::to_value(&sbc_config.rate_limit).unwrap_or_default()),
+            ("security", serde_json::to_value(&sbc_config.security).unwrap_or_default()),
+            ("nat", serde_json::to_value(&sbc_config.nat).unwrap_or_default()),
+            ("siprec", serde_json::to_value(&sbc_config.siprec).unwrap_or_default()),
+            ("metrics", serde_json::to_value(&sbc_config.metrics).unwrap_or_default()),
+            ("lcr", serde_json::to_value(&sbc_config.lcr).unwrap_or_default()),
+            ("header_manipulation", serde_json::to_value(&sbc_config.header_manipulation).unwrap_or_default()),
+            ("stir_shaken", serde_json::to_value(&sbc_config.stir_shaken).unwrap_or_default()),
+            ("b2bua", serde_json::to_value(&sbc_config.b2bua).unwrap_or_default()),
+            ("cluster", serde_json::to_value(&deploy_config.cluster).unwrap_or_default()),
+        ];
+
+        for (section, toml_val) in sections {
+            match cs.get_config(svc, section, tid).await {
+                Ok(Some(entry)) => {
+                    match section {
+                        "admission" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.admission = v; },
+                        "rate_limit" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.rate_limit = v; },
+                        "security" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.security = v; },
+                        "nat" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.nat = v; },
+                        "siprec" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.siprec = v; },
+                        "metrics" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.metrics = v; },
+                        "lcr" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.lcr = v; },
+                        "header_manipulation" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.header_manipulation = v; },
+                        "stir_shaken" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.stir_shaken = v; },
+                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.b2bua = v; },
+                        _ => {}
+                    }
+                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                }
+                Ok(None) => {
+                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
+                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
+                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    }
+                }
+                Err(e) => {
+                    warn!(service = svc, section, error = %e, "failed to check DB config, using TOML");
+                }
+            }
+        }
+        info!("Operational config loading complete (DB primary, TOML seed)");
+    }
 
     let call_manager = match &dyn_storage {
         Some(storage) => Arc::new(fcp_sip::CallManager::with_storage_and_events(
@@ -626,6 +680,29 @@ async fn main() -> Result<()> {
             sign_trunks = sign_trunks,
             "STIR/SHAKEN enabled (RFC 8224/8225/8588)"
         );
+    }
+
+    // 22b. Spawn config poll loop (checks DB every 10s for config changes)
+    if let Some(ref cs) = config_store {
+        let cs = Arc::clone(cs);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_version: i64 = 0;
+            loop {
+                interval.tick().await;
+                match cs.get_latest_version("sbc", "_system").await {
+                    Ok(v) if v > last_version => {
+                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        last_version = v;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "config poll: failed to check version");
+                    }
+                }
+            }
+        });
     }
 
     info!(

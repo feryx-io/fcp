@@ -123,8 +123,10 @@ async fn main() -> Result<()> {
     }
 
     // 4. Initialize storage
+    let storage_result = storage::initialize_storage(&config.storage).await?;
+    let config_store = storage_result.config_store;
     #[allow(unused_mut)]
-    let mut dyn_storage = storage::initialize_storage(&config.storage).await?;
+    let mut dyn_storage = storage_result.dyn_storage;
 
     // 4b. Initialize Redis + split backend (if configured)
     #[cfg(feature = "storage-redis")]
@@ -212,6 +214,59 @@ async fn main() -> Result<()> {
 
     #[cfg(not(feature = "storage-redis"))]
     let cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>> = None;
+
+    // 4e. Seed operational config sections into database (DB primary, TOML seed)
+    // Bootstrap sections (service, sip, storage, http, logging, cluster) stay TOML-only.
+    {
+        let cs = config_store.as_ref();
+        let svc = "call-manager";
+        let tid = "_system";
+
+        let sections: Vec<(&str, serde_json::Value)> = vec![
+            ("registrar", serde_json::to_value(&config.registrar).unwrap_or_default()),
+            ("calls", serde_json::to_value(&config.calls).unwrap_or_default()),
+            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
+            ("routing", serde_json::to_value(&config.routing).unwrap_or_default()),
+            ("events", serde_json::to_value(&config.events).unwrap_or_default()),
+            ("b2bua", serde_json::to_value(&config.b2bua).unwrap_or_default()),
+            ("pbx", serde_json::to_value(&config.pbx).unwrap_or_default()),
+            ("queue", serde_json::to_value(&config.queue).unwrap_or_default()),
+            ("presence", serde_json::to_value(&config.presence).unwrap_or_default()),
+        ];
+
+        for (section, toml_val) in sections {
+            // Check if DB has this section; if not, seed it
+            match cs.get_config(svc, section, tid).await {
+                Ok(Some(entry)) => {
+                    // DB has it — use DB version to override local config
+                    match section {
+                        "registrar" => if let Ok(v) = serde_json::from_value(entry.value) { config.registrar = v; },
+                        "calls" => if let Ok(v) = serde_json::from_value(entry.value) { config.calls = v; },
+                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
+                        "routing" => if let Ok(v) = serde_json::from_value(entry.value) { config.routing = v; },
+                        "events" => if let Ok(v) = serde_json::from_value(entry.value) { config.events = v; },
+                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { config.b2bua = v; },
+                        "pbx" => if let Ok(v) = serde_json::from_value(entry.value) { config.pbx = v; },
+                        "queue" => if let Ok(v) = serde_json::from_value(entry.value) { config.queue = v; },
+                        "presence" => if let Ok(v) = serde_json::from_value(entry.value) { config.presence = v; },
+                        _ => {}
+                    }
+                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                }
+                Ok(None) => {
+                    // Seed from TOML
+                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
+                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
+                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    }
+                }
+                Err(e) => {
+                    warn!(service = svc, section, error = %e, "failed to check DB config, using TOML");
+                }
+            }
+        }
+        info!("Operational config loading complete (DB primary, TOML seed)");
+    }
 
     // 5. Create SIP components
     let dialog_manager = DialogManager::new();
@@ -895,6 +950,29 @@ async fn main() -> Result<()> {
         pbx = config.pbx.enabled,
         "fcp-call-manager ready — listening for SIP messages"
     );
+
+    // 20b. Spawn config poll loop (checks DB every 10s for config changes)
+    {
+        let cs = Arc::clone(&config_store);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_version: i64 = 0;
+            loop {
+                interval.tick().await;
+                match cs.get_latest_version("call-manager", "_system").await {
+                    Ok(v) if v > last_version => {
+                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        last_version = v;
+                    }
+                    Ok(_) => {} // no change
+                    Err(e) => {
+                        tracing::debug!(error = %e, "config poll: failed to check version");
+                    }
+                }
+            }
+        });
+    }
 
     // 21. Wait for shutdown signal (with SIGHUP for config reload)
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

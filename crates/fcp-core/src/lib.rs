@@ -8,6 +8,7 @@ pub mod call_forking;
 pub mod call_state;
 pub mod codec;
 pub mod config;
+pub mod config_store;
 pub mod device;
 pub mod error;
 pub mod extension;
@@ -86,6 +87,10 @@ pub use crate::transport::{
     TransportReceiver, TransportType,
 };
 pub use crate::cached_storage::{CacheStats, CachedCredentialStore, CachedDeviceStore, CachedExtensionStore};
+pub use crate::config_store::{
+    AuditEntry, ConfigEntry, ConfigStore, ConfigWatcher, get_config_with_tenant_fallback,
+    load_or_seed_config, spawn_config_poll_loop,
+};
 pub use crate::voicemail::{
     GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
     VoicemailMailbox, VoicemailMessage, VoicemailStats,

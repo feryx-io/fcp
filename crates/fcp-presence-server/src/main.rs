@@ -52,7 +52,51 @@ async fn main() -> Result<()> {
     );
 
     // Initialize storage
-    let dyn_storage = initialize_storage(&config).await?;
+    let storage_result = initialize_storage(&config).await?;
+    let config_store = storage_result.config_store;
+    let dyn_storage = storage_result.dyn_storage;
+
+    // Seed operational config sections into database (DB primary, TOML seed)
+    // Bootstrap sections (service, storage, http, logging) stay TOML-only.
+    {
+        let cs = config_store.as_ref();
+        let svc = "presence";
+        let tid = "_system";
+
+        let sections: Vec<(&str, serde_json::Value)> = vec![
+            ("presence", serde_json::to_value(&config.presence).unwrap_or_default()),
+            ("redis", serde_json::to_value(&config.redis).unwrap_or_default()),
+            ("xcap", serde_json::to_value(&config.xcap).unwrap_or_default()),
+            ("webhook", serde_json::to_value(&config.webhooks).unwrap_or_default()),
+            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+        ];
+
+        for (section, toml_val) in sections {
+            match cs.get_config(svc, section, tid).await {
+                Ok(Some(entry)) => {
+                    match section {
+                        "presence" => if let Ok(v) = serde_json::from_value(entry.value) { config.presence = v; },
+                        "redis" => if let Ok(v) = serde_json::from_value(entry.value) { config.redis = v; },
+                        "xcap" => if let Ok(v) = serde_json::from_value(entry.value) { config.xcap = v; },
+                        "webhook" => if let Ok(v) = serde_json::from_value(entry.value) { config.webhooks = v; },
+                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        _ => {}
+                    }
+                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                }
+                Ok(None) => {
+                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
+                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
+                        Err(e) => tracing::warn!(service = svc, section, error = %e, "failed to seed config"),
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(service = svc, section, error = %e, "failed to check DB config, using TOML");
+                }
+            }
+        }
+        info!("Operational config loading complete (DB primary, TOML seed)");
+    }
 
     // Create PresenceConfig from our config
     let presence_config = fcp_presence::PresenceConfig {
@@ -221,6 +265,29 @@ async fn main() -> Result<()> {
         "fcp-presence ready"
     );
 
+    // Spawn config poll loop (checks DB every 10s for config changes)
+    {
+        let cs = Arc::clone(&config_store);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_version: i64 = 0;
+            loop {
+                interval.tick().await;
+                match cs.get_latest_version("presence", "_system").await {
+                    Ok(v) if v > last_version => {
+                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        last_version = v;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "config poll: failed to check version");
+                    }
+                }
+            }
+        });
+    }
+
     // Wait for shutdown signal
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("Failed to register SIGTERM handler")?;
@@ -248,10 +315,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Storage initialization result with both DynStorage and ConfigStore.
+struct StorageResult {
+    dyn_storage: Arc<fcp_core::storage::DynStorage>,
+    config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
+}
+
 /// Initialize PostgreSQL storage backend based on configuration.
 async fn initialize_storage(
     config: &PresenceServerConfig,
-) -> Result<Arc<fcp_core::storage::DynStorage>> {
+) -> Result<StorageResult> {
     use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 
     let pg_config = PostgresConfig {
@@ -264,10 +337,13 @@ async fn initialize_storage(
         .await
         .context("Failed to initialize PostgreSQL storage")?;
 
+    let storage = Arc::new(storage);
+
     info!("PostgreSQL storage initialized successfully");
-    Ok(Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
-        Arc::new(storage),
-    )))
+    Ok(StorageResult {
+        dyn_storage: Arc::new(fcp_core::storage::DynStorage::from_all_in_one(storage.clone())),
+        config_store: storage,
+    })
 }
 
 /// Set up Redis Pub/Sub for cross-node clustering.

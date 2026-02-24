@@ -10,8 +10,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use forge_api::ApiServer;
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 mod config;
 
@@ -114,7 +115,72 @@ async fn main() -> Result<()> {
         "fcp-media starting"
     );
 
-    // 5. Convert to ApiServerConfig
+    // 5. Initialize config store from PostgreSQL (if database_url is configured)
+    let config_store: Option<Arc<dyn fcp_core::config_store::ConfigStore>> =
+        if let Some(ref db_url) = config.storage.database_url {
+            match fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig {
+                connection_string: db_url.clone(),
+                max_connections: config.storage.max_connections,
+                connection_timeout: Duration::from_secs(30),
+            })
+            .await
+            {
+                Ok(storage) => {
+                    info!("PostgreSQL config store initialized");
+                    Some(Arc::new(storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize PostgreSQL config store, using TOML only");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+    // 5b. Seed operational config sections into database (DB primary, TOML seed)
+    // Bootstrap sections (service, http, logging, tls, storage) stay TOML-only.
+    if let Some(ref cs) = config_store {
+        let cs = cs.as_ref();
+        let svc = "media";
+        let tid = "_system";
+
+        let sections: Vec<(&str, serde_json::Value)> = vec![
+            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
+            ("recording", serde_json::to_value(&config.recording).unwrap_or_default()),
+            ("auth", serde_json::to_value(&config.auth).unwrap_or_default()),
+            ("ai", serde_json::to_value(&config.ai).unwrap_or_default()),
+            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+        ];
+
+        for (section, toml_val) in sections {
+            match cs.get_config(svc, section, tid).await {
+                Ok(Some(entry)) => {
+                    match section {
+                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
+                        "recording" => if let Ok(v) = serde_json::from_value(entry.value) { config.recording = v; },
+                        "auth" => if let Ok(v) = serde_json::from_value(entry.value) { config.auth = v; },
+                        "ai" => if let Ok(v) = serde_json::from_value(entry.value) { config.ai = v; },
+                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        _ => {}
+                    }
+                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                }
+                Ok(None) => {
+                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
+                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
+                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    }
+                }
+                Err(e) => {
+                    warn!(service = svc, section, error = %e, "failed to check DB config, using TOML");
+                }
+            }
+        }
+        info!("Operational config loading complete (DB primary, TOML seed)");
+    }
+
+    // 6. Convert to ApiServerConfig
     let api_config = config::to_api_server_config(&config);
 
     // 6. Create ApiServer
@@ -171,7 +237,29 @@ async fn main() -> Result<()> {
         "fcp-media ready — listening for API requests"
     );
 
-    // 7. Serve with graceful shutdown on SIGINT/SIGTERM
+    // 7b. Spawn config poll loop (checks DB every 10s for config changes)
+    if let Some(cs) = config_store {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_version: i64 = 0;
+            loop {
+                interval.tick().await;
+                match cs.get_latest_version("media", "_system").await {
+                    Ok(v) if v > last_version => {
+                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        last_version = v;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "config poll: failed to check version");
+                    }
+                }
+            }
+        });
+    }
+
+    // 8. Serve with graceful shutdown on SIGINT/SIGTERM
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     let shutdown_signal = async move {
         let mut sigterm =

@@ -1858,6 +1858,7 @@ pub struct DynStorage {
     presence_store: Arc<dyn PresenceStore>,
     resource_list_store: Arc<dyn ResourceListStore>,
     webhook_store: Arc<dyn WebhookStore>,
+    config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
 }
 
 impl DynStorage {
@@ -1897,6 +1898,7 @@ impl DynStorage {
             presence_store,
             resource_list_store,
             webhook_store,
+            config_store: None,
         }
     }
 
@@ -1941,6 +1943,7 @@ impl DynStorage {
             presence_store: storage.clone(),
             resource_list_store: storage.clone(),
             webhook_store: storage,
+            config_store: None,
         }
     }
 
@@ -1984,6 +1987,17 @@ impl DynStorage {
     /// Get the webhook store.
     pub fn webhook_store(&self) -> &Arc<dyn WebhookStore> {
         &self.webhook_store
+    }
+
+    /// Replace the config store with a specific implementation.
+    pub fn with_config_store(mut self, store: Arc<dyn crate::config_store::ConfigStore>) -> Self {
+        self.config_store = Some(store);
+        self
+    }
+
+    /// Get the config store, if one has been set.
+    pub fn config_store(&self) -> Option<&Arc<dyn crate::config_store::ConfigStore>> {
+        self.config_store.as_ref()
     }
 }
 

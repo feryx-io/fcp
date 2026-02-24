@@ -1,5 +1,6 @@
 //! Shared API state.
 
+use fcp_core::config_store::ConfigStore;
 use fcp_core::DynStorage;
 use fcp_events::EventBus;
 use fcp_flow::FlowStore;
@@ -54,6 +55,9 @@ pub struct ApiState {
     /// URL of fcp-events-server (e.g. "http://localhost:8081") for proxying
     /// cluster-wide queries (active calls, etc.)
     pub events_server_url: Option<String>,
+
+    /// Config store for database-backed configuration management (optional)
+    pub config_store: Option<Arc<dyn ConfigStore>>,
 }
 
 impl ApiState {
@@ -86,12 +90,19 @@ impl ApiState {
             default_tenant_id,
             start_time: std::time::Instant::now(),
             events_server_url: None,
+            config_store: None,
         }
     }
 
     /// Set the events server URL for proxying cluster-wide queries.
     pub fn with_events_server_url(mut self, url: Option<String>) -> Self {
         self.events_server_url = url;
+        self
+    }
+
+    /// Set the config store for database-backed configuration management.
+    pub fn with_config_store(mut self, store: Arc<dyn ConfigStore>) -> Self {
+        self.config_store = Some(store);
         self
     }
 }

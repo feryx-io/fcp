@@ -305,14 +305,30 @@ impl Default for LoggingSection {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfigSection {
+    /// PostgreSQL connection URL for config store.
+    #[serde(default)]
+    pub database_url: Option<String>,
+
+    /// Maximum database connections (default: 10).
+    #[serde(default = "default_storage_max_connections")]
+    pub max_connections: u32,
+
     /// Redis connection URL for cluster membership.
     #[serde(default)]
     pub redis_url: Option<String>,
 }
 
+fn default_storage_max_connections() -> u32 {
+    10
+}
+
 impl Default for StorageConfigSection {
     fn default() -> Self {
-        Self { redis_url: None }
+        Self {
+            database_url: None,
+            max_connections: default_storage_max_connections(),
+            redis_url: None,
+        }
     }
 }
 

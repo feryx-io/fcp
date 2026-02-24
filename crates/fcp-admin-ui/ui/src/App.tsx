@@ -29,6 +29,7 @@ const PortingPage = lazy(() => import('@/pages/PortingPage').then((m) => ({ defa
 const AuditLogPage = lazy(() => import('@/pages/AuditLogPage').then((m) => ({ default: m.AuditLogPage })))
 const ApiTokensPage = lazy(() => import('@/pages/ApiTokensPage').then((m) => ({ default: m.ApiTokensPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const SystemSettingsPage = lazy(() => import('@/pages/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -95,6 +96,7 @@ export function App() {
               <Route path="audit" element={<Suspense fallback={<PageLoader />}><AuditLogPage /></Suspense>} />
               <Route path="tokens" element={<Suspense fallback={<PageLoader />}><ApiTokensPage /></Suspense>} />
               <Route path="settings" element={<Suspense fallback={<PageLoader />}><SettingsPage /></Suspense>} />
+              <Route path="system-settings" element={<Suspense fallback={<PageLoader />}><SystemSettingsPage /></Suspense>} />
             </Route>
             <Route path="*" element={<Navigate to="/admin" replace />} />
           </Routes>

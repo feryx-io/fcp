@@ -275,3 +275,72 @@ export const apiTokens = {
   create: (data: CreateApiTokenRequest) => apiClient.post<CreateApiTokenResponse>('/api-tokens', data),
   delete: (id: string) => apiClient.delete<void>(`/api-tokens/${id}`),
 }
+
+// Configuration Management
+export interface ConfigEntry {
+  service: string
+  section: string
+  tenant_id: string
+  value: Record<string, unknown>
+  version: number
+  updated_at: string
+  updated_by: string | null
+}
+
+export interface ConfigAuditEntry {
+  id: number
+  service: string
+  section: string
+  tenant_id: string
+  old_value: Record<string, unknown> | null
+  new_value: Record<string, unknown>
+  changed_by: string | null
+  changed_at: string
+  version: number
+}
+
+export interface UpdateConfigResponse {
+  version: number
+  service: string
+  section: string
+  tenant_id: string
+}
+
+export interface ValidateConfigResponse {
+  valid: boolean
+  errors: string[]
+}
+
+export const config = {
+  list: (service?: string, tenant_id?: string) => {
+    const params = new URLSearchParams()
+    if (service) params.set('service', service)
+    if (tenant_id) params.set('tenant_id', tenant_id)
+    const q = params.toString()
+    return apiClient.get<ConfigEntry[]>(`/config${q ? `?${q}` : ''}`)
+  },
+  listService: (service: string, tenant_id = '_system') =>
+    apiClient.get<ConfigEntry[]>(`/config/${encodeURIComponent(service)}?tenant_id=${tenant_id}`),
+  get: (service: string, section: string, tenant_id = '_system') =>
+    apiClient.get<ConfigEntry>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${tenant_id}`),
+  update: (service: string, section: string, value: Record<string, unknown>, tenant_id = '_system', updated_by?: string) =>
+    apiClient.put<UpdateConfigResponse>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}`, {
+      value,
+      tenant_id,
+      updated_by,
+    }),
+  delete: (service: string, section: string, tenant_id = '_system') =>
+    apiClient.delete<{ deleted: boolean }>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${tenant_id}`),
+  validate: (service: string, section: string, value: Record<string, unknown>, tenant_id = '_system') =>
+    apiClient.post<ValidateConfigResponse>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}/validate`, {
+      value,
+      tenant_id,
+    }),
+  audit: (service?: string, section?: string, limit = 50) => {
+    const params = new URLSearchParams()
+    if (service) params.set('service', service)
+    if (section) params.set('section', section)
+    params.set('limit', String(limit))
+    return apiClient.get<ConfigAuditEntry[]>(`/config/audit?${params.toString()}`)
+  },
+}

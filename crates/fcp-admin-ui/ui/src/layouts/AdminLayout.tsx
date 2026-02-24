@@ -52,6 +52,7 @@ const navItems: NavItem[] = [
   { label: 'Number Porting', href: '/admin/porting', icon: Phone, section: 'Advanced' },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },
   { label: 'API Tokens', href: '/admin/tokens', icon: Key, section: 'Advanced' },
+  { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'Advanced' },
 ]
 
 const themeIcon = (theme: string) => {

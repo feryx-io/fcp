@@ -126,9 +126,11 @@ async fn main() -> Result<()> {
     );
 
     // Initialize storage backend
-    let storage = storage::initialize_storage(&config.storage)
+    let storage_result = storage::initialize_storage(&config.storage)
         .await
         .context("Failed to initialize storage backend")?;
+    let storage = storage_result.dyn_storage;
+    let config_store = storage_result.config_store;
 
     info!("Storage backend initialized successfully");
 
@@ -212,7 +214,8 @@ async fn main() -> Result<()> {
         realm,
         fcp_core::TenantId::nil(),
     )
-    .with_events_server_url(events_server_url.clone());
+    .with_events_server_url(events_server_url.clone())
+    .with_config_store(config_store);
 
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
@@ -302,16 +305,11 @@ async fn main() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    // Start event forwarding task (if configured)
-    if let Some(ref events_url) = config.events.server_url {
-        let events_url = events_url.clone();
-        tokio::spawn(async move {
-            if let Err(e) = run_event_forwarder(event_bus_for_forward, &events_url).await {
-                tracing::error!(%e, "Event forwarder task failed");
-            }
-        });
-        info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
-    }
+    // Note: event forwarding is intentionally disabled for the admin service.
+    // The admin subscribes to the events server WebSocket to receive cluster-wide
+    // events for the UI, but does not generate events of its own. Forwarding
+    // received events back to the events server would create an infinite loop.
+    let _ = event_bus_for_forward;
 
     // Start events server subscriber (receives cluster-wide events for the admin UI WebSocket)
     if let Some(ref events_url) = events_server_url {
@@ -339,68 +337,6 @@ async fn main() -> Result<()> {
 
     info!("FCP Admin API shutdown complete");
     Ok(())
-}
-
-/// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
-async fn run_event_forwarder(
-    event_bus: Arc<dyn fcp_events::EventBus>,
-    events_url: &str,
-) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .context("Failed to create HTTP client for event forwarding")?;
-
-    // Subscribe to all events
-    let mut stream = event_bus
-        .subscribe(EventFilter::new())
-        .await
-        .context("Failed to subscribe to event bus")?;
-
-    info!(url = %events_url, "Event forwarder started");
-
-    loop {
-        match stream.next().await {
-            Some(event) => {
-                tracing::debug!(?event, "Forwarding event to events server");
-                // Fire-and-forget POST to events server
-                let client = client.clone();
-                let url = events_url.to_string();
-                tokio::spawn(async move {
-                    match client.post(&url).json(&event).send().await {
-                        Ok(resp) => {
-                            if resp.status().is_success() {
-                                tracing::debug!(status = %resp.status(), "Event forwarded");
-                            } else {
-                                tracing::warn!(
-                                    status = %resp.status(),
-                                    "Event forward received non-2xx response"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(%e, "Failed to forward event to events server");
-                        }
-                    }
-                });
-            }
-            None => {
-                warn!("Event stream ended unexpectedly, resubscribing...");
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                // Try to resubscribe
-                match event_bus.subscribe(EventFilter::new()).await {
-                    Ok(new_stream) => {
-                        stream = new_stream;
-                        info!("Resubscribed to event bus");
-                    }
-                    Err(e) => {
-                        warn!(%e, "Failed to resubscribe to event bus");
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Subscribe to the events server's WebSocket and republish events to the local event bus.

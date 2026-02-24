@@ -13,6 +13,7 @@ mod connection;
 mod nodes;
 mod routes;
 mod state;
+mod storage;
 
 use anyhow::{Context, Result};
 use axum::{
@@ -84,6 +85,54 @@ async fn main() -> Result<()> {
         "Starting FCP Events Server"
     );
 
+    // Initialize PostgreSQL storage for config store (and webhooks)
+    let storage_result = storage::initialize_storage(&config.webhook.database_url).await?;
+    let config_store = storage_result.config_store;
+
+    // Seed operational config sections into database (DB primary, TOML seed)
+    // Bootstrap sections (service, logging) stay TOML-only.
+    {
+        let cs = config_store.as_ref();
+        let svc = "events-server";
+        let tid = "_system";
+
+        let sections: Vec<(&str, serde_json::Value)> = vec![
+            ("websocket", serde_json::to_value(&config.websocket).unwrap_or_default()),
+            ("event_bus", serde_json::to_value(&config.event_bus).unwrap_or_default()),
+            ("limits", serde_json::to_value(&config.limits).unwrap_or_default()),
+            ("upstream", serde_json::to_value(&config.upstream).unwrap_or_default()),
+            ("webhook", serde_json::to_value(&config.webhook).unwrap_or_default()),
+            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+        ];
+
+        for (section, toml_val) in sections {
+            match cs.get_config(svc, section, tid).await {
+                Ok(Some(entry)) => {
+                    match section {
+                        "websocket" => if let Ok(v) = serde_json::from_value(entry.value) { config.websocket = v; },
+                        "event_bus" => if let Ok(v) = serde_json::from_value(entry.value) { config.event_bus = v; },
+                        "limits" => if let Ok(v) = serde_json::from_value(entry.value) { config.limits = v; },
+                        "upstream" => if let Ok(v) = serde_json::from_value(entry.value) { config.upstream = v; },
+                        "webhook" => if let Ok(v) = serde_json::from_value(entry.value) { config.webhook = v; },
+                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        _ => {}
+                    }
+                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                }
+                Ok(None) => {
+                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
+                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
+                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    }
+                }
+                Err(e) => {
+                    warn!(service = svc, section, error = %e, "failed to check DB config, using TOML");
+                }
+            }
+        }
+        info!("Operational config loading complete (DB primary, TOML seed)");
+    }
+
     // Create event bus
     let event_bus = Arc::new(InMemoryEventBus::new());
 
@@ -149,14 +198,9 @@ async fn main() -> Result<()> {
     let webhook_dispatcher = if config.webhook.enabled {
         info!("Webhook dispatching enabled, initializing...");
 
-        // Initialize PostgreSQL storage for webhooks
-        let pg_config =
-            fcp_storage_postgres::PostgresConfig::new(&config.webhook.database_url);
-        let pg_storage = fcp_storage_postgres::PostgresStorage::new(pg_config)
-            .await
-            .context("Failed to initialize PostgreSQL storage for webhooks")?;
+        // Re-use the already-initialized PostgreSQL storage for webhooks
         let webhook_store: Arc<dyn fcp_core::storage::WebhookStore> =
-            Arc::new(pg_storage);
+            storage_result.pg_storage.clone();
 
         let dispatcher_config = WebhookDispatcherConfig {
             request_timeout: Duration::from_secs(config.webhook.request_timeout_secs),
@@ -298,6 +342,29 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         stale_cleanup_task(call_store_cleanup, registration_store_cleanup, node_registry_cleanup).await;
     });
+
+    // Spawn config poll loop (checks DB every 10s for config changes)
+    {
+        let cs = Arc::clone(&config_store);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut last_version: i64 = 0;
+            loop {
+                interval.tick().await;
+                match cs.get_latest_version("events-server", "_system").await {
+                    Ok(v) if v > last_version => {
+                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        last_version = v;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %e, "config poll: failed to check version");
+                    }
+                }
+            }
+        });
+    }
 
     // Start server
     let bind_addr = config.websocket.bind_address;
