@@ -44,6 +44,9 @@ pub enum PlatformEvent {
 
     /// Presence status event
     Presence(PresenceEvent),
+
+    /// SIP protocol trace event
+    Sip(SipTraceEvent),
 }
 
 /// Call lifecycle events.
@@ -944,6 +947,29 @@ pub enum VoicemailEvent {
     },
 }
 
+/// SIP protocol trace events for ladder diagram visualization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SipTraceEvent {
+    /// Raw SIP message captured from the wire
+    MessageCaptured {
+        call_id: String,
+        sip_call_id: String,
+        direction: String,
+        method_or_status: String,
+        from_uri: String,
+        to_uri: String,
+        source_addr: String,
+        dest_addr: String,
+        transport: String,
+        cseq: String,
+        raw_message: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+        node_id: Option<String>,
+    },
+}
+
 /// Call direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1104,6 +1130,9 @@ impl PlatformEvent {
                 PresenceEvent::PublishExpiryWarning { .. } => "presence.publish_expiry_warning",
                 PresenceEvent::PublishExpired { .. } => "presence.publish_expired",
             },
+            PlatformEvent::Sip(e) => match e {
+                SipTraceEvent::MessageCaptured { .. } => "sip.message_captured",
+            },
         }
     }
 
@@ -1188,7 +1217,8 @@ impl PlatformEvent {
             | PlatformEvent::Ivr(_)
             | PlatformEvent::Recording(_)
             | PlatformEvent::Flow(_)
-            | PlatformEvent::Voicemail(_) => None,
+            | PlatformEvent::Voicemail(_)
+            | PlatformEvent::Sip(_) => None,
         }
     }
 
@@ -1207,6 +1237,7 @@ impl PlatformEvent {
             PlatformEvent::Conference(_) => None,
             PlatformEvent::Queue(_) => None,
             PlatformEvent::Presence(_) => None,
+            PlatformEvent::Sip(_) => None,
         }
     }
 
@@ -1225,6 +1256,7 @@ impl PlatformEvent {
             PlatformEvent::Conference(event) => event.timestamp(),
             PlatformEvent::Queue(event) => event.timestamp(),
             PlatformEvent::Presence(event) => event.timestamp(),
+            PlatformEvent::Sip(event) => event.timestamp(),
         }
     }
 }
@@ -1452,6 +1484,14 @@ impl PresenceEvent {
             | PresenceEvent::DialogChanged { timestamp, .. }
             | PresenceEvent::PublishExpiryWarning { timestamp, .. }
             | PresenceEvent::PublishExpired { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+impl SipTraceEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            SipTraceEvent::MessageCaptured { timestamp, .. } => *timestamp,
         }
     }
 }

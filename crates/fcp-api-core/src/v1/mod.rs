@@ -16,6 +16,7 @@ pub mod phone_numbers;
 pub mod presence;
 pub mod queues;
 pub mod registrations;
+pub mod sip_trace;
 pub mod system;
 pub mod tenants;
 pub mod users;
@@ -96,6 +97,11 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/calls/:call_id/recording/stop",
             post(media::stop_recording),
+        )
+        // SIP trace endpoints (for ladder diagram debugging)
+        .route(
+            "/calls/:call_id/sip-messages",
+            get(sip_trace::get_sip_messages),
         )
         // CDR (Call Detail Record) endpoints
         .route("/cdrs", get(cdrs::list_cdrs))

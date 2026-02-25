@@ -33,6 +33,7 @@ pub enum EventType {
     Conference,
     Queue,
     Presence,
+    Sip,
 }
 
 impl EventFilter {
@@ -88,6 +89,7 @@ impl EventFilter {
                 PlatformEvent::Conference(_) => EventType::Conference,
                 PlatformEvent::Queue(_) => EventType::Queue,
                 PlatformEvent::Presence(_) => EventType::Presence,
+                PlatformEvent::Sip(_) => EventType::Sip,
             };
 
             if !types.contains(&event_type) {

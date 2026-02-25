@@ -141,6 +141,32 @@ export const cdrs = {
   get: (callId: string) => apiClient.get<CdrResponse>(`/cdrs/${callId}`),
 }
 
+// SIP Trace (for ladder diagram debugging)
+export interface SipTraceMessage {
+  id: number
+  timestamp: number // Unix timestamp in milliseconds
+  direction: string
+  method_or_status: string
+  cseq: string
+  from_uri: string
+  to_uri: string
+  source_addr: string
+  dest_addr: string
+  transport: string
+  raw_message: string
+  node_id: string | null
+}
+
+export interface SipTraceListResponse {
+  call_id: string
+  messages: SipTraceMessage[]
+}
+
+export const sipTrace = {
+  getMessages: (callId: string) =>
+    apiClient.get<SipTraceListResponse>(`/calls/${callId}/sip-messages`),
+}
+
 // Queues (Phase 2 - ACD queues)
 export const queues = {
   list: () => apiClient.get<QueueResponse[]>('/queues'),

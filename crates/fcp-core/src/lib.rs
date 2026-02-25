@@ -25,6 +25,7 @@ pub mod routing;
 pub mod routing_engine;
 pub mod service;
 pub mod sip_handler;
+pub mod sip_trace;
 pub mod storage;
 pub mod tenant;
 pub mod time;
@@ -91,6 +92,7 @@ pub use crate::config_store::{
     AuditEntry, ConfigEntry, ConfigStore, ConfigWatcher, get_config_with_tenant_fallback,
     load_or_seed_config, spawn_config_poll_loop,
 };
+pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
 pub use crate::voicemail::{
     GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,
     VoicemailMailbox, VoicemailMessage, VoicemailStats,

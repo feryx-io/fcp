@@ -582,7 +582,7 @@ async fn main() -> Result<()> {
             .as_ref()
             .map(|h| Arc::clone(h) as Arc<dyn fcp_sip::presence::PresenceHandler>);
 
-    let handler = Arc::new(SipMessageHandler::new(
+    let mut handler = SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
         local_uri,
@@ -612,7 +612,84 @@ async fn main() -> Result<()> {
         presence_handler.clone(),
         cluster_parking.clone(),
         config.service.node_id.clone(),
-    )?);
+    )?;
+
+    // Set up SIP trace channel for raw message capture to PostgreSQL
+    let sip_trace_store: Option<Arc<dyn fcp_core::SipTraceStore>> =
+        if let Some(ref store) = dyn_storage.sip_trace_store() {
+            Some(Arc::clone(store))
+        } else {
+            None
+        };
+    let sip_trace_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventBus>;
+    if sip_trace_store.is_some() {
+        let (sip_trace_tx, mut sip_trace_rx) =
+            tokio::sync::mpsc::channel::<fcp_core::SipTraceMessage>(2000);
+        handler.set_sip_trace_tx(sip_trace_tx);
+
+        let trace_store = sip_trace_store.clone().unwrap();
+        let trace_event_bus = sip_trace_event_bus.clone();
+        tokio::spawn(async move {
+            let mut batch: Vec<fcp_core::SipTraceMessage> = Vec::with_capacity(50);
+            let mut interval = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tokio::select! {
+                    msg = sip_trace_rx.recv() => {
+                        match msg {
+                            Some(trace_msg) => {
+                                // Publish real-time event
+                                let event = fcp_events::types::PlatformEvent::Sip(
+                                    fcp_events::types::SipTraceEvent::MessageCaptured {
+                                        call_id: trace_msg.call_id.clone(),
+                                        sip_call_id: trace_msg.sip_call_id.clone(),
+                                        direction: trace_msg.direction.clone(),
+                                        method_or_status: trace_msg.method_or_status.clone(),
+                                        from_uri: trace_msg.from_uri.clone(),
+                                        to_uri: trace_msg.to_uri.clone(),
+                                        source_addr: trace_msg.source_addr.clone(),
+                                        dest_addr: trace_msg.dest_addr.clone(),
+                                        transport: trace_msg.transport.clone(),
+                                        cseq: trace_msg.cseq.clone(),
+                                        raw_message: trace_msg.raw_message.clone(),
+                                        timestamp: trace_msg.timestamp,
+                                        node_id: trace_msg.node_id.clone(),
+                                    },
+                                );
+                                let _ = trace_event_bus.publish(event).await;
+
+                                batch.push(trace_msg);
+                                if batch.len() >= 50 {
+                                    if let Err(e) = trace_store.insert_sip_traces_batch(&batch).await {
+                                        tracing::warn!(error = %e, "Failed to insert SIP trace batch");
+                                    }
+                                    batch.clear();
+                                }
+                            }
+                            None => {
+                                // Channel closed — flush remaining
+                                if !batch.is_empty() {
+                                    let _ = trace_store.insert_sip_traces_batch(&batch).await;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {
+                        // Flush batch on timer
+                        if !batch.is_empty() {
+                            if let Err(e) = trace_store.insert_sip_traces_batch(&batch).await {
+                                tracing::warn!(error = %e, "Failed to insert SIP trace batch");
+                            }
+                            batch.clear();
+                        }
+                    }
+                }
+            }
+        });
+        info!("SIP message tracing enabled — writing to PostgreSQL");
+    }
+
+    let handler = Arc::new(handler);
 
     // 16. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config

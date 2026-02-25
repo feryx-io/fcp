@@ -1859,6 +1859,7 @@ pub struct DynStorage {
     resource_list_store: Arc<dyn ResourceListStore>,
     webhook_store: Arc<dyn WebhookStore>,
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
+    sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
 }
 
 impl DynStorage {
@@ -1899,6 +1900,7 @@ impl DynStorage {
             resource_list_store,
             webhook_store,
             config_store: None,
+            sip_trace_store: None,
         }
     }
 
@@ -1944,6 +1946,7 @@ impl DynStorage {
             resource_list_store: storage.clone(),
             webhook_store: storage,
             config_store: None,
+            sip_trace_store: None,
         }
     }
 
@@ -1998,6 +2001,17 @@ impl DynStorage {
     /// Get the config store, if one has been set.
     pub fn config_store(&self) -> Option<&Arc<dyn crate::config_store::ConfigStore>> {
         self.config_store.as_ref()
+    }
+
+    /// Replace the SIP trace store with a specific implementation.
+    pub fn with_sip_trace_store(mut self, store: Arc<dyn crate::sip_trace::SipTraceStore>) -> Self {
+        self.sip_trace_store = Some(store);
+        self
+    }
+
+    /// Get the SIP trace store, if one has been set.
+    pub fn sip_trace_store(&self) -> Option<&Arc<dyn crate::sip_trace::SipTraceStore>> {
+        self.sip_trace_store.as_ref()
     }
 }
 

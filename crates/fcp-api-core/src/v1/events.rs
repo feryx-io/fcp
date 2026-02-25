@@ -208,6 +208,7 @@ fn parse_event_type(s: &str) -> Result<EventType, String> {
         "user" => Ok(EventType::User),
         "registration" => Ok(EventType::Registration),
         "flow" => Ok(EventType::Flow),
+        "sip" => Ok(EventType::Sip),
         _ => Err(format!("Invalid event type: {}", s)),
     }
 }

@@ -13,6 +13,7 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
+import { useNavigate } from 'react-router-dom'
 import { cdrs } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
 import type { CdrResponse, CdrQueryParams } from '@/types'
@@ -28,6 +29,7 @@ const dispositionBadge = (d: string) => {
 }
 
 export function CDRsPage() {
+  const navigate = useNavigate()
   const [filters, setFilters] = useState<CdrQueryParams>({ limit: 100, offset: 0 })
   const [selectedCdr, setSelectedCdr] = useState<CdrResponse | null>(null)
 
@@ -297,6 +299,15 @@ export function CDRsPage() {
               <Field label="Codec B-Leg" value={selectedCdr.codec_b_leg} />
               <Field label="Recording" value={selectedCdr.recording_url} />
               <Field label="Cost" value={selectedCdr.cost != null ? `${selectedCdr.cost} ${selectedCdr.currency ?? ''}` : null} />
+              <div className="col-span-2 pt-2 border-t">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/admin/calls/${selectedCdr.call_id}/sip-trace`)}
+                >
+                  View SIP Trace
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>

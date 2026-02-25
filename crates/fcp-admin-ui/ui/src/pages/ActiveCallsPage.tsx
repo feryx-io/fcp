@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
+import { useNavigate } from 'react-router-dom'
 import { calls } from '@/api/endpoints'
 import { formatDuration } from '@/lib/utils'
 import type { CallInfo } from '@/types'
@@ -29,6 +30,7 @@ const callStateBadge = (state: string) => {
 }
 
 export function ActiveCallsPage() {
+  const navigate = useNavigate()
   const [transferDialog, setTransferDialog] = useState<string | null>(null)
   const [transferTarget, setTransferTarget] = useState('')
   const [selectedCall, setSelectedCall] = useState<CallInfo | null>(null)
@@ -318,6 +320,15 @@ export function ActiveCallsPage() {
                     <p className="text-destructive">{selectedCall.failure_reason}</p>
                   </div>
                 )}
+              </div>
+              <div className="pt-2 border-t">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate(`/admin/calls/${selectedCall.id}/sip-trace`)}
+                >
+                  View SIP Trace
+                </Button>
               </div>
             </div>
           )}
