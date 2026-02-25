@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
   PhoneOff, Pause, Play, ArrowRightLeft, ArrowUpDown,
-  Phone, RefreshCw,
+  Phone, RefreshCw, FileText,
 } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
@@ -178,6 +178,14 @@ export function ActiveCallsPage() {
                 <ArrowRightLeft className="h-4 w-4" />
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="icon"
+              title="SIP Trace"
+              onClick={() => navigate(`/admin/calls/${call.id}/sip-trace`)}
+            >
+              <FileText className="h-4 w-4" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

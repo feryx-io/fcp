@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { ArrowUpDown, Download, Search } from 'lucide-react'
+import { ArrowUpDown, Download, Search, FileText } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -135,6 +135,20 @@ export function CDRsPage() {
       header: 'Hangup Cause',
       cell: ({ row }) => (
         <span className="text-xs font-mono">{row.original.hangup_cause}</span>
+      ),
+    },
+    {
+      id: 'sip_trace',
+      header: '',
+      cell: ({ row }) => (
+        <Button
+          variant="ghost"
+          size="icon"
+          title="SIP Trace"
+          onClick={() => navigate(`/admin/calls/${row.original.call_id}/sip-trace`)}
+        >
+          <FileText className="h-4 w-4" />
+        </Button>
       ),
     },
   ]
