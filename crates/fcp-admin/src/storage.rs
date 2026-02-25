@@ -29,9 +29,17 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
 
     let storage = Arc::new(storage);
 
-    info!("PostgreSQL storage initialized successfully");
+    // Create SIP trace store backed by the same PostgreSQL pool
+    let sip_trace_store = Arc::new(
+        fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(storage.pool().clone()),
+    );
+
+    let dyn_st = DynStorage::from_all_in_one(storage.clone())
+        .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>);
+
+    info!("PostgreSQL storage initialized successfully (with SIP trace store)");
     Ok(StorageResult {
-        dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
+        dyn_storage: Arc::new(dyn_st),
         config_store: storage,
     })
 }
