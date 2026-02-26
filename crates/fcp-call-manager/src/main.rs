@@ -426,6 +426,24 @@ async fn main() -> Result<()> {
     call_manager_inner.set_node_id(&config.service.node_id);
     let call_manager = Arc::new(call_manager_inner);
 
+    // 15a. Wire cluster active-call counter to CallManager
+    #[cfg(feature = "storage-redis")]
+    if let Some((ref cm, _)) = _cluster_manager {
+        let counter = cm.active_calls_counter();
+        let call_mgr = Arc::clone(&call_manager);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                counter.store(
+                    call_mgr.active_call_count(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+        });
+        info!("Cluster active-call counter wired to CallManager");
+    }
+
     // 16. Create PBX handler (if enabled)
     let pbx_handler: Option<Arc<fcp_pbx::PbxHandler>> = if config.pbx.enabled {
         let handler = Arc::new(fcp_pbx::PbxHandler::new(config.pbx.clone()));

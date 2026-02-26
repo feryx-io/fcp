@@ -9,6 +9,7 @@ use fcp_storage_redis::RedisStorage;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -44,6 +45,8 @@ pub struct ClusterManager {
     heartbeat_ttl_secs: u64,
     shutdown_tx: Arc<watch::Sender<bool>>,
     event_publisher: Option<Arc<dyn EventPublisher>>,
+    /// Shared counter for active calls, updated externally and read by heartbeat loop.
+    active_calls_counter: Arc<AtomicUsize>,
 }
 
 impl ClusterManager {
@@ -58,6 +61,7 @@ impl ClusterManager {
             heartbeat_ttl_secs: 15,
             shutdown_tx: Arc::new(shutdown_tx),
             event_publisher: None,
+            active_calls_counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -77,12 +81,13 @@ impl ClusterManager {
     /// Start the heartbeat and discovery loops. Returns a JoinHandle.
     pub fn start(&self) -> JoinHandle<()> {
         let storage = self.storage.clone();
-        let self_info = self.self_info.clone();
+        let mut self_info = self.self_info.clone();
         let members = Arc::clone(&self.members);
         let interval = self.heartbeat_interval_secs;
         let ttl = self.heartbeat_ttl_secs;
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let event_publisher = self.event_publisher.clone();
+        let active_calls_counter = Arc::clone(&self.active_calls_counter);
 
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
@@ -97,6 +102,9 @@ impl ClusterManager {
                         break;
                     }
                 }
+
+                // Read latest active call count from shared counter
+                self_info.active_calls = active_calls_counter.load(Ordering::Relaxed);
 
                 // Publish heartbeat
                 if let Err(e) = publish_heartbeat(&storage, &self_info, ttl).await {
@@ -143,8 +151,14 @@ impl ClusterManager {
     }
 
     /// Update the active call count for this node.
-    pub fn update_active_calls(&mut self, count: usize) {
-        self.self_info.active_calls = count;
+    /// This is thread-safe and the heartbeat loop will pick up the new value.
+    pub fn update_active_calls(&self, count: usize) {
+        self.active_calls_counter.store(count, Ordering::Relaxed);
+    }
+
+    /// Get the shared active calls counter (for external periodic updates).
+    pub fn active_calls_counter(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.active_calls_counter)
     }
 
     /// Get the local DashMap of members (for direct iteration).
