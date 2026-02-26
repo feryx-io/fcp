@@ -9,6 +9,7 @@ use fcp_events::{EventPublisher, PlatformEvent, RegistrationEvent};
 use sip_core::{Request, Response};
 use sip_registrar::{AsyncLocationStore, Binding};
 use smol_str::SmolStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::{debug, info};
@@ -232,8 +233,12 @@ pub struct FcpRegistrar {
     /// Location store for managing registrations
     location_store: LocationStoreAdapter,
 
-    /// Custom authenticator that uses pre-computed HA1 hashes
+    /// Custom authenticator that uses pre-computed HA1 hashes.
+    /// Always created if credential store is available; auth_enabled controls whether it's used.
     authenticator: Option<Ha1Authenticator<CredentialStoreAdapter>>,
+
+    /// Whether authentication is currently enabled (toggleable at runtime).
+    auth_enabled: AtomicBool,
 
     /// Credential store for looking up user preferences
     credential_store: Option<Arc<dyn CredentialStore>>,
@@ -263,17 +268,20 @@ impl FcpRegistrar {
     ///
     /// # Arguments
     /// * `registration_store` - Storage for SIP registrations
-    /// * `credential_store` - Storage for user credentials (optional, for auth)
+    /// * `credential_store` - Storage for user credentials (always pass if available)
     /// * `realm` - Authentication realm (optional)
+    /// * `auth_enabled` - Whether authentication is initially enabled
     pub fn new(
         registration_store: Arc<dyn RegistrationStore>,
         credential_store: Option<Arc<dyn CredentialStore>>,
         realm: Option<String>,
+        auth_enabled: bool,
     ) -> Self {
         let location_store = LocationStoreAdapter::new(registration_store);
         let realm_str = realm.unwrap_or_else(|| "fcp.local".to_string());
 
-        // Create our custom Ha1Authenticator if credentials are provided
+        // Always create the authenticator if credential store is available.
+        // The auth_enabled flag controls whether it's actually used.
         let authenticator = if let Some(ref cred_store) = credential_store {
             let cred_adapter =
                 CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
@@ -285,6 +293,7 @@ impl FcpRegistrar {
         Self {
             location_store,
             authenticator,
+            auth_enabled: AtomicBool::new(auth_enabled),
             credential_store,
             default_expires: 3600,
             min_expires: 60,
@@ -308,18 +317,37 @@ impl FcpRegistrar {
     ///
     /// # Arguments
     /// * `registration_store` - Storage for SIP registrations
-    /// * `credential_store` - Storage for user credentials (optional, for auth)
+    /// * `credential_store` - Storage for user credentials (always pass if available)
     /// * `realm` - Authentication realm (optional)
     /// * `event_publisher` - Event publisher for emitting registration events
+    /// * `auth_enabled` - Whether authentication is initially enabled
     pub fn with_events(
         registration_store: Arc<dyn RegistrationStore>,
         credential_store: Option<Arc<dyn CredentialStore>>,
         realm: Option<String>,
         event_publisher: Arc<dyn EventPublisher>,
+        auth_enabled: bool,
     ) -> Self {
-        let mut registrar = Self::new(registration_store, credential_store, realm);
+        let mut registrar = Self::new(registration_store, credential_store, realm, auth_enabled);
         registrar.event_publisher = Some(event_publisher);
         registrar
+    }
+
+    /// Enable authentication at runtime.
+    pub fn enable_auth(&self) {
+        self.auth_enabled.store(true, Ordering::Relaxed);
+        info!("Registration authentication enabled");
+    }
+
+    /// Disable authentication at runtime.
+    pub fn disable_auth(&self) {
+        self.auth_enabled.store(false, Ordering::Relaxed);
+        info!("Registration authentication disabled");
+    }
+
+    /// Check whether authentication is currently enabled.
+    pub fn is_auth_enabled(&self) -> bool {
+        self.auth_enabled.load(Ordering::Relaxed)
     }
 
     /// Publish a registration event (fire-and-forget).
@@ -368,67 +396,73 @@ impl FcpRegistrar {
         // Extract AOR early for event emission
         let aor = self.extract_aor_from_request(request).unwrap_or_default();
 
-        // Handle authentication manually if enabled
-        if let Some(ref authenticator) = self.authenticator {
-            debug!("Handling REGISTER with authentication");
+        // Handle authentication if enabled (toggled at runtime via AtomicBool)
+        if self.auth_enabled.load(Ordering::Relaxed) {
+            if let Some(ref authenticator) = self.authenticator {
+                debug!("Handling REGISTER with authentication");
 
-            // Check if request has Authorization header
-            let has_auth = request
-                .headers()
-                .get_smol("Authorization")
-                .or_else(|| request.headers().get_smol("Proxy-Authorization"))
-                .is_some();
+                // Check if request has Authorization header
+                let has_auth = request
+                    .headers()
+                    .get_smol("Authorization")
+                    .or_else(|| request.headers().get_smol("Proxy-Authorization"))
+                    .is_some();
 
-            if !has_auth {
-                // No auth header - send challenge (not a failure, just initial challenge)
-                debug!("No Authorization header, sending 401 challenge");
-                return match authenticator.challenge(request) {
-                    Ok(response) => response,
-                    Err(e) => {
-                        tracing::error!("Failed to create auth challenge: {}", e);
-                        return self.create_error_response(request, 500, "Internal Server Error");
-                    }
-                };
-            }
-
-            // Verify authentication
-            match authenticator.verify(request).await {
-                Ok(true) => {
-                    debug!("Authentication successful");
-                    // Continue to registration handling
-                }
-                Ok(false) => {
-                    debug!("Authentication failed, sending 401 challenge");
-                    // Emit registration failed event
-                    self.publish_event(RegistrationEvent::Failed {
-                        aor: aor.clone(),
-                        tenant_id: TenantId::nil(), // Default tenant
-                        reason: "authentication_failed".to_string(),
-                        timestamp: SystemTime::now(),
-                    });
+                if !has_auth {
+                    // No auth header - send challenge (not a failure, just initial challenge)
+                    debug!("No Authorization header, sending 401 challenge");
                     return match authenticator.challenge(request) {
                         Ok(response) => response,
                         Err(e) => {
                             tracing::error!("Failed to create auth challenge: {}", e);
-                            return self.create_error_response(
-                                request,
-                                500,
-                                "Internal Server Error",
-                            );
+                            return self
+                                .create_error_response(request, 500, "Internal Server Error");
                         }
                     };
                 }
-                Err(e) => {
-                    tracing::error!("Authentication error: {}", e);
-                    // Emit registration failed event
-                    self.publish_event(RegistrationEvent::Failed {
-                        aor,
-                        tenant_id: TenantId::nil(),
-                        reason: format!("authentication_error: {}", e),
-                        timestamp: SystemTime::now(),
-                    });
-                    return self.create_error_response(request, 500, "Internal Server Error");
+
+                // Verify authentication
+                match authenticator.verify(request).await {
+                    Ok(true) => {
+                        debug!("Authentication successful");
+                        // Continue to registration handling
+                    }
+                    Ok(false) => {
+                        debug!("Authentication failed, sending 401 challenge");
+                        // Emit registration failed event
+                        self.publish_event(RegistrationEvent::Failed {
+                            aor: aor.clone(),
+                            tenant_id: TenantId::nil(),
+                            reason: "authentication_failed".to_string(),
+                            timestamp: SystemTime::now(),
+                        });
+                        return match authenticator.challenge(request) {
+                            Ok(response) => response,
+                            Err(e) => {
+                                tracing::error!("Failed to create auth challenge: {}", e);
+                                return self.create_error_response(
+                                    request,
+                                    500,
+                                    "Internal Server Error",
+                                );
+                            }
+                        };
+                    }
+                    Err(e) => {
+                        tracing::error!("Authentication error: {}", e);
+                        // Emit registration failed event
+                        self.publish_event(RegistrationEvent::Failed {
+                            aor,
+                            tenant_id: TenantId::nil(),
+                            reason: format!("authentication_error: {}", e),
+                            timestamp: SystemTime::now(),
+                        });
+                        return self
+                            .create_error_response(request, 500, "Internal Server Error");
+                    }
                 }
+            } else {
+                debug!("Auth enabled but no credential store available, skipping authentication");
             }
         } else {
             debug!("Handling REGISTER without authentication");
@@ -989,7 +1023,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("fcp-test-registrar");
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
 
         // Create a simple REGISTER request
         let mut headers = sip_core::Headers::new();
@@ -1082,6 +1116,7 @@ mod tests {
             storage.clone(),
             Some(storage.clone()), // Use storage as credential store
             Some("test.local".to_string()),
+            true, // auth enabled
         );
 
         // First request without auth - should get 401
@@ -1140,7 +1175,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await; // Clean up from previous runs
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
 
         // First REGISTER with rinstance=aaa
         let mut headers = sip_core::Headers::new();
@@ -1254,7 +1289,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
 
         // Register first
         let mut headers = sip_core::Headers::new();
@@ -1349,7 +1384,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None);
+        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
 
         // Register a contact
         let mut headers = sip_core::Headers::new();

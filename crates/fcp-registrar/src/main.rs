@@ -160,18 +160,16 @@ fn create_registrar(
 ) -> Arc<FcpRegistrar> {
     // DynStorage implements RegistrationStore and CredentialStore directly
     let registration_store: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(storage) as _;
+    // Always provide credential store so auth can be toggled at runtime
     let credential_store: Option<Arc<dyn fcp_core::CredentialStore>> =
-        if config.registrar.auth_enabled {
-            Some(Arc::clone(storage) as _)
-        } else {
-            None
-        };
+        Some(Arc::clone(storage) as _);
     let realm = Some(config.registrar.realm.clone());
 
     Arc::new(FcpRegistrar::new(
         registration_store,
         credential_store,
         realm,
+        config.registrar.auth_enabled,
     ))
 }
 

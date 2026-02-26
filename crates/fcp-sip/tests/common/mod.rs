@@ -164,7 +164,7 @@ impl TestHarnessBuilder {
                     .expect("Failed to create FileBackedStorage"),
             );
             if self.with_registrar {
-                registrar = Some(Arc::new(FcpRegistrar::new(fs.clone(), None, None)));
+                registrar = Some(Arc::new(FcpRegistrar::new(fs.clone(), None, None, false)));
             }
             storage = Some(fs);
             temp_dir = Some(td);

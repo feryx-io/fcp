@@ -1049,6 +1049,7 @@ async fn main() -> Result<()> {
     // 20b. Spawn config poll loop (checks DB every 10s for config changes)
     {
         let cs = Arc::clone(&config_store);
+        let registrar_clone = registrar.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1059,6 +1060,38 @@ async fn main() -> Result<()> {
                     Ok(v) if v > last_version => {
                         info!(old_version = last_version, new_version = v, "config version changed in database");
                         last_version = v;
+
+                        // Re-read registrar config from DB and apply runtime changes
+                        if let Some(ref reg) = registrar_clone {
+                            match cs
+                                .get_config("call-manager", "registrar", "_system")
+                                .await
+                            {
+                                Ok(Some(entry)) => {
+                                    if let Ok(reg_cfg) = serde_json::from_value::<
+                                        config::RegistrarSection,
+                                    >(
+                                        entry.value
+                                    ) {
+                                        let current = reg.is_auth_enabled();
+                                        if reg_cfg.auth_enabled != current {
+                                            if reg_cfg.auth_enabled {
+                                                reg.enable_auth();
+                                            } else {
+                                                reg.disable_auth();
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::debug!(
+                                        error = %e,
+                                        "config poll: failed to read registrar config"
+                                    );
+                                }
+                            }
+                        }
                     }
                     Ok(_) => {} // no change
                     Err(e) => {
@@ -1155,12 +1188,9 @@ fn create_registrar(
     event_publisher: Arc<dyn fcp_events::EventPublisher>,
 ) -> Arc<fcp_sip::registrar::FcpRegistrar> {
     let registration_store: Arc<dyn fcp_core::RegistrationStore> = Arc::clone(storage) as _;
+    // Always provide credential store so auth can be toggled at runtime
     let credential_store: Option<Arc<dyn fcp_core::CredentialStore>> =
-        if config.registrar.auth_enabled {
-            Some(Arc::clone(storage) as _)
-        } else {
-            None
-        };
+        Some(Arc::clone(storage) as _);
     let realm = Some(config.registrar.realm.clone());
 
     let registrar = fcp_sip::registrar::FcpRegistrar::with_events(
@@ -1168,6 +1198,7 @@ fn create_registrar(
         credential_store,
         realm,
         event_publisher,
+        config.registrar.auth_enabled,
     );
 
     // Add domain aliases if configured

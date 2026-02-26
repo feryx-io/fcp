@@ -10229,7 +10229,7 @@ mod tests {
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
         // Create registrar (without authentication)
-        let registrar = Arc::new(FcpRegistrar::new(storage.clone(), None, None));
+        let registrar = Arc::new(FcpRegistrar::new(storage.clone(), None, None, false));
 
         // Create dependencies
         let dispatcher = Arc::new(

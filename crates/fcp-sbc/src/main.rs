@@ -409,6 +409,7 @@ async fn main() -> Result<()> {
         None, // no credential store — SBC does not authenticate registrations itself
         Some(sbc_config.external_domain.clone()),
         sbc_hooks,
+        false, // SBC does not authenticate registrations itself
     ));
 
     // 13. Create TrunkRouter with LCR support (provides outbound routing when registrar lookup fails)
