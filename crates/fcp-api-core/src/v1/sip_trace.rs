@@ -11,6 +11,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::UNIX_EPOCH;
+use fcp_core::CdrStore;
 use tracing::{debug, warn};
 
 /// Response model for a single SIP trace message.
@@ -88,7 +89,11 @@ pub async fn get_sip_messages(
         ApiError::NotFound("SIP trace store is not configured".to_string())
     })?;
 
-    debug!(call_id = %call_id, sip_call_id = ?params.sip_call_id, "Retrieving SIP trace messages");
+    // Normalize call_id: strip "call-" prefix if present (CDR uses fcp_core::CallId
+    // format "call-{uuid}" but traces store fcp_b2bua_core::CallId format "{uuid}")
+    let normalized_call_id = call_id.strip_prefix("call-").unwrap_or(&call_id).to_string();
+
+    debug!(call_id = %normalized_call_id, sip_call_id = ?params.sip_call_id, "Retrieving SIP trace messages");
 
     let messages = if let Some(ref sip_call_id) = params.sip_call_id {
         // Look up by SIP Call-ID header
@@ -100,20 +105,47 @@ pub async fn get_sip_messages(
                 ApiError::Internal("Failed to retrieve SIP trace messages".to_string())
             })?
     } else {
-        // Look up by FCP call_id
-        sip_trace_store
-            .get_sip_traces(&call_id)
+        // Look up by FCP call_id (normalized, without "call-" prefix)
+        let mut traces = sip_trace_store
+            .get_sip_traces(&normalized_call_id)
             .await
             .map_err(|e| {
-                warn!(call_id = %call_id, error = %e, "Failed to retrieve SIP traces");
+                warn!(call_id = %normalized_call_id, error = %e, "Failed to retrieve SIP traces");
                 ApiError::Internal("Failed to retrieve SIP trace messages".to_string())
-            })?
+            })?;
+
+        // Fallback: if no traces found by call_id, look up the CDR to get sip_call_id
+        // and try querying by that. This handles the initial INVITE and messages that
+        // were stored before the FCP CallId mapping was established.
+        if traces.is_empty() {
+            // Try both "call-{uuid}" and raw "{uuid}" formats for CDR lookup
+            let call_id_with_prefix = if call_id.starts_with("call-") {
+                call_id.clone()
+            } else {
+                format!("call-{}", call_id)
+            };
+            if let Ok(call_id_parsed) = call_id_with_prefix.parse::<fcp_core::CallId>() {
+                if let Some(cdr) = storage.get_cdr(&call_id_parsed).await.unwrap_or(None) {
+                    debug!(
+                        call_id = %normalized_call_id,
+                        sip_call_id = %cdr.sip_call_id,
+                        "No traces by call_id, falling back to CDR sip_call_id lookup"
+                    );
+                    traces = sip_trace_store
+                        .get_sip_traces_by_sip_call_id(&cdr.sip_call_id)
+                        .await
+                        .unwrap_or_default();
+                }
+            }
+        }
+
+        traces
     };
 
     let responses: Vec<SipTraceResponse> = messages.into_iter().map(SipTraceResponse::from).collect();
 
     Ok(Json(SipTraceListResponse {
-        call_id,
+        call_id: normalized_call_id,
         messages: responses,
     }))
 }

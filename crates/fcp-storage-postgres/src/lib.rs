@@ -697,7 +697,7 @@ impl CdrStore for PostgresStorage {
                 route_id, gateway_id,
                 media_anchored, codec_a_leg, codec_b_leg,
                 rtp_packets_sent, rtp_packets_received, rtp_bytes_sent, rtp_bytes_received,
-                recording_url, cost, currency, custom_data, created_at
+                recording_url, cost, currency, custom_data
              ) VALUES (
                 $1, $2, $3,
                 $4, $5, $6, $7,
@@ -708,7 +708,7 @@ impl CdrStore for PostgresStorage {
                 $19, $20,
                 $21, $22, $23,
                 $24, $25, $26, $27,
-                $28, $29, $30, $31, NOW()
+                $28, $29, $30, $31
              )
              ON CONFLICT(call_id) DO UPDATE SET
                  answer_time = EXCLUDED.answer_time,

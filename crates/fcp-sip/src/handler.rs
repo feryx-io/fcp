@@ -348,6 +348,10 @@ pub struct SipMessageHandler {
 
     /// Channel for SIP message tracing (raw message capture to PostgreSQL).
     sip_trace_tx: Option<mpsc::Sender<fcp_core::SipTraceMessage>>,
+
+    /// Map SIP Call-ID header values → FCP internal CallId for trace correlation.
+    /// Populated at call creation (A-leg) and B-leg INVITE (B-leg).
+    sip_call_id_map: Arc<dashmap::DashMap<String, String>>,
 }
 
 #[derive(Clone)]
@@ -668,6 +672,7 @@ impl SipMessageHandler {
             node_id,
             flow_registry: Arc::new(crate::flow::FlowRegistry::new()),
             sip_trace_tx: None,
+            sip_call_id_map: Arc::new(dashmap::DashMap::new()),
         };
 
         // Start session timer event loop
@@ -1177,6 +1182,41 @@ impl SipMessageHandler {
 
         // Store call in CallManager
         let call_id = self.call_manager.create_call(call);
+
+        // Register A-leg SIP Call-ID → FCP CallId mapping for trace correlation
+        if let Some(sip_cid) = sip_parse::header(request.headers(), "Call-ID") {
+            self.sip_call_id_map
+                .insert(sip_cid.as_str().to_string(), call_id.to_string());
+        }
+
+        // Re-log the initial INVITE with the correct FCP CallId (the one logged in
+        // handle_inbound used the SIP Call-ID because the call didn't exist yet)
+        self.log_sip_message(
+            "inbound",
+            request.method().as_str(),
+            Some(call_id.to_string().as_str()),
+            None,
+            sip_parse::header(request.headers(), "CSeq").map(|s| s.as_str()),
+            Some(peer),
+            Some("tcp"),
+            Some(request.headers()),
+            Some(request.body()),
+            None, // raw_message already logged in handle_inbound
+        );
+
+        // Log the outbound 100 Trying
+        self.log_sip_message(
+            "outbound",
+            "100",
+            Some(call_id.to_string().as_str()),
+            None,
+            sip_parse::header(request.headers(), "CSeq").map(|s| s.as_str()),
+            Some(peer),
+            Some("tcp"),
+            None,
+            None,
+            None,
+        );
 
         // Extract caller/callee for logging (to avoid non-Send tracing issues)
         let caller_str = sip_parse::header(request.headers(), "From")
@@ -3133,6 +3173,7 @@ impl SipMessageHandler {
             let call_id_clone = call_id.clone();
             let flow_token_clone = target_contact.flow_token.clone();
             let flow_registry_clone = Arc::clone(&self.flow_registry);
+            let sip_call_id_map_clone = Arc::clone(&self.sip_call_id_map);
 
             let future = async move {
                 debug!(
@@ -3187,6 +3228,16 @@ impl SipMessageHandler {
 
                 match invite_result {
                     Ok(Ok(call)) => {
+                        // Register B-leg SIP Call-ID → FCP CallId mapping for trace correlation
+                        if let Some(b_leg_cid) = sip_parse::header(
+                            call.invite_request().headers(),
+                            "Call-ID",
+                        ) {
+                            sip_call_id_map_clone.insert(
+                                b_leg_cid.as_str().to_string(),
+                                call_id_clone.to_string(),
+                            );
+                        }
                         info!(
                             call_id = %call_id_clone,
                             target = %target_uri_clone,
@@ -3856,6 +3907,21 @@ impl SipMessageHandler {
                     }
                 }
 
+                // Log outbound provisional relay to A-leg
+                let code_str = code.to_string();
+                handler_clone.log_sip_message(
+                    "outbound",
+                    &code_str,
+                    Some(call_id_clone.to_string().as_str()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+
                 a_leg_handle_clone.send_provisional(provisional).await;
             }
         });
@@ -4292,6 +4358,18 @@ impl SipMessageHandler {
             }
 
             info!(call_id = %call_id, "Sending 200 OK to A-leg with media anchoring");
+            self.log_sip_message(
+                "outbound",
+                "200",
+                Some(call_id.to_string().as_str()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
             a_leg_handle.send_final(ok_response).await;
         } else if cancelled_by_caller {
             // Caller already cancelled — handle_cancel sent 487 and terminated the call.
@@ -4639,6 +4717,11 @@ impl SipMessageHandler {
                                 has_flow_token = b_leg.flow_token.is_some(),
                                 "BYE from A-leg, forwarding to B-leg"
                             );
+                            self.log_sip_message(
+                                "outbound", "BYE",
+                                Some(call.id.to_string().as_str()),
+                                None, None, None, None, None, None, None,
+                            );
 
                             self.spawn_bye_with_retry(
                                 Arc::clone(uac),
@@ -4659,6 +4742,11 @@ impl SipMessageHandler {
                         info!(
                             call_id = %call.id,
                             "BYE from B-leg, forwarding to A-leg"
+                        );
+                        self.log_sip_message(
+                            "outbound", "BYE",
+                            Some(call.id.to_string().as_str()),
+                            None, None, None, None, None, None, None,
                         );
 
                         self.spawn_bye_with_retry(
@@ -8697,10 +8785,27 @@ impl InboundMessageHandler for SipMessageHandler {
 
         // Try parsing as request first, then response
         if let Some(req) = sip_parse::parse_request(&payload) {
+            // Look up FCP internal CallId from the SIP Call-ID header
+            // Priority: 1) Fast DashMap lookup, 2) Call manager dialog scan, 3) Raw SIP Call-ID
+            let sip_cid = sip_parse::header(&req.headers(), "Call-ID");
+            let fcp_call_id_str = sip_cid
+                .as_ref()
+                .and_then(|cid| {
+                    self.sip_call_id_map
+                        .get(cid.as_str())
+                        .map(|v| v.value().clone())
+                        .or_else(|| {
+                            self.call_manager
+                                .find_by_dialog_call_id(cid.as_str())
+                                .map(|call| call.id.to_string())
+                        })
+                })
+                .or_else(|| sip_cid.as_ref().map(|s| s.as_str().to_string()));
+
             self.log_sip_message(
                 "inbound",
                 req.method().as_str(),
-                sip_parse::header(&req.headers(), "Call-ID").map(|s| s.as_str()),
+                fcp_call_id_str.as_deref(),
                 self.dialog_manager
                     .find_by_request(&req)
                     .map(|d| d.id().clone())
@@ -8758,10 +8863,27 @@ impl InboundMessageHandler for SipMessageHandler {
                 handle.send_final(response).await;
             }
         } else if let Some(resp) = sip_parse::parse_response(&payload) {
+            // Look up FCP internal CallId from the SIP Call-ID header
+            // Priority: 1) Fast DashMap lookup, 2) Call manager dialog scan, 3) Raw SIP Call-ID
+            let sip_cid_resp = sip_parse::header(&resp.headers(), "Call-ID");
+            let fcp_call_id_resp = sip_cid_resp
+                .as_ref()
+                .and_then(|cid| {
+                    self.sip_call_id_map
+                        .get(cid.as_str())
+                        .map(|v| v.value().clone())
+                        .or_else(|| {
+                            self.call_manager
+                                .find_by_dialog_call_id(cid.as_str())
+                                .map(|call| call.id.to_string())
+                        })
+                })
+                .or_else(|| sip_cid_resp.as_ref().map(|s| s.as_str().to_string()));
+
             self.log_sip_message(
                 "inbound",
                 &resp.start_line().code().to_string(),
-                sip_parse::header(&resp.headers(), "Call-ID").map(|s| s.as_str()),
+                fcp_call_id_resp.as_deref(),
                 None,
                 sip_parse::header(&resp.headers(), "CSeq").map(|s| s.as_str()),
                 Some(peer),
