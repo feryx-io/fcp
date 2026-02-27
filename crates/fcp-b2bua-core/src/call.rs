@@ -12,7 +12,7 @@ use sip_uac::integrated::CallHandle;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
@@ -267,6 +267,10 @@ pub struct Call {
     /// Line binding ID for the callee (used for CFNA lookup).
     pub line_binding_id: Option<fcp_core::LineBindingId>,
 
+    /// Per-user ring-no-answer timeout from the line binding.
+    /// When set, overrides the global B2BUA forking timeout.
+    pub no_answer_timeout: Option<Duration>,
+
     /// Original callee identifier (phone number or extension) before routing resolution.
     pub original_callee: Option<String>,
 
@@ -348,6 +352,7 @@ impl Call {
             parked_orbit: None,
             parker_extension: None,
             line_binding_id: None,
+            no_answer_timeout: None,
             original_callee: None,
             caller_number: None,
         }
@@ -436,6 +441,7 @@ impl Call {
             parked_orbit: None,
             parker_extension: None,
             line_binding_id: None,
+            no_answer_timeout: None,
             original_callee: None,
             caller_number: None,
         }

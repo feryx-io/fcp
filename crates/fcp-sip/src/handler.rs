@@ -2002,9 +2002,11 @@ impl SipMessageHandler {
                                 {
                                     let lb_id = line_binding.id;
                                     let callee = destination_aor.to_string();
+                                    let rna_timeout = line_binding.no_answer_timeout;
                                     let _ = self.call_manager.update_call(&call_id, |call| {
                                         call.line_binding_id = Some(lb_id);
                                         call.original_callee = Some(callee);
+                                        call.no_answer_timeout = Some(rna_timeout);
                                     });
                                 }
 
@@ -2422,9 +2424,11 @@ impl SipMessageHandler {
                                                 {
                                                     let lb_id = line_binding.id;
                                                     let callee = destination_aor.to_string();
+                                                    let rna_timeout = line_binding.no_answer_timeout;
                                                     let _ = self.call_manager.update_call(&call_id, |call| {
                                                         call.line_binding_id = Some(lb_id);
                                                         call.original_callee = Some(callee);
+                                                        call.no_answer_timeout = Some(rna_timeout);
                                                     });
                                                 }
 
@@ -4096,10 +4100,14 @@ impl SipMessageHandler {
 
         tokio::pin!(race_future);
 
-        let fork_timeout = self.b2bua_config.forking.timeout;
+        let per_call_timeout = self.call_manager
+            .get_call(&call_id)
+            .and_then(|c| c.no_answer_timeout);
+        let fork_timeout = per_call_timeout.unwrap_or(self.b2bua_config.forking.timeout);
         info!(
             call_id = %call_id,
             timeout_secs = fork_timeout.as_secs(),
+            per_user = per_call_timeout.is_some(),
             b_leg_count = b_leg_calls.len(),
             "Starting B-leg race select! - listening for winner, cancel, or timeout"
         );

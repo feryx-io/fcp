@@ -192,6 +192,11 @@ export interface LineBinding {
   phone_number_id: string | null
   line_index: number
   label: string | null
+  no_answer_timeout_secs: number
+  forward_on_no_answer: string | null
+  forward_on_busy: string | null
+  forward_unconditional: string | null
+  ring_strategy: string
   created_at: string
 }
 

@@ -30,6 +30,10 @@ const editSchema = z.object({
   phone_number_id: z.string().optional(),
   line_index: z.coerce.number().min(1).optional(),
   label: z.string().optional(),
+  no_answer_timeout_secs: z.coerce.number().min(5).max(300).optional(),
+  forward_on_no_answer: z.string().optional(),
+  forward_on_busy: z.string().optional(),
+  forward_unconditional: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -96,6 +100,11 @@ export function LineBindingsPage() {
       cell: ({ row }) => row.original.label || '-',
     },
     {
+      accessorKey: 'no_answer_timeout_secs',
+      header: 'Ring Timeout',
+      cell: ({ row }) => `${row.original.no_answer_timeout_secs}s`,
+    },
+    {
       accessorKey: 'created_at',
       header: 'Created',
       cell: ({ row }) => formatDateTime(row.original.created_at),
@@ -141,6 +150,10 @@ export function LineBindingsPage() {
       phone_number_id: editItem.phone_number_id || '',
       line_index: editItem.line_index,
       label: editItem.label || '',
+      no_answer_timeout_secs: editItem.no_answer_timeout_secs,
+      forward_on_no_answer: editItem.forward_on_no_answer || '',
+      forward_on_busy: editItem.forward_on_busy || '',
+      forward_unconditional: editItem.forward_unconditional || '',
     })
   }
 
@@ -162,6 +175,10 @@ export function LineBindingsPage() {
         phone_number_id: data.phone_number_id || undefined,
         line_index: data.line_index,
         label: data.label || undefined,
+        no_answer_timeout_secs: data.no_answer_timeout_secs,
+        forward_on_no_answer: data.forward_on_no_answer || undefined,
+        forward_on_busy: data.forward_on_busy || undefined,
+        forward_unconditional: data.forward_unconditional || undefined,
       },
     })
   }
@@ -252,6 +269,28 @@ export function LineBindingsPage() {
               <div className="space-y-2">
                 <Label htmlFor="e-label">Label</Label>
                 <Input id="e-label" {...editForm.register('label')} />
+              </div>
+            </div>
+            <div className="border-t pt-4 mt-2">
+              <h4 className="text-sm font-medium mb-3">Call Handling</h4>
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="e-no_answer_timeout_secs">Ring Timeout (seconds)</Label>
+                  <Input id="e-no_answer_timeout_secs" type="number" min="5" max="300" {...editForm.register('no_answer_timeout_secs')} />
+                  {editForm.formState.errors.no_answer_timeout_secs && <p className="text-sm text-destructive">{editForm.formState.errors.no_answer_timeout_secs.message}</p>}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="e-forward_unconditional">Forward Unconditional</Label>
+                  <Input id="e-forward_unconditional" placeholder="voicemail, extension, or SIP URI" {...editForm.register('forward_unconditional')} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="e-forward_on_no_answer">Forward on No Answer</Label>
+                  <Input id="e-forward_on_no_answer" placeholder="voicemail, extension, or SIP URI" {...editForm.register('forward_on_no_answer')} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="e-forward_on_busy">Forward on Busy</Label>
+                  <Input id="e-forward_on_busy" placeholder="voicemail, extension, or SIP URI" {...editForm.register('forward_on_busy')} />
+                </div>
               </div>
             </div>
             <div className="flex justify-end gap-2">
