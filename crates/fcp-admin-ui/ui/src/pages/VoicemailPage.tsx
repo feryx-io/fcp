@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
-  Voicemail, Inbox, Trash2, Check, MoreHorizontal, ArrowUpDown, Plus, Pencil,
+  Voicemail, Inbox, Trash2, Check, MoreHorizontal, ArrowUpDown, Plus, Pencil, Upload,
 } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
@@ -156,6 +156,37 @@ export function VoicemailPage() {
       queryClient.invalidateQueries({ queryKey: ['voicemail-stats'] })
     },
   })
+
+  // --- Greeting management ---
+  const { data: greetings = [], refetch: refetchGreetings } = useQuery({
+    queryKey: ['voicemail-greetings', editItem?.id],
+    queryFn: () => voicemail.listGreetings(editItem!.id),
+    enabled: !!editItem,
+  })
+
+  const uploadGreetingMutation = useMutation({
+    mutationFn: ({ mailboxId, greetingType, file }: { mailboxId: string; greetingType: string; file: File }) =>
+      voicemail.uploadGreeting(mailboxId, greetingType, file),
+    onSuccess: () => refetchGreetings(),
+  })
+
+  const deleteGreetingMutation = useMutation({
+    mutationFn: ({ mailboxId, greetingType }: { mailboxId: string; greetingType: string }) =>
+      voicemail.deleteGreeting(mailboxId, greetingType),
+    onSuccess: () => refetchGreetings(),
+  })
+
+  const GREETING_TYPES = ['unavailable', 'busy', 'name', 'temporary'] as const
+
+  const handleGreetingUpload = (greetingType: string, file: File) => {
+    if (!editItem) return
+    uploadGreetingMutation.mutate({ mailboxId: editItem.id, greetingType, file })
+  }
+
+  const handleGreetingDelete = (greetingType: string) => {
+    if (!editItem) return
+    deleteGreetingMutation.mutate({ mailboxId: editItem.id, greetingType })
+  }
 
   const mailboxColumns: ColumnDef<MailboxResponse>[] = [
     {
@@ -521,6 +552,56 @@ export function VoicemailPage() {
             </div>
             <div className="border-t pt-3 space-y-2">
               <Checkbox checked={editForm.watch('transcription_enabled') ?? false} onChange={v => editForm.setValue('transcription_enabled', v)} label="Transcription enabled" />
+            </div>
+            <div className="border-t pt-3 space-y-3">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wider">Greetings</Label>
+              {GREETING_TYPES.map(type_ => {
+                const existing = greetings.find(g => g.greeting_type === type_)
+                return (
+                  <div key={type_} className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Badge variant="outline" className="capitalize shrink-0">{type_}</Badge>
+                      {existing && (
+                        <span className="text-xs text-muted-foreground truncate">
+                          {new Date(typeof existing.created_at === 'number' ? existing.created_at * 1000 : existing.created_at).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {existing ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleGreetingDelete(type_)}
+                          disabled={deleteGreetingMutation.isPending}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      ) : (
+                        <label className="cursor-pointer">
+                          <input
+                            type="file"
+                            accept=".wav,.mp3,audio/*"
+                            className="hidden"
+                            onChange={e => {
+                              const file = e.target.files?.[0]
+                              if (file) handleGreetingUpload(type_, file)
+                              e.target.value = ''
+                            }}
+                          />
+                          <Button type="button" variant="outline" size="sm" asChild>
+                            <span><Upload className="h-3.5 w-3.5 mr-1" /> Upload</span>
+                          </Button>
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+              {uploadGreetingMutation.isError && (
+                <p className="text-sm text-destructive">{(uploadGreetingMutation.error as Error).message}</p>
+              )}
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

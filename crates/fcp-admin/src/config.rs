@@ -33,6 +33,10 @@ pub struct AdminConfig {
     /// Cluster monitoring configuration
     #[serde(default)]
     pub cluster: ClusterConfig,
+
+    /// Directory for voicemail greetings (used by greeting upload/download endpoints)
+    #[serde(default)]
+    pub voicemail_greetings_dir: Option<String>,
 }
 
 impl Default for AdminConfig {
@@ -44,6 +48,7 @@ impl Default for AdminConfig {
             logging: LoggingConfig::default(),
             events: EventsConfig::default(),
             cluster: ClusterConfig::default(),
+            voicemail_greetings_dir: None,
         }
     }
 }

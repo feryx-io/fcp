@@ -8,6 +8,7 @@ use fcp_media::MediaManager;
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::prelude::{DialogManager, SubscriptionManager};
 use fcp_sip::CallManager;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Shared state for API handlers.
@@ -58,6 +59,9 @@ pub struct ApiState {
 
     /// Config store for database-backed configuration management (optional)
     pub config_store: Option<Arc<dyn ConfigStore>>,
+
+    /// Directory for voicemail greetings (used by greeting upload/download endpoints)
+    pub voicemail_greetings_dir: Option<PathBuf>,
 }
 
 impl ApiState {
@@ -91,6 +95,7 @@ impl ApiState {
             start_time: std::time::Instant::now(),
             events_server_url: None,
             config_store: None,
+            voicemail_greetings_dir: None,
         }
     }
 
@@ -103,6 +108,12 @@ impl ApiState {
     /// Set the config store for database-backed configuration management.
     pub fn with_config_store(mut self, store: Arc<dyn ConfigStore>) -> Self {
         self.config_store = Some(store);
+        self
+    }
+
+    /// Set the voicemail greetings directory.
+    pub fn with_voicemail_greetings_dir(mut self, dir: PathBuf) -> Self {
+        self.voicemail_greetings_dir = Some(dir);
         self
     }
 }

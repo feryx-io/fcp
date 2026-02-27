@@ -217,6 +217,13 @@ async fn main() -> Result<()> {
     .with_events_server_url(events_server_url.clone())
     .with_config_store(config_store);
 
+    // Set voicemail greetings directory (default: /tmp/fcp/voicemail/greetings)
+    let api_state = if let Some(ref dir) = config.voicemail_greetings_dir {
+        api_state.with_voicemail_greetings_dir(std::path::PathBuf::from(dir))
+    } else {
+        api_state.with_voicemail_greetings_dir(std::path::PathBuf::from("/tmp/fcp/voicemail/greetings"))
+    };
+
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
         match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {

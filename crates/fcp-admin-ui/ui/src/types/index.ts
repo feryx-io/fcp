@@ -463,6 +463,13 @@ export interface MailboxStats {
   avg_duration: number
 }
 
+export interface GreetingResponse {
+  greeting_type: string // "unavailable" | "busy" | "name" | "temporary"
+  audio_path: string
+  created_at: number
+  expires_at: number | null
+}
+
 export interface CreateMailboxRequest {
   tenant_id: string
   user_id: string

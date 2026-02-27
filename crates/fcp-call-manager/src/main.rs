@@ -1050,6 +1050,7 @@ async fn main() -> Result<()> {
     {
         let cs = Arc::clone(&config_store);
         let registrar_clone = registrar.clone();
+        let handler_for_poll = Arc::clone(&handler);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1090,6 +1091,27 @@ async fn main() -> Result<()> {
                                         "config poll: failed to read registrar config"
                                     );
                                 }
+                            }
+                        }
+
+                        // Re-read B2BUA config and update voicemail_server_uri at runtime
+                        match cs.get_config("call-manager", "b2bua", "_system").await {
+                            Ok(Some(entry)) => {
+                                if let Ok(b2bua_cfg) = serde_json::from_value::<
+                                    fcp_b2bua_core::B2buaConfig,
+                                >(entry.value) {
+                                    if let Ok(mut guard) = handler_for_poll.voicemail_server_uri_override().write() {
+                                        *guard = b2bua_cfg.voicemail_server_uri;
+                                        tracing::debug!("config poll: updated voicemail_server_uri override");
+                                    }
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::debug!(
+                                    error = %e,
+                                    "config poll: failed to read b2bua config"
+                                );
                             }
                         }
                     }

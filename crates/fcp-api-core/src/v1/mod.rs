@@ -251,6 +251,19 @@ pub fn router() -> Router<ApiState> {
                 .put(voicemail::update_message)
                 .delete(voicemail::delete_message),
         )
+        // Voicemail Greetings
+        .route(
+            "/voicemail/mailboxes/:id/greetings",
+            get(voicemail::list_greetings).post(voicemail::upload_greeting),
+        )
+        .route(
+            "/voicemail/mailboxes/:id/greetings/:greeting_type",
+            delete(voicemail::delete_greeting),
+        )
+        .route(
+            "/voicemail/mailboxes/:id/greetings/:greeting_type/audio",
+            get(voicemail::download_greeting_audio),
+        )
         // API Tokens
         .route(
             "/api-tokens",

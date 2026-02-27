@@ -202,6 +202,23 @@ export const voicemail = {
     apiClient.put<MailboxResponse>(`/voicemail/mailboxes/${id}`, data),
   deleteMailbox: (id: string) =>
     apiClient.delete<void>(`/voicemail/mailboxes/${id}`),
+  listGreetings: (mailboxId: string) =>
+    apiClient.get<import('@/types').GreetingResponse[]>(`/voicemail/mailboxes/${mailboxId}/greetings`),
+  uploadGreeting: async (mailboxId: string, greetingType: string, audioFile: File) => {
+    const formData = new FormData()
+    formData.append('greeting_type', greetingType)
+    formData.append('audio', audioFile)
+    const resp = await fetch(`/api/v1/voicemail/mailboxes/${mailboxId}/greetings`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
+    return resp.json() as Promise<import('@/types').GreetingResponse>
+  },
+  deleteGreeting: (mailboxId: string, greetingType: string) =>
+    apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}`),
+  downloadGreetingUrl: (mailboxId: string, greetingType: string) =>
+    `/api/v1/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}/audio`,
 }
 
 // Presence (Phase 2)

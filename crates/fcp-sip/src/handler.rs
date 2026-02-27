@@ -313,6 +313,11 @@ pub struct SipMessageHandler {
     /// B2BUA policy configuration (topology hiding, media anchoring, forking, transfer)
     b2bua_config: B2buaConfig,
 
+    /// Runtime-reloadable voicemail server URI override.
+    /// The config poll loop updates this when the DB config changes, so the
+    /// running process picks up new values without a restart.
+    voicemail_server_uri_override: Arc<std::sync::RwLock<Option<String>>>,
+
     /// Per-dialog rate limits
     rate_limits: Arc<dashmap::DashMap<sip_dialog::DialogId, RateWindow>>,
 
@@ -659,6 +664,9 @@ impl SipMessageHandler {
             metrics: settings.metrics.clone(),
             _transcript_dir: settings.transcript_dir.clone(),
             transcript_tx,
+            voicemail_server_uri_override: Arc::new(std::sync::RwLock::new(
+                b2bua_config.voicemail_server_uri.clone(),
+            )),
             settings,
             b2bua_config,
             rate_limits: Arc::new(dashmap::DashMap::new()),
@@ -690,6 +698,11 @@ impl SipMessageHandler {
     /// Get a reference to the B2BUA policy configuration.
     pub fn b2bua_config(&self) -> &B2buaConfig {
         &self.b2bua_config
+    }
+
+    /// Get a reference to the runtime-reloadable voicemail server URI override.
+    pub fn voicemail_server_uri_override(&self) -> &Arc<std::sync::RwLock<Option<String>>> {
+        &self.voicemail_server_uri_override
     }
 
     /// Get a reference to the rate limits map for debugging/monitoring.
@@ -8451,14 +8464,16 @@ impl SipMessageHandler {
 
         // Resolve the target URI
         let target_uri = if destination.eq_ignore_ascii_case("voicemail") {
-            // Construct voicemail SIP URI from config
-            let vm_uri = self
-                .b2bua_config
-                .voicemail_server_uri
-                .as_deref()
+            // Read the runtime-reloadable override first, fall back to static config
+            let override_guard = self.voicemail_server_uri_override.read().unwrap();
+            let vm_uri_owned = override_guard
+                .clone()
+                .or_else(|| self.b2bua_config.voicemail_server_uri.clone())
                 .ok_or_else(|| {
                     anyhow::anyhow!("CFNA destination is 'voicemail' but voicemail_server_uri is not configured")
                 })?;
+            drop(override_guard);
+            let vm_uri = &vm_uri_owned;
 
             // Extract host:port from the configured voicemail server URI
             let vm_host = vm_uri

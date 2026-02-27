@@ -2,16 +2,17 @@
 
 use crate::{error::ApiError, state::ApiState};
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use fcp_core::{
-    storage::VoicemailStore, LineBindingId, MessageStatus, TenantId, UserId, VoicemailMailbox,
-    VoicemailMessage,
+    storage::VoicemailStore, GreetingType, LineBindingId, MessageStatus, TenantId, UserId,
+    VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::SystemTime;
 use tracing::info;
@@ -521,4 +522,240 @@ pub async fn get_mailbox_stats(
         storage_used: stats.storage_used,
         avg_duration: stats.avg_duration,
     }))
+}
+
+// --- Greeting Management ---
+
+/// Greeting response.
+#[derive(Debug, Serialize)]
+pub struct GreetingResponse {
+    pub greeting_type: String,
+    pub audio_path: String,
+    pub created_at: SystemTime,
+    pub expires_at: Option<SystemTime>,
+}
+
+impl From<VoicemailGreeting> for GreetingResponse {
+    fn from(g: VoicemailGreeting) -> Self {
+        Self {
+            greeting_type: g.greeting_type.to_string(),
+            audio_path: g.audio_path.to_string_lossy().to_string(),
+            created_at: g.created_at,
+            expires_at: g.expires_at,
+        }
+    }
+}
+
+/// Parse a greeting type string into GreetingType.
+fn parse_greeting_type(s: &str) -> Result<GreetingType, ApiError> {
+    match s.to_lowercase().as_str() {
+        "unavailable" => Ok(GreetingType::Unavailable),
+        "busy" => Ok(GreetingType::Busy),
+        "name" => Ok(GreetingType::Name),
+        "temporary" => Ok(GreetingType::Temporary),
+        _ => Err(ApiError::BadRequest(format!(
+            "Invalid greeting type '{}'. Must be one of: unavailable, busy, name, temporary",
+            s
+        ))),
+    }
+}
+
+/// Get the greetings directory or return an error.
+fn require_greetings_dir(state: &ApiState) -> Result<&PathBuf, ApiError> {
+    state.voicemail_greetings_dir.as_ref().ok_or_else(|| {
+        ApiError::Internal("Voicemail greetings directory is not configured".to_string())
+    })
+}
+
+/// List all greetings for a mailbox.
+pub async fn list_greetings(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    let responses: Vec<GreetingResponse> =
+        mailbox.greetings.into_iter().map(GreetingResponse::from).collect();
+
+    Ok(Json(responses))
+}
+
+/// Upload a greeting (multipart: greeting_type + audio file).
+pub async fn upload_greeting(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let greetings_dir = require_greetings_dir(&state)?;
+
+    // Parse multipart fields
+    let mut greeting_type_str: Option<String> = None;
+    let mut audio_data: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "greeting_type" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("Failed to read greeting_type: {}", e)))?;
+                greeting_type_str = Some(text);
+            }
+            "audio" => {
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("Failed to read audio data: {}", e)))?;
+                audio_data = Some(bytes.to_vec());
+            }
+            _ => {} // ignore unknown fields
+        }
+    }
+
+    let greeting_type_str = greeting_type_str
+        .ok_or_else(|| ApiError::BadRequest("Missing 'greeting_type' field".to_string()))?;
+    let audio_data = audio_data
+        .ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
+    if audio_data.is_empty() {
+        return Err(ApiError::BadRequest("Audio file is empty".to_string()));
+    }
+
+    let greeting_type = parse_greeting_type(&greeting_type_str)?;
+
+    // Load mailbox
+    let mut mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    // Create directory for this mailbox's greetings
+    let mailbox_dir = greetings_dir.join(&id);
+    tokio::fs::create_dir_all(&mailbox_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create greetings directory: {}", e)))?;
+
+    // Write audio file
+    let file_path = mailbox_dir.join(format!("{}.wav", greeting_type));
+    tokio::fs::write(&file_path, &audio_data)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to write greeting file: {}", e)))?;
+
+    // Add greeting to mailbox and save
+    let greeting = VoicemailGreeting::new(greeting_type, file_path);
+    mailbox.add_greeting(greeting.clone());
+
+    storage
+        .put_mailbox(mailbox)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        mailbox_id = %id,
+        greeting_type = %greeting_type_str,
+        "Uploaded voicemail greeting"
+    );
+
+    Ok((StatusCode::CREATED, Json(GreetingResponse::from(greeting))))
+}
+
+/// Delete a greeting.
+pub async fn delete_greeting(
+    State(state): State<ApiState>,
+    Path((id, greeting_type_str)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let greeting_type = parse_greeting_type(&greeting_type_str)?;
+
+    let mut mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    // Find and remove the greeting
+    let had_greeting = mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type);
+    if !had_greeting {
+        return Err(ApiError::NotFound(format!(
+            "Greeting '{}' not found for mailbox {}",
+            greeting_type_str, id
+        )));
+    }
+
+    // Try to remove the audio file (best-effort)
+    if let Some(g) = mailbox.greetings.iter().find(|g| g.greeting_type == greeting_type) {
+        let _ = tokio::fs::remove_file(&g.audio_path).await;
+    }
+
+    mailbox.greetings.retain(|g| g.greeting_type != greeting_type);
+    mailbox.updated_at = SystemTime::now();
+
+    storage
+        .put_mailbox(mailbox)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        mailbox_id = %id,
+        greeting_type = %greeting_type_str,
+        "Deleted voicemail greeting"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Download a greeting audio file.
+pub async fn download_greeting_audio(
+    State(state): State<ApiState>,
+    Path((id, greeting_type_str)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let greeting_type = parse_greeting_type(&greeting_type_str)?;
+
+    let mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    let greeting = mailbox
+        .greetings
+        .iter()
+        .find(|g| g.greeting_type == greeting_type)
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Greeting '{}' not found for mailbox {}",
+                greeting_type_str, id
+            ))
+        })?;
+
+    let data = tokio::fs::read(&greeting.audio_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to read greeting file: {}", e)))?;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "audio/wav"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "inline",
+            ),
+        ],
+        data,
+    ))
 }
