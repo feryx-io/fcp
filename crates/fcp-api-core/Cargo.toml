@@ -43,5 +43,8 @@ base64 = "0.22"
 # HTTP client (for proxying to events server)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# Secure random for token generation
+rand = "0.8"
+
 # Utilities
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

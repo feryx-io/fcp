@@ -1,5 +1,6 @@
 //! API v1 routes.
 
+pub mod api_tokens;
 pub mod auth_session;
 pub mod cdrs;
 pub mod config;
@@ -249,5 +250,14 @@ pub fn router() -> Router<ApiState> {
             get(voicemail::get_message)
                 .put(voicemail::update_message)
                 .delete(voicemail::delete_message),
+        )
+        // API Tokens
+        .route(
+            "/api-tokens",
+            get(api_tokens::list_api_tokens).post(api_tokens::create_api_token),
+        )
+        .route(
+            "/api-tokens/:id",
+            delete(api_tokens::delete_api_token),
         )
 }

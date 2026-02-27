@@ -34,10 +34,16 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(storage.pool().clone()),
     );
 
-    let dyn_st = DynStorage::from_all_in_one(storage.clone())
-        .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>);
+    // Create API token store backed by the same PostgreSQL pool
+    let api_token_store = Arc::new(
+        fcp_storage_postgres::api_token::PostgresApiTokenStore::new(storage.pool().clone()),
+    );
 
-    info!("PostgreSQL storage initialized successfully (with SIP trace store)");
+    let dyn_st = DynStorage::from_all_in_one(storage.clone())
+        .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
+        .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>);
+
+    info!("PostgreSQL storage initialized successfully (with SIP trace and API token stores)");
     Ok(StorageResult {
         dyn_storage: Arc::new(dyn_st),
         config_store: storage,

@@ -1501,6 +1501,57 @@ pub trait WebhookStore: Send + Sync {
     ) -> Result<Vec<WebhookDeliveryLog>>;
 }
 
+// ---------------------------------------------------------------------------
+// API Tokens
+// ---------------------------------------------------------------------------
+
+/// An API token for programmatic access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiToken {
+    /// Unique token identifier
+    pub id: crate::ApiTokenId,
+    /// Human-readable name for this token
+    pub name: String,
+    /// SHA-256 hash of the secret (hex-encoded)
+    pub token_hash: String,
+    /// First 8 characters of the plaintext token for display
+    pub prefix: String,
+    /// Owner user ID (may be empty for system tokens)
+    pub user_id: String,
+    /// Tenant this token belongs to
+    pub tenant_id: crate::TenantId,
+    /// Permissions granted to this token
+    pub permissions: Vec<String>,
+    /// When this token expires (None = never)
+    #[serde(with = "optional_system_time_serde")]
+    pub expires_at: Option<SystemTime>,
+    /// When this token was created
+    #[serde(with = "system_time_serde")]
+    pub created_at: SystemTime,
+    /// When this token was last used
+    #[serde(with = "optional_system_time_serde")]
+    pub last_used_at: Option<SystemTime>,
+}
+
+/// Storage backend for API tokens.
+#[async_trait]
+pub trait ApiTokenStore: Send + Sync {
+    /// Store a new API token.
+    async fn create_api_token(&self, token: ApiToken) -> Result<()>;
+
+    /// List all API tokens for a tenant.
+    async fn list_api_tokens(&self, tenant_id: &crate::TenantId) -> Result<Vec<ApiToken>>;
+
+    /// Look up an API token by its hash (for authentication).
+    async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>>;
+
+    /// Delete an API token by ID.
+    async fn delete_api_token(&self, id: &crate::ApiTokenId) -> Result<()>;
+
+    /// Update the last_used_at timestamp.
+    async fn update_last_used(&self, id: &crate::ApiTokenId) -> Result<()>;
+}
+
 /// Serde helper for Optional<SystemTime>
 mod optional_system_time_serde {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -1860,6 +1911,7 @@ pub struct DynStorage {
     webhook_store: Arc<dyn WebhookStore>,
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
+    api_token_store: Option<Arc<dyn ApiTokenStore>>,
 }
 
 impl DynStorage {
@@ -1901,6 +1953,7 @@ impl DynStorage {
             webhook_store,
             config_store: None,
             sip_trace_store: None,
+            api_token_store: None,
         }
     }
 
@@ -1947,6 +2000,7 @@ impl DynStorage {
             webhook_store: storage,
             config_store: None,
             sip_trace_store: None,
+            api_token_store: None,
         }
     }
 
@@ -2012,6 +2066,17 @@ impl DynStorage {
     /// Get the SIP trace store, if one has been set.
     pub fn sip_trace_store(&self) -> Option<&Arc<dyn crate::sip_trace::SipTraceStore>> {
         self.sip_trace_store.as_ref()
+    }
+
+    /// Replace the API token store with a specific implementation.
+    pub fn with_api_token_store(mut self, store: Arc<dyn ApiTokenStore>) -> Self {
+        self.api_token_store = Some(store);
+        self
+    }
+
+    /// Get the API token store, if one has been set.
+    pub fn api_token_store(&self) -> Option<&Arc<dyn ApiTokenStore>> {
+        self.api_token_store.as_ref()
     }
 }
 
