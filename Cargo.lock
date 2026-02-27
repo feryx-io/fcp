@@ -1549,6 +1549,7 @@ name = "fcp-api-core"
 version = "0.18.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -1568,6 +1569,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "tokio",
+ "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
 ]

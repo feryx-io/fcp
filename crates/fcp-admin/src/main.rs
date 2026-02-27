@@ -284,7 +284,11 @@ async fn main() -> Result<()> {
         if api_config.auth_enabled {
             if let Some(auth_token) = &api_config.auth_token {
                 tracing::info!("API authentication enabled");
-                let auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
+                let mut auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
+                if let Some(store) = api_state.storage.as_ref().and_then(|s| s.api_token_store().cloned()) {
+                    auth_config = auth_config.with_api_token_store(store);
+                    tracing::info!("API token authentication enabled");
+                }
                 router = router.layer(axum::middleware::from_fn(move |req, next| {
                     let config = auth_config.clone();
                     fcp_api_core::auth::validate_bearer_token(config, req, next)
