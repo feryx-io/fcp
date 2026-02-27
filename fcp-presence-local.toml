@@ -1,0 +1,26 @@
+[service]
+service_type = "presence"
+node_id = "presence-local"
+shutdown_timeout_secs = 10
+
+[storage]
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+max_connections = 10
+redis_url = "redis://localhost:6379"
+
+[presence]
+max_presentities = 10000
+default_subscription_expiry_secs = 3600
+cleanup_interval_secs = 60
+
+[http]
+bind_address = "0.0.0.0:8092"
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15

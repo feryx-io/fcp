@@ -1,0 +1,45 @@
+[service]
+service_type = "gateway"
+node_id = "gateway-local"
+
+[gateway]
+bind_address = "0.0.0.0:8000"
+request_timeout = 30
+compression_enabled = true
+
+[backends.admin]
+url = "http://localhost:8080"
+health_check_path = "/api/v1/system/health"
+health_check_interval = 10
+connection_timeout = 5
+
+[backends.events]
+url = "http://localhost:8081"
+health_check_path = "/health"
+health_check_interval = 10
+connection_timeout = 5
+
+[backends.jobs]
+url = "http://localhost:8082"
+health_check_path = "/health"
+health_check_interval = 10
+connection_timeout = 5
+
+[redis]
+url = "redis://localhost:6379"
+pool_size = 10
+connection_timeout = 5
+
+[rate_limit]
+enabled = false
+
+[cache]
+enabled = false
+
+[cors]
+enabled = true
+allow_all_origins = true
+
+[logging]
+level = "info"
+format = "pretty"

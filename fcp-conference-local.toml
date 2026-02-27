@@ -1,0 +1,47 @@
+[service]
+service_type = "conference"
+node_id = "conference-local"
+
+[sip]
+udp_bind = "0.0.0.0:5074"
+tcp_bind = "0.0.0.0:5074"
+local_ip = "192.168.1.225"
+local_uri = "sip:conference@192.168.1.225:5074"
+
+[storage]
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+redis_url = "redis://localhost:6379"
+
+[http]
+bind_address = "0.0.0.0:8090"
+auth_enabled = false
+
+[media]
+rtp_port_start = 26000
+rtp_port_end = 28000
+public_ip = "192.168.1.225"
+codecs = ["PCMU", "PCMA"]
+
+[events]
+server_url = "http://localhost:8081/ingest"
+
+[conference]
+sample_rate = 8000
+frame_size = 160
+enable_vad = true
+auto_destroy_empty_rooms = true
+recordings_dir = "/tmp/fcp/conference/recordings"
+announcements_dir = "/tmp/fcp/conference/announcements"
+jitter_buffer_ms = 60
+dtmf_enabled = true
+max_pin_attempts = 3
+pin_timeout_secs = 10
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15

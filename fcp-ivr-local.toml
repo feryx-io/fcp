@@ -1,0 +1,33 @@
+[service]
+service_type = "ivr"
+node_id = "ivr-local"
+
+[sip]
+udp_bind = "0.0.0.0:5070"
+tcp_bind = "0.0.0.0:5070"
+local_ip = "192.168.1.225"
+local_uri = "sip:ivr@192.168.1.225:5070"
+
+[storage]
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+redis_url = "redis://localhost:6379"
+
+[http]
+bind_address = "0.0.0.0:8086"
+
+[media]
+rtp_port_start = 22000
+rtp_port_end = 24000
+public_ip = "192.168.1.225"
+
+[events]
+server_url = "http://localhost:8081/ingest"
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15

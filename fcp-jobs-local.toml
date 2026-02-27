@@ -1,0 +1,29 @@
+[service]
+service_type = "jobs"
+node_id = "jobs-local"
+
+[redis]
+url = "redis://localhost:6379"
+pool_size = 10
+connection_timeout = 5
+queue_prefix = "fcp:jobs"
+
+[workers]
+count = 2
+poll_interval = 5
+job_timeout = 300
+shutdown_timeout = 30
+
+[retry]
+max_retries = 3
+initial_delay = 10
+max_delay = 3600
+backoff_multiplier = 2.0
+
+[health]
+enabled = true
+bind_address = "0.0.0.0:8082"
+
+[logging]
+level = "info"
+format = "pretty"

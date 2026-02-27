@@ -1,0 +1,29 @@
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15
+redis_url = "redis://localhost:6379"
+
+[core]
+external_domain = "fcp.local"
+
+[core.security]
+max_message_size = 65535
+
+[core.admission]
+max_cps = 100
+max_concurrent_calls = 500
+
+[core.nat]
+public_ip = "192.168.1.225"
+rtp_port_start = 28000
+rtp_port_end = 30000
+enable_transcoding = true
+enable_dtmf = true
+
+[core.storage]
+enabled = true
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+
+[core.metrics]
+snapshot_interval_secs = 30

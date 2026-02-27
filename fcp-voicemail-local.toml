@@ -1,0 +1,40 @@
+[service]
+service_type = "voicemail"
+node_id = "voicemail-local"
+
+[sip]
+udp_bind = "0.0.0.0:5072"
+tcp_bind = "0.0.0.0:5072"
+local_ip = "192.168.1.225"
+local_uri = "sip:voicemail@192.168.1.225:5072"
+
+[storage]
+database_url = "postgresql://fcp:fcp_password@localhost:5432/fcp"
+redis_url = "redis://localhost:6379"
+
+[http]
+bind_address = "0.0.0.0:8088"
+
+[media]
+rtp_port_start = 24000
+rtp_port_end = 26000
+public_ip = "192.168.1.225"
+
+[events]
+server_url = "http://localhost:8081/ingest"
+
+[voicemail]
+recordings_dir = "/tmp/fcp/voicemail/recordings"
+greetings_dir = "/tmp/fcp/voicemail/greetings"
+max_message_duration = 300
+max_messages_per_mailbox = 100
+play_beep = true
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15

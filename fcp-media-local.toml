@@ -1,0 +1,31 @@
+[service]
+service_type = "media"
+node_id = "media-local"
+shutdown_timeout_secs = 30
+
+[http]
+bind_address = "0.0.0.0:8083"
+
+[media]
+rtp_port_start = 30000
+rtp_port_end = 32000
+
+[recording]
+base_dir = "/tmp/fcp/media/recordings"
+root_jail = "/tmp/fcp/media"
+prompts_dir = "/tmp/fcp/media/prompts"
+
+[auth]
+tokens = ["dev-token"]
+
+[storage]
+redis_url = "redis://localhost:6379"
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15
