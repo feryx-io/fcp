@@ -184,29 +184,54 @@ export interface CreatePhoneNumberRequest {
   tags?: string[]
 }
 
+export interface DeviceBinding {
+  device_id: string
+  priority: number
+  line_appearance: number
+  shared_line: boolean
+  enabled: boolean
+}
+
 export interface LineBinding {
   id: string
-  tenant_id: string
-  extension_id: string
-  device_id: string | null
-  phone_number_id: string | null
-  line_index: number
-  label: string | null
-  no_answer_timeout_secs: number
-  forward_on_no_answer: string | null
-  forward_on_busy: string | null
-  forward_unconditional: string | null
+  phone_number_id: string
+  owner_user_id: string | null
+  binding_type: string
+  devices: DeviceBinding[]
   ring_strategy: string
+  tenant_id: string
+  no_answer_timeout_secs: number
+  forward_on_busy: string | null
+  forward_on_no_answer: string | null
+  forward_unconditional: string | null
+  outbound_caller_id: string | null
+  outbound_cnam: string | null
   created_at: string
+  updated_at: string
 }
 
 export interface CreateLineBindingRequest {
+  phone_number_id: string
+  owner_user_id?: string
+  binding_type: string
   tenant_id?: string
-  extension_id: string
-  device_id?: string
-  phone_number_id?: string
-  line_index?: number
-  label?: string
+  devices?: DeviceBinding[]
+  ring_strategy?: string
+  no_answer_timeout_secs?: number
+  forward_on_busy?: string
+  forward_on_no_answer?: string
+  forward_unconditional?: string
+}
+
+export interface UpdateLineBindingRequest {
+  devices?: DeviceBinding[]
+  ring_strategy?: string
+  no_answer_timeout_secs?: number
+  forward_on_busy?: string
+  forward_on_no_answer?: string
+  forward_unconditional?: string
+  outbound_caller_id?: string
+  outbound_cnam?: string
 }
 
 export interface CallDetailRecord {

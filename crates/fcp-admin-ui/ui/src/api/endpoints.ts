@@ -5,7 +5,7 @@ import type {
   Extension, CreateExtensionRequest,
   Device, CreateDeviceRequest,
   PhoneNumber, CreatePhoneNumberRequest,
-  LineBinding, CreateLineBindingRequest,
+  LineBinding, CreateLineBindingRequest, UpdateLineBindingRequest,
   DashboardSummary, SystemHealth,
   LoginRequest, LoginResponse, AuthUser,
   CallInfo, OriginateCallRequest,
@@ -105,7 +105,7 @@ export const lineBindings = {
   list: () => apiClient.get<LineBinding[]>('/line-bindings'),
   get: (id: string) => apiClient.get<LineBinding>(`/line-bindings/${id}`),
   create: (data: CreateLineBindingRequest) => apiClient.post<LineBinding>('/line-bindings', data),
-  update: (id: string, data: Partial<CreateLineBindingRequest>) =>
+  update: (id: string, data: UpdateLineBindingRequest) =>
     apiClient.patch<LineBinding>(`/line-bindings/${id}`, data),
   delete: (id: string) => apiClient.delete<void>(`/line-bindings/${id}`),
 }
