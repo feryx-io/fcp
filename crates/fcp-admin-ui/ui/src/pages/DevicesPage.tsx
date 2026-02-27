@@ -21,6 +21,7 @@ import type { Device } from '@/types'
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   device_type: z.string().min(1, 'Device type is required'),
+  sip_uri: z.string().optional(),
   mac_address: z.string().optional(),
   model: z.string().optional(),
   location: z.string().optional(),
@@ -28,6 +29,7 @@ const createSchema = z.object({
 
 const editSchema = z.object({
   name: z.string().min(1, 'Name is required'),
+  sip_uri: z.string().optional(),
   mac_address: z.string().optional(),
   model: z.string().optional(),
   firmware_version: z.string().optional(),
@@ -106,6 +108,13 @@ export function DevicesPage() {
       cell: ({ row }) => row.original.model || '-',
     },
     {
+      accessorKey: 'sip_uri',
+      header: 'SIP URI',
+      cell: ({ row }) => row.original.sip_uri ? (
+        <code className="text-xs">{row.original.sip_uri}</code>
+      ) : <span className="text-muted-foreground">-</span>,
+    },
+    {
       accessorKey: 'registration_state',
       header: 'Registration',
       cell: ({ row }) => (
@@ -161,6 +170,7 @@ export function DevicesPage() {
     setLastEditId(editItem.id)
     editForm.reset({
       name: editItem.name,
+      sip_uri: editItem.sip_uri || '',
       mac_address: editItem.mac_address || '',
       model: editItem.model || '',
       firmware_version: editItem.firmware_version || '',
@@ -173,6 +183,7 @@ export function DevicesPage() {
     createMutation.mutate({
       name: data.name,
       device_type: data.device_type,
+      sip_uri: data.sip_uri || undefined,
       mac_address: data.mac_address || undefined,
       model: data.model || undefined,
       location: data.location || undefined,
@@ -185,6 +196,7 @@ export function DevicesPage() {
       id: editItem.id,
       data: {
         name: data.name,
+        sip_uri: data.sip_uri || undefined,
         mac_address: data.mac_address || undefined,
         model: data.model || undefined,
         firmware_version: data.firmware_version || undefined,
@@ -242,6 +254,11 @@ export function DevicesPage() {
               </Select>
               {createForm.formState.errors.device_type && <p className="text-sm text-destructive">{createForm.formState.errors.device_type.message}</p>}
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="c-sip_uri">SIP URI</Label>
+              <Input id="c-sip_uri" placeholder="sip:username@domain" {...createForm.register('sip_uri')} />
+              <p className="text-xs text-muted-foreground">Must match the AOR the device registers with</p>
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="c-mac_address">MAC Address</Label>
@@ -281,6 +298,11 @@ export function DevicesPage() {
               <Label htmlFor="e-name">Name *</Label>
               <Input id="e-name" {...editForm.register('name')} />
               {editForm.formState.errors.name && <p className="text-sm text-destructive">{editForm.formState.errors.name.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-sip_uri">SIP URI</Label>
+              <Input id="e-sip_uri" placeholder="sip:username@domain" {...editForm.register('sip_uri')} />
+              <p className="text-xs text-muted-foreground">Must match the AOR the device registers with</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
