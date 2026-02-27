@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use fcp_core::storage::{LineBindingStore, PhoneNumberStore, VoicemailStore};
 use tracing::{info, warn};
 
 mod cli;
@@ -396,6 +397,57 @@ async fn main() -> Result<()> {
             default_mailbox_id = %default_mailbox_id,
             "Default voicemail route registered"
         );
+    }
+
+    // Auto-discover mailboxes from DB and register routes by extension + phone number
+    {
+        let tenant_id = fcp_core::TenantId::nil();
+        match dyn_storage.list_mailboxes(&tenant_id).await {
+            Ok(mailboxes) => {
+                let mut auto_routes = 0u32;
+                for mb in &mailboxes {
+                    if !mb.enabled {
+                        continue;
+                    }
+                    let flow_id = format!("vm-auto-{}", mb.id);
+                    let flow_def = build_voicemail_flow(
+                        &flow_id,
+                        &mb.id,
+                        config.voicemail.max_message_duration,
+                        config.voicemail.play_beep,
+                    );
+                    if let Err(e) = flow_store.insert_flow(flow_def).await {
+                        warn!(mailbox_id = %mb.id, error = %e, "Failed to create auto-flow for mailbox");
+                        continue;
+                    }
+
+                    // Register by extension
+                    flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+                    auto_routes += 1;
+
+                    // Also register by associated phone number E.164
+                    if let Ok(Some(lb)) = dyn_storage.get_line_binding(&mb.line_binding_id).await {
+                        if let Ok(Some(pn)) = dyn_storage.get_phone_number(&lb.phone_number_id).await {
+                            flow_handler.add_route(pn.e164.clone(), flow_id.clone()).await;
+                            // Also register without leading +
+                            if let Some(stripped) = pn.e164.strip_prefix('+') {
+                                flow_handler.add_route(stripped.to_string(), flow_id.clone()).await;
+                            }
+                            info!(
+                                mailbox = %mb.id,
+                                extension = %mb.extension,
+                                e164 = %pn.e164,
+                                "Auto-registered voicemail route"
+                            );
+                        }
+                    }
+                }
+                info!(auto_routes, "Auto-discovered mailbox routes from database");
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to list mailboxes for auto-discovery");
+            }
+        }
     }
 
     info!(

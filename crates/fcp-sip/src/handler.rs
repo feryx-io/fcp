@@ -3887,7 +3887,7 @@ impl SipMessageHandler {
             let task_early_media_policy = early_media_policy;
             let task_dedup = dedup_provisionals;
 
-            // Spawn provisional listener task (non-blocking, exits after first 180)
+            // Spawn provisional listener task (loops until first 180+ response)
             tokio::spawn(async move {
                 // If early media is suppressed, skip provisional relay entirely
                 if task_early_media_policy == fcp_b2bua_core::EarlyMediaPolicy::None {
@@ -3899,18 +3899,18 @@ impl SipMessageHandler {
                     return;
                 }
 
-                // Listen for FIRST provisional 180+ response only
-                if let Some(response) = b_leg_handle_clone.await_provisional().await {
+                // Loop to consume provisionals until we get a 180+ response
+                while let Some(response) = b_leg_handle_clone.await_provisional().await {
                     let code = response.start_line().code();
                     debug!(
                         call_id = %call_id_clone,
                         target = %target_clone,
                         code = code,
                         has_body = !response.body().is_empty(),
-                        "B-leg {} first provisional response", i
+                        "B-leg {} provisional response", i
                     );
 
-                    // Signal if it's a ringing/progress response
+                    // Signal if it's a ringing/progress response (skip 100 Trying etc.)
                     if code >= 180 && code < 200 {
                         let mut sent = provisional_sent_clone.lock().await;
                         if !*sent || !task_dedup {
@@ -3925,9 +3925,10 @@ impl SipMessageHandler {
                             let _ = provisional_tx_clone.send(response).await;
                             *sent = true;
                         }
+                        break;
                     }
+                    // Continue looping past 100 Trying and other non-ringing provisionals
                 }
-                // Task exits immediately after first provisional (or if none received)
             });
         }
 
