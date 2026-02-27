@@ -531,8 +531,16 @@ pub async fn get_mailbox_stats(
 pub struct GreetingResponse {
     pub greeting_type: String,
     pub audio_path: String,
-    pub created_at: SystemTime,
-    pub expires_at: Option<SystemTime>,
+    /// Unix timestamp in seconds
+    pub created_at: f64,
+    /// Unix timestamp in seconds, or null
+    pub expires_at: Option<f64>,
+}
+
+fn system_time_to_epoch_secs(t: SystemTime) -> f64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
 }
 
 impl From<VoicemailGreeting> for GreetingResponse {
@@ -540,8 +548,8 @@ impl From<VoicemailGreeting> for GreetingResponse {
         Self {
             greeting_type: g.greeting_type.to_string(),
             audio_path: g.audio_path.to_string_lossy().to_string(),
-            created_at: g.created_at,
-            expires_at: g.expires_at,
+            created_at: system_time_to_epoch_secs(g.created_at),
+            expires_at: g.expires_at.map(system_time_to_epoch_secs),
         }
     }
 }

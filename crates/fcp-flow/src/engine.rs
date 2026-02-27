@@ -10,7 +10,7 @@ use futures::future::BoxFuture;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Flow execution engine.
@@ -812,7 +812,7 @@ impl FlowContext {
 
     /// Get a variable value.
     pub fn get_variable(&self, name: &str) -> Result<String> {
-        let variables = self.variables.blocking_read();
+        let variables = self.variables.read().unwrap();
         variables
             .get(name)
             .cloned()
@@ -821,13 +821,13 @@ impl FlowContext {
 
     /// Set a variable value.
     pub fn set_variable(&self, name: String, value: String) {
-        let mut variables = self.variables.blocking_write();
+        let mut variables = self.variables.write().unwrap();
         variables.insert(name, value);
     }
 
     /// Get all variables.
     pub async fn get_all_variables(&self) -> HashMap<String, String> {
-        self.variables.read().await.clone()
+        self.variables.read().unwrap().clone()
     }
 }
 

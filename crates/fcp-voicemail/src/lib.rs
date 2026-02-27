@@ -517,7 +517,7 @@ impl VoicemailService {
                 // Custom greeting — validate it's within a safe directory
                 validate_path_within_dir(
                     &greeting.audio_path,
-                    &self.config.recordings_dir,
+                    &self.config.greetings_dir,
                 )
                 .context("Custom greeting path failed safety check")?;
                 &greeting.audio_path
