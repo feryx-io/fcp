@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2 } from 'lucide-react'
@@ -9,11 +9,12 @@ import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { lineBindings } from '@/api/endpoints'
+import { lineBindings, extensions, devices, phoneNumbers } from '@/api/endpoints'
 import type { LineBinding } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 
@@ -49,6 +50,23 @@ export function LineBindingsPage() {
     queryFn: lineBindings.list,
   })
 
+  const { data: extensionList = [] } = useQuery({
+    queryKey: ['extensions'],
+    queryFn: extensions.list,
+  })
+  const { data: deviceList = [] } = useQuery({
+    queryKey: ['devices'],
+    queryFn: devices.list,
+  })
+  const { data: phoneNumberList = [] } = useQuery({
+    queryKey: ['phone-numbers'],
+    queryFn: phoneNumbers.list,
+  })
+
+  const extensionMap = useMemo(() => new Map(extensionList.map(e => [e.id, e])), [extensionList])
+  const deviceMap = useMemo(() => new Map(deviceList.map(d => [d.id, d])), [deviceList])
+  const phoneNumberMap = useMemo(() => new Map(phoneNumberList.map(p => [p.id, p])), [phoneNumberList])
+
   const createMutation = useMutation({
     mutationFn: lineBindings.create,
     onSuccess: () => {
@@ -79,16 +97,28 @@ export function LineBindingsPage() {
           Extension <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
+      cell: ({ row }) => {
+        const ext = extensionMap.get(row.original.extension_id)
+        return ext ? (ext.display_name ? `${ext.number} - ${ext.display_name}` : ext.number) : row.original.extension_id
+      },
     },
     {
       accessorKey: 'device_id',
       header: 'Device',
-      cell: ({ row }) => row.original.device_id || '-',
+      cell: ({ row }) => {
+        if (!row.original.device_id) return '-'
+        const dev = deviceMap.get(row.original.device_id)
+        return dev ? dev.name : row.original.device_id
+      },
     },
     {
       accessorKey: 'phone_number_id',
       header: 'Phone Number',
-      cell: ({ row }) => row.original.phone_number_id || '-',
+      cell: ({ row }) => {
+        if (!row.original.phone_number_id) return '-'
+        const pn = phoneNumberMap.get(row.original.phone_number_id)
+        return pn ? (pn.cnam ? `${pn.e164} - ${pn.cnam}` : pn.e164) : row.original.phone_number_id
+      },
     },
     {
       accessorKey: 'line_index',
@@ -210,17 +240,44 @@ export function LineBindingsPage() {
           </DialogHeader>
           <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="c-extension_id">Extension ID *</Label>
-              <Input id="c-extension_id" {...createForm.register('extension_id')} />
+              <Label>Extension *</Label>
+              <Select onValueChange={(v) => createForm.setValue('extension_id', v)}>
+                <SelectTrigger><SelectValue placeholder="Select extension" /></SelectTrigger>
+                <SelectContent>
+                  {extensionList.map(ext => (
+                    <SelectItem key={ext.id} value={ext.id}>
+                      {ext.display_name ? `${ext.number} - ${ext.display_name}` : ext.number}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               {createForm.formState.errors.extension_id && <p className="text-sm text-destructive">{createForm.formState.errors.extension_id.message}</p>}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="c-device_id">Device ID</Label>
-              <Input id="c-device_id" {...createForm.register('device_id')} />
+              <Label>Device</Label>
+              <Select onValueChange={(v) => createForm.setValue('device_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {deviceList.map(dev => (
+                    <SelectItem key={dev.id} value={dev.id}>{dev.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="c-phone_number_id">Phone Number ID</Label>
-              <Input id="c-phone_number_id" {...createForm.register('phone_number_id')} />
+              <Label>Phone Number</Label>
+              <Select onValueChange={(v) => createForm.setValue('phone_number_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {phoneNumberList.map(pn => (
+                    <SelectItem key={pn.id} value={pn.id}>
+                      {pn.cnam ? `${pn.e164} - ${pn.cnam}` : pn.e164}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -250,16 +307,34 @@ export function LineBindingsPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Edit Line Binding</DialogTitle>
-            <DialogDescription>Update binding for extension {editItem?.extension_id}.</DialogDescription>
+            <DialogDescription>Update binding for extension {editItem ? (extensionMap.get(editItem.extension_id)?.number || editItem.extension_id) : ''}.</DialogDescription>
           </DialogHeader>
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="e-device_id">Device ID</Label>
-              <Input id="e-device_id" {...editForm.register('device_id')} />
+              <Label>Device</Label>
+              <Select defaultValue={editItem?.device_id || '__none__'} onValueChange={(v) => editForm.setValue('device_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {deviceList.map(dev => (
+                    <SelectItem key={dev.id} value={dev.id}>{dev.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="e-phone_number_id">Phone Number ID</Label>
-              <Input id="e-phone_number_id" {...editForm.register('phone_number_id')} />
+              <Label>Phone Number</Label>
+              <Select defaultValue={editItem?.phone_number_id || '__none__'} onValueChange={(v) => editForm.setValue('phone_number_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {phoneNumberList.map(pn => (
+                    <SelectItem key={pn.id} value={pn.id}>
+                      {pn.cnam ? `${pn.e164} - ${pn.cnam}` : pn.e164}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
