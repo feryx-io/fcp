@@ -11,7 +11,7 @@ import type {
   CallInfo, OriginateCallRequest,
   CdrResponse, ListCdrsResponse, CdrQueryParams,
   QueueResponse, QueueStatsResponse, AgentResponse, AgentLoginRequest,
-  MailboxResponse, VoicemailMessage, MailboxStats,
+  MailboxResponse, VoicemailMessage, MailboxStats, CreateMailboxRequest, UpdateMailboxRequest,
   PresenceResponse, PresenceStats,
   Registration,
   TrunkSummary, TrunkDetail, QualityMetrics,
@@ -196,6 +196,12 @@ export const voicemail = {
     apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}`),
   markHeard: (mailboxId: string, messageId: string) =>
     apiClient.post<void>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}/heard`),
+  createMailbox: (data: CreateMailboxRequest) =>
+    apiClient.post<MailboxResponse>('/voicemail/mailboxes', data),
+  updateMailbox: (id: string, data: UpdateMailboxRequest) =>
+    apiClient.put<MailboxResponse>(`/voicemail/mailboxes/${id}`, data),
+  deleteMailbox: (id: string) =>
+    apiClient.delete<void>(`/voicemail/mailboxes/${id}`),
 }
 
 // Presence (Phase 2)

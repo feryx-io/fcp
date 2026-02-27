@@ -463,6 +463,29 @@ export interface MailboxStats {
   avg_duration: number
 }
 
+export interface CreateMailboxRequest {
+  tenant_id: string
+  user_id: string
+  line_binding_id: string
+  extension: string
+  pin: string
+  enabled?: boolean
+  max_message_duration?: number
+  max_messages?: number
+}
+
+export interface UpdateMailboxRequest {
+  pin?: string
+  enabled?: boolean
+  max_message_duration?: number
+  max_messages?: number
+  email_notification?: boolean
+  email_address?: string
+  attach_audio?: boolean
+  include_transcription?: boolean
+  transcription_enabled?: boolean
+}
+
 // Presence (matches presence.rs)
 export interface PresenceResponse {
   aor: string
