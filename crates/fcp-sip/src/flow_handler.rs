@@ -1017,11 +1017,16 @@ impl FlowCallHandler {
             .unwrap_or_else(|_| "unknown".to_string());
         let caller_name = context_guard.get_variable("caller_name").ok();
         let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+        // Use the media_session_id from context (not the SIP call_id) so the
+        // voicemail service can find the forge-media session for playback/recording.
+        let media_call_id = context_guard
+            .media_session_id
+            .unwrap_or_else(|| core_call_id.clone());
         drop(context_guard);
 
         // Call VoicemailService::record_message
         match voicemail_service
-            .record_message(&core_call_id, &mailbox, caller.clone(), caller_name, is_busy)
+            .record_message(&media_call_id, &mailbox, caller.clone(), caller_name, is_busy)
             .await
         {
             Ok(message) => {

@@ -8311,7 +8311,7 @@ impl SipMessageHandler {
                 let mut b_leg_calls = Vec::new();
                 for (member, binding) in &contacts {
                     let target_uri = binding.contact().to_string();
-                    match self.create_outbound_call(request, &target_uri, &uac).await {
+                    match self.create_outbound_call(request, &target_uri, &uac, None).await {
                         Ok(outbound_call) => {
                             b_leg_calls.push((member.clone(), outbound_call, binding.flow_token().map(|s| s.to_string())));
                         }
@@ -8357,7 +8357,7 @@ impl SipMessageHandler {
                     );
 
                     // Try single B-leg with timeout
-                    match self.create_outbound_call(request, &target_uri, &uac).await {
+                    match self.create_outbound_call(request, &target_uri, &uac, None).await {
                         Ok(outbound_call) => {
                             let cancel_notify = Arc::new(tokio::sync::Notify::new());
                             let _ = self.call_manager.update_call(&call_id, |call| {
@@ -8512,17 +8512,65 @@ impl SipMessageHandler {
             "CFNA: creating B-leg to forward destination"
         );
 
+        // Rewrite SDP for media anchoring so the CFNA B-leg goes through
+        // call-manager's media session (not directly to the caller).
+        let sdp_override = if !original_request.body().is_empty() {
+            let original_sdp = String::from_utf8_lossy(original_request.body()).to_string();
+            let media_session_id = self.call_manager.get_call(&call_id).and_then(|call| {
+                if call.media_anchored {
+                    call.media_session_id.clone()
+                } else {
+                    None
+                }
+            });
+            if let (Some(media_session_id), Some(media_manager)) =
+                (media_session_id, &self.media_manager)
+            {
+                match media_manager.get_session(&media_session_id).await {
+                    Ok(session) => {
+                        let (rtp_port, _rtcp_port) = session.ports();
+                        let rewritten = fcp_media::rewrite_sdp_for_anchoring(
+                            &original_sdp,
+                            &self.local_addr,
+                            rtp_port,
+                            None,
+                        );
+                        info!(
+                            call_id = %call_id,
+                            server_ip = %self.local_addr,
+                            rtp_port = rtp_port,
+                            "CFNA: rewrote SDP for media anchoring"
+                        );
+                        Some(rewritten)
+                    }
+                    Err(e) => {
+                        warn!(call_id = %call_id, error = %e, "CFNA: failed to get media session for SDP rewrite");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Create the outbound call
         let outbound_call = self
-            .create_outbound_call(original_request, &target_uri, uac)
+            .create_outbound_call(original_request, &target_uri, uac, sdp_override)
             .await?;
 
         // Create a fresh cancel_notify for the CFNA B-leg
         let cancel_notify = Arc::new(tokio::sync::Notify::new());
+        let target_uri_clone = target_uri.clone();
         let _ = self.call_manager.update_call(&call_id, |call| {
             call.cancel_notify = Some(Arc::clone(&cancel_notify));
-            // Clear the old B-leg so the CFNA B-leg takes over
-            call.b_leg = None;
+            // Replace old B-leg with a new one for the CFNA target so that
+            // handle_parallel_forking can store the dialog + handle on it.
+            call.b_leg = Some(fcp_b2bua_core::CallLeg::new_outbound(
+                target_uri_clone,
+                None,
+            ));
         });
 
         // Run parallel forking with the single CFNA B-leg
@@ -8546,18 +8594,24 @@ impl SipMessageHandler {
     ///
     /// Extracts SDP from the A-leg request (if present) and sends INVITE to the
     /// target URI. Returns an Arc<OutboundCall> ready for `handle_parallel_forking()`.
+    ///
+    /// If `sdp_override` is provided, it is used instead of the A-leg request body.
+    /// This is used by CFNA routing to send a media-anchored SDP to the B-leg.
     async fn create_outbound_call(
         &self,
         request: &sip_core::Request,
         target_uri: &str,
         uac: &Arc<SipUserAgentClient>,
+        sdp_override: Option<String>,
     ) -> Result<Arc<crate::uac::OutboundCall>> {
-        // Extract SDP from A-leg request
-        let a_leg_sdp = if !request.body().is_empty() {
-            Some(String::from_utf8_lossy(request.body()).to_string())
-        } else {
-            None
-        };
+        // Use SDP override if provided, otherwise extract from A-leg request
+        let a_leg_sdp = sdp_override.or_else(|| {
+            if !request.body().is_empty() {
+                Some(String::from_utf8_lossy(request.body()).to_string())
+            } else {
+                None
+            }
+        });
 
         let call = uac.invite(target_uri, a_leg_sdp.as_deref()).await?;
         Ok(Arc::new(call))

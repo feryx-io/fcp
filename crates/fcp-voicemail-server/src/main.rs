@@ -835,6 +835,7 @@ async fn create_media_manager(
         rtp_port_start: config.media.rtp_port_start,
         rtp_port_end: config.media.rtp_port_end,
         public_ip: config.media.public_ip.clone(),
+        recording_dir: config.voicemail.recordings_dir.clone(),
         ..Default::default()
     };
 

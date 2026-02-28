@@ -246,8 +246,12 @@ impl VoicemailService {
                 .context("Failed to create recordings directory")?;
         }
 
-        // Start recording
-        debug!("Starting recording to: {:?}", recording_path);
+        // Start recording — pass a relative path (tenant/mailbox/file.wav) since
+        // the MediaManager prepends its own recording_dir base.
+        let relative_recording_path = PathBuf::from(&tenant_dir)
+            .join(mailbox_id)
+            .join(&recording_filename);
+        debug!("Starting recording to: {:?} (relative: {:?})", recording_path, relative_recording_path);
         let max_duration = std::cmp::min(
             mailbox.max_message_duration,
             self.config.max_message_duration,
@@ -256,7 +260,7 @@ impl VoicemailService {
         let recording_start = std::time::Instant::now();
 
         self.media_manager
-            .start_recording(call_id, recording_path.to_string_lossy().to_string())
+            .start_recording(call_id, relative_recording_path.to_string_lossy().to_string())
             .await
             .context("Failed to start recording")?;
 

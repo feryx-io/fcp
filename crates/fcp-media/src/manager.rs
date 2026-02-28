@@ -192,7 +192,11 @@ impl MediaManager {
     /// - Ensures path stays within configured recording directory
     pub async fn start_recording(&self, call_id: &CallId, path: String) -> Result<()> {
         validate_recording_path(&path, Path::new(&self.config.recording_dir))?;
-        self.backend.start_recording(call_id, path).await
+        // Build absolute path by prepending recording_dir to the validated relative path
+        let full_path = Path::new(&self.config.recording_dir).join(&path);
+        self.backend
+            .start_recording(call_id, full_path.to_string_lossy().to_string())
+            .await
     }
 
     /// Stop recording a call
