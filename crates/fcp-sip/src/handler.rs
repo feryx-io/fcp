@@ -770,6 +770,38 @@ impl SipMessageHandler {
         None
     }
 
+    /// Extract display name from a SIP From/To header value.
+    ///
+    /// Handles formats like:
+    /// - `"Alice Smith" <sip:alice@domain>` -> Some("Alice Smith")
+    /// - `Alice <sip:alice@domain>` -> Some("Alice")
+    /// - `<sip:alice@domain>` -> None
+    /// - `sip:alice@domain` -> None
+    fn extract_display_name(header_value: &str) -> Option<String> {
+        let trimmed = header_value.trim();
+        // Must have angle brackets for display name to be present
+        let bracket_pos = trimmed.find('<')?;
+        if bracket_pos == 0 {
+            return None;
+        }
+        let name_part = trimmed[..bracket_pos].trim();
+        if name_part.is_empty() {
+            return None;
+        }
+        // Strip surrounding quotes if present
+        let name = if name_part.starts_with('"') && name_part.ends_with('"') && name_part.len() >= 2
+        {
+            &name_part[1..name_part.len() - 1]
+        } else {
+            name_part
+        };
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    }
+
     /// Handle an incoming SIP request and generate a response.
     ///
     /// Supports:
@@ -1339,10 +1371,16 @@ impl SipMessageHandler {
                         // Build initial variables from call context
                         let mut initial_variables = std::collections::HashMap::new();
 
-                        // Extract From URI (caller)
+                        // Extract From URI (caller number and display name)
                         if let Some(from_header) = sip_parse::header(request.headers(), "From") {
-                            if let Some(caller) = Self::extract_did_from_uri(from_header.as_str()) {
-                                initial_variables.insert("caller_number".to_string(), caller);
+                            let from_str = from_header.as_str();
+                            if let Some(caller) = Self::extract_did_from_uri(from_str) {
+                                initial_variables.insert("caller_number".to_string(), caller.clone());
+                                initial_variables.insert("caller".to_string(), caller);
+                            }
+                            // Extract display name: "Display Name" <sip:...>
+                            if let Some(display_name) = Self::extract_display_name(from_str) {
+                                initial_variables.insert("caller_name".to_string(), display_name);
                             }
                         }
 

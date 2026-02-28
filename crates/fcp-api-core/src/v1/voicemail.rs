@@ -42,8 +42,8 @@ pub struct MailboxResponse {
     pub attach_audio: bool,
     pub include_transcription: bool,
     pub transcription_enabled: bool,
-    pub created_at: SystemTime,
-    pub updated_at: SystemTime,
+    pub created_at: f64,
+    pub updated_at: f64,
 }
 
 impl From<VoicemailMailbox> for MailboxResponse {
@@ -62,8 +62,8 @@ impl From<VoicemailMailbox> for MailboxResponse {
             attach_audio: mailbox.attach_audio,
             include_transcription: mailbox.include_transcription,
             transcription_enabled: mailbox.transcription_enabled,
-            created_at: mailbox.created_at,
-            updated_at: mailbox.updated_at,
+            created_at: system_time_to_epoch_secs(mailbox.created_at),
+            updated_at: system_time_to_epoch_secs(mailbox.updated_at),
         }
     }
 }
@@ -80,8 +80,8 @@ pub struct MessageResponse {
     pub duration: u32,
     pub recording_path: String,
     pub transcription: Option<String>,
-    pub created_at: SystemTime,
-    pub accessed_at: Option<SystemTime>,
+    pub created_at: f64,
+    pub accessed_at: Option<f64>,
 }
 
 impl From<VoicemailMessage> for MessageResponse {
@@ -99,8 +99,8 @@ impl From<VoicemailMessage> for MessageResponse {
             duration: message.duration,
             recording_path: message.recording_path.to_string_lossy().to_string(),
             transcription: message.transcription,
-            created_at: message.created_at,
-            accessed_at: message.accessed_at,
+            created_at: system_time_to_epoch_secs(message.created_at),
+            accessed_at: message.accessed_at.map(system_time_to_epoch_secs),
         }
     }
 }
