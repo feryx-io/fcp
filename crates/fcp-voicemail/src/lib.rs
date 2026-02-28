@@ -214,14 +214,24 @@ impl VoicemailService {
         // Play greeting
         self.play_greeting(call_id, &mailbox, is_busy).await?;
 
-        // Play beep if configured
+        // Play beep tone before recording
         if self.config.play_beep {
-            if let Some(ref beep_path) = self.config.beep_audio_path {
-                if beep_path.exists() {
-                    debug!("Playing beep before recording");
-                    self.play_audio(call_id, beep_path).await?;
-                }
-            }
+            debug!("Playing 1000Hz beep tone before recording");
+            let playback_id = self
+                .media_manager
+                .play_tone(
+                    call_id,
+                    1000.0,  // 1kHz tone
+                    500,     // 500ms duration
+                    0.6,     // -4dB amplitude
+                    fcp_media::AudioTarget::ParticipantA,
+                )
+                .await
+                .context("Failed to start beep tone")?;
+            self.media_manager
+                .wait_playback_completion(playback_id)
+                .await
+                .context("Beep tone playback failed")?;
         }
 
         // Generate recording file path with safe components

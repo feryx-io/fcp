@@ -229,6 +229,30 @@ impl MediaManager {
         self.backend.play_file(call_id, file_path, target).await
     }
 
+    /// Play a generated tone into a call
+    ///
+    /// # Arguments
+    /// * `call_id` - The call to inject audio into
+    /// * `frequency` - Tone frequency in Hz (e.g., 1000.0 for 1kHz beep)
+    /// * `duration_ms` - Duration in milliseconds
+    /// * `amplitude` - Amplitude from 0.0 to 1.0
+    /// * `target` - Which participant(s) should hear the tone
+    ///
+    /// # Returns
+    /// A playback ID that can be used to stop or wait for the tone
+    pub async fn play_tone(
+        &self,
+        call_id: &CallId,
+        frequency: f32,
+        duration_ms: u32,
+        amplitude: f32,
+        target: AudioTarget,
+    ) -> Result<String> {
+        self.backend
+            .play_tone(call_id, frequency, duration_ms, amplitude, target)
+            .await
+    }
+
     /// Play text-to-speech into a call
     ///
     /// # Arguments

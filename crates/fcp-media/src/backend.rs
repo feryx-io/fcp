@@ -139,6 +139,28 @@ pub trait MediaBackend: Send + Sync {
         target: AudioTarget,
     ) -> Result<String>;
 
+    /// Play a generated tone into the call
+    ///
+    /// # Arguments
+    ///
+    /// * `call_id` - The call to inject audio into
+    /// * `frequency` - Tone frequency in Hz (e.g., 1000.0 for 1kHz beep)
+    /// * `duration_ms` - Duration in milliseconds
+    /// * `amplitude` - Amplitude from 0.0 to 1.0
+    /// * `target` - Which participant(s) should hear the tone
+    ///
+    /// # Returns
+    ///
+    /// A playback ID that can be used to stop or wait for the tone
+    async fn play_tone(
+        &self,
+        call_id: &CallId,
+        frequency: f32,
+        duration_ms: u32,
+        amplitude: f32,
+        target: AudioTarget,
+    ) -> Result<String>;
+
     /// Stop an active playback
     ///
     /// # Arguments
@@ -892,6 +914,50 @@ pub mod embedded {
             self.playback_handles.insert(playback_id.clone(), handle);
 
             info!(?call_id, playback_id = %playback_id, "Audio playback started");
+
+            Ok(playback_id)
+        }
+
+        async fn play_tone(
+            &self,
+            call_id: &fcp_core::CallId,
+            frequency: f32,
+            duration_ms: u32,
+            amplitude: f32,
+            target: AudioTarget,
+        ) -> Result<String> {
+            debug!(?call_id, frequency, duration_ms, amplitude, ?target, "Starting tone playback");
+
+            let session_info = self
+                .sessions
+                .get(call_id)
+                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+
+            let forge_call_id = session_info.forge_call_id.clone();
+            drop(session_info);
+
+            let source = Box::new(
+                forge_injection::ToneGenerator::single_tone(frequency, 8000)
+                    .with_duration(duration_ms)
+                    .with_amplitude(amplitude),
+            );
+
+            let forge_target = match target {
+                AudioTarget::ParticipantA => ForgeAudioTarget::ParticipantA,
+                AudioTarget::ParticipantB => ForgeAudioTarget::ParticipantB,
+                AudioTarget::Both => ForgeAudioTarget::Both,
+            };
+
+            let handle = self
+                .playback_manager
+                .start_playback(forge_call_id, source, forge_target, MixMode::Replace)
+                .await
+                .map_err(|e| Error::ForgeMedia(format!("Failed to start tone playback: {}", e)))?;
+
+            let playback_id = handle.id().to_string();
+            self.playback_handles.insert(playback_id.clone(), handle);
+
+            info!(?call_id, playback_id = %playback_id, frequency, duration_ms, "Tone playback started");
 
             Ok(playback_id)
         }
@@ -1859,6 +1925,18 @@ pub mod remote {
         ) -> Result<String> {
             // POST /v1/sessions/{id}/playback/file
             todo!("Implement remote audio playback")
+        }
+
+        async fn play_tone(
+            &self,
+            _call_id: &fcp_core::CallId,
+            _frequency: f32,
+            _duration_ms: u32,
+            _amplitude: f32,
+            _target: AudioTarget,
+        ) -> Result<String> {
+            // POST /v1/sessions/{id}/playback/tone
+            todo!("Implement remote tone playback")
         }
 
         async fn play_tts(

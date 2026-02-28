@@ -1,6 +1,6 @@
 [package]
 name = "fcp-voicemail"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["FCP Contributors"]
 description = "Voicemail service for FCP"
