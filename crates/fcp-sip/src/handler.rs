@@ -1392,6 +1392,17 @@ impl SipMessageHandler {
                                 .insert("sip_call_id".to_string(), sip_call_id.to_string());
                         }
 
+                        // Extract reason parameter from Request-URI for busy/no-answer greeting selection
+                        let ruri_str = request.uri().to_string();
+                        if let Some(pos) = ruri_str.find(";reason=") {
+                            let val = &ruri_str[pos + 8..];
+                            let val = val.split(';').next().unwrap_or(val);
+                            initial_variables.insert(
+                                "is_busy".to_string(),
+                                (val == "busy").to_string(),
+                            );
+                        }
+
                         // Create callbacks for Answer and Hangup nodes
                         let answer_handle = handle.clone();
                         let answer_request = request.clone();
@@ -4095,11 +4106,13 @@ impl SipMessageHandler {
         let mut winning_handle = None;
         let mut winning_flow_token: Option<String> = None;
         let mut cancelled_by_caller = false;
+        let mut last_failure_code: Option<u16> = None;
 
         debug!(call_id = %call_id, task_count = tasks.len(), "Starting race for first 2xx response");
 
         // Wrap the B-leg race into a single future so we can select against cancel
         let race_future = async {
+            let mut race_failure_code: Option<u16> = None;
             while !tasks.is_empty() {
                 let (result, _task_index, remaining) = futures::future::select_all(tasks).await;
                 tasks = remaining;
@@ -4123,13 +4136,14 @@ impl SipMessageHandler {
                                 "B-leg {} won the race with {}",
                                 i, code
                             );
-                            return Some((i, target, response, handle, flow_token));
+                            return (Some((i, target, response, handle, flow_token)), race_failure_code);
                         } else {
                             debug!(
                                 call_id = %call_id,
                                 code = code,
                                 "B-leg {} returned non-2xx {}, continuing race", i, code
                             );
+                            race_failure_code = Some(code);
                         }
                     }
                     Ok(None) => {
@@ -4147,7 +4161,7 @@ impl SipMessageHandler {
                     }
                 }
             }
-            None // No winner
+            (None, race_failure_code) // No winner
         };
 
         tokio::pin!(race_future);
@@ -4165,7 +4179,9 @@ impl SipMessageHandler {
         );
 
         tokio::select! {
-            winner = &mut race_future => {
+            result = &mut race_future => {
+                let (winner, failure_code) = result;
+                last_failure_code = failure_code;
                 if let Some((i, target, response, handle, flow_token)) = winner {
                     winning_index = Some(i);
                     winning_target = Some(target);
@@ -4508,10 +4524,14 @@ impl SipMessageHandler {
             };
 
             if let Some(dest) = cfna_dest {
-                info!(call_id = %call_id, destination = %dest, "CFNA: routing to forward destination");
+                let reason = match last_failure_code {
+                    Some(486) | Some(600) => Some("busy"),
+                    _ => Some("no-answer"),
+                };
+                info!(call_id = %call_id, destination = %dest, reason = ?reason, "CFNA: routing to forward destination");
                 let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
                 match self
-                    .route_cfna(&request, &a_leg_handle, call_id, &dest, callee)
+                    .route_cfna(&request, &a_leg_handle, call_id, &dest, callee, reason)
                     .await
                 {
                     Ok(()) => {} // route_cfna handles forking + response
@@ -8438,7 +8458,7 @@ impl SipMessageHandler {
             let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
             let a_handle = Arc::new(a_leg_handle.clone());
             match self
-                .route_cfna(request, &a_handle, call_id, dest, callee)
+                .route_cfna(request, &a_handle, call_id, dest, callee, Some("no-answer"))
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -8494,6 +8514,7 @@ impl SipMessageHandler {
         call_id: fcp_b2bua_core::CallId,
         destination: &'a str,
         original_callee: Option<&'a str>,
+        reason: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
         let uac = self
@@ -8534,7 +8555,11 @@ impl SipMessageHandler {
                 .next()
                 .unwrap_or(user);
 
-            format!("sip:{}@{}", user_part, vm_host)
+            if let Some(r) = reason {
+                format!("sip:{}@{};reason={}", user_part, vm_host, r)
+            } else {
+                format!("sip:{}@{}", user_part, vm_host)
+            }
         } else if destination.starts_with("sip:") || destination.starts_with("sips:") {
             destination.to_string()
         } else {

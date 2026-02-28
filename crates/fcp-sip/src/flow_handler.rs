@@ -1016,6 +1016,11 @@ impl FlowCallHandler {
             .get_variable("caller")
             .unwrap_or_else(|_| "unknown".to_string());
         let caller_name = context_guard.get_variable("caller_name").ok();
+        // Override is_busy from flow context variable (set by CFNA routing reason)
+        let is_busy = context_guard
+            .get_variable("is_busy")
+            .map(|v| v == "true")
+            .unwrap_or(is_busy);
         let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
         // Use the media_session_id from context (not the SIP call_id) so the
         // voicemail service can find the forge-media session for playback/recording.
