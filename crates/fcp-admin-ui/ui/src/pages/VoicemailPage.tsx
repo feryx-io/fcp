@@ -164,9 +164,11 @@ export function VoicemailPage() {
     enabled: !!editItem,
   })
 
+  const [tempDuration, setTempDuration] = useState<number>(168) // default 1 week (168 hours)
+
   const uploadGreetingMutation = useMutation({
-    mutationFn: ({ mailboxId, greetingType, file }: { mailboxId: string; greetingType: string; file: File }) =>
-      voicemail.uploadGreeting(mailboxId, greetingType, file),
+    mutationFn: ({ mailboxId, greetingType, file, expiresInHours }: { mailboxId: string; greetingType: string; file: File; expiresInHours?: number }) =>
+      voicemail.uploadGreeting(mailboxId, greetingType, file, expiresInHours),
     onSuccess: () => refetchGreetings(),
   })
 
@@ -180,7 +182,8 @@ export function VoicemailPage() {
 
   const handleGreetingUpload = (greetingType: string, file: File) => {
     if (!editItem) return
-    uploadGreetingMutation.mutate({ mailboxId: editItem.id, greetingType, file })
+    const expiresInHours = greetingType === 'temporary' ? tempDuration : undefined
+    uploadGreetingMutation.mutate({ mailboxId: editItem.id, greetingType, file, expiresInHours })
   }
 
   const handleGreetingDelete = (greetingType: string) => {
@@ -557,15 +560,22 @@ export function VoicemailPage() {
               <Label className="text-xs text-muted-foreground uppercase tracking-wider">Greetings</Label>
               {GREETING_TYPES.map(type_ => {
                 const existing = greetings.find(g => g.greeting_type === type_)
+                const expiresAt = existing && type_ === 'temporary' && existing.expires_at
+                  ? new Date(existing.expires_at * 1000) : null
+                const isExpired = expiresAt ? expiresAt.getTime() < Date.now() : false
                 return (
                   <div key={type_} className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
                       <Badge variant="outline" className="capitalize shrink-0">{type_}</Badge>
-                      {existing && (
+                      {existing && type_ === 'temporary' && expiresAt ? (
+                        <span className={`text-xs truncate ${isExpired ? 'text-destructive' : 'text-green-600'}`}>
+                          {isExpired ? 'Expired' : 'Expires'} {expiresAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </span>
+                      ) : existing ? (
                         <span className="text-xs text-muted-foreground truncate">
                           {new Date(typeof existing.created_at === 'number' ? existing.created_at * 1000 : existing.created_at).toLocaleDateString()}
                         </span>
-                      )}
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       {existing ? (
@@ -579,21 +589,36 @@ export function VoicemailPage() {
                           <Trash2 className="h-3.5 w-3.5 text-destructive" />
                         </Button>
                       ) : (
-                        <label className="cursor-pointer">
-                          <input
-                            type="file"
-                            accept=".wav,.mp3,audio/*"
-                            className="hidden"
-                            onChange={e => {
-                              const file = e.target.files?.[0]
-                              if (file) handleGreetingUpload(type_, file)
-                              e.target.value = ''
-                            }}
-                          />
-                          <Button type="button" variant="outline" size="sm" asChild>
-                            <span><Upload className="h-3.5 w-3.5 mr-1" /> Upload</span>
-                          </Button>
-                        </label>
+                        <>
+                          {type_ === 'temporary' && (
+                            <select
+                              className="text-xs border rounded px-1.5 py-1 bg-background"
+                              value={tempDuration}
+                              onChange={e => setTempDuration(Number(e.target.value))}
+                            >
+                              <option value={24}>24 hours</option>
+                              <option value={72}>3 days</option>
+                              <option value={168}>1 week</option>
+                              <option value={336}>2 weeks</option>
+                              <option value={720}>1 month</option>
+                            </select>
+                          )}
+                          <label className="cursor-pointer">
+                            <input
+                              type="file"
+                              accept=".wav,.mp3,audio/*"
+                              className="hidden"
+                              onChange={e => {
+                                const file = e.target.files?.[0]
+                                if (file) handleGreetingUpload(type_, file)
+                                e.target.value = ''
+                              }}
+                            />
+                            <Button type="button" variant="outline" size="sm" asChild>
+                              <span><Upload className="h-3.5 w-3.5 mr-1" /> Upload</span>
+                            </Button>
+                          </label>
+                        </>
                       )}
                     </div>
                   </div>

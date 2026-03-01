@@ -169,6 +169,16 @@ impl VoicemailGreeting {
         }
     }
 
+    /// Creates a new greeting with an expiration time.
+    pub fn with_expiration(greeting_type: GreetingType, audio_path: PathBuf, expires_at: SystemTime) -> Self {
+        Self {
+            greeting_type,
+            audio_path,
+            created_at: SystemTime::now(),
+            expires_at: Some(expires_at),
+        }
+    }
+
     /// Checks if this greeting has expired (for temporary greetings).
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {

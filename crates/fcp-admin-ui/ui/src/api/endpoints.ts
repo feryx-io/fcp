@@ -204,10 +204,11 @@ export const voicemail = {
     apiClient.delete<void>(`/voicemail/mailboxes/${id}`),
   listGreetings: (mailboxId: string) =>
     apiClient.get<import('@/types').GreetingResponse[]>(`/voicemail/mailboxes/${mailboxId}/greetings`),
-  uploadGreeting: async (mailboxId: string, greetingType: string, audioFile: File) => {
+  uploadGreeting: async (mailboxId: string, greetingType: string, audioFile: File, expiresInHours?: number) => {
     const formData = new FormData()
     formData.append('greeting_type', greetingType)
     formData.append('audio', audioFile)
+    if (expiresInHours) formData.append('expires_in', String(expiresInHours))
     const resp = await fetch(`/api/v1/voicemail/mailboxes/${mailboxId}/greetings`, {
       method: 'POST',
       body: formData,

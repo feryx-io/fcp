@@ -271,6 +271,7 @@ async fn list_greetings_handler(
                             .map(|d| d.as_secs())
                             .unwrap_or(0),
                         "expired": g.is_expired(),
+                        "expires_at": g.expires_at.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
                     })
                 })
                 .collect();
@@ -302,10 +303,11 @@ async fn upload_greeting_handler(
 ) -> Json<serde_json::Value> {
     use fcp_core::storage::VoicemailStore;
 
-    // Parse multipart fields: "type" (text) and "audio" (file)
+    // Parse multipart fields: "type" (text), "audio" (file), optional "expires_in" (hours)
     let mut greeting_type_str = None;
     let mut audio_data: Option<Vec<u8>> = None;
     let mut audio_filename = None;
+    let mut expires_in_hours: Option<u64> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or_default().to_string();
@@ -317,6 +319,10 @@ async fn upload_greeting_handler(
             audio_filename = field.file_name().map(str::to_string);
             if let Ok(data) = field.bytes().await {
                 audio_data = Some(data.to_vec());
+            }
+        } else if name == "expires_in" {
+            if let Ok(text) = field.text().await {
+                expires_in_hours = text.parse::<u64>().ok();
             }
         }
     }
@@ -377,7 +383,17 @@ async fn upload_greeting_handler(
     }
 
     // Update mailbox with new greeting
-    let greeting = fcp_core::VoicemailGreeting::new(greeting_type, audio_path.clone());
+    let greeting = if greeting_type == fcp_core::GreetingType::Temporary {
+        if let Some(hours) = expires_in_hours {
+            let expires_at = std::time::SystemTime::now()
+                + std::time::Duration::from_secs(hours * 3600);
+            fcp_core::VoicemailGreeting::with_expiration(greeting_type, audio_path.clone(), expires_at)
+        } else {
+            fcp_core::VoicemailGreeting::new(greeting_type, audio_path.clone())
+        }
+    } else {
+        fcp_core::VoicemailGreeting::new(greeting_type, audio_path.clone())
+    };
     mailbox.add_greeting(greeting);
 
     if let Err(e) = state.dyn_storage.put_mailbox(mailbox).await {
