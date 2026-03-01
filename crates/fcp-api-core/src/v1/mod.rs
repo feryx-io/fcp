@@ -261,6 +261,10 @@ pub fn router() -> Router<ApiState> {
             delete(voicemail::delete_greeting),
         )
         .route(
+            "/voicemail/mailboxes/:id/greetings/:greeting_type/active",
+            put(voicemail::set_greeting_active),
+        )
+        .route(
             "/voicemail/mailboxes/:id/greetings/:greeting_type/audio",
             get(voicemail::download_greeting_audio),
         )

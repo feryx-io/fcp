@@ -49,6 +49,10 @@ pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
             "/voicemail/mailboxes/{id}/greetings/{greeting_type}",
             delete(delete_greeting_handler),
         )
+        .route(
+            "/voicemail/mailboxes/{id}/greetings/{greeting_type}/active",
+            axum::routing::put(set_greeting_active_handler),
+        )
 }
 
 /// Run the HTTP health/status/voicemail server.
@@ -266,6 +270,7 @@ async fn list_greetings_handler(
                     serde_json::json!({
                         "type": g.greeting_type.to_string(),
                         "audio_path": g.audio_path.display().to_string(),
+                        "is_active": g.is_active,
                         "created_at": g.created_at
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
@@ -415,6 +420,64 @@ async fn upload_greeting_handler(
         "mailbox_id": id,
         "greeting_type": greeting_type.to_string(),
         "audio_path": audio_path.display().to_string(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct SetGreetingActiveRequest {
+    active: bool,
+}
+
+async fn set_greeting_active_handler(
+    State(state): State<Arc<VoicemailState>>,
+    Path((id, greeting_type_str)): Path<(String, String)>,
+    Json(payload): Json<SetGreetingActiveRequest>,
+) -> Json<serde_json::Value> {
+    use fcp_core::storage::VoicemailStore;
+
+    let greeting_type = match parse_greeting_type(&greeting_type_str) {
+        Some(gt) => gt,
+        None => {
+            return Json(serde_json::json!({
+                "error": format!("Invalid greeting type: {}. Must be: unavailable, busy, name, or temporary", greeting_type_str)
+            }));
+        }
+    };
+
+    let mut mailbox = match state.dyn_storage.get_mailbox(&id).await {
+        Ok(Some(mb)) => mb,
+        Ok(None) => {
+            return Json(serde_json::json!({
+                "error": format!("Mailbox not found: {}", id)
+            }));
+        }
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("Failed to get mailbox: {}", e)
+            }));
+        }
+    };
+
+    mailbox.set_greeting_active(greeting_type, payload.active);
+
+    if let Err(e) = state.dyn_storage.put_mailbox(mailbox).await {
+        return Json(serde_json::json!({
+            "error": format!("Failed to update mailbox: {}", e)
+        }));
+    }
+
+    info!(
+        mailbox_id = %id,
+        greeting_type = %greeting_type_str,
+        active = %payload.active,
+        "Greeting active state updated"
+    );
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "mailbox_id": id,
+        "greeting_type": greeting_type_str,
+        "is_active": payload.active,
     }))
 }
 

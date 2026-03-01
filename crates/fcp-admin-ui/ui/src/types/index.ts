@@ -466,6 +466,7 @@ export interface MailboxStats {
 export interface GreetingResponse {
   greeting_type: string // "unavailable" | "busy" | "name" | "temporary"
   audio_path: string
+  is_active: boolean
   created_at: number
   expires_at: number | null
 }

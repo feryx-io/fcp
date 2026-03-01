@@ -2924,7 +2924,7 @@ impl PostgresStorage {
 
         // Fetch greetings for this mailbox
         let greeting_rows = sqlx::query(
-            "SELECT greeting_type, audio_path, created_at, expires_at
+            "SELECT greeting_type, audio_path, is_active, created_at, expires_at
              FROM voicemail_greetings WHERE mailbox_id = $1",
         )
         .bind(&id)
@@ -2943,12 +2943,14 @@ impl PostgresStorage {
             };
 
             let audio_path: String = greeting_row.try_get("audio_path")?;
+            let is_active: bool = greeting_row.try_get("is_active").unwrap_or(true);
             let g_created_at: DateTime<Utc> = greeting_row.try_get("created_at")?;
             let expires_at: Option<DateTime<Utc>> = greeting_row.try_get("expires_at")?;
 
             greetings.push(fcp_core::VoicemailGreeting {
                 greeting_type,
                 audio_path: std::path::PathBuf::from(audio_path),
+                is_active,
                 created_at: datetime_to_system_time(g_created_at),
                 expires_at: expires_at.map(datetime_to_system_time),
             });
@@ -3197,12 +3199,13 @@ impl VoicemailStore for PostgresStorage {
 
             sqlx::query(
                 "INSERT INTO voicemail_greetings
-                 (mailbox_id, greeting_type, audio_path, created_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5)",
+                 (mailbox_id, greeting_type, audio_path, is_active, created_at, expires_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(&mailbox.id)
             .bind(greeting.greeting_type.to_string())
             .bind(greeting.audio_path.to_string_lossy().as_ref())
+            .bind(greeting.is_active)
             .bind(greeting_created_at)
             .bind(expires_at)
             .execute(&self.pool)

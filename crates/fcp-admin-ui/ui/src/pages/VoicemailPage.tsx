@@ -178,7 +178,19 @@ export function VoicemailPage() {
     onSuccess: () => refetchGreetings(),
   })
 
-  const GREETING_TYPES = ['unavailable', 'busy', 'name', 'temporary'] as const
+  const toggleGreetingMutation = useMutation({
+    mutationFn: ({ mailboxId, greetingType, active }: { mailboxId: string; greetingType: string; active: boolean }) =>
+      voicemail.setGreetingActive(mailboxId, greetingType, active),
+    onSuccess: () => refetchGreetings(),
+  })
+
+  const GREETING_TYPES = ['unavailable', 'temporary', 'busy', 'name'] as const
+  const GREETING_LABELS: Record<string, string> = {
+    unavailable: 'Standard',
+    temporary: 'Alternate',
+    busy: 'Busy',
+    name: 'Name',
+  }
 
   const handleGreetingUpload = (greetingType: string, file: File) => {
     if (!editItem) return
@@ -560,13 +572,28 @@ export function VoicemailPage() {
               <Label className="text-xs text-muted-foreground uppercase tracking-wider">Greetings</Label>
               {GREETING_TYPES.map(type_ => {
                 const existing = greetings.find(g => g.greeting_type === type_)
+                const showRadio = (type_ === 'unavailable' || type_ === 'temporary') && existing
                 const expiresAt = existing && type_ === 'temporary' && existing.expires_at
                   ? new Date(existing.expires_at * 1000) : null
                 const isExpired = expiresAt ? expiresAt.getTime() < Date.now() : false
                 return (
                   <div key={type_} className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <Badge variant="outline" className="capitalize shrink-0">{type_}</Badge>
+                      {showRadio && (
+                        <input
+                          type="radio"
+                          name="active-greeting"
+                          checked={existing.is_active}
+                          onChange={() => {
+                            if (!editItem || existing.is_active) return
+                            toggleGreetingMutation.mutate({ mailboxId: editItem.id, greetingType: type_, active: true })
+                          }}
+                          disabled={toggleGreetingMutation.isPending}
+                          className="border-input"
+                          title={existing.is_active ? 'Active — will be played' : 'Click to activate'}
+                        />
+                      )}
+                      <Badge variant="outline" className="shrink-0">{GREETING_LABELS[type_]}</Badge>
                       {existing && type_ === 'temporary' && expiresAt ? (
                         <span className={`text-xs truncate ${isExpired ? 'text-destructive' : 'text-green-600'}`}>
                           {isExpired ? 'Expired' : 'Expires'} {expiresAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}

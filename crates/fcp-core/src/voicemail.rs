@@ -151,6 +151,9 @@ pub struct VoicemailGreeting {
     /// File path to the audio greeting
     pub audio_path: PathBuf,
 
+    /// Whether this greeting is active (considered during playback)
+    pub is_active: bool,
+
     /// When this greeting was recorded
     pub created_at: SystemTime,
 
@@ -164,6 +167,7 @@ impl VoicemailGreeting {
         Self {
             greeting_type,
             audio_path,
+            is_active: true,
             created_at: SystemTime::now(),
             expires_at: None,
         }
@@ -174,6 +178,7 @@ impl VoicemailGreeting {
         Self {
             greeting_type,
             audio_path,
+            is_active: true,
             created_at: SystemTime::now(),
             expires_at: Some(expires_at),
         }
@@ -275,17 +280,13 @@ impl VoicemailMailbox {
     }
 
     /// Gets the appropriate greeting for the given scenario.
+    ///
+    /// Priority: busy greeting (if caller got busy) → alternate/temporary
+    /// (if active and not expired) → standard/unavailable (if active).
+    /// Busy greetings are always played when present and the caller is busy;
+    /// they do not use the `is_active` flag.
     pub fn get_greeting(&self, is_busy: bool) -> Option<&VoicemailGreeting> {
-        // Check for temporary greeting first
-        if let Some(greeting) = self
-            .greetings
-            .iter()
-            .find(|g| g.greeting_type == GreetingType::Temporary && !g.is_expired())
-        {
-            return Some(greeting);
-        }
-
-        // Check for busy greeting if busy
+        // Check for busy greeting first (always played if present, no is_active check)
         if is_busy {
             if let Some(greeting) = self
                 .greetings
@@ -296,10 +297,62 @@ impl VoicemailMailbox {
             }
         }
 
-        // Fall back to unavailable greeting
+        // Check for alternate/temporary greeting (must be active and not expired)
+        if let Some(greeting) = self
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Temporary && g.is_active && !g.is_expired())
+        {
+            return Some(greeting);
+        }
+
+        // Fall back to standard/unavailable greeting (must be active)
         self.greetings
             .iter()
-            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .find(|g| g.greeting_type == GreetingType::Unavailable && g.is_active)
+    }
+
+    /// Sets the active state of a greeting by type.
+    ///
+    /// Standard (Unavailable) and Alternate (Temporary) are mutually exclusive:
+    /// activating one automatically deactivates the other. At least one of them
+    /// must always be active — deactivating one activates the other.
+    pub fn set_greeting_active(&mut self, greeting_type: GreetingType, active: bool) {
+        let has_greeting = self.greetings.iter().any(|g| g.greeting_type == greeting_type);
+        if !has_greeting {
+            return;
+        }
+
+        // Enforce mutual exclusivity between Unavailable and Temporary
+        let counterpart = match greeting_type {
+            GreetingType::Unavailable => Some(GreetingType::Temporary),
+            GreetingType::Temporary => Some(GreetingType::Unavailable),
+            _ => None,
+        };
+
+        if active {
+            // Activating one deactivates the other
+            if let Some(other) = counterpart {
+                if let Some(g) = self.greetings.iter_mut().find(|g| g.greeting_type == other) {
+                    g.is_active = false;
+                }
+            }
+            if let Some(g) = self.greetings.iter_mut().find(|g| g.greeting_type == greeting_type) {
+                g.is_active = true;
+            }
+        } else {
+            // Deactivating one activates the other (one must always be active)
+            if let Some(g) = self.greetings.iter_mut().find(|g| g.greeting_type == greeting_type) {
+                g.is_active = false;
+            }
+            if let Some(other) = counterpart {
+                if let Some(g) = self.greetings.iter_mut().find(|g| g.greeting_type == other) {
+                    g.is_active = true;
+                }
+            }
+        }
+
+        self.updated_at = SystemTime::now();
     }
 
     /// Adds a greeting to this mailbox.

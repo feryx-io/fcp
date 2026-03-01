@@ -531,6 +531,7 @@ pub async fn get_mailbox_stats(
 pub struct GreetingResponse {
     pub greeting_type: String,
     pub audio_path: String,
+    pub is_active: bool,
     /// Unix timestamp in seconds
     pub created_at: f64,
     /// Unix timestamp in seconds, or null
@@ -548,6 +549,7 @@ impl From<VoicemailGreeting> for GreetingResponse {
         Self {
             greeting_type: g.greeting_type.to_string(),
             audio_path: g.audio_path.to_string_lossy().to_string(),
+            is_active: g.is_active,
             created_at: system_time_to_epoch_secs(g.created_at),
             expires_at: g.expires_at.map(system_time_to_epoch_secs),
         }
@@ -723,6 +725,56 @@ pub async fn delete_greeting(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Request body for toggling greeting active state.
+#[derive(Debug, Deserialize)]
+pub struct SetGreetingActiveRequest {
+    pub active: bool,
+}
+
+/// Set the active state of a greeting.
+pub async fn set_greeting_active(
+    State(state): State<ApiState>,
+    Path((id, greeting_type_str)): Path<(String, String)>,
+    Json(req): Json<SetGreetingActiveRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let greeting_type = parse_greeting_type(&greeting_type_str)?;
+
+    let mut mailbox = storage
+        .get_mailbox(&id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+
+    if !mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type) {
+        return Err(ApiError::NotFound(format!(
+            "Greeting '{}' not found for mailbox {}",
+            greeting_type_str, id
+        )));
+    }
+
+    mailbox.set_greeting_active(greeting_type, req.active);
+
+    storage
+        .put_mailbox(mailbox)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        mailbox_id = %id,
+        greeting_type = %greeting_type_str,
+        active = %req.active,
+        "Updated greeting active state"
+    );
+
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "greeting_type": greeting_type_str,
+        "is_active": req.active,
+    })))
 }
 
 /// Download a greeting audio file.

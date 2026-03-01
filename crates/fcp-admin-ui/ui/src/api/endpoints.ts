@@ -218,6 +218,8 @@ export const voicemail = {
   },
   deleteGreeting: (mailboxId: string, greetingType: string) =>
     apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}`),
+  setGreetingActive: (mailboxId: string, greetingType: string, active: boolean) =>
+    apiClient.put<void>(`/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}/active`, { active }),
   downloadGreetingUrl: (mailboxId: string, greetingType: string) =>
     `/api/v1/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}/audio`,
 }
