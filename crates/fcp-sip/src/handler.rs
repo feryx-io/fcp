@@ -4525,7 +4525,7 @@ impl SipMessageHandler {
 
             if let Some(dest) = cfna_dest {
                 let reason = match last_failure_code {
-                    Some(486) | Some(600) => Some("busy"),
+                    Some(486) | Some(600) | Some(603) => Some("busy"),
                     _ => Some("no-answer"),
                 };
                 info!(call_id = %call_id, destination = %dest, reason = ?reason, "CFNA: routing to forward destination");
