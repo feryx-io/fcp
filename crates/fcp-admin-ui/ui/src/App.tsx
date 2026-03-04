@@ -58,21 +58,23 @@ function PageLoader() {
 }
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuthStore()
-  if (!isAuthenticated) return <Navigate to="/admin/login" replace />
+  const { isAuthenticated, user } = useAuthStore()
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  // End users cannot access admin routes
+  if (user?.role === 'end_user') return <Navigate to="/user" replace />
   return <>{children}</>
 }
 
 function UserProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore()
-  if (!isAuthenticated) return <Navigate to="/admin/login" replace />
+  if (!isAuthenticated) return <Navigate to="/login" replace />
   return <>{children}</>
 }
 
 function DefaultRedirect() {
   const { isAuthenticated, user } = useAuthStore()
-  if (!isAuthenticated) return <Navigate to="/admin/login" replace />
-  if (user?.role === 'user') return <Navigate to="/user" replace />
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (user?.role === 'end_user') return <Navigate to="/user" replace />
   return <Navigate to="/admin" replace />
 }
 
@@ -82,7 +84,9 @@ export function App() {
       <BrowserRouter>
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route path="/admin/login" element={<LoginPage />} />
+            <Route path="/login" element={<LoginPage />} />
+            {/* Backward compat: redirect old login path */}
+            <Route path="/admin/login" element={<Navigate to="/login" replace />} />
             <Route
               path="/admin"
               element={

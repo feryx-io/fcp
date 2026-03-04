@@ -16,10 +16,20 @@ use axum::{
 use fcp_core::CredentialStore;
 use serde::{Deserialize, Serialize};
 
+use fcp_core::UserRole;
+
 /// JWT secret — in production this should come from config/env.
 /// For now we use the same auth_token or a derived key.
 const JWT_SECRET: &[u8] = b"fcp-admin-jwt-secret-change-in-production";
 const JWT_EXPIRY_HOURS: i64 = 24;
+
+/// Serialize a UserRole to its serde snake_case string (e.g. EndUser -> "end_user").
+fn role_to_string(role: &UserRole) -> String {
+    serde_json::to_value(role)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| format!("{:?}", role).to_lowercase())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -90,7 +100,7 @@ pub async fn login(
 
     let claims = Claims {
         sub: user.username.clone(),
-        role: format!("{:?}", user.role).to_lowercase(),
+        role: role_to_string(&user.role),
         tenant_id: user.tenant_id.to_string(),
         display_name: user.display_name.clone(),
         exp: now + (JWT_EXPIRY_HOURS as usize * 3600),
@@ -135,7 +145,7 @@ pub async fn me(
         if let Ok(Some(user)) = storage.get_user(&claims.sub).await {
             return Ok(Json(AuthUserResponse {
                 username: user.username,
-                role: format!("{:?}", user.role).to_lowercase(),
+                role: role_to_string(&user.role),
                 tenant_id: user.tenant_id.to_string(),
                 display_name: user.display_name,
             }));
@@ -177,7 +187,7 @@ pub async fn refresh(
 
         let new_claims = Claims {
             sub: user.username.clone(),
-            role: format!("{:?}", user.role).to_lowercase(),
+            role: role_to_string(&user.role),
             tenant_id: user.tenant_id.to_string(),
             display_name: user.display_name.clone(),
             exp: now + (JWT_EXPIRY_HOURS as usize * 3600),

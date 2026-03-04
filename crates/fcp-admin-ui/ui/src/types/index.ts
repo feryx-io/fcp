@@ -19,7 +19,7 @@ export interface User {
   last_login: string | null
 }
 
-export type UserRole = 'super_admin' | 'telecom_admin' | 'tenant_admin' | 'operator' | 'user' | 'api_service'
+export type UserRole = 'super_admin' | 'telecom_admin' | 'user_admin' | 'department_admin' | 'read_only' | 'end_user'
 
 export type AccountStatus = 'active' | 'suspended' | 'pending' | 'disabled'
 

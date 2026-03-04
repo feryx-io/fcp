@@ -69,7 +69,7 @@ export function UserLayout() {
 
   const handleLogout = () => {
     logout()
-    navigate('/admin/login')
+    navigate('/login')
   }
 
   const ThemeIcon = themeIcon(theme)

@@ -25,7 +25,7 @@ export function LoginPage() {
     try {
       const response = await auth.login({ username, password })
       login(response.token, response.user)
-      if (response.user.role === 'user') {
+      if (response.user.role === 'end_user') {
         navigate('/user')
       } else {
         navigate('/admin')

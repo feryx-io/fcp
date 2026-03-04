@@ -66,8 +66,10 @@ const roleBadgeVariant = (role: string) => {
   switch (role) {
     case 'super_admin': case 'superadmin': return 'destructive' as const
     case 'telecom_admin': case 'telecomadmin': return 'default' as const
-    case 'tenant_admin': case 'tenantadmin': return 'default' as const
-    case 'operator': return 'secondary' as const
+    case 'user_admin': case 'useradmin': return 'default' as const
+    case 'department_admin': case 'departmentadmin': return 'secondary' as const
+    case 'read_only': case 'readonly': return 'secondary' as const
+    case 'end_user': case 'enduser': return 'outline' as const
     default: return 'outline' as const
   }
 }
@@ -326,14 +328,15 @@ function CreateUserDialog({
           </div>
           <div className="space-y-2">
             <Label>Role</Label>
-            <Select defaultValue="user" onValueChange={(v) => setValue('role', v)}>
+            <Select defaultValue="end_user" onValueChange={(v) => setValue('role', v)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="enduser">User</SelectItem>
-                <SelectItem value="operator">Operator</SelectItem>
-                <SelectItem value="tenantadmin">Tenant Admin</SelectItem>
-                <SelectItem value="telecomadmin">Telecom Admin</SelectItem>
-                <SelectItem value="superadmin">Super Admin</SelectItem>
+                <SelectItem value="end_user">End User</SelectItem>
+                <SelectItem value="read_only">Read Only</SelectItem>
+                <SelectItem value="department_admin">Department Admin</SelectItem>
+                <SelectItem value="user_admin">User Admin</SelectItem>
+                <SelectItem value="telecom_admin">Telecom Admin</SelectItem>
+                <SelectItem value="super_admin">Super Admin</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -432,11 +435,12 @@ function EditUserDialog({
               <Select value={undefined} defaultValue={user?.role} onValueChange={(v) => setValue('role', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="enduser">User</SelectItem>
-                  <SelectItem value="operator">Operator</SelectItem>
-                  <SelectItem value="tenantadmin">Tenant Admin</SelectItem>
-                  <SelectItem value="telecomadmin">Telecom Admin</SelectItem>
-                  <SelectItem value="superadmin">Super Admin</SelectItem>
+                  <SelectItem value="end_user">End User</SelectItem>
+                  <SelectItem value="read_only">Read Only</SelectItem>
+                  <SelectItem value="department_admin">Department Admin</SelectItem>
+                  <SelectItem value="user_admin">User Admin</SelectItem>
+                  <SelectItem value="telecom_admin">Telecom Admin</SelectItem>
+                  <SelectItem value="super_admin">Super Admin</SelectItem>
                 </SelectContent>
               </Select>
             </div>
