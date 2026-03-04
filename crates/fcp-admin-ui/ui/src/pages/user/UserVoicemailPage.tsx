@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Play, Pause, Trash2, Upload, CheckCircle, Clock, MailOpen, Save, Power, PowerOff } from 'lucide-react'
+import { Play, Pause, Trash2, Upload, CheckCircle, Clock, MailOpen, Mail, Save, Download, Power, PowerOff } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -155,6 +155,23 @@ function MessagesTab() {
     }
   }
 
+  const handleDownload = async (msg: VoicemailMessage) => {
+    try {
+      const url = await me.fetchMessageAudio(msg.id)
+      const caller = (msg.caller_name || msg.caller || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_')
+      const date = new Date(msg.created_at * 1000).toISOString().slice(0, 10)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `voicemail-${caller}-${date}.wav`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      // Failed
+    }
+  }
+
   // Cleanup blob URLs
   useEffect(() => {
     return () => {
@@ -225,11 +242,19 @@ function MessagesTab() {
                   <MailOpen className="h-4 w-4" />
                 </Button>
               )}
+              {msg.status === 'heard' && (
+                <Button variant="ghost" size="icon" title="Mark as unheard" onClick={() => handleMarkStatus(msg.id, 'new')}>
+                  <Mail className="h-4 w-4" />
+                </Button>
+              )}
               {msg.status !== 'saved' && (
                 <Button variant="ghost" size="icon" title="Save message" onClick={() => handleMarkStatus(msg.id, 'saved')}>
                   <Save className="h-4 w-4" />
                 </Button>
               )}
+              <Button variant="ghost" size="icon" title="Download" onClick={() => handleDownload(msg)}>
+                <Download className="h-4 w-4" />
+              </Button>
               <Button variant="ghost" size="icon" title="Delete" onClick={() => handleDelete(msg.id)}>
                 <Trash2 className="h-4 w-4 text-destructive" />
               </Button>
