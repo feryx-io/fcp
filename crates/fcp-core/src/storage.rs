@@ -330,6 +330,14 @@ pub struct User {
     #[serde(with = "optional_system_time_serde", default)]
     pub last_login: Option<SystemTime>,
 
+    /// Number of consecutive failed login attempts
+    #[serde(default)]
+    pub failed_login_attempts: i32,
+
+    /// Account locked until this time (None = not time-locked)
+    #[serde(with = "optional_system_time_serde", default)]
+    pub account_locked_until: Option<SystemTime>,
+
     /// Emergency contact information
     #[serde(default)]
     pub emergency_contact: EmergencyContact,
@@ -2722,6 +2730,8 @@ mod tests {
             emergency_contact: EmergencyContact::default(),
             primary_phone_number_id: None,
             voicemail_box_id: None,
+            failed_login_attempts: 0,
+            account_locked_until: None,
         };
 
         storage.put_user(user.clone()).await.unwrap();

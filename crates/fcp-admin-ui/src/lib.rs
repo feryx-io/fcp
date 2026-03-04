@@ -29,8 +29,9 @@ where
         .route("/admin", get(serve_index))
         .route("/admin/", get(serve_index))
         .route("/admin/*path", get(serve_spa_fallback))
-        // Login page at root
+        // Login and password change pages at root
         .route("/login", get(serve_index))
+        .route("/change-password", get(serve_index))
         // User portal (same SPA, different route prefix)
         .route("/user", get(serve_index))
         .route("/user/", get(serve_index))

@@ -7,7 +7,7 @@ import type {
   PhoneNumber, CreatePhoneNumberRequest,
   LineBinding, CreateLineBindingRequest, UpdateLineBindingRequest,
   DashboardSummary, SystemHealth,
-  LoginRequest, LoginResponse, AuthUser,
+  LoginRequest, LoginResponse, AuthUser, ChangeExpiredPasswordRequest,
   CallInfo, OriginateCallRequest,
   CdrResponse, ListCdrsResponse, CdrQueryParams,
   QueueResponse, QueueStatsResponse, AgentResponse, AgentLoginRequest,
@@ -32,6 +32,8 @@ export const auth = {
   logout: () => apiClient.post<void>('/auth/logout'),
   refresh: () => apiClient.post<LoginResponse>('/auth/refresh'),
   me: () => apiClient.get<AuthUser>('/auth/me'),
+  changeExpiredPassword: (data: ChangeExpiredPasswordRequest) =>
+    apiClient.post<LoginResponse>('/auth/change-expired-password', data),
 }
 
 // Dashboard
@@ -59,6 +61,8 @@ export const users = {
     apiClient.put<void>(`/users/${encodeURIComponent(username)}/digest-password`, { digest_password }),
   deleteDigestPassword: (username: string) =>
     apiClient.delete<void>(`/users/${encodeURIComponent(username)}/digest-password`),
+  unlock: (username: string) =>
+    apiClient.post<User>(`/users/${encodeURIComponent(username)}/unlock`),
 }
 
 // Tenants

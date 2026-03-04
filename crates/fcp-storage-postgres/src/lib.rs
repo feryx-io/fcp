@@ -242,7 +242,8 @@ impl CredentialStore for PostgresStorage {
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
                     account_status, last_login, emergency_contact_json,
-                    primary_phone_number_id, voicemail_box_id
+                    primary_phone_number_id, voicemail_box_id,
+                    failed_login_attempts, account_locked_until
              FROM users
              WHERE username = $1",
         )
@@ -271,6 +272,7 @@ impl CredentialStore for PostgresStorage {
         let last_login = user.last_login.map(system_time_to_datetime);
         let primary_phone_number_id = user.primary_phone_number_id.map(|id| id.to_string());
         let voicemail_box_id = user.voicemail_box_id.map(|id| id.to_string());
+        let account_locked_until = user.account_locked_until.map(system_time_to_datetime);
 
         sqlx::query(
             "INSERT INTO users (
@@ -279,9 +281,10 @@ impl CredentialStore for PostgresStorage {
                 email, password_last_reset, phone_number, mobile_number, pin,
                 extension, department, job_title, location, language, timezone,
                 account_status, last_login, emergency_contact_json,
-                primary_phone_number_id, voicemail_box_id
+                primary_phone_number_id, voicemail_box_id,
+                failed_login_attempts, account_locked_until
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
              ON CONFLICT(username, tenant_id) DO UPDATE SET
                  password_hash = EXCLUDED.password_hash,
                  digest_password = EXCLUDED.digest_password,
@@ -307,7 +310,9 @@ impl CredentialStore for PostgresStorage {
                  last_login = EXCLUDED.last_login,
                  emergency_contact_json = EXCLUDED.emergency_contact_json,
                  primary_phone_number_id = EXCLUDED.primary_phone_number_id,
-                 voicemail_box_id = EXCLUDED.voicemail_box_id",
+                 voicemail_box_id = EXCLUDED.voicemail_box_id,
+                 failed_login_attempts = EXCLUDED.failed_login_attempts,
+                 account_locked_until = EXCLUDED.account_locked_until",
         )
         .bind(&id)
         .bind(&user.username)
@@ -338,6 +343,8 @@ impl CredentialStore for PostgresStorage {
         .bind(&emergency_contact)
         .bind(&primary_phone_number_id)
         .bind(&voicemail_box_id)
+        .bind(user.failed_login_attempts)
+        .bind(account_locked_until)
         .execute(&self.pool)
         .await?;
 
@@ -362,7 +369,8 @@ impl CredentialStore for PostgresStorage {
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, language, timezone,
                     account_status, last_login, emergency_contact_json,
-                    primary_phone_number_id, voicemail_box_id
+                    primary_phone_number_id, voicemail_box_id,
+                    failed_login_attempts, account_locked_until
              FROM users
              ORDER BY username",
         )
@@ -939,6 +947,11 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         .get::<Option<String>, _>("voicemail_box_id")
         .and_then(|s| fcp_core::VoicemailBoxId::from_str(&s).ok());
 
+    let failed_login_attempts: i32 = row.get("failed_login_attempts");
+    let account_locked_until = row
+        .get::<Option<DateTime<Utc>>, _>("account_locked_until")
+        .map(datetime_to_system_time);
+
     Ok(User {
         id,
         username: row.get("username"),
@@ -969,6 +982,8 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         emergency_contact,
         primary_phone_number_id,
         voicemail_box_id,
+        failed_login_attempts,
+        account_locked_until,
     })
 }
 

@@ -41,6 +41,44 @@ pub struct AdminConfig {
     /// Directory for voicemail recordings (used by message audio playback)
     #[serde(default)]
     pub voicemail_recordings_dir: Option<String>,
+
+    /// Security policy configuration (account lockout, password expiration)
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+/// Security policy configuration for login protection.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SecurityConfig {
+    /// Maximum failed login attempts before lockout (default: 5)
+    #[serde(default = "default_max_failed_attempts")]
+    pub max_failed_attempts: u32,
+
+    /// Lockout duration in seconds (default: 1800 = 30 minutes)
+    #[serde(default = "default_lockout_duration_secs")]
+    pub lockout_duration_secs: u64,
+
+    /// Password expiration in days (None/0 = disabled)
+    #[serde(default)]
+    pub password_expiration_days: Option<u32>,
+}
+
+fn default_max_failed_attempts() -> u32 {
+    5
+}
+
+fn default_lockout_duration_secs() -> u64 {
+    1800
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            max_failed_attempts: default_max_failed_attempts(),
+            lockout_duration_secs: default_lockout_duration_secs(),
+            password_expiration_days: None,
+        }
+    }
 }
 
 impl Default for AdminConfig {
@@ -54,6 +92,7 @@ impl Default for AdminConfig {
             cluster: ClusterConfig::default(),
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
+            security: SecurityConfig::default(),
         }
     }
 }

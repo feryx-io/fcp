@@ -24,6 +24,11 @@ export function LoginPage() {
 
     try {
       const response = await auth.login({ username, password })
+      if (response.password_expired) {
+        // Redirect to change-password page with credentials in state
+        navigate('/change-password', { state: { username, currentPassword: password, token: response.token, user: response.user } })
+        return
+      }
       login(response.token, response.user)
       if (response.user.role === 'end_user') {
         navigate('/user')

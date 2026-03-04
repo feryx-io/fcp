@@ -17,11 +17,13 @@ export interface User {
   timezone: string
   account_status: AccountStatus
   last_login: string | null
+  failed_login_attempts: number
+  account_locked_until: string | null
 }
 
 export type UserRole = 'super_admin' | 'telecom_admin' | 'user_admin' | 'department_admin' | 'read_only' | 'end_user'
 
-export type AccountStatus = 'active' | 'suspended' | 'pending' | 'disabled'
+export type AccountStatus = 'active' | 'suspended' | 'locked' | 'pending' | 'disabled'
 
 export interface CreateUserRequest {
   username: string
@@ -300,6 +302,13 @@ export interface LoginRequest {
 export interface LoginResponse {
   token: string
   user: AuthUser
+  password_expired?: boolean
+}
+
+export interface ChangeExpiredPasswordRequest {
+  username: string
+  current_password: string
+  new_password: string
 }
 
 export interface ApiError {

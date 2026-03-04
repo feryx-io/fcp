@@ -50,6 +50,8 @@ pub struct UserResponse {
     pub timezone: String,
     pub account_status: String,
     pub last_login: Option<std::time::SystemTime>,
+    pub failed_login_attempts: i32,
+    pub account_locked_until: Option<std::time::SystemTime>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
 }
@@ -83,6 +85,8 @@ impl From<User> for UserResponse {
             timezone: user.timezone,
             account_status: user.account_status.to_string(),
             last_login: user.last_login,
+            failed_login_attempts: user.failed_login_attempts,
+            account_locked_until: user.account_locked_until,
             emergency_contact_name: user.emergency_contact.name,
             emergency_contact_phone: user.emergency_contact.phone,
         }
@@ -309,6 +313,8 @@ pub async fn create_user(
         emergency_contact,
         primary_phone_number_id: None,
         voicemail_box_id: None,
+        failed_login_attempts: 0,
+        account_locked_until: None,
     };
 
     storage.put_user(user.clone()).await?;
@@ -664,6 +670,39 @@ pub async fn delete_digest_password(
     );
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Unlock a user account.
+///
+/// POST /api/v1/users/:username/unlock
+///
+/// Resets failed login attempts, clears lockout, and sets account status to Active.
+pub async fn unlock_user(
+    State(state): State<ApiState>,
+    Path(username): Path<String>,
+) -> Result<Json<UserResponse>, ApiError> {
+    validation::validate_username(&username)?;
+
+    let storage = require_storage!(state);
+    let mut user = storage
+        .get_user(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+
+    user.failed_login_attempts = 0;
+    user.account_locked_until = None;
+    user.account_status = AccountStatus::Active;
+    user.updated_at = std::time::SystemTime::now();
+
+    storage.put_user(user.clone()).await?;
+
+    warn!(
+        event = "account_unlocked",
+        username = %username,
+        "User account unlocked by admin"
+    );
+
+    Ok(Json(UserResponse::from(user)))
 }
 
 /// Delete a user.

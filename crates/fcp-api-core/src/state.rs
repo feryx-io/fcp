@@ -11,6 +11,27 @@ use fcp_sip::CallManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Security policy for login protection.
+#[derive(Debug, Clone)]
+pub struct SecurityPolicy {
+    /// Maximum failed login attempts before lockout
+    pub max_failed_attempts: u32,
+    /// Lockout duration in seconds
+    pub lockout_duration_secs: u64,
+    /// Password expiration in days (None = disabled)
+    pub password_expiration_days: Option<u32>,
+}
+
+impl Default for SecurityPolicy {
+    fn default() -> Self {
+        Self {
+            max_failed_attempts: 5,
+            lockout_duration_secs: 1800, // 30 minutes
+            password_expiration_days: None,
+        }
+    }
+}
+
 /// Shared state for API handlers.
 #[derive(Clone)]
 pub struct ApiState {
@@ -65,6 +86,9 @@ pub struct ApiState {
 
     /// Directory for voicemail recordings (used by message audio playback)
     pub voicemail_recordings_dir: Option<PathBuf>,
+
+    /// Security policy for login protection (lockout, password expiration)
+    pub security_policy: SecurityPolicy,
 }
 
 impl ApiState {
@@ -100,6 +124,7 @@ impl ApiState {
             config_store: None,
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
+            security_policy: SecurityPolicy::default(),
         }
     }
 
@@ -124,6 +149,12 @@ impl ApiState {
     /// Set the voicemail recordings directory.
     pub fn with_voicemail_recordings_dir(mut self, dir: PathBuf) -> Self {
         self.voicemail_recordings_dir = Some(dir);
+        self
+    }
+
+    /// Set the security policy for login protection.
+    pub fn with_security_policy(mut self, policy: SecurityPolicy) -> Self {
+        self.security_policy = policy;
         self
     }
 }

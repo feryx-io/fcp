@@ -217,6 +217,13 @@ async fn main() -> Result<()> {
     .with_events_server_url(events_server_url.clone())
     .with_config_store(config_store);
 
+    // Set security policy from config
+    let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {
+        max_failed_attempts: config.security.max_failed_attempts,
+        lockout_duration_secs: config.security.lockout_duration_secs,
+        password_expiration_days: config.security.password_expiration_days,
+    });
+
     // Set voicemail greetings directory (default: /tmp/fcp/voicemail/greetings)
     let api_state = if let Some(ref dir) = config.voicemail_greetings_dir {
         api_state.with_voicemail_greetings_dir(std::path::PathBuf::from(dir))

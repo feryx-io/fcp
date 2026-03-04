@@ -38,6 +38,7 @@ pub fn router() -> Router<ApiState> {
         .route("/auth/logout", post(auth_session::logout))
         .route("/auth/me", get(auth_session::me))
         .route("/auth/refresh", post(auth_session::refresh))
+        .route("/auth/change-expired-password", post(auth_session::change_expired_password))
         // Dashboard endpoints (for admin UI)
         .route("/dashboard/summary", get(dashboard::summary))
         // System endpoints
@@ -71,6 +72,7 @@ pub fn router() -> Router<ApiState> {
                 .delete(users::delete_user),
         )
         .route("/users/:username/password", put(users::update_password))
+        .route("/users/:username/unlock", post(users::unlock_user))
         .route(
             "/users/:username/digest-password",
             put(users::update_digest_password).delete(users::delete_digest_password),

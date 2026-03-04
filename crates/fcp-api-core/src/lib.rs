@@ -18,7 +18,7 @@ pub mod validation;
 
 // Re-export commonly used types
 pub use error::ApiError;
-pub use state::ApiState;
+pub use state::{ApiState, SecurityPolicy};
 
 use axum::{
     http::{header, Method},

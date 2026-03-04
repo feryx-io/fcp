@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth'
 
 // Lazy-loaded pages
 const LoginPage = lazy(() => import('@/pages/LoginPage').then((m) => ({ default: m.LoginPage })))
+const ChangePasswordPage = lazy(() => import('@/pages/ChangePasswordPage').then((m) => ({ default: m.ChangePasswordPage })))
 const DashboardPage = lazy(() => import('@/pages/DashboardPage').then((m) => ({ default: m.DashboardPage })))
 const UsersPage = lazy(() => import('@/pages/UsersPage').then((m) => ({ default: m.UsersPage })))
 const ExtensionsPage = lazy(() => import('@/pages/ExtensionsPage').then((m) => ({ default: m.ExtensionsPage })))
@@ -85,6 +86,7 @@ export function App() {
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/change-password" element={<ChangePasswordPage />} />
             {/* Backward compat: redirect old login path */}
             <Route path="/admin/login" element={<Navigate to="/login" replace />} />
             <Route

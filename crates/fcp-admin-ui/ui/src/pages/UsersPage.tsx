@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2 } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2, LockOpen } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -78,6 +78,7 @@ const statusBadgeVariant = (status: string) => {
   switch (status) {
     case 'active': return 'success' as const
     case 'suspended': return 'warning' as const
+    case 'locked': return 'destructive' as const
     case 'disabled': return 'destructive' as const
     default: return 'secondary' as const
   }
@@ -136,6 +137,11 @@ export function UsersPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
   })
 
+  const unlockMutation = useMutation({
+    mutationFn: users.unlock,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  })
+
   const columns: ColumnDef<User>[] = [
     {
       accessorKey: 'username',
@@ -163,9 +169,16 @@ export function UsersPage() {
       accessorKey: 'account_status',
       header: 'Status',
       cell: ({ row }) => (
-        <Badge variant={statusBadgeVariant(row.original.account_status)}>
-          {row.original.account_status}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={statusBadgeVariant(row.original.account_status)}>
+            {row.original.account_status}
+          </Badge>
+          {row.original.account_status === 'locked' && row.original.failed_login_attempts > 0 && (
+            <span className="text-xs text-muted-foreground">
+              ({row.original.failed_login_attempts} attempts)
+            </span>
+          )}
+        </div>
       ),
     },
     {
@@ -200,6 +213,12 @@ export function UsersPage() {
               <Phone className="mr-2 h-4 w-4" />
               Set Digest Credentials
             </DropdownMenuItem>
+            {row.original.account_status === 'locked' && (
+              <DropdownMenuItem onClick={() => unlockMutation.mutate(row.original.username)}>
+                <LockOpen className="mr-2 h-4 w-4" />
+                Unlock Account
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive"

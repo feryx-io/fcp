@@ -1108,6 +1108,8 @@ mod tests {
             primary_phone_number_id: None,
             voicemail_box_id: None,
             account_status: fcp_core::AccountStatus::Active,
+            failed_login_attempts: 0,
+            account_locked_until: None,
         };
         storage.put_user(user).await.unwrap();
 
