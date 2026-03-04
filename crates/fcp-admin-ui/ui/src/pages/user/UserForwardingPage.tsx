@@ -121,7 +121,7 @@ export function UserForwardingPage() {
           return (
             <Card key={binding.id}>
               <CardHeader>
-                <CardTitle className="text-base">Line {binding.phone_number_id}</CardTitle>
+                <CardTitle className="text-base">Line {binding.phone_number || binding.phone_number_id}</CardTitle>
                 <CardDescription>Configure call forwarding for this line.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">

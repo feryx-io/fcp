@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    storage::{password, LineBindingStore, VoicemailStore},
+    storage::{password, LineBindingStore, PhoneNumberStore, VoicemailStore},
     CredentialStore, GreetingType, MessageStatus, UserId, VoicemailGreeting,
 };
 use serde::{Deserialize, Serialize};
@@ -737,6 +737,7 @@ pub async fn download_voicemail_greeting_audio(
 pub struct ForwardingResponse {
     pub id: String,
     pub phone_number_id: String,
+    pub phone_number: Option<String>,
     pub forward_unconditional: Option<String>,
     pub forward_on_busy: Option<String>,
     pub forward_on_no_answer: Option<String>,
@@ -762,17 +763,26 @@ pub async fn get_forwarding(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let responses: Vec<ForwardingResponse> = bindings
-        .into_iter()
-        .map(|b| ForwardingResponse {
+    let mut responses = Vec::with_capacity(bindings.len());
+    for b in bindings {
+        // Look up the actual phone number (E.164) from the ID
+        let phone_number = storage
+            .get_phone_number(&b.phone_number_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|pn| pn.e164);
+
+        responses.push(ForwardingResponse {
             id: b.id.to_string(),
             phone_number_id: b.phone_number_id.to_string(),
+            phone_number,
             forward_unconditional: b.forward_unconditional,
             forward_on_busy: b.forward_on_busy,
             forward_on_no_answer: b.forward_on_no_answer,
             no_answer_timeout_secs: b.no_answer_timeout.as_secs(),
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(responses))
 }
@@ -839,9 +849,18 @@ pub async fn update_forwarding(
 
     info!(username = %claims.sub, binding_id = %binding_id, "User updated call forwarding");
 
+    // Look up the actual phone number (E.164) from the ID
+    let phone_number = storage
+        .get_phone_number(&binding.phone_number_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|pn| pn.e164);
+
     Ok(Json(ForwardingResponse {
         id: binding.id.to_string(),
         phone_number_id: binding.phone_number_id.to_string(),
+        phone_number,
         forward_unconditional: binding.forward_unconditional,
         forward_on_busy: binding.forward_on_busy,
         forward_on_no_answer: binding.forward_on_no_answer,

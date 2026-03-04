@@ -884,6 +884,7 @@ export interface MeMailboxStats {
 export interface MeForwarding {
   id: string
   phone_number_id: string
+  phone_number: string | null
   forward_unconditional: string | null
   forward_on_busy: string | null
   forward_on_no_answer: string | null
