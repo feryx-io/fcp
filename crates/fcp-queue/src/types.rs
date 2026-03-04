@@ -535,4 +535,64 @@ mod tests {
         assert_eq!(AgentState::Away.to_string(), "away");
         assert_eq!(AgentState::Paused.to_string(), "paused");
     }
+
+    fn test_queued_call_aged(call_id: &str, priority: u32, age_secs: u64) -> QueuedCall {
+        QueuedCall {
+            id: uuid::Uuid::new_v4().to_string(),
+            call_id: call_id.to_string(),
+            queue_name: "test".to_string(),
+            tenant_id: test_tenant(),
+            caller_uri: "sip:caller@example.com".to_string(),
+            caller_display: None,
+            priority,
+            original_priority: priority,
+            enqueued_at: Instant::now().checked_sub(std::time::Duration::from_secs(age_secs)).unwrap(),
+            position: 0,
+            attempts: 0,
+            is_callback: false,
+            callback_uri: None,
+            callback_attempts: 0,
+            last_callback_attempt: None,
+        }
+    }
+
+    #[test]
+    fn test_escalate_priorities_reduces_priority() {
+        let mut queue = Queue::new("test".to_string(), test_tenant(), test_queue_config());
+        // Call aged 120s with priority 5, escalation every 60s → 2 escalations → priority 3
+        queue.insert_call(test_queued_call_aged("call-1", 5, 120));
+        queue.escalate_priorities(60);
+        assert_eq!(queue.waiting_calls[0].priority, 3);
+    }
+
+    #[test]
+    fn test_escalate_priorities_saturates_at_zero() {
+        let mut queue = Queue::new("test".to_string(), test_tenant(), test_queue_config());
+        // Call aged 300s with priority 2, escalation every 60s → 5 escalations → saturates at 0
+        queue.insert_call(test_queued_call_aged("call-1", 2, 300));
+        queue.escalate_priorities(60);
+        assert_eq!(queue.waiting_calls[0].priority, 0);
+    }
+
+    #[test]
+    fn test_escalate_priorities_zero_interval_noop() {
+        let mut queue = Queue::new("test".to_string(), test_tenant(), test_queue_config());
+        queue.insert_call(test_queued_call_aged("call-1", 5, 120));
+        queue.escalate_priorities(0);
+        // Priority should be unchanged
+        assert_eq!(queue.waiting_calls[0].priority, 5);
+    }
+
+    #[test]
+    fn test_agent_is_available_multi_call() {
+        let mut agent = Agent::new("100".to_string(), "100".to_string(), test_tenant());
+        agent.state = AgentState::OnCall;
+        agent.max_concurrent_calls = 3;
+
+        agent.current_calls = 2;
+        assert!(agent.is_available());
+
+        agent.current_calls = 3;
+        assert!(!agent.is_available());
+    }
 }

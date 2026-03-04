@@ -970,4 +970,192 @@ mod tests {
         let result = engine.execute_node(&mut context, "hangup").await.unwrap();
         assert!(matches!(result, FlowExecutionResult::Hangup(_)));
     }
+
+    // ---- Helpers ----
+
+    fn test_engine() -> FlowEngine {
+        FlowEngine::new()
+    }
+
+    fn test_context_with(vars: HashMap<String, String>) -> FlowContext {
+        let flow = FlowDefinition {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            description: None,
+            version: 1,
+            initial_node: "start".to_string(),
+            nodes: HashMap::new(),
+            variables: HashMap::new(),
+            tenant_id: None,
+            enabled: true,
+            webhook_url: None,
+            created_at: None,
+            updated_at: None,
+        };
+        FlowContext::new(Arc::new(flow), CallId::new(), vars)
+    }
+
+    // ---- evaluate_condition tests ----
+
+    #[test]
+    fn test_condition_equals() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("hello", BranchOperator::Equals, "hello"));
+        assert!(!engine.evaluate_condition("hello", BranchOperator::Equals, "world"));
+    }
+
+    #[test]
+    fn test_condition_not_equals() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("hello", BranchOperator::NotEquals, "world"));
+        assert!(!engine.evaluate_condition("hello", BranchOperator::NotEquals, "hello"));
+    }
+
+    #[test]
+    fn test_condition_contains() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("hello world", BranchOperator::Contains, "world"));
+        assert!(!engine.evaluate_condition("hello", BranchOperator::Contains, "xyz"));
+    }
+
+    #[test]
+    fn test_condition_starts_with() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("hello world", BranchOperator::StartsWith, "hello"));
+        assert!(!engine.evaluate_condition("hello world", BranchOperator::StartsWith, "world"));
+    }
+
+    #[test]
+    fn test_condition_ends_with() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("hello world", BranchOperator::EndsWith, "world"));
+        assert!(!engine.evaluate_condition("hello world", BranchOperator::EndsWith, "hello"));
+    }
+
+    #[test]
+    fn test_condition_greater_than() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("10", BranchOperator::GreaterThan, "5"));
+        assert!(!engine.evaluate_condition("5", BranchOperator::GreaterThan, "10"));
+    }
+
+    #[test]
+    fn test_condition_less_than() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("5", BranchOperator::LessThan, "10"));
+        assert!(!engine.evaluate_condition("10", BranchOperator::LessThan, "5"));
+    }
+
+    #[test]
+    fn test_condition_greater_than_or_equal() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("10", BranchOperator::GreaterThanOrEqual, "10"));
+        assert!(engine.evaluate_condition("11", BranchOperator::GreaterThanOrEqual, "10"));
+        assert!(!engine.evaluate_condition("9", BranchOperator::GreaterThanOrEqual, "10"));
+    }
+
+    #[test]
+    fn test_condition_less_than_or_equal() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("10", BranchOperator::LessThanOrEqual, "10"));
+        assert!(engine.evaluate_condition("9", BranchOperator::LessThanOrEqual, "10"));
+        assert!(!engine.evaluate_condition("11", BranchOperator::LessThanOrEqual, "10"));
+    }
+
+    #[test]
+    fn test_condition_exists() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("something", BranchOperator::Exists, ""));
+        assert!(!engine.evaluate_condition("", BranchOperator::Exists, ""));
+    }
+
+    #[test]
+    fn test_condition_not_exists() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("", BranchOperator::NotExists, ""));
+        assert!(!engine.evaluate_condition("something", BranchOperator::NotExists, ""));
+    }
+
+    #[test]
+    fn test_condition_numeric_non_parseable() {
+        let engine = test_engine();
+        // Non-numeric strings default to false for numeric operators
+        assert!(!engine.evaluate_condition("abc", BranchOperator::GreaterThan, "def"));
+        assert!(!engine.evaluate_condition("abc", BranchOperator::LessThan, "def"));
+    }
+
+    #[test]
+    fn test_condition_float_comparison() {
+        let engine = test_engine();
+        assert!(engine.evaluate_condition("3.14", BranchOperator::GreaterThan, "2.71"));
+        assert!(!engine.evaluate_condition("2.71", BranchOperator::GreaterThan, "3.14"));
+    }
+
+    #[test]
+    fn test_condition_equal_numbers_not_greater() {
+        let engine = test_engine();
+        assert!(!engine.evaluate_condition("5", BranchOperator::GreaterThan, "5"));
+        assert!(!engine.evaluate_condition("5", BranchOperator::LessThan, "5"));
+    }
+
+    // ---- interpolate_variables tests ----
+
+    #[test]
+    fn test_interpolate_simple() {
+        let engine = test_engine();
+        let mut vars = HashMap::new();
+        vars.insert("name".to_string(), "World".to_string());
+        let ctx = test_context_with(vars);
+
+        let result = engine.interpolate_variables("Hello {{name}}", &ctx).unwrap();
+        assert_eq!(result, "Hello World");
+    }
+
+    #[test]
+    fn test_interpolate_multiple_vars() {
+        let engine = test_engine();
+        let mut vars = HashMap::new();
+        vars.insert("first".to_string(), "John".to_string());
+        vars.insert("last".to_string(), "Doe".to_string());
+        let ctx = test_context_with(vars);
+
+        let result = engine.interpolate_variables("{{first}} {{last}}", &ctx).unwrap();
+        assert_eq!(result, "John Doe");
+    }
+
+    #[test]
+    fn test_interpolate_missing_variable_errors() {
+        let engine = test_engine();
+        let ctx = test_context_with(HashMap::new());
+
+        let result = engine.interpolate_variables("Hello {{missing}}", &ctx);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FlowError::VariableNotFound(_)));
+    }
+
+    #[test]
+    fn test_interpolate_no_placeholders_unchanged() {
+        let engine = test_engine();
+        let ctx = test_context_with(HashMap::new());
+
+        let result = engine.interpolate_variables("No placeholders here", &ctx).unwrap();
+        assert_eq!(result, "No placeholders here");
+    }
+
+    // ---- FlowContext tests ----
+
+    #[test]
+    fn test_context_set_get_variable() {
+        let ctx = test_context_with(HashMap::new());
+        ctx.set_variable("key".to_string(), "value".to_string());
+        assert_eq!(ctx.get_variable("key").unwrap(), "value");
+    }
+
+    #[test]
+    fn test_context_get_missing_variable_error() {
+        let ctx = test_context_with(HashMap::new());
+        let result = ctx.get_variable("nonexistent");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FlowError::VariableNotFound(_)));
+    }
 }

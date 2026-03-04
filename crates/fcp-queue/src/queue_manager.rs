@@ -2442,4 +2442,214 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("full"));
     }
+
+    // ---- Agent state machine tests ----
+
+    #[tokio::test]
+    async fn test_agent_call_completed_transitions_to_wrap_up() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let tenant = test_tenant();
+
+        manager
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .await
+            .unwrap();
+
+        // mark_agent_ringing increments current_calls and sets OnCall
+        manager.mark_agent_ringing("100", "call-1").await;
+        {
+            let agent = manager.agents.get("100").unwrap();
+            assert_eq!(agent.state, AgentState::OnCall);
+            assert_eq!(agent.current_calls, 1);
+        }
+
+        // Complete the call → WrapUp (current_calls drops to 0)
+        manager.agent_call_completed("100");
+        {
+            let agent = manager.agents.get("100").unwrap();
+            assert_eq!(agent.state, AgentState::WrapUp);
+            assert_eq!(agent.current_calls, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_call_completed_stays_on_call_multi() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let tenant = test_tenant();
+
+        manager
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .await
+            .unwrap();
+
+        // Set up agent for multi-call
+        {
+            let mut agent = manager.agents.get_mut("100").unwrap();
+            agent.max_concurrent_calls = 3;
+        }
+
+        // Simulate 2 concurrent calls via mark_agent_ringing (which increments current_calls)
+        manager.mark_agent_ringing("100", "call-1").await;
+        manager.mark_agent_ringing("100", "call-2").await;
+        {
+            let agent = manager.agents.get("100").unwrap();
+            assert_eq!(agent.current_calls, 2);
+            assert_eq!(agent.state, AgentState::OnCall);
+        }
+
+        // Complete 1 call — should stay OnCall since 1 call remains
+        manager.agent_call_completed("100");
+        {
+            let agent = manager.agents.get("100").unwrap();
+            assert_eq!(agent.current_calls, 1);
+            assert_eq!(agent.state, AgentState::OnCall);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_agent_call_completed_increments_calls_handled() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let tenant = test_tenant();
+
+        manager
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .await
+            .unwrap();
+
+        manager.agent_answered("100", "call-1").await;
+        manager.agent_call_completed("100");
+
+        let agent = manager.agents.get("100").unwrap();
+        assert_eq!(agent.calls_handled, 1);
+        assert!(agent.last_call_ended.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_agent_no_answer_increments_counter() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let tenant = test_tenant();
+
+        manager
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .await
+            .unwrap();
+
+        let call = test_queued_call("call-1", "sales");
+        manager.enqueue_call(call).await.unwrap();
+
+        manager.agent_no_answer("100", "call-1").await;
+
+        let agent = manager.agents.get("100").unwrap();
+        assert_eq!(agent.consecutive_no_answers, 1);
+    }
+
+    #[tokio::test]
+    async fn test_agent_no_answer_auto_away_at_max() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let tenant = test_tenant();
+
+        manager
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .await
+            .unwrap();
+
+        // max_no_answer = 3 in test_config
+        for i in 0..3 {
+            let call_id = format!("call-{}", i);
+            let call = test_queued_call(&call_id, "sales");
+            manager.enqueue_call(call).await.unwrap();
+            manager.agent_no_answer("100", &call_id).await;
+        }
+
+        let agent = manager.agents.get("100").unwrap();
+        assert_eq!(agent.state, AgentState::Away);
+        assert_eq!(agent.pause_reason.as_deref(), Some("auto_away_no_answer"));
+    }
+
+    // ---- Enqueue rejection tests ----
+
+    #[tokio::test]
+    async fn test_enqueue_draining_queue_rejected() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        manager.drain_queue("sales").await.unwrap();
+
+        let call = test_queued_call("call-1", "sales");
+        let result = manager.enqueue_call(call).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("draining"));
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_nonexistent_queue_rejected() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        let mut call = test_queued_call("call-1", "sales");
+        call.queue_name = "nonexistent".to_string();
+        let result = manager.enqueue_call(call).await;
+        assert!(result.is_err());
+    }
+
+    // ---- Wait estimation tests ----
+
+    #[test]
+    fn test_estimate_wait_no_agents_returns_none() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        // No agents logged in — can't estimate
+        assert!(manager.estimate_wait_secs("call-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_estimate_wait_no_history_returns_none() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        let tenant = test_tenant();
+
+        manager
+            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .await
+            .unwrap();
+
+        let call = test_queued_call("call-1", "sales");
+        manager.enqueue_call(call).await.unwrap();
+
+        // Agent has 0 calls_handled → total_calls = 0 → None
+        assert!(manager.estimate_wait_secs("call-1").is_none());
+    }
+
+    // ---- Queue operation tests ----
+
+    #[tokio::test]
+    async fn test_drain_undrain_queue() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        assert!(!manager.is_queue_draining("sales"));
+
+        manager.drain_queue("sales").await.unwrap();
+        assert!(manager.is_queue_draining("sales"));
+
+        manager.undrain_queue("sales").await.unwrap();
+        assert!(!manager.is_queue_draining("sales"));
+    }
+
+    #[tokio::test]
+    async fn test_caller_abandoned_removes_call_and_increments_stat() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+
+        let call = test_queued_call("call-abandon", "sales");
+        manager.enqueue_call(call).await.unwrap();
+        assert_eq!(manager.queue_stats("sales").unwrap().calls_waiting, 1);
+
+        manager.caller_abandoned("call-abandon").await;
+
+        let stats = manager.queue_stats("sales").unwrap();
+        assert_eq!(stats.calls_waiting, 0);
+        assert_eq!(stats.calls_abandoned_today, 1);
+    }
+
+    #[test]
+    fn test_queue_stats_service_level_no_offered() {
+        let manager = QueueManager::new(test_config(), None, test_tenant());
+        // 0 offered → 100% service level
+        let stats = manager.queue_stats("sales").unwrap();
+        assert_eq!(stats.service_level_pct, 100.0);
+    }
 }
