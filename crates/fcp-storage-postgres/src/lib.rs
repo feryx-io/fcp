@@ -2934,6 +2934,7 @@ impl PostgresStorage {
         let attach_audio: bool = row.try_get("attach_audio")?;
         let include_transcription: bool = row.try_get("include_transcription")?;
         let transcription_enabled: bool = row.try_get("transcription_enabled")?;
+        let retention_days: Option<i32> = row.try_get("retention_days")?;
         let created_at: DateTime<Utc> = row.try_get("created_at")?;
         let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
 
@@ -2986,6 +2987,7 @@ impl PostgresStorage {
             attach_audio,
             include_transcription,
             transcription_enabled,
+            retention_days: retention_days.map(|d| d as u32),
             greetings,
             created_at: datetime_to_system_time(created_at),
             updated_at: datetime_to_system_time(updated_at),
@@ -3042,7 +3044,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    created_at, updated_at
+                    retention_days, created_at, updated_at
              FROM voicemail_mailboxes WHERE id = $1",
         )
         .bind(id)
@@ -3066,7 +3068,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    created_at, updated_at
+                    retention_days, created_at, updated_at
              FROM voicemail_mailboxes WHERE line_binding_id = $1",
         )
         .bind(line_binding_id.to_string())
@@ -3090,7 +3092,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    created_at, updated_at
+                    retention_days, created_at, updated_at
              FROM voicemail_mailboxes WHERE user_id = $1",
         )
         .bind(user_id.to_string())
@@ -3115,7 +3117,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    created_at, updated_at
+                    retention_days, created_at, updated_at
              FROM voicemail_mailboxes WHERE tenant_id = $1 AND extension = $2",
         )
         .bind(tenant_id.to_string())
@@ -3140,7 +3142,7 @@ impl VoicemailStore for PostgresStorage {
             "SELECT id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
                     max_message_duration, max_messages, email_notification, email_address,
                     attach_audio, include_transcription, transcription_enabled,
-                    created_at, updated_at
+                    retention_days, created_at, updated_at
              FROM voicemail_mailboxes WHERE tenant_id = $1 ORDER BY extension",
         )
         .bind(tenant_id.to_string())
@@ -3164,8 +3166,8 @@ impl VoicemailStore for PostgresStorage {
              (id, tenant_id, user_id, line_binding_id, extension, pin, enabled,
               max_message_duration, max_messages, email_notification, email_address,
               attach_audio, include_transcription, transcription_enabled,
-              created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+              retention_days, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
              ON CONFLICT (id) DO UPDATE SET
                  tenant_id = EXCLUDED.tenant_id,
                  user_id = EXCLUDED.user_id,
@@ -3180,6 +3182,7 @@ impl VoicemailStore for PostgresStorage {
                  attach_audio = EXCLUDED.attach_audio,
                  include_transcription = EXCLUDED.include_transcription,
                  transcription_enabled = EXCLUDED.transcription_enabled,
+                 retention_days = EXCLUDED.retention_days,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&mailbox.id)
@@ -3196,6 +3199,7 @@ impl VoicemailStore for PostgresStorage {
         .bind(mailbox.attach_audio)
         .bind(mailbox.include_transcription)
         .bind(mailbox.transcription_enabled)
+        .bind(mailbox.retention_days.map(|d| d as i32))
         .bind(created_at)
         .bind(now)
         .execute(&self.pool)

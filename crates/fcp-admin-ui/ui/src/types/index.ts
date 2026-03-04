@@ -444,6 +444,7 @@ export interface MailboxResponse {
   attach_audio: boolean
   include_transcription: boolean
   transcription_enabled: boolean
+  retention_days: number | null
   created_at: number
   updated_at: number
 }
@@ -501,6 +502,7 @@ export interface UpdateMailboxRequest {
   attach_audio?: boolean
   include_transcription?: boolean
   transcription_enabled?: boolean
+  retention_days?: number | null
 }
 
 // Presence (matches presence.rs)
@@ -871,6 +873,7 @@ export interface MeMailbox {
   email_notification: boolean
   email_address: string | null
   attach_audio: boolean
+  retention_days: number | null
 }
 
 export interface MeMailboxStats {

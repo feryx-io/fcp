@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Play, Pause, Trash2, Upload, CheckCircle, Clock, MailOpen, Mail, Save, Download, Power, PowerOff } from 'lucide-react'
+import { Play, Pause, Trash2, Upload, CheckCircle, Clock, CalendarClock, MailOpen, Mail, Save, Download, Power, PowerOff } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -84,7 +84,7 @@ export function UserVoicemailPage() {
         ))}
       </div>
 
-      {tab === 'messages' && <MessagesTab />}
+      {tab === 'messages' && <MessagesTab retentionDays={mailbox.retention_days} />}
       {tab === 'greetings' && <GreetingsTab />}
       {tab === 'settings' && <SettingsTab mailbox={mailbox} onUpdate={setMailbox} />}
     </div>
@@ -93,7 +93,7 @@ export function UserVoicemailPage() {
 
 // ---- Messages Tab ----
 
-function MessagesTab() {
+function MessagesTab({ retentionDays }: { retentionDays: number | null }) {
   const [messages, setMessages] = useState<VoicemailMessage[]>([])
   const [loading, setLoading] = useState(true)
   const [playingId, setPlayingId] = useState<string | null>(null)
@@ -232,6 +232,9 @@ function MessagesTab() {
                 {msg.caller_name && <span>{msg.caller}</span>}
                 <span>{formatDuration(msg.duration)}</span>
                 <span>{formatDate(msg.created_at)}</span>
+                {retentionDays && msg.status !== 'saved' && (
+                  <ExpiryIndicator createdAt={msg.created_at} retentionDays={retentionDays} />
+                )}
               </div>
             </div>
 
@@ -592,6 +595,33 @@ function SettingsTab({ mailbox, onUpdate }: { mailbox: MeMailbox; onUpdate: (mb:
         </form>
       </CardContent>
     </Card>
+  )
+}
+
+// ---- Expiry Indicator ----
+
+function ExpiryIndicator({ createdAt, retentionDays }: { createdAt: number; retentionDays: number }) {
+  const expiresAt = (createdAt + retentionDays * 86400) * 1000 // ms
+  const now = Date.now()
+  const remainingMs = expiresAt - now
+
+  if (remainingMs <= 0) {
+    return (
+      <span className="text-destructive flex items-center gap-1">
+        <CalendarClock className="h-3 w-3" />
+        Expired
+      </span>
+    )
+  }
+
+  const remainingDays = Math.ceil(remainingMs / 86400000)
+  const label = remainingDays === 1 ? '1 day' : `${remainingDays} days`
+
+  return (
+    <span className="text-muted-foreground flex items-center gap-1">
+      <CalendarClock className="h-3 w-3" />
+      Expires in {label}
+    </span>
   )
 }
 

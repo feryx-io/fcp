@@ -206,6 +206,7 @@ pub struct MailboxResponse {
     pub email_notification: bool,
     pub email_address: Option<String>,
     pub attach_audio: bool,
+    pub retention_days: Option<u32>,
 }
 
 /// GET /me/voicemail
@@ -226,6 +227,7 @@ pub async fn get_voicemail(
         email_notification: mailbox.email_notification,
         email_address: mailbox.email_address,
         attach_audio: mailbox.attach_audio,
+        retention_days: mailbox.retention_days,
     }))
 }
 
@@ -277,6 +279,7 @@ pub async fn update_voicemail(
         email_notification: mailbox.email_notification,
         email_address: mailbox.email_address,
         attach_audio: mailbox.attach_audio,
+        retention_days: mailbox.retention_days,
     }))
 }
 

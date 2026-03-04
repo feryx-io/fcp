@@ -42,6 +42,7 @@ pub struct MailboxResponse {
     pub attach_audio: bool,
     pub include_transcription: bool,
     pub transcription_enabled: bool,
+    pub retention_days: Option<u32>,
     pub created_at: f64,
     pub updated_at: f64,
 }
@@ -62,6 +63,7 @@ impl From<VoicemailMailbox> for MailboxResponse {
             attach_audio: mailbox.attach_audio,
             include_transcription: mailbox.include_transcription,
             transcription_enabled: mailbox.transcription_enabled,
+            retention_days: mailbox.retention_days,
             created_at: system_time_to_epoch_secs(mailbox.created_at),
             updated_at: system_time_to_epoch_secs(mailbox.updated_at),
         }
@@ -133,6 +135,8 @@ pub struct UpdateMailboxRequest {
     pub attach_audio: Option<bool>,
     pub include_transcription: Option<bool>,
     pub transcription_enabled: Option<bool>,
+    /// Double Option: outer = field not provided, inner = null to clear.
+    pub retention_days: Option<Option<u32>>,
 }
 
 /// Update message request.
@@ -308,6 +312,16 @@ pub async fn update_mailbox(
     }
     if let Some(transcription_enabled) = req.transcription_enabled {
         mailbox.transcription_enabled = transcription_enabled;
+    }
+    if let Some(rd) = req.retention_days {
+        if let Some(days) = rd {
+            if days == 0 || days > 365 {
+                return Err(ApiError::BadRequest(
+                    "retention_days must be between 1 and 365".to_string(),
+                ));
+            }
+        }
+        mailbox.retention_days = rd;
     }
 
     mailbox.updated_at = SystemTime::now();

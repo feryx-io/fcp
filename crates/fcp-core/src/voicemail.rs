@@ -239,6 +239,9 @@ pub struct VoicemailMailbox {
     /// Whether to enable message transcription
     pub transcription_enabled: bool,
 
+    /// Message retention period in days (None = keep forever)
+    pub retention_days: Option<u32>,
+
     /// Greetings for this mailbox
     pub greetings: Vec<VoicemailGreeting>,
 
@@ -273,6 +276,7 @@ impl VoicemailMailbox {
             attach_audio: false,
             include_transcription: false,
             transcription_enabled: false,
+            retention_days: None,
             greetings: Vec::new(),
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),

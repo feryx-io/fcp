@@ -45,6 +45,7 @@ const editSchema = z.object({
   attach_audio: z.boolean().optional(),
   include_transcription: z.boolean().optional(),
   transcription_enabled: z.boolean().optional(),
+  retention_days: z.union([z.coerce.number().min(1).max(365), z.null()]).optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -249,6 +250,15 @@ export function VoicemailPage() {
       header: 'Max Messages',
     },
     {
+      accessorKey: 'retention_days',
+      header: 'Retention',
+      cell: ({ row }) => (
+        <span className="text-sm">
+          {row.original.retention_days ? `${row.original.retention_days} days` : 'No limit'}
+        </span>
+      ),
+    },
+    {
       id: 'actions',
       cell: ({ row }) => (
         <DropdownMenu>
@@ -402,6 +412,7 @@ export function VoicemailPage() {
       attach_audio: editItem.attach_audio,
       include_transcription: editItem.include_transcription,
       transcription_enabled: editItem.transcription_enabled,
+      retention_days: editItem.retention_days,
     })
   }
 
@@ -416,6 +427,7 @@ export function VoicemailPage() {
       attach_audio: data.attach_audio,
       include_transcription: data.include_transcription,
       transcription_enabled: data.transcription_enabled,
+      retention_days: data.retention_days,
     }
     if (data.pin) payload.pin = data.pin
     updateMutation.mutate({ id: editItem.id, data: payload })
@@ -553,6 +565,27 @@ export function VoicemailPage() {
                 <Label htmlFor="e-max-msg">Max Messages</Label>
                 <Input id="e-max-msg" type="number" {...editForm.register('max_messages')} />
               </div>
+            </div>
+            <div className="border-t pt-3 space-y-2">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wider">Message Retention</Label>
+              <select
+                className="w-full border rounded px-3 py-2 text-sm bg-background"
+                value={editForm.watch('retention_days') ?? ''}
+                onChange={e => {
+                  const v = e.target.value
+                  editForm.setValue('retention_days', v === '' ? null : Number(v))
+                }}
+              >
+                <option value="">No limit</option>
+                <option value="7">7 days</option>
+                <option value="14">14 days</option>
+                <option value="30">30 days</option>
+                <option value="60">60 days</option>
+                <option value="90">90 days</option>
+                <option value="180">180 days</option>
+                <option value="365">365 days</option>
+              </select>
+              <p className="text-xs text-muted-foreground">New and heard messages will expire after this period. Saved messages are exempt.</p>
             </div>
             <div className="border-t pt-3 space-y-2">
               <Label className="text-xs text-muted-foreground uppercase tracking-wider">Email Settings</Label>
