@@ -231,6 +231,13 @@ async fn main() -> Result<()> {
         api_state.with_voicemail_greetings_dir(std::path::PathBuf::from("/tmp/fcp/voicemail/greetings"))
     };
 
+    // Set profile pictures directory (default: /tmp/fcp/profile-pictures)
+    let api_state = if let Some(ref dir) = config.profile_pictures_dir {
+        api_state.with_profile_pictures_dir(std::path::PathBuf::from(dir))
+    } else {
+        api_state.with_profile_pictures_dir(std::path::PathBuf::from("/tmp/fcp/profile-pictures"))
+    };
+
     // Set voicemail recordings directory (default: /tmp/fcp/voicemail/recordings)
     let api_state = if let Some(ref dir) = config.voicemail_recordings_dir {
         api_state.with_voicemail_recordings_dir(std::path::PathBuf::from(dir))

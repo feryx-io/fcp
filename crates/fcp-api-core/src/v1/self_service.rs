@@ -47,6 +47,7 @@ pub struct ProfileResponse {
     pub language: String,
     pub timezone: String,
     pub role: String,
+    pub has_profile_picture: bool,
 }
 
 /// GET /me/profile
@@ -63,6 +64,7 @@ pub async fn get_profile(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
 
+    let has_profile_picture = user.profile_picture.is_some();
     Ok(Json(ProfileResponse {
         username: user.username,
         display_name: user.display_name,
@@ -75,6 +77,7 @@ pub async fn get_profile(
         language: user.language,
         timezone: user.timezone,
         role: format!("{:?}", user.role).to_lowercase(),
+        has_profile_picture,
     }))
 }
 
@@ -126,6 +129,7 @@ pub async fn update_profile(
 
     info!(username = %claims.sub, "User updated own profile");
 
+    let has_profile_picture = user.profile_picture.is_some();
     Ok(Json(ProfileResponse {
         username: user.username,
         display_name: user.display_name,
@@ -138,6 +142,7 @@ pub async fn update_profile(
         language: user.language,
         timezone: user.timezone,
         role: format!("{:?}", user.role).to_lowercase(),
+        has_profile_picture,
     }))
 }
 
@@ -905,6 +910,184 @@ fn parse_greeting_type(s: &str) -> Result<GreetingType, ApiError> {
             s
         ))),
     }
+}
+
+// ---- Profile Picture (Avatar) Endpoints ----
+
+/// Get the profile pictures directory or return an error.
+fn require_profile_pictures_dir(state: &ApiState) -> Result<&PathBuf, ApiError> {
+    state.profile_pictures_dir.as_ref().ok_or_else(|| {
+        ApiError::Internal("Profile pictures directory is not configured".to_string())
+    })
+}
+
+const MAX_AVATAR_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+
+/// POST /me/profile/avatar
+pub async fn upload_avatar(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims_from_headers(&headers)?;
+    let storage = require_storage!(state);
+    let pictures_dir = require_profile_pictures_dir(&state)?;
+
+    let mut user = storage
+        .get_user(&claims.sub)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+
+    let mut image_data: Option<Vec<u8>> = None;
+    let mut content_type: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "avatar" || name == "file" {
+            content_type = field.content_type().map(|s| s.to_string());
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| ApiError::BadRequest(format!("Failed to read file data: {}", e)))?;
+            if bytes.len() > MAX_AVATAR_SIZE {
+                return Err(ApiError::BadRequest(format!(
+                    "File too large ({} bytes). Maximum is {} bytes.",
+                    bytes.len(),
+                    MAX_AVATAR_SIZE
+                )));
+            }
+            image_data = Some(bytes.to_vec());
+        }
+    }
+
+    let image_data =
+        image_data.ok_or_else(|| ApiError::BadRequest("Missing 'avatar' file field".to_string()))?;
+    if image_data.is_empty() {
+        return Err(ApiError::BadRequest("Image file is empty".to_string()));
+    }
+
+    // Determine extension from content type
+    let ext = match content_type.as_deref() {
+        Some("image/jpeg") | Some("image/jpg") => "jpg",
+        Some("image/png") => "png",
+        Some("image/webp") => "webp",
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Unsupported image type. Must be JPEG, PNG, or WebP.".to_string(),
+            ));
+        }
+    };
+
+    // Create directory if needed
+    tokio::fs::create_dir_all(pictures_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create pictures directory: {}", e)))?;
+
+    // Remove old avatar if it exists (different extension)
+    if let Some(ref old_filename) = user.profile_picture {
+        let old_path = pictures_dir.join(old_filename);
+        let _ = tokio::fs::remove_file(&old_path).await;
+    }
+
+    // Write new file
+    let filename = format!("{}.{}", user.id, ext);
+    let file_path = pictures_dir.join(&filename);
+    tokio::fs::write(&file_path, &image_data)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to write avatar file: {}", e)))?;
+
+    // Update user record
+    user.profile_picture = Some(filename);
+    user.updated_at = SystemTime::now();
+
+    storage
+        .put_user(user)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(username = %claims.sub, "User uploaded profile picture");
+
+    Ok(StatusCode::CREATED)
+}
+
+/// GET /me/profile/avatar
+pub async fn get_avatar(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req)?;
+    let storage = require_storage!(state);
+    let pictures_dir = require_profile_pictures_dir(&state)?;
+
+    let user = storage
+        .get_user(&claims.sub)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+
+    let filename = user
+        .profile_picture
+        .ok_or_else(|| ApiError::NotFound("No profile picture set".to_string()))?;
+
+    let file_path = pictures_dir.join(&filename);
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to read avatar file: {}", e)))?;
+
+    let content_type = if filename.ends_with(".png") {
+        "image/png"
+    } else if filename.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::CACHE_CONTROL, "private, max-age=3600"),
+        ],
+        data,
+    ))
+}
+
+/// DELETE /me/profile/avatar
+pub async fn delete_avatar(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req)?;
+    let storage = require_storage!(state);
+    let pictures_dir = require_profile_pictures_dir(&state)?;
+
+    let mut user = storage
+        .get_user(&claims.sub)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+
+    if let Some(ref filename) = user.profile_picture {
+        let file_path = pictures_dir.join(filename);
+        let _ = tokio::fs::remove_file(&file_path).await;
+    }
+
+    user.profile_picture = None;
+    user.updated_at = SystemTime::now();
+
+    storage
+        .put_user(user)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(username = %claims.sub, "User deleted profile picture");
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Get the greetings directory or return an error.

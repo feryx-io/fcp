@@ -42,6 +42,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub voicemail_recordings_dir: Option<String>,
 
+    /// Directory for user profile pictures
+    #[serde(default)]
+    pub profile_pictures_dir: Option<String>,
+
     /// Security policy configuration (account lockout, password expiration)
     #[serde(default)]
     pub security: SecurityConfig,
@@ -92,6 +96,7 @@ impl Default for AdminConfig {
             cluster: ClusterConfig::default(),
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
+            profile_pictures_dir: None,
             security: SecurityConfig::default(),
         }
     }

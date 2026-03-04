@@ -466,6 +466,42 @@ export const me = {
     return URL.createObjectURL(blob)
   },
 
+  // Avatar
+  uploadAvatar: async (file: File) => {
+    const formData = new FormData()
+    formData.append('avatar', file)
+    const token = localStorage.getItem('fcp-auth')
+    const parsed = token ? JSON.parse(token) : null
+    const jwt = parsed?.state?.token
+    const resp = await fetch('/api/v1/me/profile/avatar', {
+      method: 'POST',
+      body: formData,
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    })
+    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
+  },
+  fetchAvatar: async (): Promise<string> => {
+    const token = localStorage.getItem('fcp-auth')
+    const parsed = token ? JSON.parse(token) : null
+    const jwt = parsed?.state?.token
+    const resp = await fetch('/api/v1/me/profile/avatar', {
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    })
+    if (!resp.ok) throw new Error(`Failed to fetch avatar: ${resp.status}`)
+    const blob = await resp.blob()
+    return URL.createObjectURL(blob)
+  },
+  deleteAvatar: async () => {
+    const token = localStorage.getItem('fcp-auth')
+    const parsed = token ? JSON.parse(token) : null
+    const jwt = parsed?.state?.token
+    const resp = await fetch('/api/v1/me/profile/avatar', {
+      method: 'DELETE',
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    })
+    if (!resp.ok) throw new Error(`Delete failed: ${resp.status}`)
+  },
+
   // Forwarding
   getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),
   updateForwarding: (id: string, data: UpdateForwardingRequest) =>

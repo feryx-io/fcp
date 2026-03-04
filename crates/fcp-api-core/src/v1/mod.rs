@@ -282,6 +282,12 @@ pub fn router() -> Router<ApiState> {
         )
         // Self-service (end-user portal)
         .route("/me/profile", get(self_service::get_profile).put(self_service::update_profile))
+        .route(
+            "/me/profile/avatar",
+            get(self_service::get_avatar)
+                .post(self_service::upload_avatar)
+                .delete(self_service::delete_avatar),
+        )
         .route("/me/password", put(self_service::change_password))
         .route("/me/voicemail", get(self_service::get_voicemail).put(self_service::update_voicemail))
         .route("/me/voicemail/stats", get(self_service::get_voicemail_stats))

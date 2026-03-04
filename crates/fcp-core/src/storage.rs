@@ -348,6 +348,9 @@ pub struct User {
 
     /// Voicemail box ID
     pub voicemail_box_id: Option<crate::VoicemailBoxId>,
+
+    /// Profile picture filename (e.g. "avatar.png")
+    pub profile_picture: Option<String>,
 }
 
 fn default_language() -> String {
@@ -2730,6 +2733,7 @@ mod tests {
             emergency_contact: EmergencyContact::default(),
             primary_phone_number_id: None,
             voicemail_box_id: None,
+            profile_picture: None,
             failed_login_attempts: 0,
             account_locked_until: None,
         };

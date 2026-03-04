@@ -87,6 +87,9 @@ pub struct ApiState {
     /// Directory for voicemail recordings (used by message audio playback)
     pub voicemail_recordings_dir: Option<PathBuf>,
 
+    /// Directory for profile picture uploads
+    pub profile_pictures_dir: Option<PathBuf>,
+
     /// Security policy for login protection (lockout, password expiration)
     pub security_policy: SecurityPolicy,
 }
@@ -124,6 +127,7 @@ impl ApiState {
             config_store: None,
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
+            profile_pictures_dir: None,
             security_policy: SecurityPolicy::default(),
         }
     }
@@ -149,6 +153,12 @@ impl ApiState {
     /// Set the voicemail recordings directory.
     pub fn with_voicemail_recordings_dir(mut self, dir: PathBuf) -> Self {
         self.voicemail_recordings_dir = Some(dir);
+        self
+    }
+
+    /// Set the profile pictures directory.
+    pub fn with_profile_pictures_dir(mut self, dir: PathBuf) -> Self {
+        self.profile_pictures_dir = Some(dir);
         self
     }
 

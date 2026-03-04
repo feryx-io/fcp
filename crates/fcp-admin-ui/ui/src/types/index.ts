@@ -849,6 +849,7 @@ export interface MeProfile {
   language: string
   timezone: string
   role: string
+  has_profile_picture: boolean
 }
 
 export interface UpdateProfileRequest {
