@@ -66,10 +66,8 @@ FCP is a multi-tenant, API-first alternative to FreeSWITCH, Kamailio, and Asteri
   - Real-time event streaming (SSE)
 
 - ✅ **Storage Backends**
-  - SQLite (default for single-node)
-  - PostgreSQL
-  - MySQL
-  - MongoDB
+  - PostgreSQL (production)
+  - Redis (caching, events, distributed state)
 
 - ✅ **Observability**
   - Prometheus metrics export
@@ -89,9 +87,9 @@ FCP is a multi-tenant, API-first alternative to FreeSWITCH, Kamailio, and Asteri
 
 ### Prerequisites
 
-- Rust 1.74 or later
-- SQLite (included by default)
-- Optional: PostgreSQL, MySQL, or MongoDB
+- Rust 1.75 or later
+- PostgreSQL
+- Optional: Redis (for event bus, caching, distributed state)
 
 ### Installation
 
@@ -136,8 +134,7 @@ external_ip = "192.168.1.100"
 domain = "pbx.example.com"
 
 [storage]
-backend = "sqlite"
-database_path = "/var/lib/fcp/fcp.db"
+postgres_url = "postgresql://fcp:secret@localhost:5432/fcp"
 
 [media]
 rtp_port_range = "10000-20000"
@@ -180,7 +177,7 @@ FCP uses a layered architecture:
                         ↓
 ┌─────────────────────────────────────────────────────┐
 │                 Storage Layer                        │
-│     (SQLite, PostgreSQL, MySQL, MongoDB)            │
+│           (PostgreSQL, Redis)                        │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -476,43 +473,41 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## 🗺️ Roadmap
 
-### Phase 1: MVP (Current - 95% Complete)
-- ✅ Core SIP functionality
+### Phase 1: MVP Foundation (Complete)
+- ✅ Core SIP functionality (siphon-rs)
 - ✅ B2BUA with parallel forking
 - ✅ Multi-tenant support
 - ✅ REST API
-- ✅ Voicemail system
-- ✅ Flow engine
-- 🚧 Docker deployment
-- 🚧 Documentation
+- ✅ PostgreSQL storage backend
+- ✅ Docker deployment
 
-### Phase 2: Programmable Voice (Planned - Q2 2026)
-- [ ] Enhanced flow engine (more nodes)
-- [ ] Call recording APIs
-- [ ] Webhook dispatcher
-- [ ] WebSocket API (bidirectional)
-- [ ] Web admin UI
-- [ ] PostgreSQL optimizations
+### Phase 2: Programmable Voice (Complete)
+- ✅ Flow engine with full node set (Answer, Play, Gather, Dial, Record, Voicemail, HTTP, etc.)
+- ✅ Voicemail system with greetings, MWI, REST API
+- ✅ Webhook dispatcher (HMAC-signed, retry with backoff)
+- ✅ Web admin UI
+- ✅ IVR server
 
-### Phase 3: Applications & Clustering (Planned - Q3 2026)
-- [ ] Queue/ACD service
-- [ ] IVR voicemail menu
-- [ ] Presence server
-- [ ] Clustering with SWIM
-- [ ] Redis for distributed state
-- [ ] WebRTC gateway
-- [ ] gRPC API
+### Phase 3: Applications & Clustering (Complete)
+- ✅ Queue/ACD service
+- ✅ Presence server with BLF
+- ✅ Clustering with SWIM protocol
+- ✅ Redis for distributed state
+- ✅ WebRTC gateway
+- ✅ Conference bridge server
+- ✅ Event streaming server
 
-### Phase 4: Enterprise Features (Planned - Q4 2026)
-- [ ] LCR (Least Cost Routing)
-- [ ] Fraud detection
-- [ ] Audio transcoding
-- [ ] CDR analytics
+### Phase 4: Enterprise Features (In Progress)
+- ✅ SBC with enforcement pipeline
+- ✅ Trunk management and LCR
+- 🚧 STIR/SHAKEN verification
+- 🚧 Audio transcoding
+- [ ] Device provisioning server
+- [ ] CDR analytics pipeline
 - [ ] KMS integration
 
 ### Phase 5: Carrier Grade (Planned - 2027)
 - [ ] Multi-region support
-- [ ] STIR/SHAKEN
 - [ ] E911 integration
 - [ ] Video conferencing
 - [ ] Regulatory compliance

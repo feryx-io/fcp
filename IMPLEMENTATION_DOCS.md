@@ -551,7 +551,7 @@ All handlers share `ApiState` which provides access to:
 
 ## 13. Storage Backends
 
-**Crates:** `fcp-storage-sqlite`, `fcp-storage-postgres`, `fcp-storage-mysql`, `fcp-storage-mongodb`
+**Crates:** `fcp-storage-postgres`, `fcp-storage-redis`
 
 ### Overview
 
@@ -576,20 +576,20 @@ Pluggable storage backends implementing the trait-based storage layer defined in
 
 ### Backend Comparison
 
-| Feature | SQLite | PostgreSQL | MySQL | MongoDB |
-|---------|--------|------------|-------|---------|
-| Deployment | Single-node | Multi-node | Multi-node | Multi-node |
-| Setup | Zero-config | External DB | External DB | External DB |
-| Migrations | sqlx | sqlx | sqlx | Code-based indexes |
-| Recommended for | Development, small PBX | Production | Existing MySQL infra | Large-scale NoSQL |
+| Feature | PostgreSQL | Redis |
+|---------|------------|-------|
+| Role | Primary storage | Caching, events, distributed state |
+| Deployment | External DB server | External Redis server |
+| Migrations | sqlx | N/A (schemaless) |
+| Recommended for | All production deployments | Event bus, parking, circuit breaker |
 
 ### DynStorage
 
 `DynStorage` wraps all storage traits into a single type-erased container:
 
 ```rust
-let storage = DynStorage::from_all_in_one(sqlite_storage);
-// or
+let storage = DynStorage::from_all_in_one(postgres_storage);
+// or compose from individual backends:
 let storage = DynStorage::new(cred_store, reg_store, cdr_store, ...);
 ```
 
@@ -701,7 +701,7 @@ Event Bus (all PlatformEvents)
 | `fcp-webhooks/src/payload.rs` | `WebhookPayload` struct and `compute_signature()` HMAC-SHA256 signing |
 | `fcp-core/src/storage.rs` | `WebhookStore` trait, `WebhookEndpoint` and `WebhookDeliveryLog` types |
 | `fcp-events-server/src/routes/webhooks.rs` | REST API for endpoint CRUD, test delivery, and delivery log inspection |
-| `fcp-storage-sqlite/migrations/019_add_webhooks.sql` | SQLite schema for `webhook_endpoints` and `webhook_delivery_log` tables |
+| `fcp-storage-postgres/migrations/` | PostgreSQL schema for `webhook_endpoints` and `webhook_delivery_log` tables |
 
 ### WebhookStore Trait
 
@@ -720,7 +720,7 @@ pub trait WebhookStore: Send + Sync {
 }
 ```
 
-Implemented by all four storage backends (SQLite, PostgreSQL, MySQL, MongoDB).
+Implemented by the PostgreSQL storage backend (with in-memory `FileBackedStorage` for development).
 
 ### Event Type Matching
 

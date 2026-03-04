@@ -6,9 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains:
-1. **fcp-core**: Foundational types, traits, and utilities shared across all FCP components
-2. **siphon-rs**: A complete, production-grade SIP stack (standalone, reusable)
+The repository contains 32 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus the siphon-rs SIP stack as a git submodule.
 
 ## Build and Test Commands
 
@@ -109,55 +107,65 @@ The architecture document (`ARCHITECTURE-v0.2.md`) defines a layered platform wi
 
 ```
 fcp/
-├── Cargo.toml                    # Workspace root
+├── Cargo.toml                    # Workspace root (32 crates)
 ├── ARCHITECTURE-v0.2.md          # Detailed architecture and roadmap
-├── Phase1 plan.md                # MVP implementation plan (16 weeks)
+├── IMPLEMENTATION_DOCS.md        # Implementation details for all subsystems
+├── Phase1 plan.md                # Original MVP implementation plan
 │
 ├── crates/
-│   ├── fcp-core/                 # Core types and traits
-│   │   ├── src/
-│   │   │   ├── lib.rs            # Module exports
-│   │   │   ├── error.rs          # Error types (ParseError, TransactionError, etc.)
-│   │   │   ├── identifiers.rs    # Strongly-typed IDs (CallId, SessionId, DialogId, etc.)
-│   │   │   ├── config.rs         # Configuration structures (FcpConfig, NodeConfig, etc.)
-│   │   │   ├── service.rs        # Service trait and ServiceManager
-│   │   │   ├── codec.rs          # Media codec definitions (AudioCodec, VideoCodec)
-│   │   │   ├── transport.rs      # Transport trait and abstractions
-│   │   │   └── time.rs           # Time utilities
-│   │   └── Cargo.toml
 │   │
-│   ├── fcp-sip/                  # SIP integration layer
-│   │   ├── src/
-│   │   │   ├── lib.rs            # Module exports
-│   │   │   ├── exports.rs        # Re-exports of siphon-rs types
-│   │   │   ├── adapters.rs       # Type conversion functions
-│   │   │   ├── transport.rs      # TransportManager
-│   │   │   └── service.rs        # Service wrappers (TransactionService, DialogService, etc.)
-│   │   └── Cargo.toml
+│   │ # ── Core ──────────────────────────────────────────────
+│   ├── fcp-core/                 # Core types, traits, identifiers, storage abstractions
+│   ├── fcp-sip/                  # SIP integration layer (bridges fcp-core and siphon-rs)
+│   ├── fcp-events/               # Platform-wide event bus (PlatformEvent types)
+│   ├── fcp-api-core/             # REST API endpoints (Axum-based, /v1/ routes)
 │   │
-│   ├── fcp-webhooks/             # General-purpose webhook dispatcher
-│   │   ├── src/
-│   │   │   ├── lib.rs            # Module exports
-│   │   │   ├── dispatcher.rs     # WebhookDispatcher — delivery, retry, event matching
-│   │   │   ├── consumer.rs       # Event bus subscriber that feeds dispatcher
-│   │   │   └── payload.rs        # WebhookPayload struct and HMAC-SHA256 signing
-│   │   └── Cargo.toml
+│   │ # ── Signaling ─────────────────────────────────────────
+│   ├── fcp-b2bua-core/           # B2BUA call engine (call state machine, forking, transfer)
+│   ├── fcp-sbc-core/             # SBC enforcement library (admission, HMR, topology hiding)
+│   ├── fcp-pbx/                  # PBX feature library (parking, pickup, intercom, hunt groups)
+│   ├── fcp-routing/              # Policy-based call routing engine
 │   │
-│   └── siphon-rs/                # SIP stack (git submodule)
-│       │                         # Repository: https://github.com/thevoiceguy/siphon-rs
+│   │ # ── Application ───────────────────────────────────────
+│   ├── fcp-flow/                 # Programmable call flow engine (JSON-based DSL)
+│   ├── fcp-voicemail/            # Voicemail service (mailboxes, greetings, MWI)
+│   ├── fcp-queue/                # ACD queue service (ring strategies, agent management)
+│   ├── fcp-presence/             # Presence and BLF (SUBSCRIBE/NOTIFY, dialog events)
+│   ├── fcp-webhooks/             # Webhook dispatcher (HMAC-signed, retry with backoff)
+│   ├── fcp-cluster/              # Clustering (SWIM protocol, node membership)
+│   │
+│   │ # ── Media ─────────────────────────────────────────────
+│   ├── fcp-media/                # Media session management, RTP relay, DTMF, recording
+│   │
+│   │ # ── Storage ───────────────────────────────────────────
+│   ├── fcp-storage-postgres/     # PostgreSQL backend (sqlx, JSONB, migrations)
+│   ├── fcp-storage-redis/        # Redis backend (event bus, parking, circuit breaker)
+│   │
+│   │ # ── Admin & CLI ───────────────────────────────────────
+│   ├── fcp-admin/                # Admin HTTP server
+│   ├── fcp-admin-ui/             # Admin web UI
+│   ├── fcp-cli/                  # Terminal UI for monitoring
+│   │
+│   │ # ── Binaries (standalone services) ────────────────────
+│   ├── fcp-call-manager/         # Main PBX binary (registrar + B2BUA + routing + PBX)
+│   ├── fcp-sbc/                  # Session Border Controller binary
+│   ├── fcp-ivr/                  # Standalone IVR server
+│   ├── fcp-voicemail-server/     # Standalone voicemail server
+│   ├── fcp-registrar/            # Standalone SIP registrar
+│   ├── fcp-presence-server/      # Standalone presence server
+│   ├── fcp-conference-server/    # Conference bridge server
+│   ├── fcp-media-server/         # Standalone media server
+│   ├── fcp-webrtc-gateway/       # WebRTC gateway
+│   ├── fcp-events-server/        # Event streaming + webhook delivery server
+│   ├── fcp-api-gateway/          # API gateway (auth, rate limiting, routing)
+│   ├── fcp-jobs/                 # Async job worker (CDR processing, webhooks, cleanup)
+│   │
+│   │ # ── SIP Stack (git submodule) ─────────────────────────
+│   └── siphon-rs/                # Repository: https://github.com/thevoiceguy/siphon-rs
 │       ├── CLAUDE.md             # siphon-rs specific documentation
-│       ├── README.md
 │       ├── Cargo.toml            # siphon-rs workspace root
-│       │
 │       ├── bins/
 │       │   └── siphond/          # Multi-mode SIP testing daemon
-│       │       ├── README.md     # Comprehensive siphond documentation
-│       │       └── src/
-│       │           ├── main.rs
-│       │           ├── dispatcher.rs
-│       │           ├── config.rs
-│       │           └── handlers/
-│       │
 │       └── crates/
 │           ├── sip-core/         # SIP message types, headers, URIs
 │           ├── sip-parse/        # nom-based SIP parser
@@ -175,8 +183,8 @@ fcp/
 │           └── sip-testkit/      # Test utilities
 │
 ├── tests/                        # Integration tests
-├── migrations/                   # Database migrations (future)
-└── deploy/                       # Deployment configs (future)
+├── migrations/                   # Database migrations
+└── deploy/                       # Deployment configs (Docker, Kubernetes)
 ```
 
 ## Key Concepts
@@ -422,54 +430,50 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 
 ## Phase-Specific Development Notes
 
-### Phase 1 (Current - MVP Foundation)
+### Phase 1 (Complete - MVP Foundation)
 
 **Focus:** Single-node PBX with basic call control
 
-**Active Work:**
-- ✅ fcp-core types and identifiers
-- ✅ siphon-rs SIP stack (complete)
-- ⏳ Integration with fcp-core abstractions
-- ⏳ Single-node runtime
+- ✅ fcp-core types, identifiers, storage traits
+- ✅ siphon-rs SIP stack
+- ✅ fcp-sip integration layer
+- ✅ fcp-b2bua-core call engine
+- ✅ fcp-call-manager runtime (registrar + B2BUA + routing)
+- ✅ fcp-api-core REST API
+- ✅ fcp-storage-postgres backend
+- ✅ Docker deployment
 
-**Next Steps** (see `Phase1 plan.md`):
-1. Complete fcp-core service traits and abstractions
-2. Build runtime that integrates siphon-rs components
-3. Add PostgreSQL storage backend
-4. Create REST API for management
-5. Docker deployment
-
-### Phase 2 (Planned - Programmable Voice)
+### Phase 2 (Complete - Programmable Voice)
 
 **Focus:** CPaaS-like programmability with webhooks
 
-**Key Components to Build:**
-- `fcp-flow-engine`: Call flow DSL runtime
-- `fcp-ivr`: IVR service using flow engine
+- ✅ `fcp-flow`: Call flow DSL runtime (JSON-based, 12+ node types)
+- ✅ `fcp-ivr`: Standalone IVR server
+- ✅ `fcp-voicemail` / `fcp-voicemail-server`: Full voicemail system with greetings, MWI
 - ✅ `fcp-webhooks`: General-purpose webhook dispatcher (HMAC-signed, retry with backoff, REST API via fcp-events-server)
-- `fcp-api-websocket`: Real-time event streaming
-- Recording support via media pipeline
+- ✅ `fcp-events` / `fcp-events-server`: Real-time event streaming
+- ✅ `fcp-admin` / `fcp-admin-ui`: Admin interface
 
-### Phase 3 (Planned - Clustering)
+### Phase 3 (Complete - Clustering & Applications)
 
 **Focus:** HA clustering and application suite
 
-**Key Components:**
-- `fcp-cluster-membership`: SWIM protocol implementation
-- `fcp-cluster-state`: Distributed registration/dialog cache
-- `fcp-queue`: ACD queue service
-- `fcp-voicemail`: Voicemail system
-- `fcp-webrtc`: WebRTC gateway
+- ✅ `fcp-cluster`: SWIM protocol clustering
+- ✅ `fcp-queue`: ACD queue service
+- ✅ `fcp-presence` / `fcp-presence-server`: Presence and BLF
+- ✅ `fcp-conference-server`: Conference bridge
+- ✅ `fcp-webrtc-gateway`: WebRTC gateway
+- ✅ `fcp-storage-redis`: Redis for distributed state
+- ✅ `fcp-media-server`: Standalone media server
 
-### Phase 4 (Planned - Enterprise Features)
+### Phase 4 (In Progress - Enterprise Features)
 
 **Focus:** Production-ready for enterprise
 
-**Key Components:**
-- `fcp-routing-engine`: LCR with carrier health
-- `fcp-policy-engine`: Rate limiting, fraud detection
-- `fcp-transcoder`: Audio transcoding
-- `fcp-cdr-processor`: Dedicated CDR pipeline
+- ✅ `fcp-sbc-core` / `fcp-sbc`: SBC with enforcement pipeline, trunk management
+- ✅ `fcp-routing`: Policy-based routing with LCR
+- ⏳ STIR/SHAKEN caller ID verification
+- ⏳ Audio transcoding pipeline
 - `fcp-provisioning`: Device provisioning server (Polycom, Yealink, Cisco, Grandstream) — HTTP-based config file serving with per-vendor templates, auto-populated from device/user records
 - Encryption at rest (KMS integration)
 
@@ -479,7 +483,6 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 
 **Key Components:**
 - Multi-region support
-- STIR/SHAKEN implementation
 - E911 integration
 - Video conferencing
 - Regulatory compliance features

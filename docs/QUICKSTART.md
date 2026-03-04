@@ -1,195 +1,113 @@
 # FCP Quick Start Guide
 
-## 🚀 Getting Started
+## Prerequisites
 
-### Prerequisites
-- Rust 1.75+ (check: `rustc --version`)
+- Rust 1.75+ (`rustc --version`)
 - Git
-- Cargo
+- PostgreSQL (production) or use the built-in `FileBackedStorage` for development
+- Optional: Redis (for event bus, caching, distributed state)
 
-### Build & Run
-
-```bash
-# Build the server
-cargo build --release --bin fcp-server
-
-# Run the server (API-only mode currently)
-./target/release/fcp-server
-
-# In another terminal, test the API
-curl http://localhost:8080/api/v1/users
-```
-
-### Create Your First User
+## Build & Run
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/users \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"secret123","display_name":"Alice","enabled":true}'
+# Clone with submodules
+git clone --recursive https://github.com/thevoiceguy/fcp.git
+cd fcp
+
+# Build all workspace crates
+cargo build --release
+
+# Run the call manager (registrar + B2BUA + PBX features)
+cargo run -p fcp-call-manager
+
+# Or run siphond for SIP-level testing
+cargo run -p siphond -- --mode registrar
 ```
 
-## 📚 Key Documents
-
-- **README.md** - Project overview
-- **ARCHITECTURE.md** - System design
-- **Phase1 plan.md** - Original 16-week plan
-- **PHASE1_COMPLETION.md** - Remaining work to finish Phase 1 (← **START HERE**)
-- **TESTING.md** - Testing guide with current status
-- **SESSION_SUMMARY.md** - Latest session notes
-
-## 📂 Project Structure
+## Project Structure
 
 ```
 fcp/
 ├── crates/
-│   ├── fcp-core/       # Core types, storage, config
-│   ├── fcp-routing/    # Policy-based routing (BONUS!)
-│   ├── fcp-sip/        # SIP integration layer
-│   ├── fcp-runtime/    # Runtime & service management
-│   ├── fcp-server/     # Main server binary + REST API
-│   └── siphon-rs/      # SIP stack (submodule)
-├── examples/
-│   ├── routing.yaml    # Policy configuration
-│   └── users.json      # Pre-configured users
-├── fcp.toml           # Server configuration
-└── target/release/
-    └── fcp-server     # Compiled binary
+│   ├── fcp-core/              # Core types, traits, storage abstractions
+│   ├── fcp-sip/               # SIP integration layer
+│   ├── fcp-b2bua-core/        # B2BUA call engine
+│   ├── fcp-pbx/               # PBX feature library (parking, pickup, intercom)
+│   ├── fcp-routing/           # Policy-based call routing
+│   ├── fcp-flow/              # Programmable call flow engine
+│   ├── fcp-voicemail/         # Voicemail service
+│   ├── fcp-queue/             # ACD queue service
+│   ├── fcp-presence/          # Presence and BLF
+│   ├── fcp-media/             # Media session management
+│   ├── fcp-events/            # Platform event bus
+│   ├── fcp-webhooks/          # Webhook dispatcher
+│   ├── fcp-cluster/           # Clustering (SWIM protocol)
+│   ├── fcp-sbc-core/          # SBC enforcement library
+│   ├── fcp-storage-postgres/  # PostgreSQL backend
+│   ├── fcp-storage-redis/     # Redis backend
+│   ├── fcp-api-core/          # REST API endpoints
+│   ├── fcp-admin/             # Admin HTTP server
+│   ├── fcp-admin-ui/          # Admin web UI
+│   ├── fcp-cli/               # Terminal UI monitor
+│   ├── fcp-call-manager/      # Main PBX binary
+│   ├── fcp-sbc/               # SBC binary
+│   ├── fcp-ivr/               # IVR binary
+│   ├── fcp-voicemail-server/  # Voicemail binary
+│   ├── fcp-registrar/         # Standalone registrar binary
+│   ├── fcp-events-server/     # Event streaming binary
+│   ├── fcp-conference-server/ # Conference bridge binary
+│   ├── fcp-media-server/      # Media server binary
+│   ├── fcp-webrtc-gateway/    # WebRTC gateway binary
+│   ├── fcp-presence-server/   # Presence server binary
+│   ├── fcp-api-gateway/       # API gateway binary
+│   ├── fcp-jobs/              # Async job worker binary
+│   └── siphon-rs/             # SIP stack (git submodule)
+├── external/siphon-rs/        # Submodule link
+├── tests/                     # Integration tests
+└── deploy/                    # Docker and deployment configs
 ```
 
-## 🎯 Current Status (75% Phase 1 Complete)
+## Key Binaries
 
-### ✅ Working
-- REST API (user management)
-- Policy-based routing engine
-- Multi-tenant isolation
-- Storage layer (SQLite)
-- Configuration management
+| Binary | Purpose |
+|--------|---------|
+| `fcp-call-manager` | Main PBX: registrar + B2BUA + call routing + PBX features |
+| `fcp-sbc` | Session Border Controller for network edge |
+| `fcp-ivr` | Standalone IVR server with flow engine |
+| `fcp-voicemail-server` | Standalone voicemail server |
+| `fcp-registrar` | Standalone SIP registrar |
+| `fcp-admin` | Admin HTTP API |
+| `fcp-events-server` | Event streaming + webhook delivery |
+| `siphond` | SIP testing daemon (part of siphon-rs) |
 
-### ⚠️ Known Issues
-- Socket binding fails (SIP transport disabled)
+## Run Tests
 
-### 🔲 TODO for Phase 1
-- B2BUA call handling (INVITE/BYE)
-- RTP media relay
-- Fix socket binding
-- Docker packaging
-- Integration testing
-
-## 🛠️ Common Tasks
-
-### Run Tests
 ```bash
 # All tests
-cargo test --workspace
+cargo test --all
 
-# Specific test
-cargo test --test multi_tenant_test
+# Specific crate
+cargo test -p fcp-core
 
 # With output
 cargo test -- --nocapture
 ```
 
-### Check Code
+## Check & Lint
+
 ```bash
-# Format
-cargo fmt
-
-# Lint
-cargo clippy
-
-# Build
-cargo build
+cargo fmt --all
+cargo clippy --all
+cargo check --all
 ```
 
-### View Logs
-```bash
-# Run with debug logging
-RUST_LOG=debug ./target/release/fcp-server
+## Key Documents
 
-# API requests are logged automatically
-```
-
-### Clean Build
-```bash
-cargo clean
-rm -rf target/
-rm fcp.db data/
-```
-
-## 🐛 Troubleshooting
-
-### "Address already in use"
-**Workaround**: Transport is disabled in `fcp.toml`. Server runs in API-only mode.
-
-### "Cannot connect to API"
-**Check**: Server is running on http://localhost:8080
-```bash
-curl http://localhost:8080/api/v1/users
-```
-
-### "cargo: command not found"
-**Install Rust**: https://rustup.rs/
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-## 📖 Learn More
-
-### Phase 1 Completion
-See `PHASE1_COMPLETION.md` for detailed task breakdown:
-- Estimated time: 25-37 hours (3-4 weeks)
-- Tasks organized by sprint
-- Clear acceptance criteria
-
-### API Reference
-All endpoints under `/api/v1/`:
-- `GET /users` - List users
-- `GET /users/:username` - Get user
-- `POST /users` - Create user
-- `PUT /users/:username` - Update user
-- `PUT /users/:username/password` - Change password
-- `DELETE /users/:username` - Delete user
-
-### Configuration
-Edit `fcp.toml` to configure:
-- Node settings (domain, name)
-- Transport (UDP/TCP ports)
-- Registrar (auth, expiry)
-- API (bind address)
-- Routing (policy file)
-- Logging (level, format)
-
-## 🚧 Next Steps
-
-1. **Read** `PHASE1_COMPLETION.md` for detailed plan
-2. **Choose** next task:
-   - Option A: Debug socket binding issue
-   - Option B: Implement B2BUA call handling
-   - Option C: Add Docker packaging
-3. **Test** as you go with `cargo test`
-4. **Update** docs when complete
-
-## 💬 Need Help?
-
-- Check `ARCHITECTURE.md` for system design
-- Review `Phase1 plan.md` for original vision
-- Read `SESSION_SUMMARY.md` for latest notes
-- Look at test files for examples
-
-## 🎉 Success Criteria
-
-Phase 1 is complete when:
-- [ ] SIP registration works
-- [ ] Calls can be placed
-- [ ] Audio flows in both directions
-- [ ] Policies enforce correctly
-- [ ] Docker deployment works
-- [ ] All docs complete
-
-**Current**: 75% → **Target**: 100%
+- **CLAUDE.md** -- Project overview, full crate listing, development guidelines
+- **IMPLEMENTATION_DOCS.md** -- Detailed implementation docs for all subsystems
+- **ARCHITECTURE-v0.2.md** -- Architecture vision and roadmap
+- **docs/STORAGE_ARCHITECTURE.md** -- Storage layer design
 
 ---
 
-Happy coding! 🚀
-
-*Last Updated: 2025-12-01*
+*Last Updated: 2026-03-04*

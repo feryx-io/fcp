@@ -7,15 +7,13 @@
 //!
 //! ## Storage Backends
 //!
-//! FCP supports multiple storage backends:
-//! - **SQLite** (default): Production-ready, ACID-compliant storage for single-node and small deployments
-//! - **PostgreSQL**: For larger multi-node deployments requiring advanced features
-//! - **MySQL**: For existing MySQL infrastructure
-//! - **MongoDB**: For large-scale NoSQL deployments
+//! FCP supports the following storage backends:
+//! - **PostgreSQL** (production): ACID-compliant storage with JSONB, connection pooling, and migrations
+//! - **Redis**: Caching, event bus, distributed state (parking, circuit breaker)
+//! - **FileBackedStorage** (development): In-memory with JSON file persistence
 //!
-//! The default backend is SQLite, which provides excellent performance for most use cases
-//! while requiring no external database server. For development and testing only, a
-//! FileBackedStorage implementation is also available that uses in-memory storage with JSON file persistence.
+//! PostgreSQL is the recommended backend for production deployments. FileBackedStorage
+//! is suitable for development and testing only.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -1626,7 +1624,7 @@ pub trait ClusterParkingStore: Send + Sync {
 /// In-memory storage with JSON file persistence.
 ///
 /// **Note:** This implementation is intended for development and testing only.
-/// For production deployments, use SQLite or another database backend.
+/// For production deployments, use the PostgreSQL backend (fcp-storage-postgres).
 ///
 /// This implementation keeps data in memory and saves to JSON files. It does not
 /// persist CDRs (Call Detail Records) - they are discarded. For full CDR support
@@ -1842,7 +1840,7 @@ impl RegistrationStore for FileBackedStorage {
 impl CdrStore for FileBackedStorage {
     async fn insert_cdr(&self, _cdr: CallDetailRecord) -> Result<()> {
         // FileBackedStorage doesn't persist CDRs - this is a no-op
-        // For production use cases, use a proper database backend (PostgreSQL, MySQL, MongoDB)
+        // For production use cases, use the PostgreSQL backend (fcp-storage-postgres)
         warn!("FileBackedStorage does not persist CDRs - use a database backend for production");
         Ok(())
     }
@@ -1889,8 +1887,8 @@ mod system_time_serde {
 
 /// Dynamic storage wrapper that can hold any storage backend implementing the required traits.
 ///
-/// This allows the runtime to work with different storage backends (SQLite, PostgreSQL, MySQL, MongoDB)
-/// without being tied to a specific implementation at compile time.
+/// This allows the runtime to work with different storage backends (PostgreSQL, Redis,
+/// FileBackedStorage) without being tied to a specific implementation at compile time.
 #[derive(Clone)]
 pub struct DynStorage {
     credential_store: Arc<dyn CredentialStore>,
