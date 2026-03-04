@@ -42,13 +42,13 @@ pub struct AuthUserResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,       // username
-    role: String,
-    tenant_id: String,
-    display_name: Option<String>,
-    exp: usize,        // expiry timestamp
-    iat: usize,        // issued at
+pub struct Claims {
+    pub sub: String,       // username
+    pub role: String,
+    pub tenant_id: String,
+    pub display_name: Option<String>,
+    pub exp: usize,        // expiry timestamp
+    pub iat: usize,        // issued at
 }
 
 /// POST /api/v1/auth/login
@@ -262,9 +262,15 @@ fn decode_jwt(token: &str) -> Result<Claims, ApiError> {
     Ok(claims)
 }
 
-fn extract_claims(req: &axum::extract::Request) -> Result<Claims, ApiError> {
-    let auth_header = req
-        .headers()
+pub fn extract_claims(req: &axum::extract::Request) -> Result<Claims, ApiError> {
+    extract_claims_from_headers(req.headers())
+}
+
+/// Extract JWT claims from a `HeaderMap` (useful when Request is not available).
+pub fn extract_claims_from_headers(
+    headers: &axum::http::HeaderMap,
+) -> Result<Claims, ApiError> {
+    let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .ok_or_else(|| ApiError::Unauthorized("Missing Authorization header".to_string()))?;

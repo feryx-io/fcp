@@ -25,7 +25,11 @@ export function LoginPage() {
     try {
       const response = await auth.login({ username, password })
       login(response.token, response.user)
-      navigate('/admin')
+      if (response.user.role === 'user') {
+        navigate('/user')
+      } else {
+        navigate('/admin')
+      }
     } catch (err) {
       if (err instanceof ApiRequestError) {
         setError(err.body.details || err.body.error)
@@ -44,8 +48,8 @@ export function LoginPage() {
           <div className="flex justify-center mb-4">
             <Boxes className="h-12 w-12 text-primary" />
           </div>
-          <CardTitle className="text-2xl">FCP Admin</CardTitle>
-          <CardDescription>Sign in to the administration panel</CardDescription>
+          <CardTitle className="text-2xl">FCP Portal</CardTitle>
+          <CardDescription>Sign in to your account</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">

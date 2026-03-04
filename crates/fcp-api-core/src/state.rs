@@ -62,6 +62,9 @@ pub struct ApiState {
 
     /// Directory for voicemail greetings (used by greeting upload/download endpoints)
     pub voicemail_greetings_dir: Option<PathBuf>,
+
+    /// Directory for voicemail recordings (used by message audio playback)
+    pub voicemail_recordings_dir: Option<PathBuf>,
 }
 
 impl ApiState {
@@ -96,6 +99,7 @@ impl ApiState {
             events_server_url: None,
             config_store: None,
             voicemail_greetings_dir: None,
+            voicemail_recordings_dir: None,
         }
     }
 
@@ -114,6 +118,12 @@ impl ApiState {
     /// Set the voicemail greetings directory.
     pub fn with_voicemail_greetings_dir(mut self, dir: PathBuf) -> Self {
         self.voicemail_greetings_dir = Some(dir);
+        self
+    }
+
+    /// Set the voicemail recordings directory.
+    pub fn with_voicemail_recordings_dir(mut self, dir: PathBuf) -> Self {
+        self.voicemail_recordings_dir = Some(dir);
         self
     }
 }

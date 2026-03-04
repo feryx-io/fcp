@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AdminLayout } from '@/layouts/AdminLayout'
+import { UserLayout } from '@/layouts/UserLayout'
 import { useAuthStore } from '@/stores/auth'
 
 // Lazy-loaded pages
@@ -32,6 +33,12 @@ const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ de
 const SystemSettingsPage = lazy(() => import('@/pages/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })))
 const SipLadderPage = lazy(() => import('@/pages/SipLadderPage').then((m) => ({ default: m.SipLadderPage })))
 
+// User portal pages
+const UserDashboardPage = lazy(() => import('@/pages/user/UserDashboardPage').then((m) => ({ default: m.UserDashboardPage })))
+const UserVoicemailPage = lazy(() => import('@/pages/user/UserVoicemailPage').then((m) => ({ default: m.UserVoicemailPage })))
+const UserForwardingPage = lazy(() => import('@/pages/user/UserForwardingPage').then((m) => ({ default: m.UserForwardingPage })))
+const UserSettingsPage = lazy(() => import('@/pages/user/UserSettingsPage').then((m) => ({ default: m.UserSettingsPage })))
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -54,6 +61,19 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore()
   if (!isAuthenticated) return <Navigate to="/admin/login" replace />
   return <>{children}</>
+}
+
+function UserProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuthStore()
+  if (!isAuthenticated) return <Navigate to="/admin/login" replace />
+  return <>{children}</>
+}
+
+function DefaultRedirect() {
+  const { isAuthenticated, user } = useAuthStore()
+  if (!isAuthenticated) return <Navigate to="/admin/login" replace />
+  if (user?.role === 'user') return <Navigate to="/user" replace />
+  return <Navigate to="/admin" replace />
 }
 
 export function App() {
@@ -100,7 +120,21 @@ export function App() {
               <Route path="system-settings" element={<Suspense fallback={<PageLoader />}><SystemSettingsPage /></Suspense>} />
               <Route path="calls/:callId/sip-trace" element={<Suspense fallback={<PageLoader />}><SipLadderPage /></Suspense>} />
             </Route>
-            <Route path="*" element={<Navigate to="/admin" replace />} />
+            {/* User portal routes */}
+            <Route
+              path="/user"
+              element={
+                <UserProtectedRoute>
+                  <UserLayout />
+                </UserProtectedRoute>
+              }
+            >
+              <Route index element={<Suspense fallback={<PageLoader />}><UserDashboardPage /></Suspense>} />
+              <Route path="voicemail" element={<Suspense fallback={<PageLoader />}><UserVoicemailPage /></Suspense>} />
+              <Route path="forwarding" element={<Suspense fallback={<PageLoader />}><UserForwardingPage /></Suspense>} />
+              <Route path="settings" element={<Suspense fallback={<PageLoader />}><UserSettingsPage /></Suspense>} />
+            </Route>
+            <Route path="*" element={<DefaultRedirect />} />
           </Routes>
         </Suspense>
       </BrowserRouter>

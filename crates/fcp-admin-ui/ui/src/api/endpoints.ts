@@ -22,6 +22,8 @@ import type {
   AuditEntry, AuditQueryParams, ListAuditResponse,
   ApiToken, CreateApiTokenRequest, CreateApiTokenResponse,
   ClusterNodesResponse, ClusterStatsResponse,
+  MeProfile, UpdateProfileRequest, ChangePasswordRequest,
+  MeMailbox, MeMailboxStats, MeForwarding, UpdateForwardingRequest,
 } from '@/types'
 
 // Auth
@@ -395,4 +397,73 @@ export const config = {
     params.set('limit', String(limit))
     return apiClient.get<ConfigAuditEntry[]>(`/config/audit?${params.toString()}`)
   },
+}
+
+// Self-service (end-user portal)
+export const me = {
+  // Profile
+  getProfile: () => apiClient.get<MeProfile>('/me/profile'),
+  updateProfile: (data: UpdateProfileRequest) => apiClient.put<MeProfile>('/me/profile', data),
+  changePassword: (data: ChangePasswordRequest) => apiClient.put<void>('/me/password', data),
+
+  // Voicemail
+  getMailbox: () => apiClient.get<MeMailbox>('/me/voicemail'),
+  updateMailbox: (data: { pin?: string; email_notification?: boolean; email_address?: string; attach_audio?: boolean }) =>
+    apiClient.put<MeMailbox>('/me/voicemail', data),
+  getMailboxStats: () => apiClient.get<MeMailboxStats>('/me/voicemail/stats'),
+  listMessages: () => apiClient.get<VoicemailMessage[]>('/me/voicemail/messages'),
+  updateMessage: (id: string, data: { status?: string }) =>
+    apiClient.put<VoicemailMessage>(`/me/voicemail/messages/${id}`, data),
+  deleteMessage: (id: string) => apiClient.delete<void>(`/me/voicemail/messages/${id}`),
+  fetchMessageAudio: async (id: string): Promise<string> => {
+    const token = localStorage.getItem('fcp-auth')
+    const parsed = token ? JSON.parse(token) : null
+    const jwt = parsed?.state?.token
+    const resp = await fetch(`/api/v1/me/voicemail/messages/${id}/audio`, {
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    })
+    if (!resp.ok) throw new Error(`Failed to fetch audio: ${resp.status}`)
+    const blob = await resp.blob()
+    return URL.createObjectURL(blob)
+  },
+
+  // Greetings
+  listGreetings: () =>
+    apiClient.get<import('@/types').GreetingResponse[]>('/me/voicemail/greetings'),
+  uploadGreeting: async (greetingType: string, audioFile: File, expiresInHours?: number) => {
+    const formData = new FormData()
+    formData.append('greeting_type', greetingType)
+    formData.append('audio', audioFile)
+    if (expiresInHours) formData.append('expires_in', String(expiresInHours))
+    const token = localStorage.getItem('fcp-auth')
+    const parsed = token ? JSON.parse(token) : null
+    const jwt = parsed?.state?.token
+    const resp = await fetch('/api/v1/me/voicemail/greetings', {
+      method: 'POST',
+      body: formData,
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    })
+    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
+    return resp.json() as Promise<import('@/types').GreetingResponse>
+  },
+  deleteGreeting: (greetingType: string) =>
+    apiClient.delete<void>(`/me/voicemail/greetings/${greetingType}`),
+  setGreetingActive: (greetingType: string, active: boolean) =>
+    apiClient.put<void>(`/me/voicemail/greetings/${greetingType}/active`, { active }),
+  fetchGreetingAudio: async (greetingType: string): Promise<string> => {
+    const token = localStorage.getItem('fcp-auth')
+    const parsed = token ? JSON.parse(token) : null
+    const jwt = parsed?.state?.token
+    const resp = await fetch(`/api/v1/me/voicemail/greetings/${greetingType}/audio`, {
+      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
+    })
+    if (!resp.ok) throw new Error(`Failed to fetch audio: ${resp.status}`)
+    const blob = await resp.blob()
+    return URL.createObjectURL(blob)
+  },
+
+  // Forwarding
+  getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),
+  updateForwarding: (id: string, data: UpdateForwardingRequest) =>
+    apiClient.patch<MeForwarding>(`/me/forwarding/${id}`, data),
 }

@@ -17,6 +17,7 @@ pub mod phone_numbers;
 pub mod presence;
 pub mod queues;
 pub mod registrations;
+pub mod self_service;
 pub mod sip_trace;
 pub mod system;
 pub mod tenants;
@@ -25,7 +26,7 @@ pub mod voicemail;
 
 use crate::state::ApiState;
 use axum::{
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
@@ -277,4 +278,33 @@ pub fn router() -> Router<ApiState> {
             "/api-tokens/:id",
             delete(api_tokens::delete_api_token),
         )
+        // Self-service (end-user portal)
+        .route("/me/profile", get(self_service::get_profile).put(self_service::update_profile))
+        .route("/me/password", put(self_service::change_password))
+        .route("/me/voicemail", get(self_service::get_voicemail).put(self_service::update_voicemail))
+        .route("/me/voicemail/stats", get(self_service::get_voicemail_stats))
+        .route("/me/voicemail/messages", get(self_service::list_voicemail_messages))
+        .route(
+            "/me/voicemail/messages/:id",
+            put(self_service::update_voicemail_message).delete(self_service::delete_voicemail_message),
+        )
+        .route("/me/voicemail/messages/:id/audio", get(self_service::get_message_audio))
+        .route(
+            "/me/voicemail/greetings",
+            get(self_service::list_voicemail_greetings).post(self_service::upload_voicemail_greeting),
+        )
+        .route(
+            "/me/voicemail/greetings/:greeting_type",
+            delete(self_service::delete_voicemail_greeting),
+        )
+        .route(
+            "/me/voicemail/greetings/:greeting_type/active",
+            put(self_service::set_voicemail_greeting_active),
+        )
+        .route(
+            "/me/voicemail/greetings/:greeting_type/audio",
+            get(self_service::download_voicemail_greeting_audio),
+        )
+        .route("/me/forwarding", get(self_service::get_forwarding))
+        .route("/me/forwarding/:id", patch(self_service::update_forwarding))
 }

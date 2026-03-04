@@ -29,6 +29,10 @@ where
         .route("/admin", get(serve_index))
         .route("/admin/", get(serve_index))
         .route("/admin/*path", get(serve_spa_fallback))
+        // User portal (same SPA, different route prefix)
+        .route("/user", get(serve_index))
+        .route("/user/", get(serve_index))
+        .route("/user/*path", get(serve_spa_fallback))
 }
 
 /// Serve a static asset from the embedded dist directory.

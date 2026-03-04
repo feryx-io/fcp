@@ -824,6 +824,70 @@ export interface CreateApiTokenResponse {
   secret: string // Only returned once
 }
 
+// --- Self-service (end-user portal) types ---
+
+export interface MeProfile {
+  username: string
+  display_name: string | null
+  email: string | null
+  phone_number: string | null
+  extension: string | null
+  department: string | null
+  job_title: string | null
+  location: string | null
+  language: string
+  timezone: string
+  role: string
+}
+
+export interface UpdateProfileRequest {
+  display_name?: string
+  email?: string
+  phone_number?: string
+  timezone?: string
+  language?: string
+}
+
+export interface ChangePasswordRequest {
+  current_password: string
+  new_password: string
+}
+
+export interface MeMailbox {
+  id: string
+  extension: string
+  enabled: boolean
+  max_message_duration: number
+  max_messages: number
+  email_notification: boolean
+  email_address: string | null
+  attach_audio: boolean
+}
+
+export interface MeMailboxStats {
+  mailbox_id: string
+  total_messages: number
+  new_messages: number
+  heard_messages: number
+  saved_messages: number
+}
+
+export interface MeForwarding {
+  id: string
+  phone_number_id: string
+  forward_unconditional: string | null
+  forward_on_busy: string | null
+  forward_on_no_answer: string | null
+  no_answer_timeout_secs: number
+}
+
+export interface UpdateForwardingRequest {
+  forward_unconditional?: string
+  forward_on_busy?: string
+  forward_on_no_answer?: string
+  no_answer_timeout_secs?: number
+}
+
 // SBC Quality Metrics
 export interface QualityMetrics {
   trunk_name: string
