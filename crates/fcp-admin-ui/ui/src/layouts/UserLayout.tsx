@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { me } from '@/api/endpoints'
 
 interface NavItem {
   label: string
@@ -56,6 +57,16 @@ export function UserLayout() {
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
   const { theme, setTheme } = useThemeStore()
+  const [headerAvatarUrl, setHeaderAvatarUrl] = useState<string | null>(null)
+
+  // Fetch avatar for header
+  useEffect(() => {
+    me.getProfile().then((p) => {
+      if (p.has_profile_picture) {
+        me.fetchAvatar().then(setHeaderAvatarUrl).catch(() => {})
+      }
+    }).catch(() => {})
+  }, [])
 
   // Close mobile drawer on navigation
   useEffect(() => {
@@ -185,9 +196,13 @@ export function UserLayout() {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="gap-2" aria-label="User menu">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
-                    {(user?.display_name || user?.username || 'U').charAt(0).toUpperCase()}
-                  </div>
+                  {headerAvatarUrl ? (
+                    <img src={headerAvatarUrl} alt="" className="h-8 w-8 rounded-full object-cover" />
+                  ) : (
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                      {(user?.display_name || user?.username || 'U').charAt(0).toUpperCase()}
+                    </div>
+                  )}
                   <span className="hidden md:inline">{user?.display_name || user?.username}</span>
                 </Button>
               </DropdownMenuTrigger>
