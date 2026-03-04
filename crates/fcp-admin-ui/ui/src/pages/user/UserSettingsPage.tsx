@@ -1,14 +1,40 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import Cropper from 'react-easy-crop'
+import type { Area } from 'react-easy-crop'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from '@/components/ui/dialog'
 import { Moon, Sun, Monitor, Camera, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { me } from '@/api/endpoints'
 import type { MeProfile } from '@/types'
+
+function getCroppedImg(imageSrc: string, crop: Area): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = crop.width
+      canvas.height = crop.height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) { reject(new Error('Canvas not supported')); return }
+      ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height)
+      canvas.toBlob((blob) => {
+        if (!blob) { reject(new Error('Failed to create blob')); return }
+        resolve(new File([blob], 'avatar.png', { type: 'image/png' }))
+      }, 'image/png')
+    }
+    image.onerror = () => reject(new Error('Failed to load image'))
+    image.crossOrigin = 'anonymous'
+    image.src = imageSrc
+  })
+}
 
 function getInitials(profile: MeProfile | null, username?: string): string {
   if (profile?.display_name) {
@@ -43,6 +69,17 @@ export function UserSettingsPage() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
   const [avatarUploading, setAvatarUploading] = useState(false)
+
+  // Crop dialog
+  const [cropDialogOpen, setCropDialogOpen] = useState(false)
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null)
+  const [crop, setCrop] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(1)
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
+
+  const onCropComplete = useCallback((_: Area, areaPixels: Area) => {
+    setCroppedAreaPixels(areaPixels)
+  }, [])
 
   // Password form
   const [currentPassword, setCurrentPassword] = useState('')
@@ -94,12 +131,35 @@ export function UserSettingsPage() {
       return
     }
 
-    // Show preview
-    const previewUrl = URL.createObjectURL(file)
-    setAvatarPreview(previewUrl)
+    // Open crop dialog
+    const objectUrl = URL.createObjectURL(file)
+    setCropImageSrc(objectUrl)
+    setCrop({ x: 0, y: 0 })
+    setZoom(1)
+    setCroppedAreaPixels(null)
+    setCropDialogOpen(true)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
 
-    // Upload immediately
-    handleAvatarUpload(file)
+  const handleCropCancel = () => {
+    setCropDialogOpen(false)
+    if (cropImageSrc) URL.revokeObjectURL(cropImageSrc)
+    setCropImageSrc(null)
+  }
+
+  const handleCropSave = async () => {
+    if (!cropImageSrc || !croppedAreaPixels) return
+    setCropDialogOpen(false)
+    try {
+      const croppedFile = await getCroppedImg(cropImageSrc, croppedAreaPixels)
+      URL.revokeObjectURL(cropImageSrc)
+      setCropImageSrc(null)
+      const previewUrl = URL.createObjectURL(croppedFile)
+      setAvatarPreview(previewUrl)
+      await handleAvatarUpload(croppedFile)
+    } catch {
+      setProfileMsg({ type: 'error', text: 'Failed to crop image.' })
+    }
   }
 
   const handleAvatarUpload = async (file: File) => {
@@ -264,6 +324,46 @@ export function UserSettingsPage() {
               )}
             </div>
           </div>
+
+          {/* Crop Dialog */}
+          <Dialog open={cropDialogOpen} onOpenChange={(open) => { if (!open) handleCropCancel() }}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Crop Profile Picture</DialogTitle>
+                <DialogDescription>Drag to reposition. Use the slider to zoom.</DialogDescription>
+              </DialogHeader>
+              <div className="relative h-64 w-full">
+                {cropImageSrc && (
+                  <Cropper
+                    image={cropImageSrc}
+                    crop={crop}
+                    zoom={zoom}
+                    aspect={1}
+                    cropShape="round"
+                    onCropChange={setCrop}
+                    onZoomChange={setZoom}
+                    onCropComplete={onCropComplete}
+                  />
+                )}
+              </div>
+              <div className="flex items-center gap-3 px-1">
+                <span className="text-xs text-muted-foreground">Zoom</span>
+                <input
+                  type="range"
+                  min={1}
+                  max={3}
+                  step={0.05}
+                  value={zoom}
+                  onChange={(e) => setZoom(Number(e.target.value))}
+                  className="flex-1"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={handleCropCancel}>Cancel</Button>
+                <Button type="button" onClick={handleCropSave}>Save</Button>
+              </div>
+            </DialogContent>
+          </Dialog>
 
           <form onSubmit={handleProfileSave} className="space-y-4">
             {profileMsg && (
