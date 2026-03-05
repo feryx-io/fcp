@@ -160,6 +160,7 @@ export interface PhoneNumber {
   e911_callback: string | null
   cnam: string | null
   spam_score: number | null
+  location_id: string | null
   carrier: string | null
   lrn: string | null
   rate_center: string | null
@@ -191,6 +192,7 @@ export interface CreatePhoneNumberRequest {
   cnam?: string
   carrier?: string
   tags?: string[]
+  location_id?: string
 }
 
 export interface DeviceBinding {

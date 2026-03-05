@@ -1191,6 +1191,7 @@ impl PhoneNumberStore for PostgresStorage {
         let foc_date = phone_number.foc_date.map(system_time_to_datetime);
         let created_at = system_time_to_datetime(phone_number.created_at);
         let updated_at = system_time_to_datetime(phone_number.updated_at);
+        let location_id = phone_number.location_id.map(|id| id.to_string());
 
         sqlx::query(
             "INSERT INTO phone_numbers (
@@ -1199,9 +1200,9 @@ impl PhoneNumberStore for PostgresStorage {
                 carrier, lrn, ocn, rate_center, lata,
                 acquired_at, activated_at, ported_at, loa_date, foc_date,
                 recording_enabled, block_anonymous, allow_list, block_list, tags,
-                created_at, updated_at
+                location_id, created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
              ON CONFLICT(id) DO UPDATE SET
                  state = EXCLUDED.state,
                  e911_address_json = EXCLUDED.e911_address_json,
@@ -1222,6 +1223,7 @@ impl PhoneNumberStore for PostgresStorage {
                  allow_list = EXCLUDED.allow_list,
                  block_list = EXCLUDED.block_list,
                  tags = EXCLUDED.tags,
+                 location_id = EXCLUDED.location_id,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&id)
@@ -1251,6 +1253,7 @@ impl PhoneNumberStore for PostgresStorage {
         .bind(&allow_list)
         .bind(&block_list)
         .bind(&tags)
+        .bind(&location_id)
         .bind(&created_at)
         .bind(&updated_at)
         .execute(&self.pool)
@@ -1998,6 +2001,8 @@ fn row_to_phone_number(row: sqlx::postgres::PgRow) -> Result<PhoneNumber> {
         allow_list,
         block_list,
         tags,
+        location_id: row.get::<Option<String>, _>("location_id")
+            .and_then(|s| LocationId::from_str(&s).ok()),
         created_at,
         updated_at,
     })

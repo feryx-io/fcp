@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 use fcp_core::storage::PhoneNumberStore;
-use fcp_core::{E911Address, PhoneNumber, PhoneNumberId, TenantId};
+use fcp_core::{E911Address, LocationId, PhoneNumber, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -40,6 +40,9 @@ pub struct PhoneNumberResponse {
     pub e911_callback: Option<String>,
     pub cnam: Option<String>,
     pub spam_score: Option<f32>,
+
+    // Location
+    pub location_id: Option<String>,
 
     // Carrier metadata
     pub carrier: Option<String>,
@@ -117,6 +120,7 @@ impl From<PhoneNumber> for PhoneNumberResponse {
             e911_callback: number.e911_callback,
             cnam: number.cnam,
             spam_score: number.spam_score,
+            location_id: number.location_id.map(|id| id.to_string()),
             carrier: number.carrier,
             lrn: number.lrn,
             rate_center: number.rate_center,
@@ -142,6 +146,7 @@ pub struct CreatePhoneNumberRequest {
     pub cnam: Option<String>,
     pub carrier: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub location_id: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -160,6 +165,7 @@ pub struct UpdatePhoneNumberRequest {
     pub allow_list: Option<Vec<String>>,
     pub block_list: Option<Vec<String>>,
     pub tags: Option<Vec<String>>,
+    pub location_id: Option<String>,
 }
 
 /// List phone numbers.
@@ -228,6 +234,14 @@ pub async fn create_phone_number(
     if let Some(tags) = req.tags {
         number.tags = tags;
     }
+    if let Some(ref loc_id) = req.location_id {
+        if !loc_id.is_empty() {
+            number.location_id = Some(
+                LocationId::from_str(loc_id)
+                    .map_err(|e| ApiError::BadRequest(format!("Invalid location_id: {}", e)))?,
+            );
+        }
+    }
 
     // Store the phone number
     storage
@@ -294,6 +308,16 @@ pub async fn update_phone_number(
     }
     if req.tags.is_some() {
         number.tags = req.tags.unwrap_or_default();
+    }
+    if let Some(ref loc_id) = req.location_id {
+        if loc_id.is_empty() {
+            number.location_id = None;
+        } else {
+            number.location_id = Some(
+                LocationId::from_str(loc_id)
+                    .map_err(|e| ApiError::BadRequest(format!("Invalid location_id: {}", e)))?,
+            );
+        }
     }
 
     // Update timestamp

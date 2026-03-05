@@ -11,24 +11,27 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { phoneNumbers } from '@/api/endpoints'
+import { phoneNumbers, locations } from '@/api/endpoints'
 import type { PhoneNumber, CreatePhoneNumberRequest } from '@/types'
 
 const createSchema = z.object({
   e164: z.string().min(1, 'E.164 number is required').regex(/^\+?[0-9]+$/, 'Invalid phone number format'),
   cnam: z.string().optional(),
   carrier: z.string().optional(),
+  location_id: z.string().optional(),
 })
 
 const editSchema = z.object({
   cnam: z.string().optional(),
   recording_enabled: z.boolean().optional(),
   block_anonymous: z.boolean().optional(),
+  location_id: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -55,6 +58,17 @@ export function PhoneNumbersPage() {
     queryKey: ['phone-numbers'],
     queryFn: phoneNumbers.list,
   })
+
+  const { data: locationList = [] } = useQuery({
+    queryKey: ['locations'],
+    queryFn: locations.list,
+  })
+
+  const locationName = (id: string | null) => {
+    if (!id) return '-'
+    const loc = locationList.find((l) => l.id === id)
+    return loc ? loc.name : id
+  }
 
   const createMutation = useMutation({
     mutationFn: phoneNumbers.create,
@@ -101,6 +115,11 @@ export function PhoneNumbersPage() {
       accessorKey: 'carrier',
       header: 'Carrier',
       cell: ({ row }) => row.original.carrier || '-',
+    },
+    {
+      accessorKey: 'location_id',
+      header: 'Location',
+      cell: ({ row }) => locationName(row.original.location_id),
     },
     {
       accessorKey: 'rate_center',
@@ -163,6 +182,7 @@ export function PhoneNumbersPage() {
       cnam: editItem.cnam || '',
       recording_enabled: editItem.recording_enabled,
       block_anonymous: editItem.block_anonymous,
+      location_id: editItem.location_id || '',
     })
   }
 
@@ -171,6 +191,7 @@ export function PhoneNumbersPage() {
       e164: data.e164,
       cnam: data.cnam || undefined,
       carrier: data.carrier || undefined,
+      location_id: data.location_id || undefined,
     })
   }
 
@@ -182,6 +203,7 @@ export function PhoneNumbersPage() {
         cnam: data.cnam || undefined,
         recording_enabled: data.recording_enabled,
         block_anonymous: data.block_anonymous,
+        location_id: data.location_id || undefined,
       },
     })
   }
@@ -237,6 +259,18 @@ export function PhoneNumbersPage() {
                 <Input id="c-carrier" {...createForm.register('carrier')} />
               </div>
             </div>
+            <div className="space-y-2">
+              <Label>Location</Label>
+              <Select onValueChange={(v) => createForm.setValue('location_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {locationList.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -272,6 +306,18 @@ export function PhoneNumbersPage() {
                 Block anonymous
               </label>
             </div>
+            <div className="space-y-2">
+              <Label>Location</Label>
+              <Select defaultValue={editItem?.location_id || '__none__'} onValueChange={(v) => editForm.setValue('location_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {locationList.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
               <Button type="submit" disabled={updateMutation.isPending}>
@@ -298,7 +344,7 @@ export function PhoneNumbersPage() {
 
 // --- CSV Export / Import Helpers ---
 
-const EXPORT_COLUMNS = ['e164', 'cnam', 'carrier', 'state', 'rate_center'] as const
+const EXPORT_COLUMNS = ['e164', 'cnam', 'carrier', 'state', 'rate_center', 'location_id'] as const
 
 function escapeCSVField(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -322,7 +368,7 @@ function exportPhoneNumbers(items: PhoneNumber[]) {
   URL.revokeObjectURL(url)
 }
 
-const IMPORT_COLUMNS = ['e164', 'cnam', 'carrier'] as const
+const IMPORT_COLUMNS = ['e164', 'cnam', 'carrier', 'location_id'] as const
 
 interface ParsedRow {
   [key: string]: string
@@ -395,7 +441,7 @@ function validatePhoneRow(row: ParsedRow): string[] {
 
 function downloadPhoneTemplate() {
   const header = IMPORT_COLUMNS.join(',')
-  const sample = '+15551234567,ACME Corp,Bandwidth'
+  const sample = '+15551234567,ACME Corp,Bandwidth,'
   const csv = `${header}\n${sample}\n`
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
@@ -526,6 +572,7 @@ function PhoneNumberImportDialog({
       const updateData: Record<string, unknown> = {}
       if (row.data.cnam?.trim()) updateData.cnam = row.data.cnam.trim()
       if (row.data.carrier?.trim()) updateData.carrier = row.data.carrier.trim()
+      if (row.data.location_id?.trim()) updateData.location_id = row.data.location_id.trim()
 
       try {
         const req: CreatePhoneNumberRequest = { e164, ...updateData as { cnam?: string; carrier?: string } }
@@ -648,6 +695,7 @@ function PhoneNumberImportDialog({
                     <TableHead>E.164</TableHead>
                     <TableHead>CNAM</TableHead>
                     <TableHead>Carrier</TableHead>
+                    <TableHead>Location</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -661,6 +709,7 @@ function PhoneNumberImportDialog({
                       <TableCell className="font-medium">{row.data.e164 || <span className="text-destructive italic">empty</span>}</TableCell>
                       <TableCell>{row.data.cnam || '-'}</TableCell>
                       <TableCell>{row.data.carrier || '-'}</TableCell>
+                      <TableCell>{row.data.location_id || '-'}</TableCell>
                       <TableCell>
                         {row.validationErrors.length > 0 ? (
                           <span className="text-xs text-destructive">{row.validationErrors.join('; ')}</span>

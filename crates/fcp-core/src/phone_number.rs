@@ -12,7 +12,7 @@
 //! - Number portability and lifecycle management
 //! - Flexible routing policies
 
-use crate::identifiers::{PhoneNumberId, TenantId};
+use crate::identifiers::{LocationId, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -108,6 +108,10 @@ pub struct PhoneNumber {
 
     /// Tags for billing, departments, etc.
     pub tags: Vec<String>,
+
+    // ===== Location =====
+    /// Associated site location (for E911, regulatory, organizational purposes)
+    pub location_id: Option<LocationId>,
 
     // ===== Audit =====
     /// Created timestamp
@@ -364,6 +368,7 @@ impl PhoneNumber {
             allow_list: Vec::new(),
             block_list: Vec::new(),
             tags: Vec::new(),
+            location_id: None,
             created_at: now,
             updated_at: now,
         })
