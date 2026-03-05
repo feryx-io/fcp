@@ -39,5 +39,5 @@ uuid = { workspace = true }
 futures-util = { version = "0.3", optional = true }
 
 # Metrics (optional, behind "metrics" feature)
-prometheus = { version = "0.13", optional = true }
+prometheus = { version = "0.13", default-features = false, optional = true }
 lazy_static = { version = "1", optional = true }

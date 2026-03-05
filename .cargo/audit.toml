@@ -2,27 +2,7 @@
 # https://rustsec.org/
 
 [advisories]
-# Ignore advisories for specific crates (if needed)
-# ignore = ["RUSTSEC-0000-0000"]
-
-# Warn about unmaintained crates
-unmaintained = "warn"
-
-# Warn about unsound crates
-unsound = "warn"
-
-# Deny vulnerabilities with high severity
-vulnerability = "deny"
-
-# Warn about yanked crates
-yanked = "warn"
-
-[output]
-# Output format (terminal, json, etc)
-format = "terminal"
-
-# Show all information
-quiet = false
-
-# Show affected versions
-show-tree = false
+# rsa 0.9.10 (RUSTSEC-2023-0071): No fix available. Only pulled in transitively
+# by sqlx-mysql which we don't use (we use PostgreSQL only). Not compiled.
+ignore = ["RUSTSEC-2023-0071"]
+informational_warnings = ["unmaintained", "unsound"]
