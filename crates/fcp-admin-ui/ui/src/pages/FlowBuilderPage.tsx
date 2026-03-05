@@ -17,7 +17,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   Save, ArrowLeft, Trash2, Play, Mic, Phone,
-  Voicemail, GitBranch, PhoneOff, Globe, Users,
+  Voicemail, GitBranch, PhoneOff, Globe, Users, KeyRound,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,6 +34,7 @@ const NODE_TYPES_PALETTE = [
   { type: 'dial', label: 'Dial', icon: Phone, color: '#f59e0b' },
   { type: 'queue', label: 'Queue', icon: Users, color: '#6366f1' },
   { type: 'voicemail', label: 'Voicemail', icon: Voicemail, color: '#ec4899' },
+  { type: 'voicemail_access', label: 'VM Access', icon: KeyRound, color: '#d946ef' },
   { type: 'branch', label: 'Branch', icon: GitBranch, color: '#14b8a6' },
   { type: 'http', label: 'HTTP', icon: Globe, color: '#f97316' },
   { type: 'hangup', label: 'Hangup', icon: PhoneOff, color: '#ef4444' },

@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Top-level PBX configuration.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PbxConfig {
     /// Master enable/disable for all PBX features.
-    #[serde(default)]
+    #[serde(default = "default_pbx_enabled")]
     pub enabled: bool,
 
     /// Feature code (star code) mappings.
@@ -33,6 +33,24 @@ pub struct PbxConfig {
     /// Forced Authorization Code configuration.
     #[serde(default)]
     pub fac: FacConfig,
+}
+
+fn default_pbx_enabled() -> bool {
+    true
+}
+
+impl Default for PbxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pbx_enabled(),
+            feature_codes: FeatureCodeConfig::default(),
+            hunt_groups: HashMap::new(),
+            parking: ParkingConfig::default(),
+            pickup_groups: HashMap::new(),
+            cmc: CmcConfig::default(),
+            fac: FacConfig::default(),
+        }
+    }
 }
 
 /// Feature code (star code) prefix mappings.
@@ -275,7 +293,7 @@ mod tests {
     #[test]
     fn test_default_pbx_config() {
         let cfg = PbxConfig::default();
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert!(cfg.hunt_groups.is_empty());
         assert!(!cfg.parking.enabled);
         assert!(cfg.pickup_groups.is_empty());
