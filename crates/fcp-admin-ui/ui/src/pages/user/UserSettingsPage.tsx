@@ -8,12 +8,61 @@ import { Label } from '@/components/ui/label'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { Moon, Sun, Monitor, Camera, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { me } from '@/api/endpoints'
 import type { MeProfile } from '@/types'
+
+const TIMEZONES: { value: string; label: string }[] = [
+  { value: 'Pacific/Honolulu', label: '(UTC-10:00) Hawaii' },
+  { value: 'America/Anchorage', label: '(UTC-09:00) Alaska' },
+  { value: 'America/Los_Angeles', label: '(UTC-08:00) Pacific Time' },
+  { value: 'America/Denver', label: '(UTC-07:00) Mountain Time' },
+  { value: 'America/Chicago', label: '(UTC-06:00) Central Time' },
+  { value: 'America/New_York', label: '(UTC-05:00) Eastern Time' },
+  { value: 'America/Halifax', label: '(UTC-04:00) Atlantic Time' },
+  { value: 'America/St_Johns', label: '(UTC-03:30) Newfoundland' },
+  { value: 'America/Sao_Paulo', label: '(UTC-03:00) Brasilia' },
+  { value: 'Atlantic/Cape_Verde', label: '(UTC-01:00) Cape Verde' },
+  { value: 'Europe/London', label: '(UTC+00:00) London' },
+  { value: 'Europe/Paris', label: '(UTC+01:00) Paris / Berlin' },
+  { value: 'Europe/Helsinki', label: '(UTC+02:00) Helsinki / Bucharest' },
+  { value: 'Europe/Moscow', label: '(UTC+03:00) Moscow' },
+  { value: 'Asia/Dubai', label: '(UTC+04:00) Dubai' },
+  { value: 'Asia/Karachi', label: '(UTC+05:00) Karachi' },
+  { value: 'Asia/Kolkata', label: '(UTC+05:30) India' },
+  { value: 'Asia/Dhaka', label: '(UTC+06:00) Dhaka' },
+  { value: 'Asia/Bangkok', label: '(UTC+07:00) Bangkok' },
+  { value: 'Asia/Shanghai', label: '(UTC+08:00) Shanghai / Singapore' },
+  { value: 'Asia/Tokyo', label: '(UTC+09:00) Tokyo' },
+  { value: 'Australia/Sydney', label: '(UTC+10:00) Sydney' },
+  { value: 'Pacific/Auckland', label: '(UTC+12:00) Auckland' },
+]
+
+const LANGUAGES: { value: string; label: string }[] = [
+  { value: 'en-US', label: 'English (US)' },
+  { value: 'en-GB', label: 'English (UK)' },
+  { value: 'es-ES', label: 'Spanish (Spain)' },
+  { value: 'es-MX', label: 'Spanish (Mexico)' },
+  { value: 'fr-FR', label: 'French' },
+  { value: 'de-DE', label: 'German' },
+  { value: 'it-IT', label: 'Italian' },
+  { value: 'pt-BR', label: 'Portuguese (Brazil)' },
+  { value: 'nl-NL', label: 'Dutch' },
+  { value: 'pl-PL', label: 'Polish' },
+  { value: 'ru-RU', label: 'Russian' },
+  { value: 'ja-JP', label: 'Japanese' },
+  { value: 'ko-KR', label: 'Korean' },
+  { value: 'zh-CN', label: 'Chinese (Simplified)' },
+  { value: 'zh-TW', label: 'Chinese (Traditional)' },
+  { value: 'ar-SA', label: 'Arabic' },
+  { value: 'hi-IN', label: 'Hindi' },
+]
 
 function getCroppedImg(imageSrc: string, crop: Area): Promise<File> {
   return new Promise((resolve, reject) => {
@@ -388,12 +437,34 @@ export function UserSettingsPage() {
                 <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="timezone">Timezone</Label>
-                <Input id="timezone" value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="America/New_York" />
+                <Label>Timezone</Label>
+                <Select value={timezone} onValueChange={setTimezone}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select timezone" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {TIMEZONES.map((tz) => (
+                        <SelectItem key={tz.value} value={tz.value}>{tz.label}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="language">Language</Label>
-                <Input id="language" value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="en-US" />
+                <Label>Language</Label>
+                <Select value={language} onValueChange={setLanguage}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select language" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {LANGUAGES.map((lang) => (
+                        <SelectItem key={lang.value} value={lang.value}>{lang.label}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <Button type="submit" disabled={profileSaving}>
