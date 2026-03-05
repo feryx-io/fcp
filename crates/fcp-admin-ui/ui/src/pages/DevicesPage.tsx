@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2 } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -15,8 +15,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Switch } from '@/components/ui/switch'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { devices } from '@/api/endpoints'
-import type { Device } from '@/types'
+import type { Device, CreateDeviceRequest } from '@/types'
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -51,6 +53,7 @@ const regBadge = (state: string) => {
 
 export function DevicesPage() {
   const [createOpen, setCreateOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [editItem, setEditItem] = useState<Device | null>(null)
   const queryClient = useQueryClient()
 
@@ -213,9 +216,19 @@ export function DevicesPage() {
           <h1 className="text-3xl font-bold tracking-tight">Devices</h1>
           <p className="text-muted-foreground">Manage SIP phones and devices</p>
         </div>
-        <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
-          <Plus className="mr-2 h-4 w-4" /> Add Device
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => exportDevices(items)}>
+            <Download className="mr-2 h-4 w-4" />
+            Export
+          </Button>
+          <Button variant="outline" onClick={() => setImportOpen(true)}>
+            <Upload className="mr-2 h-4 w-4" />
+            Bulk Import
+          </Button>
+          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+            <Plus className="mr-2 h-4 w-4" /> Add Device
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -334,6 +347,518 @@ export function DevicesPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Bulk Import Dialog */}
+      <BulkImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onComplete={() => queryClient.invalidateQueries({ queryKey: ['devices'] })}
+        existingItems={items}
+      />
     </div>
+  )
+}
+
+// --- CSV Export / Import Helpers ---
+
+const EXPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location', 'enabled'] as const
+
+function escapeCSVField(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return `"${value.replace(/"/g, '""')}"`
+  }
+  return value
+}
+
+function exportDevices(deviceList: Device[]) {
+  const header = EXPORT_COLUMNS.join(',')
+  const rows = deviceList.map((d) =>
+    EXPORT_COLUMNS.map((col) => escapeCSVField(String(d[col] ?? ''))).join(',')
+  )
+  const csv = [header, ...rows].join('\n') + '\n'
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `devices_export_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+const IMPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location'] as const
+const KNOWN_DEVICE_TYPES = ['desk_phone', 'softphone', 'webrtc', 'conference_room', 'ata', 'gateway', 'mobile', 'other']
+
+interface ParsedRow {
+  [key: string]: string
+}
+
+function parseCSV(text: string): { headers: string[]; rows: ParsedRow[] } | { error: string } {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '')
+  if (lines.length === 0) return { error: 'File is empty' }
+
+  const parseLine = (line: string): string[] => {
+    const fields: string[] = []
+    let current = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (inQuotes) {
+        if (ch === '"') {
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            current += '"'
+            i++
+          } else {
+            inQuotes = false
+          }
+        } else {
+          current += ch
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true
+        } else if (ch === ',') {
+          fields.push(current.trim())
+          current = ''
+        } else {
+          current += ch
+        }
+      }
+    }
+    fields.push(current.trim())
+    return fields
+  }
+
+  const headers = parseLine(lines[0]).map((h) => h.toLowerCase().replace(/\s+/g, '_'))
+
+  if (!headers.includes('name') || !headers.includes('device_type')) {
+    return { error: 'CSV must contain at least "name" and "device_type" columns' }
+  }
+
+  const rows: ParsedRow[] = []
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseLine(lines[i])
+    const row: ParsedRow = {}
+    headers.forEach((h, idx) => {
+      row[h] = values[idx] || ''
+    })
+    rows.push(row)
+  }
+
+  return { headers, rows }
+}
+
+function validateDeviceImportRow(row: ParsedRow): string[] {
+  const errors: string[] = []
+  if (!row.name?.trim()) errors.push('Name is required')
+  if (!row.device_type?.trim()) errors.push('Device type is required')
+  else if (!KNOWN_DEVICE_TYPES.includes(row.device_type.trim())) {
+    errors.push(`Unknown device type "${row.device_type.trim()}"`)
+  }
+  return errors
+}
+
+function downloadDeviceTemplate() {
+  const header = IMPORT_COLUMNS.join(',')
+  const sample = 'Lobby Phone,desk_phone,AA:BB:CC:DD:EE:FF,Yealink T54W,sip:lobby@example.com,Floor 1'
+  const csv = `${header}\n${sample}\n`
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'devices_import_template.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+type ImportStep = 'upload' | 'preview' | 'import'
+type RowStatus = 'pending' | 'importing' | 'success' | 'error'
+
+interface ImportRowState {
+  data: ParsedRow
+  validationErrors: string[]
+  status: RowStatus
+  apiError?: string
+}
+
+function BulkImportDialog({
+  open,
+  onOpenChange,
+  onComplete,
+  existingItems,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onComplete: () => void
+  existingItems: Device[]
+}) {
+  const [step, setStep] = useState<ImportStep>('upload')
+  const [rows, setRows] = useState<ImportRowState[]>([])
+  const [importedCount, setImportedCount] = useState(0)
+  const [failedCount, setFailedCount] = useState(0)
+  const [updatedCount, setUpdatedCount] = useState(0)
+  const [isImporting, setIsImporting] = useState(false)
+  const [fileError, setFileError] = useState<string | null>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [overrideExisting, setOverrideExisting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef(false)
+
+  const reset = useCallback(() => {
+    setStep('upload')
+    setRows([])
+    setImportedCount(0)
+    setFailedCount(0)
+    setUpdatedCount(0)
+    setIsImporting(false)
+    setFileError(null)
+    setIsDragOver(false)
+    setOverrideExisting(false)
+    abortRef.current = false
+  }, [])
+
+  const handleClose = (v: boolean) => {
+    if (!v) {
+      if (isImporting) {
+        abortRef.current = true
+        return
+      }
+      if (step === 'import' && importedCount > 0) {
+        onComplete()
+      }
+      reset()
+    }
+    onOpenChange(v)
+  }
+
+  const processFile = (file: File) => {
+    setFileError(null)
+    if (!file.name.endsWith('.csv')) {
+      setFileError('Please select a .csv file')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const text = e.target?.result as string
+      const result = parseCSV(text)
+      if ('error' in result) {
+        setFileError(result.error)
+        return
+      }
+      if (result.rows.length === 0) {
+        setFileError('CSV contains no data rows')
+        return
+      }
+      const validated: ImportRowState[] = result.rows.map((data) => ({
+        data,
+        validationErrors: validateDeviceImportRow(data),
+        status: 'pending' as const,
+      }))
+      setRows(validated)
+      setStep('preview')
+    }
+    reader.readAsText(file)
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) processFile(file)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) processFile(file)
+  }
+
+  const validRows = rows.filter((r) => r.validationErrors.length === 0)
+  const invalidRows = rows.filter((r) => r.validationErrors.length > 0)
+
+  const startImport = async () => {
+    setStep('import')
+    setIsImporting(true)
+    setImportedCount(0)
+    setFailedCount(0)
+    setUpdatedCount(0)
+    abortRef.current = false
+
+    const updatedRows = rows.map((r) =>
+      r.validationErrors.length === 0 ? { ...r, status: 'pending' as const } : { ...r, status: 'error' as const, apiError: 'Skipped (validation errors)' }
+    )
+    setRows(updatedRows)
+
+    let created = 0
+    let updated = 0
+    let failed = invalidRows.length
+
+    for (let i = 0; i < updatedRows.length; i++) {
+      if (abortRef.current) break
+      const row = updatedRows[i]
+      if (row.validationErrors.length > 0) continue
+
+      setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'importing' } : r))
+
+      const name = row.data.name.trim()
+      const device_type = row.data.device_type.trim()
+      const createData: CreateDeviceRequest = { name, device_type }
+      if (row.data.mac_address?.trim()) createData.mac_address = row.data.mac_address.trim()
+      if (row.data.model?.trim()) createData.model = row.data.model.trim()
+      if (row.data.sip_uri?.trim()) createData.sip_uri = row.data.sip_uri.trim()
+      if (row.data.location?.trim()) createData.location = row.data.location.trim()
+
+      try {
+        await devices.create(createData)
+        created++
+        setImportedCount(created)
+        setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success' } : r))
+      } catch (createErr: unknown) {
+        const createMsg = createErr instanceof Error ? createErr.message : 'Unknown error'
+        const isConflict = (createErr as { status?: number }).status === 409
+
+        if (overrideExisting && isConflict) {
+          const existingDevice = existingItems.find((d) => d.name === name)
+          if (existingDevice) {
+            try {
+              const updateData: Partial<CreateDeviceRequest> = { name, device_type }
+              if (row.data.mac_address?.trim()) updateData.mac_address = row.data.mac_address.trim()
+              if (row.data.model?.trim()) updateData.model = row.data.model.trim()
+              if (row.data.sip_uri?.trim()) updateData.sip_uri = row.data.sip_uri.trim()
+              if (row.data.location?.trim()) updateData.location = row.data.location.trim()
+              await devices.update(existingDevice.id, updateData)
+              updated++
+              setUpdatedCount(updated)
+              setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success', apiError: 'Updated' } : r))
+            } catch (updateErr) {
+              failed++
+              setFailedCount(failed - invalidRows.length)
+              const message = updateErr instanceof Error ? updateErr.message : 'Unknown error'
+              setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: `Update failed: ${message}` } : r))
+            }
+          } else {
+            failed++
+            setFailedCount(failed - invalidRows.length)
+            setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: 'Conflict: device not found in current list for override' } : r))
+          }
+        } else {
+          failed++
+          setFailedCount(failed - invalidRows.length)
+          setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: createMsg || 'Unknown error' } : r))
+        }
+      }
+    }
+
+    setIsImporting(false)
+  }
+
+  const handleDone = () => {
+    if (importedCount > 0) onComplete()
+    reset()
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>
+            {step === 'upload' && 'Bulk Import Devices'}
+            {step === 'preview' && 'Preview Import'}
+            {step === 'import' && 'Importing Devices'}
+          </DialogTitle>
+          <DialogDescription>
+            {step === 'upload' && 'Upload a CSV file to create multiple devices at once.'}
+            {step === 'preview' && `Review ${rows.length} rows before importing.`}
+            {step === 'import' && 'Creating devices...'}
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Step 1: Upload */}
+        {step === 'upload' && (
+          <div className="space-y-4">
+            <div
+              className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                isDragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/25 hover:border-primary/50'
+              }`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+              onDragLeave={() => setIsDragOver(false)}
+              onDrop={handleDrop}
+            >
+              <FileUp className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
+              <p className="text-sm font-medium">Drop a CSV file here or click to browse</p>
+              <p className="text-xs text-muted-foreground mt-1">Accepts .csv files</p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+            </div>
+            {fileError && (
+              <div className="flex items-center gap-2 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {fileError}
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <Button variant="link" size="sm" className="px-0" onClick={downloadDeviceTemplate}>
+                <Download className="mr-1 h-3 w-3" />
+                Download Template
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Required columns: name, device_type
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Preview */}
+        {step === 'preview' && (
+          <div className="space-y-4 min-h-0 flex flex-col">
+            <div className="flex items-center gap-3 text-sm">
+              <Badge variant="default">{validRows.length} valid</Badge>
+              {invalidRows.length > 0 && (
+                <Badge variant="destructive">{invalidRows.length} with errors</Badge>
+              )}
+            </div>
+
+            <div className="border rounded-md overflow-auto max-h-[400px] min-h-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-8">#</TableHead>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>MAC</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>SIP URI</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((row, idx) => (
+                    <TableRow
+                      key={idx}
+                      className={row.validationErrors.length > 0 ? 'bg-destructive/5' : ''}
+                    >
+                      <TableCell className="text-muted-foreground">{idx + 1}</TableCell>
+                      <TableCell className="font-medium">{row.data.name || <span className="text-destructive italic">empty</span>}</TableCell>
+                      <TableCell>{row.data.device_type || <span className="text-destructive italic">empty</span>}</TableCell>
+                      <TableCell>{row.data.mac_address || '-'}</TableCell>
+                      <TableCell>{row.data.model || '-'}</TableCell>
+                      <TableCell>{row.data.sip_uri || '-'}</TableCell>
+                      <TableCell>
+                        {row.validationErrors.length > 0 ? (
+                          <span className="text-xs text-destructive">{row.validationErrors.join('; ')}</span>
+                        ) : (
+                          <span className="text-xs text-green-600">OK</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <Button variant="outline" onClick={() => { setRows([]); setStep('upload') }}>
+                Back
+              </Button>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="override-existing"
+                    checked={overrideExisting}
+                    onCheckedChange={setOverrideExisting}
+                  />
+                  <Label htmlFor="override-existing" className="text-sm cursor-pointer">
+                    Override existing devices
+                  </Label>
+                </div>
+                <Button onClick={startImport} disabled={validRows.length === 0}>
+                  Import {validRows.length} Device{validRows.length !== 1 ? 's' : ''}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Import */}
+        {step === 'import' && (
+          <div className="space-y-4 min-h-0 flex flex-col">
+            {/* Progress bar */}
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>
+                  {isImporting ? 'Importing...' : 'Import complete'}
+                </span>
+                <span className="text-muted-foreground">
+                  {importedCount + updatedCount + failedCount} / {validRows.length}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-300"
+                  style={{ width: `${validRows.length > 0 ? ((importedCount + updatedCount + failedCount) / validRows.length) * 100 : 0}%` }}
+                />
+              </div>
+              {!isImporting && (
+                <div className="flex gap-4 text-sm">
+                  <span className="text-green-600">{importedCount} created</span>
+                  {updatedCount > 0 && <span className="text-blue-600">{updatedCount} updated</span>}
+                  {failedCount > 0 && <span className="text-destructive">{failedCount} failed</span>}
+                  {invalidRows.length > 0 && <span className="text-muted-foreground">{invalidRows.length} skipped</span>}
+                </div>
+              )}
+            </div>
+
+            <div className="border rounded-md overflow-auto max-h-[350px] min-h-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-8"></TableHead>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Result</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((row, idx) => (
+                    <TableRow key={idx}>
+                      <TableCell>
+                        {row.status === 'importing' && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+                        {row.status === 'success' && <CheckCircle2 className="h-4 w-4 text-green-600" />}
+                        {row.status === 'error' && <XCircle className="h-4 w-4 text-destructive" />}
+                        {row.status === 'pending' && <span className="block h-4 w-4 rounded-full border-2 border-muted-foreground/25" />}
+                      </TableCell>
+                      <TableCell className="font-medium">{row.data.name || '(empty)'}</TableCell>
+                      <TableCell className="text-sm">
+                        {row.status === 'success' && row.apiError === 'Updated' && <span className="text-blue-600">Updated</span>}
+                        {row.status === 'success' && row.apiError !== 'Updated' && <span className="text-green-600">Created</span>}
+                        {row.status === 'error' && (
+                          <span className="text-destructive">{row.apiError || row.validationErrors.join('; ')}</span>
+                        )}
+                        {row.status === 'importing' && <span className="text-muted-foreground">Creating...</span>}
+                        {row.status === 'pending' && <span className="text-muted-foreground">Waiting</span>}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex justify-end">
+              {isImporting ? (
+                <Button variant="outline" onClick={() => { abortRef.current = true }}>
+                  Cancel
+                </Button>
+              ) : (
+                <Button onClick={handleDone}>Done</Button>
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
