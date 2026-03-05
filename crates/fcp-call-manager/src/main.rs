@@ -17,7 +17,10 @@ use fcp_events::filter::EventType;
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
 use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
+use fcp_flow::InMemoryFlowStore;
+use fcp_sip::flow_handler::FlowCallHandler;
 use fcp_sip::prelude::*;
+use fcp_voicemail::{VoicemailConfig, VoicemailService};
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
@@ -265,6 +268,22 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        // Fix stale PBX config: if DB had pbx.enabled=false from pre-v0.23.0 seed,
+        // correct it so feature codes (*98 etc.) work.
+        if !config.pbx.enabled {
+            config.pbx.enabled = true;
+            let _ = cs
+                .set_config(
+                    svc,
+                    "pbx",
+                    tid,
+                    serde_json::to_value(&config.pbx).unwrap_or_default(),
+                    Some("fix-pbx-default"),
+                )
+                .await;
+            info!("PBX enabled flag corrected in database");
+        }
+
         info!("Operational config loading complete (DB primary, TOML seed)");
     }
 
@@ -600,6 +619,33 @@ async fn main() -> Result<()> {
             .as_ref()
             .map(|h| Arc::clone(h) as Arc<dyn fcp_sip::presence::PresenceHandler>);
 
+    // 17c. Create VoicemailService for *98 voicemail access
+    let voicemail_service = Arc::new(VoicemailService::new(
+        Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::VoicemailStore>,
+        Arc::clone(&media_manager),
+        VoicemailConfig::default(),
+    ));
+
+    // 17d. Create FlowCallHandler for IVR flows (*98 voicemail access, future IVR features)
+    let flow_store: Arc<dyn fcp_flow::FlowStore> = Arc::new(InMemoryFlowStore::new());
+    let contact_uri = local_uri.clone();
+    let flow_handler = FlowCallHandler::new(
+        Arc::clone(&flow_store),
+        Some(Arc::clone(&event_publisher)),
+        Some(Arc::clone(&media_manager)),
+    )
+    .with_call_manager(Arc::clone(&call_manager))
+    .with_transaction_manager(Arc::clone(&transaction_manager_ref))
+    .with_dialog_manager(Arc::clone(&dialog_manager_ref))
+    .with_uris(local_uri.clone(), contact_uri)
+    .with_media_profile(
+        MediaProfileBuilder::audio_only(),
+        local_addr.clone(),
+        config.media.rtp_port_start,
+    )
+    .with_voicemail_service(Arc::clone(&voicemail_service));
+    let flow_handler = Arc::new(flow_handler);
+
     let mut handler = SipMessageHandler::new(
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
@@ -621,7 +667,7 @@ async fn main() -> Result<()> {
             public_ip: config.media.public_ip.clone(),
             ..Default::default()
         }),
-        None, // flow_handler — add when flow config is present
+        Some(Arc::clone(&flow_handler)),
         config.b2bua.clone(),
         outbound_route_provider,
         pbx_handler.clone(),
