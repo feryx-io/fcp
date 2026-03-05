@@ -39,11 +39,17 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         fcp_storage_postgres::api_token::PostgresApiTokenStore::new(storage.pool().clone()),
     );
 
+    // Create prompt store backed by the same PostgreSQL pool
+    let prompt_store = Arc::new(
+        fcp_storage_postgres::prompt::PostgresPromptStore::new(storage.pool().clone()),
+    );
+
     let dyn_st = DynStorage::from_all_in_one(storage.clone())
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
-        .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>);
+        .with_api_token_store(api_token_store as Arc<dyn fcp_core::storage::ApiTokenStore>)
+        .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>);
 
-    info!("PostgreSQL storage initialized successfully (with SIP trace and API token stores)");
+    info!("PostgreSQL storage initialized successfully (with SIP trace, API token, and prompt stores)");
     Ok(StorageResult {
         dyn_storage: Arc::new(dyn_st),
         config_store: storage,

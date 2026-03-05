@@ -30,8 +30,10 @@ LANG_MAP = {
     "fr-FR": "f",
     "ja": "j",
     "ja-JP": "j",
-    "ko": "k",
-    "ko-KR": "k",
+    "hi": "h",
+    "hi-IN": "h",
+    "it": "i",
+    "it-IT": "i",
     "zh": "z",
     "zh-CN": "z",
     "pt": "p",
@@ -41,8 +43,9 @@ LANG_MAP = {
     "b": "b",
     "e": "e",
     "f": "f",
+    "h": "h",
+    "i": "i",
     "j": "j",
-    "k": "k",
     "z": "z",
     "p": "p",
 }
@@ -80,9 +83,19 @@ def main():
 
     from kokoro import KPipeline
 
-    pipeline = KPipeline(lang="a")  # default lang, overridden per-request
+    # Cache pipelines per language code (each has its own G2P)
+    pipelines = {}
+    default_pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
+    pipelines["a"] = default_pipeline
     load_ms = int((time.monotonic() - t0) * 1000)
     print(f"kokoro_tts_worker: model loaded in {load_ms}ms", file=sys.stderr, flush=True)
+
+    def get_pipeline(lang_code):
+        if lang_code not in pipelines:
+            print(f"kokoro_tts_worker: creating pipeline for lang={lang_code}", file=sys.stderr, flush=True)
+            # Share the model across pipelines to save memory
+            pipelines[lang_code] = KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M", model=default_pipeline.model)
+        return pipelines[lang_code]
 
     # Signal readiness
     ready_msg = json.dumps({"ready": True, "load_ms": load_ms})
@@ -113,12 +126,14 @@ def main():
         try:
             t_start = time.monotonic()
 
+            pipeline = get_pipeline(lang)
+
             # Generate audio segments
-            # KPipeline returns generator of (graphemes, phonemes, audio) tuples
+            # KPipeline returns generator of Result objects with .audio property
             audio_segments = []
-            for _gs, _ps, audio in pipeline(text, voice=voice, lang=lang):
-                if audio is not None:
-                    audio_segments.append(audio)
+            for result in pipeline(text, voice=voice):
+                if result.audio is not None:
+                    audio_segments.append(result.audio.numpy())
 
             if not audio_segments:
                 resp = {"ok": False, "error": "No audio generated"}

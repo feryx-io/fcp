@@ -56,12 +56,18 @@ export function PromptsPage() {
     queryFn: () => prompts.list(categoryFilter !== 'all' ? { category: categoryFilter } : undefined),
   })
 
+  const [createError, setCreateError] = useState<string | null>(null)
+
   const createMutation = useMutation({
     mutationFn: prompts.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prompts'] })
       setCreateOpen(false)
+      setCreateError(null)
       resetForm()
+    },
+    onError: (err: Error) => {
+      setCreateError(err.message || 'Failed to create prompt')
     },
   })
 
@@ -251,7 +257,7 @@ export function PromptsPage() {
               ))}
             </SelectContent>
           </Select>
-          <Button onClick={() => { resetForm(); setCreateOpen(true) }}>
+          <Button onClick={() => { resetForm(); setCreateError(null); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> New Prompt
           </Button>
         </div>
@@ -317,8 +323,11 @@ export function PromptsPage() {
                 />
               </div>
             )}
+            {createError && (
+              <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>
+            )}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => { setCreateOpen(false); setCreateError(null) }}>Cancel</Button>
               <Button
                 onClick={handleCreate}
                 disabled={!formName || (formSourceType === 'tts' && !formTtsText) || createMutation.isPending}
