@@ -32,6 +32,7 @@ pub struct AppState {
 /// If `xcap_root` is provided, the XCAP server routes are nested under that path.
 pub fn router(state: Arc<AppState>, xcap_root: Option<&str>) -> Router {
     let mut app = Router::new()
+        .route("/health", get(health))
         .route("/v1/health", get(health))
         .route("/v1/metrics", get(metrics))
         .route("/v1/presence/{aor}", get(get_presence))
