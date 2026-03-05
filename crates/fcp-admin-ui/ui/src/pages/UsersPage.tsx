@@ -19,9 +19,10 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users } from '@/api/endpoints'
-import type { User, CreateUserRequest } from '@/types'
+import type { User, CreateUserRequest, UpdateUserRequest } from '@/types'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -247,6 +248,10 @@ export function UsersPage() {
           <p className="text-muted-foreground">Manage user accounts and credentials</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => exportUsers(userList)}>
+            <Download className="mr-2 h-4 w-4" />
+            Export
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
@@ -574,7 +579,31 @@ function ChangePasswordDialog({
   )
 }
 
-// --- CSV Bulk Import Helpers ---
+// --- CSV Export / Import Helpers ---
+
+const EXPORT_COLUMNS = ['username', 'display_name', 'email', 'role', 'extension', 'department', 'account_status'] as const
+
+function escapeCSVField(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return `"${value.replace(/"/g, '""')}"`
+  }
+  return value
+}
+
+function exportUsers(userList: User[]) {
+  const header = EXPORT_COLUMNS.join(',')
+  const rows = userList.map((u) =>
+    EXPORT_COLUMNS.map((col) => escapeCSVField(String(u[col] ?? ''))).join(',')
+  )
+  const csv = [header, ...rows].join('\n') + '\n'
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `users_export_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const IMPORT_COLUMNS = ['username', 'password', 'display_name', 'email', 'role', 'extension', 'department'] as const
 const KNOWN_ROLES = ['end_user', 'read_only', 'department_admin', 'user_admin', 'telecom_admin', 'super_admin']
@@ -688,9 +717,11 @@ function BulkImportDialog({
   const [rows, setRows] = useState<ImportRowState[]>([])
   const [importedCount, setImportedCount] = useState(0)
   const [failedCount, setFailedCount] = useState(0)
+  const [updatedCount, setUpdatedCount] = useState(0)
   const [isImporting, setIsImporting] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [overrideExisting, setOverrideExisting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef(false)
 
@@ -699,9 +730,11 @@ function BulkImportDialog({
     setRows([])
     setImportedCount(0)
     setFailedCount(0)
+    setUpdatedCount(0)
     setIsImporting(false)
     setFileError(null)
     setIsDragOver(false)
+    setOverrideExisting(false)
     abortRef.current = false
   }, [])
 
@@ -768,6 +801,7 @@ function BulkImportDialog({
     setIsImporting(true)
     setImportedCount(0)
     setFailedCount(0)
+    setUpdatedCount(0)
     abortRef.current = false
 
     const updatedRows = rows.map((r) =>
@@ -775,7 +809,8 @@ function BulkImportDialog({
     )
     setRows(updatedRows)
 
-    let succeeded = 0
+    let created = 0
+    let updated = 0
     let failed = invalidRows.length
 
     for (let i = 0; i < updatedRows.length; i++) {
@@ -785,27 +820,44 @@ function BulkImportDialog({
 
       setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'importing' } : r))
 
-      try {
-        const req: CreateUserRequest = {
-          username: row.data.username.trim(),
-          password: row.data.password.trim(),
-        }
-        if (row.data.display_name?.trim()) req.display_name = row.data.display_name.trim()
-        if (row.data.email?.trim()) req.email = row.data.email.trim()
-        if (row.data.role?.trim()) req.role = row.data.role.trim()
-        else req.role = 'end_user'
-        if (row.data.extension?.trim()) req.extension = row.data.extension.trim()
-        if (row.data.department?.trim()) req.department = row.data.department.trim()
+      const username = row.data.username.trim()
+      const password = row.data.password.trim()
+      const updateData: UpdateUserRequest = {}
+      if (row.data.display_name?.trim()) updateData.display_name = row.data.display_name.trim()
+      if (row.data.email?.trim()) updateData.email = row.data.email.trim()
+      if (row.data.role?.trim()) updateData.role = row.data.role.trim()
+      else updateData.role = 'end_user'
+      if (row.data.extension?.trim()) updateData.extension = row.data.extension.trim()
+      if (row.data.department?.trim()) updateData.department = row.data.department.trim()
 
+      try {
+        const req: CreateUserRequest = { username, password, ...updateData }
         await users.create(req)
-        succeeded++
-        setImportedCount(succeeded)
+        created++
+        setImportedCount(created)
         setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success' } : r))
-      } catch (err) {
-        failed++
-        setFailedCount(failed - invalidRows.length)
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: message } : r))
+      } catch (createErr) {
+        const createMsg = createErr instanceof Error ? createErr.message : ''
+        const isConflict = createMsg.toLowerCase().includes('already exists') || createMsg.includes('409') || createMsg.toLowerCase().includes('conflict')
+
+        if (overrideExisting && isConflict) {
+          try {
+            await users.update(username, updateData)
+            await users.updatePassword(username, password)
+            updated++
+            setUpdatedCount(updated)
+            setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success', apiError: 'Updated' } : r))
+          } catch (updateErr) {
+            failed++
+            setFailedCount(failed - invalidRows.length)
+            const message = updateErr instanceof Error ? updateErr.message : 'Unknown error'
+            setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: `Update failed: ${message}` } : r))
+          }
+        } else {
+          failed++
+          setFailedCount(failed - invalidRows.length)
+          setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: createMsg || 'Unknown error' } : r))
+        }
       }
     }
 
@@ -923,13 +975,25 @@ function BulkImportDialog({
               </Table>
             </div>
 
-            <div className="flex justify-between">
+            <div className="flex items-center justify-between">
               <Button variant="outline" onClick={() => { setRows([]); setStep('upload') }}>
                 Back
               </Button>
-              <Button onClick={startImport} disabled={validRows.length === 0}>
-                Import {validRows.length} User{validRows.length !== 1 ? 's' : ''}
-              </Button>
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="override-existing"
+                    checked={overrideExisting}
+                    onCheckedChange={setOverrideExisting}
+                  />
+                  <Label htmlFor="override-existing" className="text-sm cursor-pointer">
+                    Override existing users
+                  </Label>
+                </div>
+                <Button onClick={startImport} disabled={validRows.length === 0}>
+                  Import {validRows.length} User{validRows.length !== 1 ? 's' : ''}
+                </Button>
+              </div>
             </div>
           </div>
         )}
@@ -944,18 +1008,19 @@ function BulkImportDialog({
                   {isImporting ? 'Importing...' : 'Import complete'}
                 </span>
                 <span className="text-muted-foreground">
-                  {importedCount + failedCount} / {validRows.length}
+                  {importedCount + updatedCount + failedCount} / {validRows.length}
                 </span>
               </div>
               <div className="h-2 rounded-full bg-muted overflow-hidden">
                 <div
                   className="h-full bg-primary rounded-full transition-all duration-300"
-                  style={{ width: `${validRows.length > 0 ? ((importedCount + failedCount) / validRows.length) * 100 : 0}%` }}
+                  style={{ width: `${validRows.length > 0 ? ((importedCount + updatedCount + failedCount) / validRows.length) * 100 : 0}%` }}
                 />
               </div>
               {!isImporting && (
                 <div className="flex gap-4 text-sm">
                   <span className="text-green-600">{importedCount} created</span>
+                  {updatedCount > 0 && <span className="text-blue-600">{updatedCount} updated</span>}
                   {failedCount > 0 && <span className="text-destructive">{failedCount} failed</span>}
                   {invalidRows.length > 0 && <span className="text-muted-foreground">{invalidRows.length} skipped</span>}
                 </div>
@@ -982,7 +1047,8 @@ function BulkImportDialog({
                       </TableCell>
                       <TableCell className="font-medium">{row.data.username || '(empty)'}</TableCell>
                       <TableCell className="text-sm">
-                        {row.status === 'success' && <span className="text-green-600">Created</span>}
+                        {row.status === 'success' && row.apiError === 'Updated' && <span className="text-blue-600">Updated</span>}
+                        {row.status === 'success' && row.apiError !== 'Updated' && <span className="text-green-600">Created</span>}
                         {row.status === 'error' && (
                           <span className="text-destructive">{row.apiError || row.validationErrors.join('; ')}</span>
                         )}
