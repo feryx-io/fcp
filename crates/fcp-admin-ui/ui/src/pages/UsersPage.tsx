@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2, LockOpen } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, KeyRound, Phone, Trash2, LockOpen, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -19,8 +19,9 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users } from '@/api/endpoints'
-import type { User } from '@/types'
+import type { User, CreateUserRequest } from '@/types'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -86,6 +87,7 @@ const statusBadgeVariant = (status: string) => {
 
 export function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [editUser, setEditUser] = useState<User | null>(null)
   const [passwordUser, setPasswordUser] = useState<User | null>(null)
   const [digestUser, setDigestUser] = useState<User | null>(null)
@@ -244,10 +246,16 @@ export function UsersPage() {
           <h1 className="text-3xl font-bold tracking-tight">Users</h1>
           <p className="text-muted-foreground">Manage user accounts and credentials</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add User
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>
+            <Upload className="mr-2 h-4 w-4" />
+            Bulk Import
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add User
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -283,6 +291,13 @@ export function UsersPage() {
         onOpenChange={(open) => { if (!open) setDigestUser(null) }}
         mutation={digestMutation}
         deleteMutation={deleteDigestMutation}
+      />
+
+      {/* Bulk Import Dialog */}
+      <BulkImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onComplete={() => queryClient.invalidateQueries({ queryKey: ['users'] })}
       />
     </div>
   )
@@ -554,6 +569,443 @@ function ChangePasswordDialog({
             <p className="text-sm text-green-600">Password updated successfully.</p>
           )}
         </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// --- CSV Bulk Import Helpers ---
+
+const IMPORT_COLUMNS = ['username', 'password', 'display_name', 'email', 'role', 'extension', 'department'] as const
+const KNOWN_ROLES = ['end_user', 'read_only', 'department_admin', 'user_admin', 'telecom_admin', 'super_admin']
+
+interface ParsedRow {
+  [key: string]: string
+}
+
+function parseCSV(text: string): { headers: string[]; rows: ParsedRow[] } | { error: string } {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '')
+  if (lines.length === 0) return { error: 'File is empty' }
+
+  const parseLine = (line: string): string[] => {
+    const fields: string[] = []
+    let current = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (inQuotes) {
+        if (ch === '"') {
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            current += '"'
+            i++
+          } else {
+            inQuotes = false
+          }
+        } else {
+          current += ch
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true
+        } else if (ch === ',') {
+          fields.push(current.trim())
+          current = ''
+        } else {
+          current += ch
+        }
+      }
+    }
+    fields.push(current.trim())
+    return fields
+  }
+
+  const headers = parseLine(lines[0]).map((h) => h.toLowerCase().replace(/\s+/g, '_'))
+
+  if (!headers.includes('username') || !headers.includes('password')) {
+    return { error: 'CSV must contain at least "username" and "password" columns' }
+  }
+
+  const rows: ParsedRow[] = []
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseLine(lines[i])
+    const row: ParsedRow = {}
+    headers.forEach((h, idx) => {
+      row[h] = values[idx] || ''
+    })
+    rows.push(row)
+  }
+
+  return { headers, rows }
+}
+
+function validateImportRow(row: ParsedRow): string[] {
+  const errors: string[] = []
+  if (!row.username?.trim()) errors.push('Username is required')
+  if (!row.password?.trim()) errors.push('Password is required')
+  else if (row.password.trim().length < 8) errors.push('Password must be at least 8 characters')
+  if (row.email?.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(row.email.trim())) {
+    errors.push('Invalid email format')
+  }
+  if (row.role?.trim() && !KNOWN_ROLES.includes(row.role.trim())) {
+    errors.push(`Unknown role "${row.role.trim()}"`)
+  }
+  return errors
+}
+
+function downloadTemplate() {
+  const header = IMPORT_COLUMNS.join(',')
+  const sample = 'jdoe,SecurePass123,Jane Doe,jane@example.com,end_user,1001,Engineering'
+  const csv = `${header}\n${sample}\n`
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'users_import_template.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+type ImportStep = 'upload' | 'preview' | 'import'
+type RowStatus = 'pending' | 'importing' | 'success' | 'error'
+
+interface ImportRowState {
+  data: ParsedRow
+  validationErrors: string[]
+  status: RowStatus
+  apiError?: string
+}
+
+function BulkImportDialog({
+  open,
+  onOpenChange,
+  onComplete,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onComplete: () => void
+}) {
+  const [step, setStep] = useState<ImportStep>('upload')
+  const [rows, setRows] = useState<ImportRowState[]>([])
+  const [importedCount, setImportedCount] = useState(0)
+  const [failedCount, setFailedCount] = useState(0)
+  const [isImporting, setIsImporting] = useState(false)
+  const [fileError, setFileError] = useState<string | null>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef(false)
+
+  const reset = useCallback(() => {
+    setStep('upload')
+    setRows([])
+    setImportedCount(0)
+    setFailedCount(0)
+    setIsImporting(false)
+    setFileError(null)
+    setIsDragOver(false)
+    abortRef.current = false
+  }, [])
+
+  const handleClose = (v: boolean) => {
+    if (!v) {
+      if (isImporting) {
+        abortRef.current = true
+        return
+      }
+      if (step === 'import' && importedCount > 0) {
+        onComplete()
+      }
+      reset()
+    }
+    onOpenChange(v)
+  }
+
+  const processFile = (file: File) => {
+    setFileError(null)
+    if (!file.name.endsWith('.csv')) {
+      setFileError('Please select a .csv file')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      const text = e.target?.result as string
+      const result = parseCSV(text)
+      if ('error' in result) {
+        setFileError(result.error)
+        return
+      }
+      if (result.rows.length === 0) {
+        setFileError('CSV contains no data rows')
+        return
+      }
+      const validated: ImportRowState[] = result.rows.map((data) => ({
+        data,
+        validationErrors: validateImportRow(data),
+        status: 'pending' as const,
+      }))
+      setRows(validated)
+      setStep('preview')
+    }
+    reader.readAsText(file)
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) processFile(file)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) processFile(file)
+  }
+
+  const validRows = rows.filter((r) => r.validationErrors.length === 0)
+  const invalidRows = rows.filter((r) => r.validationErrors.length > 0)
+
+  const startImport = async () => {
+    setStep('import')
+    setIsImporting(true)
+    setImportedCount(0)
+    setFailedCount(0)
+    abortRef.current = false
+
+    const updatedRows = rows.map((r) =>
+      r.validationErrors.length === 0 ? { ...r, status: 'pending' as const } : { ...r, status: 'error' as const, apiError: 'Skipped (validation errors)' }
+    )
+    setRows(updatedRows)
+
+    let succeeded = 0
+    let failed = invalidRows.length
+
+    for (let i = 0; i < updatedRows.length; i++) {
+      if (abortRef.current) break
+      const row = updatedRows[i]
+      if (row.validationErrors.length > 0) continue
+
+      setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'importing' } : r))
+
+      try {
+        const req: CreateUserRequest = {
+          username: row.data.username.trim(),
+          password: row.data.password.trim(),
+        }
+        if (row.data.display_name?.trim()) req.display_name = row.data.display_name.trim()
+        if (row.data.email?.trim()) req.email = row.data.email.trim()
+        if (row.data.role?.trim()) req.role = row.data.role.trim()
+        else req.role = 'end_user'
+        if (row.data.extension?.trim()) req.extension = row.data.extension.trim()
+        if (row.data.department?.trim()) req.department = row.data.department.trim()
+
+        await users.create(req)
+        succeeded++
+        setImportedCount(succeeded)
+        setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success' } : r))
+      } catch (err) {
+        failed++
+        setFailedCount(failed - invalidRows.length)
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'error', apiError: message } : r))
+      }
+    }
+
+    setIsImporting(false)
+  }
+
+  const handleDone = () => {
+    if (importedCount > 0) onComplete()
+    reset()
+    onOpenChange(false)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>
+            {step === 'upload' && 'Bulk Import Users'}
+            {step === 'preview' && 'Preview Import'}
+            {step === 'import' && 'Importing Users'}
+          </DialogTitle>
+          <DialogDescription>
+            {step === 'upload' && 'Upload a CSV file to create multiple user accounts at once.'}
+            {step === 'preview' && `Review ${rows.length} rows before importing.`}
+            {step === 'import' && 'Creating user accounts...'}
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Step 1: Upload */}
+        {step === 'upload' && (
+          <div className="space-y-4">
+            <div
+              className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                isDragOver ? 'border-primary bg-primary/5' : 'border-muted-foreground/25 hover:border-primary/50'
+              }`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+              onDragLeave={() => setIsDragOver(false)}
+              onDrop={handleDrop}
+            >
+              <FileUp className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
+              <p className="text-sm font-medium">Drop a CSV file here or click to browse</p>
+              <p className="text-xs text-muted-foreground mt-1">Accepts .csv files</p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+            </div>
+            {fileError && (
+              <div className="flex items-center gap-2 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {fileError}
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <Button variant="link" size="sm" className="px-0" onClick={downloadTemplate}>
+                <Download className="mr-1 h-3 w-3" />
+                Download Template
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Required columns: username, password
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Preview */}
+        {step === 'preview' && (
+          <div className="space-y-4 min-h-0 flex flex-col">
+            <div className="flex items-center gap-3 text-sm">
+              <Badge variant="default">{validRows.length} valid</Badge>
+              {invalidRows.length > 0 && (
+                <Badge variant="destructive">{invalidRows.length} with errors</Badge>
+              )}
+            </div>
+
+            <div className="border rounded-md overflow-auto max-h-[400px] min-h-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-8">#</TableHead>
+                    <TableHead>Username</TableHead>
+                    <TableHead>Display Name</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead>Ext</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((row, idx) => (
+                    <TableRow
+                      key={idx}
+                      className={row.validationErrors.length > 0 ? 'bg-destructive/5' : ''}
+                    >
+                      <TableCell className="text-muted-foreground">{idx + 1}</TableCell>
+                      <TableCell className="font-medium">{row.data.username || <span className="text-destructive italic">empty</span>}</TableCell>
+                      <TableCell>{row.data.display_name || '-'}</TableCell>
+                      <TableCell>{row.data.email || '-'}</TableCell>
+                      <TableCell>{row.data.role || 'end_user'}</TableCell>
+                      <TableCell>{row.data.extension || '-'}</TableCell>
+                      <TableCell>
+                        {row.validationErrors.length > 0 ? (
+                          <span className="text-xs text-destructive">{row.validationErrors.join('; ')}</span>
+                        ) : (
+                          <span className="text-xs text-green-600">OK</span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex justify-between">
+              <Button variant="outline" onClick={() => { setRows([]); setStep('upload') }}>
+                Back
+              </Button>
+              <Button onClick={startImport} disabled={validRows.length === 0}>
+                Import {validRows.length} User{validRows.length !== 1 ? 's' : ''}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Import */}
+        {step === 'import' && (
+          <div className="space-y-4 min-h-0 flex flex-col">
+            {/* Progress bar */}
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span>
+                  {isImporting ? 'Importing...' : 'Import complete'}
+                </span>
+                <span className="text-muted-foreground">
+                  {importedCount + failedCount} / {validRows.length}
+                </span>
+              </div>
+              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-300"
+                  style={{ width: `${validRows.length > 0 ? ((importedCount + failedCount) / validRows.length) * 100 : 0}%` }}
+                />
+              </div>
+              {!isImporting && (
+                <div className="flex gap-4 text-sm">
+                  <span className="text-green-600">{importedCount} created</span>
+                  {failedCount > 0 && <span className="text-destructive">{failedCount} failed</span>}
+                  {invalidRows.length > 0 && <span className="text-muted-foreground">{invalidRows.length} skipped</span>}
+                </div>
+              )}
+            </div>
+
+            <div className="border rounded-md overflow-auto max-h-[350px] min-h-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-8"></TableHead>
+                    <TableHead>Username</TableHead>
+                    <TableHead>Result</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((row, idx) => (
+                    <TableRow key={idx}>
+                      <TableCell>
+                        {row.status === 'importing' && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+                        {row.status === 'success' && <CheckCircle2 className="h-4 w-4 text-green-600" />}
+                        {row.status === 'error' && <XCircle className="h-4 w-4 text-destructive" />}
+                        {row.status === 'pending' && <span className="block h-4 w-4 rounded-full border-2 border-muted-foreground/25" />}
+                      </TableCell>
+                      <TableCell className="font-medium">{row.data.username || '(empty)'}</TableCell>
+                      <TableCell className="text-sm">
+                        {row.status === 'success' && <span className="text-green-600">Created</span>}
+                        {row.status === 'error' && (
+                          <span className="text-destructive">{row.apiError || row.validationErrors.join('; ')}</span>
+                        )}
+                        {row.status === 'importing' && <span className="text-muted-foreground">Creating...</span>}
+                        {row.status === 'pending' && <span className="text-muted-foreground">Waiting</span>}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="flex justify-end">
+              {isImporting ? (
+                <Button variant="outline" onClick={() => { abortRef.current = true }}>
+                  Cancel
+                </Button>
+              ) : (
+                <Button onClick={handleDone}>Done</Button>
+              )}
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )
