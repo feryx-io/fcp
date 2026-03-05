@@ -47,6 +47,7 @@ pub fn build_fcp_media_config(
         public_ip: Some(effective_ip.to_string()),
         stun_server,
         turn_server,
+        tts: None,
         xdp_enabled: nat.xdp_enabled,
         xdp_interface: nat.xdp_interface.clone(),
         xdp_mode: nat.xdp_mode.clone(),

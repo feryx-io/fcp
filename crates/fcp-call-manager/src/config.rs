@@ -380,6 +380,18 @@ pub struct MediaSection {
 
     /// Public IP for SDP/RTP (required when behind NAT or in Docker)
     pub public_ip: Option<String>,
+
+    /// TTS engine name (e.g., "kokoro"). Enables text-to-speech when set.
+    #[serde(default)]
+    pub tts_engine: Option<String>,
+
+    /// Default TTS voice (e.g., "af_heart" for Kokoro)
+    #[serde(default)]
+    pub tts_voice: Option<String>,
+
+    /// TTS cache directory for generated audio files
+    #[serde(default = "default_tts_cache_dir")]
+    pub tts_cache_dir: String,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -394,6 +406,10 @@ fn default_codecs() -> Vec<String> {
     vec!["PCMU".to_string(), "PCMA".to_string()]
 }
 
+fn default_tts_cache_dir() -> String {
+    "/tmp/fcp/tts_cache".to_string()
+}
+
 impl Default for MediaSection {
     fn default() -> Self {
         Self {
@@ -401,6 +417,9 @@ impl Default for MediaSection {
             rtp_port_end: default_rtp_port_end(),
             codecs: default_codecs(),
             public_ip: None,
+            tts_engine: None,
+            tts_voice: None,
+            tts_cache_dir: default_tts_cache_dir(),
         }
     }
 }

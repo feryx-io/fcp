@@ -55,6 +55,10 @@ pub struct MediaConfig {
     /// TURN server for NAT traversal (future)
     pub turn_server: Option<String>,
 
+    /// TTS configuration (enables text-to-speech when set)
+    #[serde(default)]
+    pub tts: Option<crate::tts::TtsConfig>,
+
     /// Enable XDP kernel-level RTP forwarding (Linux only).
     #[serde(default)]
     pub xdp_enabled: bool,
@@ -122,6 +126,7 @@ impl Default for MediaConfig {
             public_ip: None,
             stun_server: None,
             turn_server: None,
+            tts: None,
             xdp_enabled: false,
             xdp_interface: default_xdp_interface(),
             xdp_mode: default_xdp_mode(),

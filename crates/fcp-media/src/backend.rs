@@ -265,6 +265,9 @@ pub mod embedded {
 
         /// IP address to advertise in SDP (for RTP media)
         advertise_ip: String,
+
+        /// TTS service for text-to-speech synthesis (None if not configured)
+        tts_service: Option<Arc<crate::tts::TtsService>>,
     }
 
     /// Information about a forge-media session
@@ -379,7 +382,25 @@ pub mod embedded {
                 "127.0.0.1".to_string()
             };
 
+            // Initialize TTS service if configured
+            let tts_service = match config.tts.clone() {
+                Some(tts_config) => {
+                    match crate::tts::TtsService::new(tts_config).await {
+                        Ok(svc) => {
+                            info!(provider = %svc.provider_name(), "TTS service initialized");
+                            Some(Arc::new(svc))
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "TTS service initialization failed, TTS will be unavailable");
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+
             info!(
+                tts = tts_service.is_some(),
                 "Embedded media backend initialized, advertise_ip: {}",
                 advertise_ip
             );
@@ -390,6 +411,7 @@ pub mod embedded {
                 sessions: DashMap::new(),
                 playback_handles: DashMap::new(),
                 advertise_ip,
+                tts_service,
             })
         }
     }
@@ -979,46 +1001,22 @@ pub mod embedded {
                 "Starting TTS playback"
             );
 
-            // Get session info to retrieve forge call_id
-            let _session_info = self
-                .sessions
-                .get(call_id)
-                .ok_or_else(|| Error::SessionNotFound(call_id.to_string()))?;
+            let tts = self.tts_service.as_ref().ok_or_else(|| {
+                Error::InvalidState(
+                    "TTS not configured. Set [media.tts] in config or use play_file() with pre-recorded audio."
+                        .to_string(),
+                )
+            })?;
 
-            // Create TtsSource for text-to-speech
-            // Note: TtsSource requires a TTS provider to be configured
-            // For now, we'll return an error indicating TTS is not yet configured
-            // TODO: Add TTS provider configuration (Google, AWS, Azure)
-            return Err(Error::InvalidState(
-                "TTS provider not yet configured. Use play_file() with pre-recorded audio instead."
-                    .to_string(),
-            ));
-
-            // Future implementation when TTS providers are added:
-            /*
-            let source = Box::new(
-                TtsSource::new(text, language, voice)
-                    .map_err(|e| Error::ForgeMedia(format!("Failed to create TTS source: {}", e)))?,
-            );
-
-            let forge_target = match target {
-                AudioTarget::ParticipantA => ForgeAudioTarget::ParticipantA,
-                AudioTarget::ParticipantB => ForgeAudioTarget::ParticipantB,
-                AudioTarget::Both => ForgeAudioTarget::Both,
-            };
-
-            let handle = self
-                .playback_manager
-                .start_playback(forge_call_id, source, forge_target, MixMode::Replace)
+            // Synthesize text to WAV file (cached by TtsService)
+            let audio_path = tts
+                .synthesize(&text, Some(&language), voice.as_deref())
                 .await
-                .map_err(|e| Error::ForgeMedia(format!("Failed to start TTS playback: {}", e)))?;
+                .map_err(|e| Error::InvalidState(format!("TTS synthesis failed: {}", e)))?;
 
-            let playback_id = handle.id().to_string();
-
-            info!(?call_id, playback_id = %playback_id, "TTS playback started");
-
-            Ok(playback_id)
-            */
+            // Play the generated file using existing playback infrastructure
+            self.play_file(call_id, audio_path.to_string_lossy().to_string(), target)
+                .await
         }
 
         async fn stop_playback(

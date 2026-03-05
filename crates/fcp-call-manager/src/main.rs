@@ -1470,11 +1470,26 @@ fn create_local_uri(config: &CallManagerConfig) -> Result<SipUri> {
 
 /// Create a media manager from configuration.
 async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_media::MediaManager>> {
+    // Build TTS config from call-manager media section
+    let tts_config = config.media.tts_engine.as_ref().map(|engine| {
+        fcp_media::TtsConfig {
+            provider: fcp_media::TtsProviderConfig::Local {
+                engine: engine.clone(),
+                executable_path: None,
+            },
+            cache_dir: std::path::PathBuf::from(&config.media.tts_cache_dir),
+            cache_max_size_mb: 500,
+            default_language: "en-US".to_string(),
+            default_voice: config.media.tts_voice.clone(),
+        }
+    });
+
     let media_config = MediaConfig {
         backend: BackendType::Embedded,
         rtp_port_start: config.media.rtp_port_start,
         rtp_port_end: config.media.rtp_port_end,
         public_ip: config.media.public_ip.clone(),
+        tts: tts_config,
         ..Default::default()
     };
 
@@ -1484,6 +1499,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
 
     info!(
         backend = manager.backend_name(),
+        tts_engine = ?config.media.tts_engine,
         rtp_ports = format!(
             "{}-{}",
             config.media.rtp_port_start, config.media.rtp_port_end
