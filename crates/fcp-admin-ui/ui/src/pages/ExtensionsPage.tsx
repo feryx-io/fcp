@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, X, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
@@ -17,21 +17,34 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { extensions, users, locations } from '@/api/endpoints'
-import type { Extension, CreateExtensionRequest, User, Location } from '@/types'
+import { extensions, users, locations, devices, phoneNumbers } from '@/api/endpoints'
+import type { Extension, CreateExtensionRequest, UpdateExtensionRequest, User, Location } from '@/types'
+
+const TARGET_TYPES = [
+  { value: 'user', label: 'User' },
+  { value: 'phone_number', label: 'Phone Number' },
+  { value: 'device', label: 'Device' },
+  { value: 'service', label: 'Service' },
+]
+
+function formatTargetType(type: string): string {
+  const found = TARGET_TYPES.find(t => t.value === type)
+  return found ? found.label : type
+}
 
 const createSchema = z.object({
   number: z.string().min(1, 'Extension number is required').regex(/^\d+$/, 'Must be numeric'),
-  display_name: z.string().optional(),
-  user_id: z.string().optional(),
+  target_type: z.string().min(1, 'Target type is required'),
+  target_id: z.string().min(1, 'Target is required'),
+  description: z.string().optional(),
   location_id: z.string().optional(),
 })
 
 const editSchema = z.object({
-  display_name: z.string().optional(),
-  user_id: z.string().optional(),
+  target_type: z.string().optional(),
+  target_id: z.string().optional(),
+  description: z.string().optional(),
   location_id: z.string().optional(),
-  type: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -48,6 +61,30 @@ export function ExtensionsPage() {
     queryFn: extensions.list,
   })
 
+  const { data: userList = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: users.list,
+  })
+
+  const { data: locationList = [] } = useQuery({
+    queryKey: ['locations'],
+    queryFn: locations.list,
+  })
+
+  const { data: deviceList = [] } = useQuery({
+    queryKey: ['devices'],
+    queryFn: devices.list,
+  })
+
+  const { data: phoneNumberList = [] } = useQuery({
+    queryKey: ['phone-numbers'],
+    queryFn: phoneNumbers.list,
+  })
+
+  const userMap = useMemo(() => new Map(userList.map(u => [u.id, u])), [userList])
+  const deviceMap = useMemo(() => new Map(deviceList.map(d => [d.id, d])), [deviceList])
+  const phoneNumberMap = useMemo(() => new Map(phoneNumberList.map(p => [p.id, p])), [phoneNumberList])
+
   const createMutation = useMutation({
     mutationFn: extensions.create,
     onSuccess: () => {
@@ -57,7 +94,7 @@ export function ExtensionsPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ number, data }: { number: string; data: Partial<EditForm> }) =>
+    mutationFn: ({ number, data }: { number: string; data: UpdateExtensionRequest }) =>
       extensions.update(number, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['extensions'] })
@@ -70,6 +107,25 @@ export function ExtensionsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['extensions'] }),
   })
 
+  function targetDisplay(ext: Extension): string {
+    switch (ext.target.type) {
+      case 'user': {
+        const user = userMap.get(ext.target.id)
+        return user ? (user.display_name || user.username) : ext.target.id
+      }
+      case 'phone_number': {
+        const pn = phoneNumberMap.get(ext.target.id)
+        return pn ? pn.e164 : ext.target.id
+      }
+      case 'device': {
+        const dev = deviceMap.get(ext.target.id)
+        return dev ? dev.name : ext.target.id
+      }
+      case 'service':
+        return ext.target.id
+    }
+  }
+
   const columns: ColumnDef<Extension>[] = [
     {
       accessorKey: 'number',
@@ -80,14 +136,19 @@ export function ExtensionsPage() {
       ),
     },
     {
-      accessorKey: 'display_name',
-      header: 'Display Name',
-      cell: ({ row }) => row.original.display_name || '-',
+      accessorKey: 'description',
+      header: 'Description',
+      cell: ({ row }) => row.original.description || '-',
     },
     {
-      accessorKey: 'type',
-      header: 'Type',
-      cell: ({ row }) => <Badge variant="secondary">{row.original.type}</Badge>,
+      id: 'target_type',
+      header: 'Target Type',
+      cell: ({ row }) => <Badge variant="secondary">{formatTargetType(row.original.target.type)}</Badge>,
+    },
+    {
+      id: 'target',
+      header: 'Target',
+      cell: ({ row }) => targetDisplay(row.original),
     },
     {
       accessorKey: 'enabled',
@@ -97,11 +158,6 @@ export function ExtensionsPage() {
           {row.original.enabled ? 'Enabled' : 'Disabled'}
         </Badge>
       ),
-    },
-    {
-      accessorKey: 'user_id',
-      header: 'User',
-      cell: ({ row }) => row.original.user_id || '-',
     },
     {
       accessorKey: 'location_id',
@@ -145,50 +201,42 @@ export function ExtensionsPage() {
   if (editItem && editItem.id !== lastEditId) {
     setLastEditId(editItem.id)
     editForm.reset({
-      display_name: editItem.display_name || '',
-      user_id: editItem.user_id || '',
+      target_type: editItem.target.type,
+      target_id: editItem.target.id,
+      description: editItem.description || '',
       location_id: editItem.location_id || '',
-      type: editItem.type || '',
     })
   }
 
   const onCreateSubmit = (data: CreateForm) => {
     createMutation.mutate({
-      ...data,
-      display_name: data.display_name || undefined,
-      user_id: data.user_id || undefined,
+      number: data.number,
+      target: { type: data.target_type as CreateExtensionRequest['target']['type'], id: data.target_id },
+      description: data.description || undefined,
       location_id: data.location_id || undefined,
     })
   }
 
   const onEditSubmit = (data: EditForm) => {
     if (!editItem) return
-    updateMutation.mutate({
-      number: editItem.number,
-      data: {
-        display_name: data.display_name || undefined,
-        user_id: data.user_id || undefined,
-        location_id: data.location_id || undefined,
-        type: data.type || undefined,
-      },
-    })
+    const updateData: UpdateExtensionRequest = {
+      description: data.description || undefined,
+      location_id: data.location_id || undefined,
+    }
+    if (data.target_type && data.target_id) {
+      updateData.target = { type: data.target_type as UpdateExtensionRequest['target'] extends undefined ? never : NonNullable<UpdateExtensionRequest['target']>['type'], id: data.target_id }
+    }
+    updateMutation.mutate({ number: editItem.number, data: updateData })
   }
-
-  const { data: userList = [] } = useQuery({
-    queryKey: ['users'],
-    queryFn: users.list,
-  })
-
-  const { data: locationList = [] } = useQuery({
-    queryKey: ['locations'],
-    queryFn: locations.list,
-  })
 
   const locationName = (id: string | null) => {
     if (!id) return '-'
     const loc = locationList.find((l: Location) => l.id === id)
     return loc ? loc.name : id
   }
+
+  const watchCreateTargetType = createForm.watch('target_type')
+  const watchEditTargetType = editForm.watch('target_type')
 
   return (
     <div className="space-y-6">
@@ -206,7 +254,7 @@ export function ExtensionsPage() {
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
           </Button>
-          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+          <Button onClick={() => { createForm.reset({ number: '', target_type: '', target_id: '', description: '', location_id: '' }); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Extension
           </Button>
         </div>
@@ -232,17 +280,35 @@ export function ExtensionsPage() {
               {createForm.formState.errors.number && <p className="text-sm text-destructive">{createForm.formState.errors.number.message}</p>}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="c-display_name">Display Name</Label>
-              <Input id="c-display_name" {...createForm.register('display_name')} />
+              <Label htmlFor="c-description">Description</Label>
+              <Input id="c-description" placeholder="Front desk, conference room, etc." {...createForm.register('description')} />
             </div>
             <div className="space-y-2">
-              <Label>User</Label>
-              <UserAutocomplete
-                users={userList}
-                value={createForm.watch('user_id') || ''}
-                onChange={(v) => createForm.setValue('user_id', v)}
-                placeholder="Search by username or name..."
+              <Label>Target Type *</Label>
+              <Select
+                value={watchCreateTargetType || ''}
+                onValueChange={(v) => { createForm.setValue('target_type', v); createForm.setValue('target_id', '') }}
+              >
+                <SelectTrigger><SelectValue placeholder="Select target type" /></SelectTrigger>
+                <SelectContent>
+                  {TARGET_TYPES.map(t => (
+                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {createForm.formState.errors.target_type && <p className="text-sm text-destructive">{createForm.formState.errors.target_type.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label>Target *</Label>
+              <TargetSelector
+                targetType={watchCreateTargetType || ''}
+                value={createForm.watch('target_id') || ''}
+                onChange={(v) => createForm.setValue('target_id', v)}
+                userList={userList}
+                deviceList={deviceList}
+                phoneNumberList={phoneNumberList}
               />
+              {createForm.formState.errors.target_id && <p className="text-sm text-destructive">{createForm.formState.errors.target_id.message}</p>}
             </div>
             <div className="space-y-2">
               <Label>Location</Label>
@@ -278,16 +344,32 @@ export function ExtensionsPage() {
           </DialogHeader>
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="e-display_name">Display Name</Label>
-              <Input id="e-display_name" {...editForm.register('display_name')} />
+              <Label htmlFor="e-description">Description</Label>
+              <Input id="e-description" {...editForm.register('description')} />
             </div>
             <div className="space-y-2">
-              <Label>User</Label>
-              <UserAutocomplete
-                users={userList}
-                value={editForm.watch('user_id') || ''}
-                onChange={(v) => editForm.setValue('user_id', v)}
-                placeholder="Search by username or name..."
+              <Label>Target Type</Label>
+              <Select
+                value={watchEditTargetType || ''}
+                onValueChange={(v) => { editForm.setValue('target_type', v); editForm.setValue('target_id', '') }}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {TARGET_TYPES.map(t => (
+                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Target</Label>
+              <TargetSelector
+                targetType={watchEditTargetType || ''}
+                value={editForm.watch('target_id') || ''}
+                onChange={(v) => editForm.setValue('target_id', v)}
+                userList={userList}
+                deviceList={deviceList}
+                phoneNumberList={phoneNumberList}
               />
             </div>
             <div className="space-y-2">
@@ -301,10 +383,6 @@ export function ExtensionsPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="e-type">Type</Label>
-              <Input id="e-type" {...editForm.register('type')} />
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
@@ -329,9 +407,68 @@ export function ExtensionsPage() {
   )
 }
 
+// --- Target Selector Component ---
+
+function TargetSelector({
+  targetType,
+  value,
+  onChange,
+  userList,
+  deviceList,
+  phoneNumberList,
+}: {
+  targetType: string
+  value: string
+  onChange: (value: string) => void
+  userList: User[]
+  deviceList: { id: string; name: string }[]
+  phoneNumberList: { id: string; e164: string; cnam: string | null }[]
+}) {
+  if (targetType === 'user') {
+    return (
+      <UserAutocomplete
+        users={userList}
+        value={value}
+        onChange={onChange}
+        placeholder="Search by username or name..."
+      />
+    )
+  }
+  if (targetType === 'phone_number') {
+    return (
+      <Select value={value || undefined} onValueChange={onChange}>
+        <SelectTrigger><SelectValue placeholder="Select phone number" /></SelectTrigger>
+        <SelectContent>
+          {phoneNumberList.map(pn => (
+            <SelectItem key={pn.id} value={pn.id}>
+              {pn.cnam ? `${pn.e164} - ${pn.cnam}` : pn.e164}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (targetType === 'device') {
+    return (
+      <Select value={value || undefined} onValueChange={onChange}>
+        <SelectTrigger><SelectValue placeholder="Select device" /></SelectTrigger>
+        <SelectContent>
+          {deviceList.map(d => (
+            <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (targetType === 'service') {
+    return <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="Service ID" />
+  }
+  return <Input disabled placeholder="Select a target type first" />
+}
+
 // --- CSV Export / Import Helpers ---
 
-const EXPORT_COLUMNS = ['number', 'display_name', 'type', 'enabled', 'user_id', 'location_id'] as const
+const EXPORT_COLUMNS = ['number', 'description', 'target_type', 'target_id', 'enabled', 'location_id'] as const
 
 function escapeCSVField(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -342,9 +479,17 @@ function escapeCSVField(value: string): string {
 
 function exportExtensions(extList: Extension[]) {
   const header = EXPORT_COLUMNS.join(',')
-  const rows = extList.map((ext) =>
-    EXPORT_COLUMNS.map((col) => escapeCSVField(String(ext[col] ?? ''))).join(',')
-  )
+  const rows = extList.map((ext) => {
+    const values: Record<string, string> = {
+      number: ext.number,
+      description: ext.description || '',
+      target_type: ext.target.type,
+      target_id: ext.target.id,
+      enabled: String(ext.enabled),
+      location_id: ext.location_id || '',
+    }
+    return EXPORT_COLUMNS.map((col) => escapeCSVField(values[col] ?? '')).join(',')
+  })
   const csv = [header, ...rows].join('\n') + '\n'
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
@@ -355,7 +500,7 @@ function exportExtensions(extList: Extension[]) {
   URL.revokeObjectURL(url)
 }
 
-const IMPORT_COLUMNS = ['number', 'display_name', 'user_id', 'location_id', 'type'] as const
+const IMPORT_COLUMNS = ['number', 'description', 'target_type', 'target_id', 'location_id'] as const
 
 interface ParsedRow {
   [key: string]: string
@@ -420,12 +565,17 @@ function validateImportRow(row: ParsedRow): string[] {
   const errors: string[] = []
   if (!row.number?.trim()) errors.push('Number is required')
   else if (!/^\d+$/.test(row.number.trim())) errors.push('Number must be all digits')
+  if (!row.target_type?.trim()) errors.push('target_type is required')
+  else if (!['user', 'phone_number', 'device', 'service'].includes(row.target_type.trim())) {
+    errors.push('target_type must be user, phone_number, device, or service')
+  }
+  if (!row.target_id?.trim()) errors.push('target_id is required')
   return errors
 }
 
 function downloadTemplate() {
   const header = IMPORT_COLUMNS.join(',')
-  const sample = '1001,Jane Doe,jdoe,standard'
+  const sample = '1001,Front Desk,user,user-00000000-0000-0000-0000-000000000001,'
   const csv = `${header}\n${sample}\n`
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
@@ -563,14 +713,16 @@ function BulkImportDialog({
       setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'importing' } : r))
 
       const number = row.data.number.trim()
-      const updateData: Partial<CreateExtensionRequest> = {}
-      if (row.data.display_name?.trim()) updateData.display_name = row.data.display_name.trim()
-      if (row.data.user_id?.trim()) updateData.user_id = row.data.user_id.trim()
-      if (row.data.location_id?.trim()) updateData.location_id = row.data.location_id.trim()
-      if (row.data.type?.trim()) updateData.type = row.data.type.trim()
+      const targetType = row.data.target_type?.trim() || 'user'
+      const targetId = row.data.target_id?.trim() || ''
 
       try {
-        const req: CreateExtensionRequest = { number, ...updateData }
+        const req: CreateExtensionRequest = {
+          number,
+          target: { type: targetType as CreateExtensionRequest['target']['type'], id: targetId },
+          description: row.data.description?.trim() || undefined,
+          location_id: row.data.location_id?.trim() || undefined,
+        }
         await extensions.create(req)
         created++
         setImportedCount(created)
@@ -581,6 +733,11 @@ function BulkImportDialog({
 
         if (overrideExisting && isConflict) {
           try {
+            const updateData: UpdateExtensionRequest = {
+              target: { type: targetType as NonNullable<UpdateExtensionRequest['target']>['type'], id: targetId },
+              description: row.data.description?.trim() || undefined,
+              location_id: row.data.location_id?.trim() || undefined,
+            }
             await extensions.update(number, updateData)
             updated++
             setUpdatedCount(updated)
@@ -659,7 +816,7 @@ function BulkImportDialog({
                 Download Template
               </Button>
               <p className="text-xs text-muted-foreground">
-                Required columns: number
+                Required columns: number, target_type, target_id
               </p>
             </div>
           </div>
@@ -681,9 +838,9 @@ function BulkImportDialog({
                   <TableRow>
                     <TableHead className="w-8">#</TableHead>
                     <TableHead>Number</TableHead>
-                    <TableHead>Display Name</TableHead>
-                    <TableHead>User</TableHead>
-                    <TableHead>Type</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead>Target Type</TableHead>
+                    <TableHead>Target ID</TableHead>
                     <TableHead>Status</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -695,9 +852,9 @@ function BulkImportDialog({
                     >
                       <TableCell className="text-muted-foreground">{idx + 1}</TableCell>
                       <TableCell className="font-medium">{row.data.number || <span className="text-destructive italic">empty</span>}</TableCell>
-                      <TableCell>{row.data.display_name || '-'}</TableCell>
-                      <TableCell>{row.data.user_id || '-'}</TableCell>
-                      <TableCell>{row.data.type || '-'}</TableCell>
+                      <TableCell>{row.data.description || '-'}</TableCell>
+                      <TableCell>{row.data.target_type || '-'}</TableCell>
+                      <TableCell className="max-w-[120px] truncate">{row.data.target_id || '-'}</TableCell>
                       <TableCell>
                         {row.validationErrors.length > 0 ? (
                           <span className="text-xs text-destructive">{row.validationErrors.join('; ')}</span>
@@ -824,7 +981,8 @@ function UserAutocomplete({
   onChange: (value: string) => void
   placeholder?: string
 }) {
-  const [inputValue, setInputValue] = useState(value)
+  const selectedUser = users.find(u => u.id === value)
+  const [inputValue, setInputValue] = useState(selectedUser ? (selectedUser.display_name || selectedUser.username) : '')
   const [isOpen, setIsOpen] = useState(false)
   const [focusedIndex, setFocusedIndex] = useState(-1)
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -832,8 +990,13 @@ function UserAutocomplete({
 
   // Sync inputValue when form value changes externally (e.g. on form reset)
   useEffect(() => {
-    setInputValue(value)
-  }, [value])
+    const user = users.find(u => u.id === value)
+    if (user) {
+      setInputValue(user.display_name || user.username)
+    } else if (!value) {
+      setInputValue('')
+    }
+  }, [value, users])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -847,7 +1010,8 @@ function UserAutocomplete({
   }, [])
 
   const query = inputValue.toLowerCase()
-  const filtered = query
+  const isSelected = selectedUser && (inputValue === (selectedUser.display_name || selectedUser.username))
+  const filtered = (!isSelected && query)
     ? users.filter(
         (u) =>
           u.username.toLowerCase().includes(query) ||
@@ -856,9 +1020,9 @@ function UserAutocomplete({
       ).slice(0, 8)
     : users.slice(0, 8)
 
-  const selectUser = (username: string) => {
-    setInputValue(username)
-    onChange(username)
+  const selectUser = (user: User) => {
+    setInputValue(user.display_name || user.username)
+    onChange(user.id)
     setIsOpen(false)
     setFocusedIndex(-1)
   }
@@ -885,7 +1049,7 @@ function UserAutocomplete({
       case 'Enter':
         e.preventDefault()
         if (focusedIndex >= 0 && focusedIndex < filtered.length) {
-          selectUser(filtered[focusedIndex].username)
+          selectUser(filtered[focusedIndex])
         }
         break
       case 'Escape':
@@ -911,7 +1075,10 @@ function UserAutocomplete({
           onChange={(e) => {
             const v = e.target.value
             setInputValue(v)
-            onChange(v)
+            // Clear the selected user ID when typing
+            if (selectedUser && v !== (selectedUser.display_name || selectedUser.username)) {
+              onChange('')
+            }
             setIsOpen(true)
             setFocusedIndex(-1)
           }}
@@ -941,11 +1108,11 @@ function UserAutocomplete({
         >
           {filtered.map((u, idx) => (
             <li
-              key={u.username}
+              key={u.id}
               className={`flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-accent ${
                 idx === focusedIndex ? 'bg-accent' : ''
               }`}
-              onMouseDown={(e) => { e.preventDefault(); selectUser(u.username) }}
+              onMouseDown={(e) => { e.preventDefault(); selectUser(u) }}
               onMouseEnter={() => setFocusedIndex(idx)}
             >
               <span className="font-medium">{u.username}</span>

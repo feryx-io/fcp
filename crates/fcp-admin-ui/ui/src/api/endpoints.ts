@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import type {
   User, CreateUserRequest, UpdateUserRequest,
   Tenant, CreateTenantRequest,
-  Extension, CreateExtensionRequest,
+  Extension, CreateExtensionRequest, UpdateExtensionRequest,
   Device, CreateDeviceRequest,
   Location, CreateLocationRequest,
   PhoneNumber, CreatePhoneNumberRequest,
@@ -81,7 +81,7 @@ export const extensions = {
   list: () => apiClient.get<Extension[]>('/extensions'),
   get: (number: string) => apiClient.get<Extension>(`/extensions/${encodeURIComponent(number)}`),
   create: (data: CreateExtensionRequest) => apiClient.post<Extension>('/extensions', data),
-  update: (number: string, data: Partial<CreateExtensionRequest>) =>
+  update: (number: string, data: UpdateExtensionRequest) =>
     apiClient.patch<Extension>(`/extensions/${encodeURIComponent(number)}`, data),
   delete: (number: string) => apiClient.delete<void>(`/extensions/${encodeURIComponent(number)}`),
 }

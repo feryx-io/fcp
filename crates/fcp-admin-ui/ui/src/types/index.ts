@@ -84,25 +84,37 @@ export interface CreateTenantRequest {
   billing_id?: string
 }
 
+export interface ExtensionTarget {
+  type: 'user' | 'phone_number' | 'device' | 'service'
+  id: string
+}
+
 export interface Extension {
   id: string
   number: string
   tenant_id: string
-  display_name: string | null
-  user_id: string | null
+  target: ExtensionTarget
+  description: string | null
   location_id: string | null
-  type: string
   enabled: boolean
   created_at: string
+  updated_at: string
 }
 
 export interface CreateExtensionRequest {
   number: string
+  target: ExtensionTarget
   tenant_id?: string
-  display_name?: string
-  user_id?: string
+  description?: string
   location_id?: string
-  type?: string
+  enabled?: boolean
+}
+
+export interface UpdateExtensionRequest {
+  target?: ExtensionTarget
+  description?: string
+  location_id?: string
+  enabled?: boolean
 }
 
 export interface Device {
