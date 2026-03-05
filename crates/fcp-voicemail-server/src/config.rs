@@ -288,6 +288,9 @@ pub struct VoicemailSection {
 
     /// Default mailbox ID when no route matches
     pub default_mailbox_id: Option<String>,
+
+    /// Extension/DID that reaches the voicemail access IVR (e.g., "*98" or "8500")
+    pub access_extension: Option<String>,
 }
 
 fn default_recordings_dir() -> String {
@@ -322,6 +325,7 @@ impl Default for VoicemailSection {
             beep_audio_path: None,
             routes: Vec::new(),
             default_mailbox_id: None,
+            access_extension: None,
         }
     }
 }

@@ -511,6 +511,36 @@ impl VoicemailService {
         Ok(())
     }
 
+    /// Verifies a PIN against a mailbox.
+    ///
+    /// Loads the mailbox from storage and compares the provided PIN.
+    ///
+    /// # Returns
+    /// - `Ok(true)` if the PIN matches
+    /// - `Ok(false)` if the PIN is wrong or the mailbox is not found/disabled
+    /// - `Err(...)` on storage errors
+    pub async fn verify_pin(&self, mailbox_id: &str, pin: &str) -> Result<bool> {
+        let mailbox = match self.storage.get_mailbox(mailbox_id).await? {
+            Some(mb) => mb,
+            None => return Ok(false),
+        };
+
+        if !mailbox.enabled {
+            return Ok(false);
+        }
+
+        Ok(mailbox.verify_pin(pin))
+    }
+
+    /// Saves a message by updating its status to Saved.
+    ///
+    /// This persists the updated message via the storage backend.
+    pub async fn save_message(&self, message: &VoicemailMessage) -> Result<()> {
+        let mut updated = message.clone();
+        updated.status = MessageStatus::Saved;
+        self.storage.put_message(updated).await
+    }
+
     /// Plays a greeting for a mailbox.
     ///
     /// Selects the appropriate greeting based on the busy status and plays it to the caller.

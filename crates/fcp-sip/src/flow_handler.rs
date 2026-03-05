@@ -157,6 +157,11 @@ impl FlowCallHandler {
         self
     }
 
+    /// Get a reference to the flow store.
+    pub fn flow_store(&self) -> &Arc<dyn FlowStore> {
+        &self.flow_store
+    }
+
     /// Interpolate `{{variable}}` placeholders in a template string using flow context variables.
     fn interpolate(template: &str, context: &FlowContext) -> String {
         let mut result = template.to_string();
@@ -1088,6 +1093,315 @@ impl FlowCallHandler {
                 drop(context_guard);
             }
         }
+
+        Box::pin(self.execute_next_node(call_id)).await
+    }
+
+    /// Handle the VoicemailAccess flow node — full IVR state machine.
+    ///
+    /// Steps:
+    /// 1. Resolve mailbox (empty → derive from caller extension)
+    /// 2. PIN authentication loop (up to `max_pin_attempts`)
+    /// 3. Main menu: new/saved messages, navigate with DTMF
+    /// 4. Message playback with replay/save/delete controls
+    async fn handle_voicemail_access(
+        &self,
+        call_id: CallId,
+        mailbox: String,
+        max_pin_attempts: u32,
+        next: String,
+        on_auth_failure: Option<String>,
+    ) -> Result<()> {
+        use fcp_core::MessageStatus;
+        use fcp_media::{AudioTarget, CollectionResult};
+
+        info!(
+            call_id = %call_id,
+            mailbox = %mailbox,
+            max_pin_attempts = max_pin_attempts,
+            "Starting voicemail access IVR"
+        );
+
+        let voicemail_service = match &self.voicemail_service {
+            Some(vs) => Arc::clone(vs),
+            None => {
+                warn!(call_id = %call_id, "VoicemailService not configured - skipping voicemail access");
+                let context_entry = self
+                    .contexts
+                    .get(&call_id)
+                    .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                let context = Arc::clone(context_entry.value());
+                drop(context_entry);
+
+                let mut context_guard = context.write().await;
+                context_guard.set_variable("voicemail_access_status".to_string(), "error".to_string());
+                context_guard.current_node = next;
+                drop(context_guard);
+
+                return Box::pin(self.execute_next_node(call_id)).await;
+            }
+        };
+
+        // Get caller info and media session from flow context
+        let context_entry = self
+            .contexts
+            .get(&call_id)
+            .ok_or_else(|| anyhow::anyhow!("Flow context not found for call {}", call_id))?;
+        let context = Arc::clone(context_entry.value());
+        drop(context_entry);
+
+        let context_guard = context.read().await;
+        let caller_extension = context_guard
+            .get_variable("caller")
+            .unwrap_or_else(|_| String::new());
+        let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+        let media_call_id = context_guard
+            .media_session_id
+            .unwrap_or_else(|| core_call_id.clone());
+        drop(context_guard);
+
+        // 1. Resolve mailbox — if empty, derive from caller extension
+        let target_mailbox = if mailbox.is_empty() {
+            caller_extension.clone()
+        } else {
+            mailbox
+        };
+
+        info!(
+            call_id = %call_id,
+            target_mailbox = %target_mailbox,
+            caller = %caller_extension,
+            "Resolved voicemail access target"
+        );
+
+        // Helper: play TTS prompt and wait for completion
+        let play_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, text: String| {
+            let mm = Arc::clone(mm);
+            let cid = cid.clone();
+            async move {
+                match mm.play_tts(&cid, text, "en-US".to_string(), None, AudioTarget::Both).await {
+                    Ok(playback_id) => { let _ = mm.wait_playback_completion(playback_id).await; }
+                    Err(e) => { warn!(error = %e, "TTS playback failed"); }
+                }
+            }
+        };
+
+        // Helper: collect DTMF digits
+        let collect_digits = |mm: &Arc<fcp_media::MediaManager>, max: usize, finish_key: Option<char>, timeout_secs: u64| {
+            let collector = mm.create_dtmf_collector(max, finish_key);
+            async move {
+                match collector.collect(std::time::Duration::from_secs(timeout_secs)).await {
+                    CollectionResult::Complete(d) => d,
+                    CollectionResult::Timeout(d) => d,
+                    CollectionResult::Cancelled => String::new(),
+                }
+            }
+        };
+
+        let mm = match &self.media_manager {
+            Some(mm) => Arc::clone(mm),
+            None => {
+                warn!(call_id = %call_id, "Media manager not configured - cannot run voicemail access IVR");
+                let mut context_guard = context.write().await;
+                context_guard.set_variable("voicemail_access_status".to_string(), "error".to_string());
+                context_guard.current_node = next;
+                drop(context_guard);
+                return Box::pin(self.execute_next_node(call_id)).await;
+            }
+        };
+
+        // 2. PIN authentication loop
+        let mut authenticated = false;
+        for attempt in 1..=max_pin_attempts {
+            // Play PIN prompt
+            play_prompt(&mm, &media_call_id, "Enter your PIN followed by pound".to_string()).await;
+
+            // Collect DTMF digits (finish on #, timeout 10s)
+            let pin_digits = collect_digits(&mm, 0, Some('#'), 10).await;
+
+            // Strip trailing '#' from collected digits
+            let pin_digits = pin_digits.trim_end_matches('#');
+
+            if pin_digits.is_empty() {
+                debug!(call_id = %call_id, attempt = attempt, "No PIN digits received");
+                continue;
+            }
+
+            // Verify PIN via VoicemailService
+            match voicemail_service.verify_pin(&target_mailbox, pin_digits).await {
+                Ok(true) => {
+                    authenticated = true;
+                    info!(call_id = %call_id, mailbox = %target_mailbox, "PIN verified");
+                    break;
+                }
+                Ok(false) => {
+                    info!(
+                        call_id = %call_id,
+                        attempt = attempt,
+                        max = max_pin_attempts,
+                        "Incorrect PIN"
+                    );
+                    play_prompt(&mm, &media_call_id, "Incorrect PIN. Please try again.".to_string()).await;
+                }
+                Err(e) => {
+                    warn!(call_id = %call_id, error = %e, "PIN verification error");
+                    break;
+                }
+            }
+        }
+
+        if !authenticated {
+            info!(call_id = %call_id, "Voicemail access: auth failed");
+            play_prompt(&mm, &media_call_id, "Authentication failed. Goodbye.".to_string()).await;
+
+            let mut context_guard = context.write().await;
+            context_guard.set_variable("voicemail_access_status".to_string(), "auth_failed".to_string());
+            context_guard.current_node = on_auth_failure.unwrap_or(next);
+            drop(context_guard);
+
+            return Box::pin(self.execute_next_node(call_id)).await;
+        }
+
+        // 3. Main menu loop
+        'main_menu: loop {
+            // Get all messages
+            let messages = voicemail_service
+                .get_messages(&target_mailbox, None)
+                .await
+                .unwrap_or_default();
+
+            let new_count = messages.iter().filter(|m| m.status == MessageStatus::New).count();
+            let saved_count = messages.iter().filter(|m| m.status == MessageStatus::Saved).count();
+
+            // Play message count and menu
+            play_prompt(
+                &mm,
+                &media_call_id,
+                format!(
+                    "You have {} new messages and {} saved messages. \
+                     Press 1 for new messages. Press 2 for saved messages. \
+                     Press star to exit.",
+                    new_count, saved_count
+                ),
+            )
+            .await;
+
+            // Collect single DTMF digit
+            let digit = collect_digits(&mm, 1, None, 10).await;
+
+            let filter_status = match digit.as_str() {
+                "1" => MessageStatus::New,
+                "2" => MessageStatus::Saved,
+                "*" => break 'main_menu,
+                _ => continue 'main_menu,
+            };
+
+            // 4. Message playback loop
+            let filtered: Vec<_> = messages
+                .iter()
+                .filter(|m| m.status == filter_status)
+                .collect();
+
+            if filtered.is_empty() {
+                play_prompt(
+                    &mm,
+                    &media_call_id,
+                    format!("No {} messages.", filter_status),
+                )
+                .await;
+                continue 'main_menu;
+            }
+
+            let mut msg_idx = 0;
+            while msg_idx < filtered.len() {
+                let msg = &filtered[msg_idx];
+
+                // Format timestamp for announcement
+                let time_str = msg.created_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| {
+                        let secs = d.as_secs();
+                        let hours = (secs / 3600) % 24;
+                        let minutes = (secs / 60) % 60;
+                        format!("{}:{:02}", hours, minutes)
+                    })
+                    .unwrap_or_else(|_| "unknown time".to_string());
+
+                // Play envelope
+                play_prompt(
+                    &mm,
+                    &media_call_id,
+                    format!(
+                        "Message {} of {}. From {}. Received at {}.",
+                        msg_idx + 1,
+                        filtered.len(),
+                        msg.caller_name.as_deref().unwrap_or(&msg.caller),
+                        time_str,
+                    ),
+                )
+                .await;
+
+                // Play the message audio
+                let _ = voicemail_service.play_message(&media_call_id, &msg.id).await;
+
+                // Post-message menu
+                play_prompt(
+                    &mm,
+                    &media_call_id,
+                    "Press 1 to replay. Press 2 to save. Press 3 to delete. \
+                     Press 4 for next message. Press star for main menu."
+                        .to_string(),
+                )
+                .await;
+
+                let action = collect_digits(&mm, 1, None, 10).await;
+
+                match action.as_str() {
+                    "1" => {
+                        // Replay — don't advance index
+                    }
+                    "2" => {
+                        // Save message
+                        if let Err(e) = voicemail_service.save_message(msg).await {
+                            warn!(call_id = %call_id, error = %e, "Failed to save message");
+                        } else {
+                            play_prompt(&mm, &media_call_id, "Message saved.".to_string()).await;
+                        }
+                        msg_idx += 1;
+                    }
+                    "3" => {
+                        // Delete message
+                        if let Err(e) = voicemail_service.delete_message(&msg.id).await {
+                            warn!(call_id = %call_id, error = %e, "Failed to delete message");
+                        } else {
+                            play_prompt(&mm, &media_call_id, "Message deleted.".to_string()).await;
+                        }
+                        msg_idx += 1;
+                    }
+                    "4" => {
+                        msg_idx += 1;
+                    }
+                    "*" => {
+                        continue 'main_menu;
+                    }
+                    _ => {
+                        msg_idx += 1;
+                    }
+                }
+            }
+
+            // All messages played
+            play_prompt(&mm, &media_call_id, "End of messages.".to_string()).await;
+        }
+
+        // 5. Exit — send MWI update and set success status
+        play_prompt(&mm, &media_call_id, "Goodbye.".to_string()).await;
+        let _ = voicemail_service.send_mwi(&target_mailbox).await;
+
+        let mut context_guard = context.write().await;
+        context_guard.set_variable("voicemail_access_status".to_string(), "success".to_string());
+        context_guard.current_node = next;
+        drop(context_guard);
 
         Box::pin(self.execute_next_node(call_id)).await
     }
@@ -2051,6 +2365,31 @@ impl FlowCallHandler {
                     play_beep,
                     next_on_success,
                     next_on_error,
+                )
+                .await?;
+            }
+
+            FlowExecutionResult::WaitingForVoicemailAccess {
+                mailbox,
+                max_pin_attempts,
+                next,
+                on_auth_failure,
+            } => {
+                info!(
+                    call_id = %call_id,
+                    mailbox = %mailbox,
+                    max_pin_attempts = max_pin_attempts,
+                    "Starting voicemail access IVR"
+                );
+
+                drop(context_guard);
+
+                self.handle_voicemail_access(
+                    call_id,
+                    mailbox,
+                    max_pin_attempts,
+                    next,
+                    on_auth_failure,
                 )
                 .await?;
             }

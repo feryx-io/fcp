@@ -450,9 +450,28 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Register voicemail access extension if configured
+    if let Some(ref access_ext) = config.voicemail.access_extension {
+        let flow_id = "vm-access-flow";
+        let flow_def = build_voicemail_access_flow(flow_id);
+        flow_store
+            .insert_flow(flow_def)
+            .await
+            .context("Failed to save voicemail access flow")?;
+        flow_handler
+            .add_route(access_ext.clone(), flow_id.to_string())
+            .await;
+        info!(
+            extension = %access_ext,
+            flow_id = %flow_id,
+            "Voicemail access route registered"
+        );
+    }
+
     info!(
         voicemail_routes = config.voicemail.routes.len(),
         default_mailbox = config.voicemail.default_mailbox_id.as_deref().unwrap_or("none"),
+        access_extension = config.voicemail.access_extension.as_deref().unwrap_or("none"),
         "Voicemail flow routes loaded"
     );
 
@@ -693,6 +712,65 @@ fn build_voicemail_flow(
             "Auto-generated voicemail flow for mailbox {}",
             mailbox_id
         )),
+        version: 1,
+        initial_node: "answer".to_string(),
+        nodes,
+        variables: HashMap::new(),
+        tenant_id: None,
+        enabled: true,
+        webhook_url: None,
+        created_at: None,
+        updated_at: None,
+    }
+}
+
+/// Build a programmatic voicemail access flow: Answer → VoicemailAccess → Hangup
+///
+/// The VoicemailAccess node handles the full IVR: PIN entry, message listing,
+/// playback, save/delete — all within a single flow node.
+fn build_voicemail_access_flow(flow_id: &str) -> fcp_flow::FlowDefinition {
+    use fcp_flow::{FlowDefinition, FlowNode, NodeType};
+
+    let mut nodes = HashMap::new();
+
+    nodes.insert(
+        "answer".to_string(),
+        FlowNode {
+            id: "answer".to_string(),
+            name: Some("Answer call".to_string()),
+            node_type: NodeType::Answer {
+                next: "vm_access".to_string(),
+            },
+        },
+    );
+
+    nodes.insert(
+        "vm_access".to_string(),
+        FlowNode {
+            id: "vm_access".to_string(),
+            name: Some("Voicemail access IVR".to_string()),
+            node_type: NodeType::VoicemailAccess {
+                mailbox: "{{caller_extension}}".to_string(),
+                max_pin_attempts: 3,
+                next: "hangup".to_string(),
+                on_auth_failure: Some("hangup".to_string()),
+            },
+        },
+    );
+
+    nodes.insert(
+        "hangup".to_string(),
+        FlowNode {
+            id: "hangup".to_string(),
+            name: Some("Hang up".to_string()),
+            node_type: NodeType::Hangup { reason: None },
+        },
+    );
+
+    FlowDefinition {
+        id: flow_id.to_string(),
+        name: "Voicemail Access".to_string(),
+        description: Some("Auto-generated voicemail access IVR flow".to_string()),
         version: 1,
         initial_node: "answer".to_string(),
         nodes,

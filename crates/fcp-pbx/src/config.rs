@@ -69,6 +69,11 @@ pub struct FeatureCodeConfig {
     /// Agent queue logout code (e.g., "*51").
     #[serde(default = "default_agent_logout")]
     pub agent_logout: String,
+
+    /// Voicemail access prefix (e.g., "*98"). Exact match checks own mailbox,
+    /// prefix + extension checks a specific mailbox.
+    #[serde(default = "default_voicemail_access")]
+    pub voicemail_access: String,
 }
 
 fn default_group_pickup() -> String {
@@ -95,6 +100,9 @@ fn default_agent_login() -> String {
 fn default_agent_logout() -> String {
     "*51".to_string()
 }
+fn default_voicemail_access() -> String {
+    "*98".to_string()
+}
 
 impl Default for FeatureCodeConfig {
     fn default() -> Self {
@@ -107,6 +115,7 @@ impl Default for FeatureCodeConfig {
             intercom_twoway: default_intercom_twoway(),
             agent_login: default_agent_login(),
             agent_logout: default_agent_logout(),
+            voicemail_access: default_voicemail_access(),
         }
     }
 }

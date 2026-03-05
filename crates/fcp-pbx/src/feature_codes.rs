@@ -31,6 +31,9 @@ pub enum FeatureCodeAction {
 
     /// Agent logout from queue(s).
     AgentLogout,
+
+    /// Access voicemail. No suffix = own mailbox, with suffix = specific mailbox.
+    VoicemailAccess { mailbox: Option<String> },
 }
 
 /// Extract the user-part from a SIP URI or raw dialed string.
@@ -77,6 +80,15 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
                 extension: suffix.to_string(),
             }
         }),
+        (&config.voicemail_access, |suffix| {
+            FeatureCodeAction::VoicemailAccess {
+                mailbox: if suffix.is_empty() {
+                    None
+                } else {
+                    Some(suffix.to_string())
+                },
+            }
+        }),
     ];
 
     // Sort by prefix length descending so longer prefixes match first
@@ -84,8 +96,8 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
 
     for (prefix, action_fn) in &prefixes {
         if let Some(suffix) = user.strip_prefix(*prefix) {
-            // Prefix-only codes (park) have no suffix requirement
-            if *prefix == config.park {
+            // Prefix-only codes (park, voicemail_access) work with or without suffix
+            if *prefix == config.park || *prefix == config.voicemail_access {
                 return Some(action_fn(suffix));
             }
             // Other codes require a non-empty suffix (the target extension/orbit)
@@ -205,6 +217,36 @@ mod tests {
         assert_eq!(
             parse("sip:*51@10.0.0.1", &cfg),
             Some(FeatureCodeAction::AgentLogout)
+        );
+    }
+
+    #[test]
+    fn test_voicemail_access_own_mailbox() {
+        let cfg = default_config();
+        assert_eq!(
+            parse("*98", &cfg),
+            Some(FeatureCodeAction::VoicemailAccess { mailbox: None })
+        );
+        assert_eq!(
+            parse("sip:*98@10.0.0.1", &cfg),
+            Some(FeatureCodeAction::VoicemailAccess { mailbox: None })
+        );
+    }
+
+    #[test]
+    fn test_voicemail_access_specific_mailbox() {
+        let cfg = default_config();
+        assert_eq!(
+            parse("*981234", &cfg),
+            Some(FeatureCodeAction::VoicemailAccess {
+                mailbox: Some("1234".to_string())
+            })
+        );
+        assert_eq!(
+            parse("sip:*981001@10.0.0.1", &cfg),
+            Some(FeatureCodeAction::VoicemailAccess {
+                mailbox: Some("1001".to_string())
+            })
         );
     }
 

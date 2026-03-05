@@ -7494,6 +7494,9 @@ impl SipMessageHandler {
             fcp_pbx::FeatureCodeAction::AgentLogout => {
                 self.handle_agent_logout(request, handle, call_id).await
             }
+            fcp_pbx::FeatureCodeAction::VoicemailAccess { mailbox } => {
+                self.handle_voicemail_access_feature(request, handle, call_id, mailbox).await
+            }
         }
     }
 
@@ -8275,6 +8278,234 @@ impl SipMessageHandler {
         }
 
         let _ = self.call_manager.terminate_call(call_id, Some("Agent logout feature code".to_string()));
+        Ok(())
+    }
+
+    /// Handle voicemail access feature code (*98).
+    ///
+    /// Builds an inline VoicemailAccess flow and delegates to the flow handler.
+    /// If `mailbox` is None, the caller's own extension is used.
+    async fn handle_voicemail_access_feature(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        call_id: &fcp_b2bua_core::CallId,
+        mailbox: Option<String>,
+    ) -> Result<()> {
+        let flow_handler = match &self.flow_handler {
+            Some(fh) => Arc::clone(fh),
+            None => {
+                let response = self.create_simple_response(request, 501, "Voicemail Access Not Available");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(call_id, Some("No flow handler for voicemail access".to_string()));
+                return Ok(());
+            }
+        };
+
+        // Determine the target mailbox: explicit or derive from caller extension
+        let mailbox_str = mailbox.unwrap_or_default();
+
+        let caller_ext = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_did_from_uri(from.as_str()))
+            .unwrap_or_default();
+
+        // Build an inline voicemail access flow: Answer → VoicemailAccess → Hangup
+        let flow_id = format!("vm-access-{}", call_id);
+        let flow_def = {
+            use fcp_flow::{FlowDefinition, FlowNode, NodeType};
+
+            let mut nodes = std::collections::HashMap::new();
+
+            nodes.insert(
+                "answer".to_string(),
+                FlowNode {
+                    id: "answer".to_string(),
+                    name: Some("Answer call".to_string()),
+                    node_type: NodeType::Answer {
+                        next: "vm_access".to_string(),
+                    },
+                },
+            );
+
+            nodes.insert(
+                "vm_access".to_string(),
+                FlowNode {
+                    id: "vm_access".to_string(),
+                    name: Some("Voicemail access IVR".to_string()),
+                    node_type: NodeType::VoicemailAccess {
+                        mailbox: mailbox_str,
+                        max_pin_attempts: 3,
+                        next: "hangup".to_string(),
+                        on_auth_failure: Some("hangup".to_string()),
+                    },
+                },
+            );
+
+            nodes.insert(
+                "hangup".to_string(),
+                FlowNode {
+                    id: "hangup".to_string(),
+                    name: Some("Hang up".to_string()),
+                    node_type: NodeType::Hangup { reason: None },
+                },
+            );
+
+            FlowDefinition {
+                id: flow_id.clone(),
+                name: "Voicemail Access".to_string(),
+                description: Some("Inline voicemail access flow from *98 feature code".to_string()),
+                version: 1,
+                initial_node: "answer".to_string(),
+                nodes,
+                variables: std::collections::HashMap::new(),
+                tenant_id: None,
+                enabled: true,
+                webhook_url: None,
+                created_at: None,
+                updated_at: None,
+            }
+        };
+
+        // Insert flow into the store
+        if let Err(e) = flow_handler.flow_store().insert_flow(flow_def).await {
+            warn!(call_id = %call_id, error = %e, "Failed to insert voicemail access flow");
+            let response = self.create_simple_response(request, 500, "Internal Error");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(call_id, Some("Failed to create voicemail access flow".to_string()));
+            return Ok(());
+        }
+
+        // Build initial variables
+        let mut initial_variables = HashMap::new();
+        initial_variables.insert("caller".to_string(), caller_ext.clone());
+        initial_variables.insert("caller_extension".to_string(), caller_ext);
+
+        // Build answer callback
+        let answer_call_id = *call_id;
+        let answer_request = request.clone();
+        let answer_handle = handle.clone();
+        let answer_call_manager = Arc::clone(&self.call_manager);
+        let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+        let answer_media_manager = self.media_manager.clone();
+        let answer_local_addr = self.local_addr.clone();
+        let answer_rtp_port = self.rtp_port;
+        let answer_media_profile = self.media_profile.clone();
+
+        let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
+            let request = answer_request.clone();
+            let handle = answer_handle.clone();
+            let call_manager = Arc::clone(&answer_call_manager);
+            let _dialog_manager = Arc::clone(&answer_dialog_manager);
+            let media_manager = answer_media_manager.clone();
+            let local_addr = answer_local_addr.clone();
+            let rtp_port = answer_rtp_port;
+            let media_profile = answer_media_profile.clone();
+            let call_id = answer_call_id;
+            Box::pin(async move {
+                // Generate SDP
+                let sdp_string = if let Some(profile) = media_profile {
+                    let sdp = profile.build("fcp", &local_addr, rtp_port, None);
+                    Some(sdp.to_string())
+                } else {
+                    Some(generate_basic_sdp(&local_addr, rtp_port))
+                };
+
+                // Build 200 OK with SDP
+                let response = if let Some(ref sdp_str) = sdp_string {
+                    let base = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
+                    let sdp_bytes = bytes::Bytes::from(sdp_str.clone());
+                    let mut headers = base.headers().clone();
+                    let _ = headers.push(
+                        smol_str::SmolStr::new("Content-Type"),
+                        smol_str::SmolStr::new("application/sdp"),
+                    );
+                    let _ = headers.push(
+                        smol_str::SmolStr::new("Content-Length"),
+                        smol_str::SmolStr::new(&sdp_bytes.len().to_string()),
+                    );
+                    sip_core::Response::new(base.start_line().clone(), headers, sdp_bytes)
+                        .expect("Failed to create response with SDP")
+                } else {
+                    sip_uas::UserAgentServer::create_response(&request, 200, "OK")
+                };
+                handle.send_final(response).await;
+
+                // Create media session for the call
+                if let Some(mm) = &media_manager {
+                    let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+                    let fcp_dialog_id = fcp_core::DialogId::new();
+                    if let Ok(_session) = mm.create_session_default(core_call_id.clone(), fcp_dialog_id).await {
+                        // Feed remote SDP from INVITE if present
+                        if !request.body().is_empty() {
+                            let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                            let _ = mm.update_session(&core_call_id, remote_sdp).await;
+                        }
+                        // Update the call with media session
+                        let _ = call_manager.update_call(&call_id, |c| {
+                            c.media_session_id = Some(core_call_id);
+                            c.media_anchored = true;
+                        });
+                    }
+                }
+
+                Ok(())
+            })
+        });
+
+        // Build hangup callback
+        let hangup_call_id = *call_id;
+        let hangup_call_manager = Arc::clone(&self.call_manager);
+        let hangup_uac = self.uac.clone();
+        let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+        let hangup_media_manager = self.media_manager.clone();
+
+        let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
+            let call_id = hangup_call_id;
+            let call_manager = Arc::clone(&hangup_call_manager);
+            let uac_opt = hangup_uac.clone();
+            let dialog_manager = Arc::clone(&hangup_dialog_manager);
+            let media_manager = hangup_media_manager.clone();
+            Box::pin(async move {
+                if let Some(call_entry) = call_manager.get_call(&call_id) {
+                    if call_entry.media_anchored {
+                        if let (Some(ref media_session_id), Some(ref mm)) = (&call_entry.media_session_id, &media_manager) {
+                            let _ = mm.terminate_session(media_session_id).await;
+                        }
+                    }
+                    if let Some(dialog) = call_entry.a_leg.dialog.clone() {
+                        if let Some(uac) = uac_opt {
+                            let _ = uac.bye(&dialog).await;
+                            dialog_manager.remove(dialog.id());
+                        }
+                    }
+                }
+                let _ = call_manager.terminate_call(&call_id, reason);
+                Ok(())
+            })
+        });
+
+        // Start the flow
+        if let Some(mut call_entry) = self.call_manager.get_call(call_id) {
+            match flow_handler.start_flow(&mut call_entry, flow_id, initial_variables, answer_callback, hangup_callback).await {
+                Ok(()) => {
+                    info!(call_id = %call_id, "Voicemail access flow started");
+                    // Send 183 while the flow spins up
+                    let mut progress = sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
+                    self.ensure_response_hygiene(request, &mut progress);
+                    handle.send_provisional(progress).await;
+                }
+                Err(e) => {
+                    warn!(call_id = %call_id, error = %e, "Failed to start voicemail access flow");
+                    let response = self.create_simple_response(request, 500, "Flow Start Failed");
+                    handle.send_final(response).await;
+                    let _ = self.call_manager.terminate_call(call_id, Some(format!("Voicemail access flow failed: {}", e)));
+                }
+            }
+        } else {
+            let response = self.create_simple_response(request, 500, "Call Not Found");
+            handle.send_final(response).await;
+        }
+
         Ok(())
     }
 

@@ -319,6 +319,23 @@ pub enum NodeType {
         next: String,
     },
 
+    /// Access voicemail IVR (PIN entry, message playback, DTMF menu)
+    VoicemailAccess {
+        /// Target mailbox (variable-interpolated). Empty = derive from caller.
+        mailbox: String,
+
+        /// Max PIN entry attempts before hanging up
+        #[serde(default = "default_pin_attempts")]
+        max_pin_attempts: u32,
+
+        /// Node to go to after the user hangs up or exits the menu
+        next: String,
+
+        /// Node to go to on auth failure (too many wrong PINs)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_auth_failure: Option<String>,
+    },
+
     /// Leave a voicemail message
     Voicemail {
         /// Extension or mailbox ID to leave message for
@@ -463,6 +480,10 @@ fn default_log_level() -> LogLevel {
 
 fn default_voicemail_duration() -> u32 {
     300 // 5 minutes
+}
+
+fn default_pin_attempts() -> u32 {
+    3
 }
 
 #[cfg(test)]

@@ -510,6 +510,29 @@ impl FlowEngine {
                 Ok(FlowExecutionResult::Continue(next.clone()))
             }
 
+            NodeType::VoicemailAccess {
+                mailbox,
+                max_pin_attempts,
+                next,
+                on_auth_failure,
+            } => {
+                let interpolated_mailbox = self.interpolate_variables(mailbox, context)?;
+
+                info!(
+                    call_id = %context.call_id,
+                    mailbox = %interpolated_mailbox,
+                    max_pin_attempts = %max_pin_attempts,
+                    "Starting voicemail access IVR"
+                );
+
+                Ok(FlowExecutionResult::WaitingForVoicemailAccess {
+                    mailbox: interpolated_mailbox,
+                    max_pin_attempts: *max_pin_attempts,
+                    next: next.clone(),
+                    on_auth_failure: on_auth_failure.clone(),
+                })
+            }
+
             NodeType::Voicemail {
                 mailbox,
                 is_busy,
@@ -600,6 +623,13 @@ impl FlowEngine {
                     call_id = %context.call_id,
                     mailbox = %mailbox,
                     "Flow execution paused, waiting for voicemail recording"
+                );
+            }
+            Ok(FlowExecutionResult::WaitingForVoicemailAccess { mailbox, .. }) => {
+                debug!(
+                    call_id = %context.call_id,
+                    mailbox = %mailbox,
+                    "Flow execution paused, waiting for voicemail access IVR"
                 );
             }
             Ok(FlowExecutionResult::WaitingForFork { destinations, .. }) => {
@@ -891,6 +921,14 @@ pub enum FlowExecutionResult {
     /// Recording stop requested
     StoppingRecording {
         next: String,
+    },
+
+    /// Waiting for voicemail access IVR to complete
+    WaitingForVoicemailAccess {
+        mailbox: String,
+        max_pin_attempts: u32,
+        next: String,
+        on_auth_failure: Option<String>,
     },
 }
 
