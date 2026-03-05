@@ -45,6 +45,7 @@ pub struct DeviceResponse {
     pub supports_blf: bool,
     pub codec_support: Vec<String>,
     pub location: Option<String>,
+    pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
@@ -78,6 +79,7 @@ impl From<Device> for DeviceResponse {
                 .map(|c| format!("{:?}", c))
                 .collect(),
             location: device.location,
+            location_id: device.location_id.map(|id| id.to_string()),
             e911_override: device.e911_override.map(|a| a.into()),
             provisioning_url: device.provisioning_url,
             config_template_id: device.config_template_id,
@@ -103,6 +105,7 @@ pub struct CreateDeviceRequest {
     pub supports_video: Option<bool>,
     pub supports_blf: Option<bool>,
     pub location: Option<String>,
+    pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
 }
 
@@ -123,6 +126,7 @@ pub struct UpdateDeviceRequest {
     pub supports_video: Option<bool>,
     pub supports_blf: Option<bool>,
     pub location: Option<String>,
+    pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
@@ -202,6 +206,12 @@ pub async fn create_device(
     }
 
     device.location = req.location;
+    if let Some(location_id_str) = req.location_id {
+        device.location_id = Some(
+            fcp_core::LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?,
+        );
+    }
 
     if let Some(e911) = req.e911_override {
         device.set_e911_override(e911.into());
@@ -289,6 +299,15 @@ pub async fn update_device(
 
     if req.location.is_some() {
         device.location = req.location;
+    }
+
+    if let Some(location_id_str) = req.location_id {
+        device.location_id = if location_id_str.is_empty() {
+            None
+        } else {
+            Some(fcp_core::LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?)
+        };
     }
 
     if let Some(e911) = req.e911_override {

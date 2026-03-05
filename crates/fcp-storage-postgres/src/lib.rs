@@ -38,15 +38,15 @@ use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
         LineBindingStore, PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore,
-        ResourceListStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredResourceList,
-        StoredSubscription, TenantStore, VoicemailStore, WebhookDeliveryLog, WebhookEndpoint,
-        WebhookStore,
+        ResourceListStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
+        StoredResourceList, StoredSubscription, TenantStore, VoicemailStore, WebhookDeliveryLog,
+        WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
-    HangupCause, HangupParty, LineBinding, LineBindingId, MediaPreferences, NumberState,
-    PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, Tenant, TenantId,
-    User, UserId, WebhookId,
+    HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences, NumberState,
+    PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, SiteLocation, Tenant,
+    TenantId, User, UserId, WebhookId,
 };
 use fcp_core::porting::PortingStore;
 use fcp_flow::schema::{FlowDefinition, FlowNode};
@@ -240,7 +240,7 @@ impl CredentialStore for PostgresStorage {
             "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
-                    extension, department, job_title, location, language, timezone,
+                    extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
                     failed_login_attempts, account_locked_until
@@ -273,18 +273,19 @@ impl CredentialStore for PostgresStorage {
         let primary_phone_number_id = user.primary_phone_number_id.map(|id| id.to_string());
         let voicemail_box_id = user.voicemail_box_id.map(|id| id.to_string());
         let account_locked_until = user.account_locked_until.map(system_time_to_datetime);
+        let location_id = user.location_id.map(|id| id.to_string());
 
         sqlx::query(
             "INSERT INTO users (
                 id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
                 role, department_id, enabled, created_at, updated_at, media_preferences,
                 email, password_last_reset, phone_number, mobile_number, pin,
-                extension, department, job_title, location, language, timezone,
+                extension, department, job_title, location, location_id, language, timezone,
                 account_status, last_login, emergency_contact_json,
                 primary_phone_number_id, voicemail_box_id, profile_picture,
                 failed_login_attempts, account_locked_until
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
              ON CONFLICT(username, tenant_id) DO UPDATE SET
                  password_hash = EXCLUDED.password_hash,
                  digest_password = EXCLUDED.digest_password,
@@ -304,6 +305,7 @@ impl CredentialStore for PostgresStorage {
                  department = EXCLUDED.department,
                  job_title = EXCLUDED.job_title,
                  location = EXCLUDED.location,
+                 location_id = EXCLUDED.location_id,
                  language = EXCLUDED.language,
                  timezone = EXCLUDED.timezone,
                  account_status = EXCLUDED.account_status,
@@ -337,6 +339,7 @@ impl CredentialStore for PostgresStorage {
         .bind(&user.department)
         .bind(&user.job_title)
         .bind(&user.location)
+        .bind(&location_id)
         .bind(&user.language)
         .bind(&user.timezone)
         .bind(&account_status)
@@ -369,7 +372,7 @@ impl CredentialStore for PostgresStorage {
             "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
-                    extension, department, job_title, location, language, timezone,
+                    extension, department, job_title, location, location_id, language, timezone,
                     account_status, last_login, emergency_contact_json,
                     primary_phone_number_id, voicemail_box_id, profile_picture,
                     failed_login_attempts, account_locked_until
@@ -977,6 +980,8 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         department: row.get("department"),
         job_title: row.get("job_title"),
         location: row.get("location"),
+        location_id: row.get::<Option<String>, _>("location_id")
+            .and_then(|s| fcp_core::LocationId::from_str(&s).ok()),
         language: row.get("language"),
         timezone: row.get("timezone"),
         account_status,
@@ -1471,7 +1476,7 @@ impl LineBindingStore for PostgresStorage {
 impl ExtensionStore for PostgresStorage {
     async fn get_extension(&self, id: &ExtensionId) -> Result<Option<Extension>> {
         let row = sqlx::query(
-            "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
+            "SELECT id, number, target_type, target_id, tenant_id, description, location_id, enabled,
                     created_at, updated_at
              FROM extensions
              WHERE id = $1",
@@ -1492,7 +1497,7 @@ impl ExtensionStore for PostgresStorage {
         number: &str,
     ) -> Result<Option<Extension>> {
         let row = sqlx::query(
-            "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
+            "SELECT id, number, target_type, target_id, tenant_id, description, location_id, enabled,
                     created_at, updated_at
              FROM extensions
              WHERE tenant_id = $1 AND number = $2",
@@ -1510,7 +1515,7 @@ impl ExtensionStore for PostgresStorage {
 
     async fn list_extensions(&self, tenant_id: &TenantId) -> Result<Vec<Extension>> {
         let rows = sqlx::query(
-            "SELECT id, number, target_type, target_id, tenant_id, description, enabled,
+            "SELECT id, number, target_type, target_id, tenant_id, description, location_id, enabled,
                     created_at, updated_at
              FROM extensions
              WHERE tenant_id = $1
@@ -1539,17 +1544,19 @@ impl ExtensionStore for PostgresStorage {
         };
         let created_at = system_time_to_datetime(extension.created_at);
         let updated_at = system_time_to_datetime(extension.updated_at);
+        let location_id = extension.location_id.map(|id| id.to_string());
 
         sqlx::query(
             "INSERT INTO extensions (
-                id, number, target_type, target_id, tenant_id, description, enabled,
+                id, number, target_type, target_id, tenant_id, description, location_id, enabled,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT(tenant_id, number) DO UPDATE SET
                  target_type = EXCLUDED.target_type,
                  target_id = EXCLUDED.target_id,
                  description = EXCLUDED.description,
+                 location_id = EXCLUDED.location_id,
                  enabled = EXCLUDED.enabled,
                  updated_at = EXCLUDED.updated_at",
         )
@@ -1559,6 +1566,7 @@ impl ExtensionStore for PostgresStorage {
         .bind(&target_id)
         .bind(&tenant_id)
         .bind(&extension.description)
+        .bind(&location_id)
         .bind(extension.enabled)
         .bind(&created_at)
         .bind(&updated_at)
@@ -1591,7 +1599,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
                     created_at, updated_at
              FROM devices
              WHERE id = $1",
@@ -1611,7 +1619,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
                     created_at, updated_at
              FROM devices
              WHERE sip_uri = $1",
@@ -1631,7 +1639,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
                     created_at, updated_at
              FROM devices
              WHERE tenant_id = $1
@@ -1654,7 +1662,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
                     created_at, updated_at
              FROM devices
              WHERE owner_user_id = $1
@@ -1692,16 +1700,17 @@ impl DeviceStore for PostgresStorage {
             .transpose()?;
         let created_at = system_time_to_datetime(device.created_at);
         let updated_at = system_time_to_datetime(device.updated_at);
+        let location_id = device.location_id.map(|id| id.to_string());
 
         sqlx::query(
             "INSERT INTO devices (
                 id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
-                location, e911_override_json, provisioning_url, config_template_id, enabled,
+                location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
@@ -1718,6 +1727,7 @@ impl DeviceStore for PostgresStorage {
                  supports_blf = EXCLUDED.supports_blf,
                  codec_support = EXCLUDED.codec_support,
                  location = EXCLUDED.location,
+                 location_id = EXCLUDED.location_id,
                  e911_override_json = EXCLUDED.e911_override_json,
                  provisioning_url = EXCLUDED.provisioning_url,
                  config_template_id = EXCLUDED.config_template_id,
@@ -1742,6 +1752,7 @@ impl DeviceStore for PostgresStorage {
         .bind(device.supports_blf)
         .bind(&codec_support)
         .bind(&device.location)
+        .bind(&location_id)
         .bind(&e911_override_json)
         .bind(&device.provisioning_url)
         .bind(&device.config_template_id)
@@ -2081,6 +2092,8 @@ fn row_to_extension(row: sqlx::postgres::PgRow) -> Result<Extension> {
         target,
         tenant_id,
         description: row.get("description"),
+        location_id: row.get::<Option<String>, _>("location_id")
+            .and_then(|s| LocationId::from_str(&s).ok()),
         enabled: row.get::<bool, _>("enabled"),
         created_at,
         updated_at,
@@ -2161,6 +2174,8 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         supports_blf: row.get::<bool, _>("supports_blf"),
         codec_support,
         location: row.get("location"),
+        location_id: row.get::<Option<String>, _>("location_id")
+            .and_then(|s| LocationId::from_str(&s).ok()),
         e911_override,
         provisioning_url: row.get("provisioning_url"),
         config_template_id: row.get("config_template_id"),
@@ -2168,6 +2183,158 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         created_at,
         updated_at,
     })
+}
+
+fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
+    use sqlx::Row;
+    let id = LocationId::from_str(&row.get::<String, _>("id"))?;
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+
+    Ok(SiteLocation {
+        id,
+        tenant_id,
+        name: row.get("name"),
+        description: row.get("description"),
+        address_line1: row.get("address_line1"),
+        address_line2: row.get("address_line2"),
+        city: row.get("city"),
+        state: row.get("state"),
+        postal_code: row.get("postal_code"),
+        country: row.get("country"),
+        floor: row.get("floor"),
+        building: row.get("building"),
+        latitude: row.get("latitude"),
+        longitude: row.get("longitude"),
+        phone_number: row.get("phone_number"),
+        timezone: row.get("timezone"),
+        emergency_contact_name: row.get("emergency_contact_name"),
+        emergency_contact_phone: row.get("emergency_contact_phone"),
+        created_at,
+        updated_at,
+    })
+}
+
+// ============================================================================
+// SiteLocationStore Implementation
+// ============================================================================
+
+#[async_trait]
+impl SiteLocationStore for PostgresStorage {
+    async fn get_location(&self, id: &LocationId) -> Result<Option<SiteLocation>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, description, address_line1, address_line2,
+                    city, state, postal_code, country, floor, building,
+                    latitude, longitude, phone_number, timezone,
+                    emergency_contact_name, emergency_contact_phone,
+                    created_at, updated_at
+             FROM locations
+             WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_site_location(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_locations(&self, tenant_id: &TenantId) -> Result<Vec<SiteLocation>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, description, address_line1, address_line2,
+                    city, state, postal_code, country, floor, building,
+                    latitude, longitude, phone_number, timezone,
+                    emergency_contact_name, emergency_contact_phone,
+                    created_at, updated_at
+             FROM locations
+             WHERE tenant_id = $1
+             ORDER BY name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let locations = rows
+            .into_iter()
+            .filter_map(|row| row_to_site_location(row).ok())
+            .collect();
+
+        Ok(locations)
+    }
+
+    async fn put_location(&self, location: SiteLocation) -> Result<()> {
+        let id = location.id.to_string();
+        let tenant_id = location.tenant_id.to_string();
+        let created_at = system_time_to_datetime(location.created_at);
+        let updated_at = system_time_to_datetime(location.updated_at);
+
+        sqlx::query(
+            "INSERT INTO locations (
+                id, tenant_id, name, description, address_line1, address_line2,
+                city, state, postal_code, country, floor, building,
+                latitude, longitude, phone_number, timezone,
+                emergency_contact_name, emergency_contact_phone,
+                created_at, updated_at
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 description = EXCLUDED.description,
+                 address_line1 = EXCLUDED.address_line1,
+                 address_line2 = EXCLUDED.address_line2,
+                 city = EXCLUDED.city,
+                 state = EXCLUDED.state,
+                 postal_code = EXCLUDED.postal_code,
+                 country = EXCLUDED.country,
+                 floor = EXCLUDED.floor,
+                 building = EXCLUDED.building,
+                 latitude = EXCLUDED.latitude,
+                 longitude = EXCLUDED.longitude,
+                 phone_number = EXCLUDED.phone_number,
+                 timezone = EXCLUDED.timezone,
+                 emergency_contact_name = EXCLUDED.emergency_contact_name,
+                 emergency_contact_phone = EXCLUDED.emergency_contact_phone,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&id)
+        .bind(&tenant_id)
+        .bind(&location.name)
+        .bind(&location.description)
+        .bind(&location.address_line1)
+        .bind(&location.address_line2)
+        .bind(&location.city)
+        .bind(&location.state)
+        .bind(&location.postal_code)
+        .bind(&location.country)
+        .bind(&location.floor)
+        .bind(&location.building)
+        .bind(location.latitude)
+        .bind(location.longitude)
+        .bind(&location.phone_number)
+        .bind(&location.timezone)
+        .bind(&location.emergency_contact_name)
+        .bind(&location.emergency_contact_phone)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        debug!(id = %location.id, name = %location.name, "Location stored");
+        Ok(())
+    }
+
+    async fn delete_location(&self, id: &LocationId) -> Result<()> {
+        sqlx::query("DELETE FROM locations WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(id = %id, "Location deleted");
+        Ok(())
+    }
 }
 
 // ============================================================================

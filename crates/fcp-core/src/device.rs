@@ -4,7 +4,7 @@
 //! that can register with the system and make/receive calls.
 
 use crate::codec::AudioCodec;
-use crate::identifiers::{DeviceId, TenantId, UserId};
+use crate::identifiers::{DeviceId, LocationId, TenantId, UserId};
 use crate::phone_number::E911Address;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -70,6 +70,9 @@ pub struct Device {
     /// Physical location description
     pub location: Option<String>,
 
+    /// Reference to a SiteLocation entity
+    pub location_id: Option<LocationId>,
+
     /// Per-device E911 override (for mobile users)
     pub e911_override: Option<E911Address>,
 
@@ -115,6 +118,7 @@ impl Device {
             supports_blf: false,
             codec_support: vec![AudioCodec::Pcmu, AudioCodec::Pcma],
             location: None,
+            location_id: None,
             e911_override: None,
             provisioning_url: None,
             config_template_id: None,

@@ -16,18 +16,21 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { extensions, users } from '@/api/endpoints'
-import type { Extension, CreateExtensionRequest, User } from '@/types'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { extensions, users, locations } from '@/api/endpoints'
+import type { Extension, CreateExtensionRequest, User, Location } from '@/types'
 
 const createSchema = z.object({
   number: z.string().min(1, 'Extension number is required').regex(/^\d+$/, 'Must be numeric'),
   display_name: z.string().optional(),
   user_id: z.string().optional(),
+  location_id: z.string().optional(),
 })
 
 const editSchema = z.object({
   display_name: z.string().optional(),
   user_id: z.string().optional(),
+  location_id: z.string().optional(),
   type: z.string().optional(),
 })
 
@@ -101,6 +104,11 @@ export function ExtensionsPage() {
       cell: ({ row }) => row.original.user_id || '-',
     },
     {
+      accessorKey: 'location_id',
+      header: 'Location',
+      cell: ({ row }) => locationName(row.original.location_id),
+    },
+    {
       id: 'actions',
       cell: ({ row }) => (
         <DropdownMenu>
@@ -139,6 +147,7 @@ export function ExtensionsPage() {
     editForm.reset({
       display_name: editItem.display_name || '',
       user_id: editItem.user_id || '',
+      location_id: editItem.location_id || '',
       type: editItem.type || '',
     })
   }
@@ -148,6 +157,7 @@ export function ExtensionsPage() {
       ...data,
       display_name: data.display_name || undefined,
       user_id: data.user_id || undefined,
+      location_id: data.location_id || undefined,
     })
   }
 
@@ -158,6 +168,7 @@ export function ExtensionsPage() {
       data: {
         display_name: data.display_name || undefined,
         user_id: data.user_id || undefined,
+        location_id: data.location_id || undefined,
         type: data.type || undefined,
       },
     })
@@ -167,6 +178,17 @@ export function ExtensionsPage() {
     queryKey: ['users'],
     queryFn: users.list,
   })
+
+  const { data: locationList = [] } = useQuery({
+    queryKey: ['locations'],
+    queryFn: locations.list,
+  })
+
+  const locationName = (id: string | null) => {
+    if (!id) return '-'
+    const loc = locationList.find((l: Location) => l.id === id)
+    return loc ? loc.name : id
+  }
 
   return (
     <div className="space-y-6">
@@ -222,6 +244,18 @@ export function ExtensionsPage() {
                 placeholder="Search by username or name..."
               />
             </div>
+            <div className="space-y-2">
+              <Label>Location</Label>
+              <Select onValueChange={(v) => createForm.setValue('location_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {locationList.map((loc: Location) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -257,6 +291,18 @@ export function ExtensionsPage() {
               />
             </div>
             <div className="space-y-2">
+              <Label>Location</Label>
+              <Select defaultValue={editItem?.location_id || '__none__'} onValueChange={(v) => editForm.setValue('location_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {locationList.map((loc: Location) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
               <Label htmlFor="e-type">Type</Label>
               <Input id="e-type" {...editForm.register('type')} />
             </div>
@@ -285,7 +331,7 @@ export function ExtensionsPage() {
 
 // --- CSV Export / Import Helpers ---
 
-const EXPORT_COLUMNS = ['number', 'display_name', 'type', 'enabled', 'user_id'] as const
+const EXPORT_COLUMNS = ['number', 'display_name', 'type', 'enabled', 'user_id', 'location_id'] as const
 
 function escapeCSVField(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -309,7 +355,7 @@ function exportExtensions(extList: Extension[]) {
   URL.revokeObjectURL(url)
 }
 
-const IMPORT_COLUMNS = ['number', 'display_name', 'user_id', 'type'] as const
+const IMPORT_COLUMNS = ['number', 'display_name', 'user_id', 'location_id', 'type'] as const
 
 interface ParsedRow {
   [key: string]: string
@@ -520,6 +566,7 @@ function BulkImportDialog({
       const updateData: Partial<CreateExtensionRequest> = {}
       if (row.data.display_name?.trim()) updateData.display_name = row.data.display_name.trim()
       if (row.data.user_id?.trim()) updateData.user_id = row.data.user_id.trim()
+      if (row.data.location_id?.trim()) updateData.location_id = row.data.location_id.trim()
       if (row.data.type?.trim()) updateData.type = row.data.type.trim()
 
       try {

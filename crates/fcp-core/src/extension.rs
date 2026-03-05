@@ -4,7 +4,7 @@
 //! users, phone numbers, devices, or services. This enables internal dialing
 //! without using full E.164 numbers.
 
-use crate::identifiers::{DeviceId, ExtensionId, PhoneNumberId, ServiceId, TenantId, UserId};
+use crate::identifiers::{DeviceId, ExtensionId, LocationId, PhoneNumberId, ServiceId, TenantId, UserId};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::SystemTime;
@@ -30,6 +30,9 @@ pub struct Extension {
 
     /// Description for this extension
     pub description: Option<String>,
+
+    /// Reference to a SiteLocation entity
+    pub location_id: Option<LocationId>,
 
     /// Whether this extension is enabled
     pub enabled: bool,
@@ -59,6 +62,7 @@ impl Extension {
             target,
             tenant_id,
             description: None,
+            location_id: None,
             enabled: true,
             created_at: now,
             updated_at: now,

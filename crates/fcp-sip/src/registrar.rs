@@ -1101,6 +1101,7 @@ mod tests {
             department: None,
             job_title: None,
             location: None,
+            location_id: None,
             language: "en-US".to_string(),
             timezone: "UTC".to_string(),
             last_login: None,

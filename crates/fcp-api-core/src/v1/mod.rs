@@ -11,6 +11,7 @@ pub mod events;
 pub mod extensions;
 pub mod flows;
 pub mod line_bindings;
+pub mod locations;
 pub mod media;
 pub mod metrics;
 pub mod phone_numbers;
@@ -166,6 +167,17 @@ pub fn router() -> Router<ApiState> {
             get(devices::get_device)
                 .patch(devices::update_device)
                 .delete(devices::delete_device),
+        )
+        // Locations
+        .route(
+            "/locations",
+            get(locations::list_locations).post(locations::create_location),
+        )
+        .route(
+            "/locations/:id",
+            get(locations::get_location)
+                .patch(locations::update_location)
+                .delete(locations::delete_location),
         )
         // Queues / ACD
         .route("/queues", get(queues::list_queues))

@@ -314,6 +314,9 @@ pub struct User {
     /// Location/Office
     pub location: Option<String>,
 
+    /// Reference to a SiteLocation entity
+    pub location_id: Option<crate::LocationId>,
+
     /// Language/Locale (e.g., "en-US", "es-ES")
     #[serde(default = "default_language")]
     pub language: String,
@@ -546,6 +549,9 @@ pub struct UserFileEntry {
 
     /// Location/Office
     pub location: Option<String>,
+
+    /// Reference to a SiteLocation entity
+    pub location_id: Option<crate::LocationId>,
 
     /// Language/Locale (e.g., "en-US", "es-ES")
     #[serde(default = "default_language")]
@@ -1002,6 +1008,22 @@ pub trait DeviceStore: Send + Sync {
 
     /// Delete a device by ID
     async fn delete_device(&self, id: &crate::DeviceId) -> Result<()>;
+}
+
+/// Site location storage operations.
+#[async_trait::async_trait]
+pub trait SiteLocationStore: Send + Sync {
+    /// Get a location by ID
+    async fn get_location(&self, id: &crate::LocationId) -> Result<Option<crate::SiteLocation>>;
+
+    /// List all locations for a tenant
+    async fn list_locations(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::SiteLocation>>;
+
+    /// Create or update a location
+    async fn put_location(&self, location: crate::SiteLocation) -> Result<()>;
+
+    /// Delete a location by ID
+    async fn delete_location(&self, id: &crate::LocationId) -> Result<()>;
 }
 
 /// Voicemail storage operations.
@@ -1918,6 +1940,7 @@ pub struct DynStorage {
     presence_store: Arc<dyn PresenceStore>,
     resource_list_store: Arc<dyn ResourceListStore>,
     webhook_store: Arc<dyn WebhookStore>,
+    site_location_store: Arc<dyn SiteLocationStore>,
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
@@ -1942,6 +1965,7 @@ impl DynStorage {
         presence_store: Arc<dyn PresenceStore>,
         resource_list_store: Arc<dyn ResourceListStore>,
         webhook_store: Arc<dyn WebhookStore>,
+        site_location_store: Arc<dyn SiteLocationStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -1960,6 +1984,7 @@ impl DynStorage {
             presence_store,
             resource_list_store,
             webhook_store,
+            site_location_store,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -1988,6 +2013,7 @@ impl DynStorage {
             + PresenceStore
             + ResourceListStore
             + WebhookStore
+            + SiteLocationStore
             + 'static,
     {
         Self {
@@ -2006,7 +2032,8 @@ impl DynStorage {
             queue_store: storage.clone(),
             presence_store: storage.clone(),
             resource_list_store: storage.clone(),
-            webhook_store: storage,
+            webhook_store: storage.clone(),
+            site_location_store: storage,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2086,6 +2113,11 @@ impl DynStorage {
     /// Get the API token store, if one has been set.
     pub fn api_token_store(&self) -> Option<&Arc<dyn ApiTokenStore>> {
         self.api_token_store.as_ref()
+    }
+
+    /// Get the site location store.
+    pub fn site_location_store(&self) -> &Arc<dyn SiteLocationStore> {
+        &self.site_location_store
     }
 }
 
@@ -2294,6 +2326,25 @@ impl DeviceStore for DynStorage {
 
     async fn delete_device(&self, id: &crate::DeviceId) -> Result<()> {
         self.device_store.delete_device(id).await
+    }
+}
+
+#[async_trait]
+impl SiteLocationStore for DynStorage {
+    async fn get_location(&self, id: &crate::LocationId) -> Result<Option<crate::SiteLocation>> {
+        self.site_location_store.get_location(id).await
+    }
+
+    async fn list_locations(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::SiteLocation>> {
+        self.site_location_store.list_locations(tenant_id).await
+    }
+
+    async fn put_location(&self, location: crate::SiteLocation) -> Result<()> {
+        self.site_location_store.put_location(location).await
+    }
+
+    async fn delete_location(&self, id: &crate::LocationId) -> Result<()> {
+        self.site_location_store.delete_location(id).await
     }
 }
 
@@ -2726,6 +2777,7 @@ mod tests {
             department: None,
             job_title: None,
             location: None,
+            location_id: None,
             language: "en-US".to_string(),
             timezone: "UTC".to_string(),
             account_status: AccountStatus::Active,

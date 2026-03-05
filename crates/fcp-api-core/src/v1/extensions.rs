@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 use fcp_core::storage::ExtensionStore;
-use fcp_core::{DeviceId, Extension, ExtensionTarget, PhoneNumberId, ServiceId, TenantId, UserId};
+use fcp_core::{DeviceId, Extension, ExtensionTarget, LocationId, PhoneNumberId, ServiceId, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -32,6 +32,7 @@ pub struct ExtensionResponse {
     pub target: ExtensionTargetResponse,
     pub tenant_id: String,
     pub description: Option<String>,
+    pub location_id: Option<String>,
     pub enabled: bool,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -98,6 +99,7 @@ impl From<Extension> for ExtensionResponse {
             target: ext.target.into(),
             tenant_id: ext.tenant_id.to_string(),
             description: ext.description,
+            location_id: ext.location_id.map(|id| id.to_string()),
             enabled: ext.enabled,
             created_at: ext.created_at,
             updated_at: ext.updated_at,
@@ -113,6 +115,7 @@ pub struct CreateExtensionRequest {
     #[serde(default = "default_tenant_id")]
     pub tenant_id: TenantId,
     pub description: Option<String>,
+    pub location_id: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -130,6 +133,7 @@ fn default_true() -> bool {
 pub struct UpdateExtensionRequest {
     pub target: Option<ExtensionTargetResponse>,
     pub description: Option<String>,
+    pub location_id: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -186,6 +190,13 @@ pub async fn create_extension(
 
     if let Some(desc) = req.description {
         extension.set_description(desc);
+    }
+
+    if let Some(location_id_str) = req.location_id {
+        extension.location_id = Some(
+            LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?,
+        );
     }
 
     extension.set_enabled(req.enabled);
@@ -245,6 +256,15 @@ pub async fn update_extension(
         if let Some(desc) = req.description {
             extension.set_description(desc);
         }
+    }
+
+    if let Some(location_id_str) = req.location_id {
+        extension.location_id = if location_id_str.is_empty() {
+            None
+        } else {
+            Some(LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?)
+        };
     }
 
     if let Some(enabled) = req.enabled {

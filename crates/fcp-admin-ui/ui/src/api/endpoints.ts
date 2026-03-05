@@ -4,6 +4,7 @@ import type {
   Tenant, CreateTenantRequest,
   Extension, CreateExtensionRequest,
   Device, CreateDeviceRequest,
+  Location, CreateLocationRequest,
   PhoneNumber, CreatePhoneNumberRequest,
   LineBinding, CreateLineBindingRequest, UpdateLineBindingRequest,
   DashboardSummary, SystemHealth,
@@ -93,6 +94,16 @@ export const devices = {
   update: (id: string, data: Partial<CreateDeviceRequest>) =>
     apiClient.patch<Device>(`/devices/${id}`, data),
   delete: (id: string) => apiClient.delete<void>(`/devices/${id}`),
+}
+
+// Locations
+export const locations = {
+  list: () => apiClient.get<Location[]>('/locations'),
+  get: (id: string) => apiClient.get<Location>(`/locations/${id}`),
+  create: (data: CreateLocationRequest) => apiClient.post<Location>('/locations', data),
+  update: (id: string, data: Partial<CreateLocationRequest>) =>
+    apiClient.patch<Location>(`/locations/${id}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/locations/${id}`),
 }
 
 // Phone Numbers

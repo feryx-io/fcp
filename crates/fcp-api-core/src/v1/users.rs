@@ -46,6 +46,7 @@ pub struct UserResponse {
     pub department: Option<String>,
     pub job_title: Option<String>,
     pub location: Option<String>,
+    pub location_id: Option<String>,
     pub language: String,
     pub timezone: String,
     pub account_status: String,
@@ -81,6 +82,7 @@ impl From<User> for UserResponse {
             department: user.department,
             job_title: user.job_title,
             location: user.location,
+            location_id: user.location_id.map(|id| id.to_string()),
             language: user.language,
             timezone: user.timezone,
             account_status: user.account_status.to_string(),
@@ -118,6 +120,7 @@ pub struct CreateUserRequest {
     pub department: Option<String>,
     pub job_title: Option<String>,
     pub location: Option<String>,
+    pub location_id: Option<String>,
     pub language: Option<String>,
     pub timezone: Option<String>,
     pub account_status: Option<String>,
@@ -174,6 +177,7 @@ pub struct UpdateUserRequest {
     pub department: Option<String>,
     pub job_title: Option<String>,
     pub location: Option<String>,
+    pub location_id: Option<String>,
     pub language: Option<String>,
     pub timezone: Option<String>,
     pub account_status: Option<String>,
@@ -306,6 +310,8 @@ pub async fn create_user(
         department: req.department,
         job_title: req.job_title,
         location: req.location,
+        location_id: req.location_id
+            .and_then(|s| fcp_core::LocationId::from_str(&s).ok()),
         language: req.language.unwrap_or_else(|| "en-US".to_string()),
         timezone: req.timezone.unwrap_or_else(|| "UTC".to_string()),
         account_status,
@@ -430,6 +436,14 @@ pub async fn update_user(
     }
     if let Some(location) = req.location {
         user.location = Some(location);
+    }
+    if let Some(location_id_str) = req.location_id {
+        user.location_id = if location_id_str.is_empty() {
+            None
+        } else {
+            Some(fcp_core::LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?)
+        };
     }
     if let Some(language) = req.language {
         user.language = language;

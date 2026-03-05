@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Users, Phone, Boxes, MonitorSmartphone,
-  Link2, Building2, Settings, LogOut, Moon, Sun, Monitor, Menu,
+  Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
   Radio, Activity, Server, Shield, Workflow, Globe, Key,
   ScrollText, Search, X,
@@ -37,6 +37,7 @@ const navItems: NavItem[] = [
   { label: 'Phone Numbers', href: '/admin/phone-numbers', icon: Phone, section: 'Management' },
   { label: 'Line Bindings', href: '/admin/line-bindings', icon: Link2, section: 'Management' },
   { label: 'Tenants', href: '/admin/tenants', icon: Building2, section: 'Management' },
+  { label: 'Locations', href: '/admin/locations', icon: MapPin, section: 'Management' },
   // Operations
   { label: 'Registrations', href: '/admin/registrations', icon: MonitorSmartphone, section: 'Operations' },
   { label: 'Active Calls', href: '/admin/calls', icon: PhoneCall, section: 'Operations' },

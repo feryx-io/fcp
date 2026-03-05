@@ -15,6 +15,7 @@ const DevicesPage = lazy(() => import('@/pages/DevicesPage').then((m) => ({ defa
 const PhoneNumbersPage = lazy(() => import('@/pages/PhoneNumbersPage').then((m) => ({ default: m.PhoneNumbersPage })))
 const LineBindingsPage = lazy(() => import('@/pages/LineBindingsPage').then((m) => ({ default: m.LineBindingsPage })))
 const TenantsPage = lazy(() => import('@/pages/TenantsPage').then((m) => ({ default: m.TenantsPage })))
+const LocationsPage = lazy(() => import('@/pages/LocationsPage').then((m) => ({ default: m.LocationsPage })))
 const ActiveCallsPage = lazy(() => import('@/pages/ActiveCallsPage').then((m) => ({ default: m.ActiveCallsPage })))
 const CDRsPage = lazy(() => import('@/pages/CDRsPage').then((m) => ({ default: m.CDRsPage })))
 const QueuesPage = lazy(() => import('@/pages/QueuesPage').then((m) => ({ default: m.QueuesPage })))
@@ -105,6 +106,7 @@ export function App() {
               <Route path="phone-numbers" element={<Suspense fallback={<PageLoader />}><PhoneNumbersPage /></Suspense>} />
               <Route path="line-bindings" element={<Suspense fallback={<PageLoader />}><LineBindingsPage /></Suspense>} />
               <Route path="tenants" element={<Suspense fallback={<PageLoader />}><TenantsPage /></Suspense>} />
+              <Route path="locations" element={<Suspense fallback={<PageLoader />}><LocationsPage /></Suspense>} />
               {/* Operations */}
               <Route path="registrations" element={<Suspense fallback={<PageLoader />}><RegistrationsPage /></Suspense>} />
               <Route path="calls" element={<Suspense fallback={<PageLoader />}><ActiveCallsPage /></Suspense>} />

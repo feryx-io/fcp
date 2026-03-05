@@ -13,6 +13,7 @@ export interface User {
   department: string | null
   job_title: string | null
   location: string | null
+  location_id: string | null
   language: string
   timezone: string
   account_status: AccountStatus
@@ -37,6 +38,7 @@ export interface CreateUserRequest {
   department?: string
   job_title?: string
   location?: string
+  location_id?: string
   pin?: string
 }
 
@@ -49,6 +51,7 @@ export interface UpdateUserRequest {
   department?: string
   job_title?: string
   location?: string
+  location_id?: string
   enabled?: boolean
   account_status?: string
 }
@@ -87,6 +90,7 @@ export interface Extension {
   tenant_id: string
   display_name: string | null
   user_id: string | null
+  location_id: string | null
   type: string
   enabled: boolean
   created_at: string
@@ -97,6 +101,7 @@ export interface CreateExtensionRequest {
   tenant_id?: string
   display_name?: string
   user_id?: string
+  location_id?: string
   type?: string
 }
 
@@ -119,6 +124,7 @@ export interface Device {
   supports_blf: boolean
   codec_support: string[]
   location: string | null
+  location_id: string | null
   provisioning_url: string | null
   config_template_id: string | null
   enabled: boolean
@@ -138,6 +144,7 @@ export interface CreateDeviceRequest {
   supports_video?: boolean
   supports_blf?: boolean
   location?: string
+  location_id?: string
 }
 
 export interface PhoneNumber {
@@ -900,6 +907,50 @@ export interface UpdateForwardingRequest {
   forward_on_busy?: string
   forward_on_no_answer?: string
   no_answer_timeout_secs?: number
+}
+
+// Locations
+export interface Location {
+  id: string
+  tenant_id: string
+  name: string
+  description: string | null
+  address_line1: string | null
+  address_line2: string | null
+  city: string | null
+  state: string | null
+  postal_code: string | null
+  country: string | null
+  floor: string | null
+  building: string | null
+  latitude: number | null
+  longitude: number | null
+  phone_number: string | null
+  timezone: string | null
+  emergency_contact_name: string | null
+  emergency_contact_phone: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateLocationRequest {
+  name: string
+  tenant_id?: string
+  description?: string
+  address_line1?: string
+  address_line2?: string
+  city?: string
+  state?: string
+  postal_code?: string
+  country?: string
+  floor?: string
+  building?: string
+  latitude?: number
+  longitude?: number
+  phone_number?: string
+  timezone?: string
+  emergency_contact_name?: string
+  emergency_contact_phone?: string
 }
 
 // SBC Quality Metrics

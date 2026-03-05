@@ -21,8 +21,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { users } from '@/api/endpoints'
-import type { User, CreateUserRequest, UpdateUserRequest } from '@/types'
+import { users, locations } from '@/api/endpoints'
+import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -32,6 +32,7 @@ const createUserSchema = z.object({
   role: z.string().optional(),
   extension: z.string().optional(),
   department: z.string().optional(),
+  location_id: z.string().optional(),
 })
 
 const editUserSchema = z.object({
@@ -40,6 +41,7 @@ const editUserSchema = z.object({
   role: z.string().optional(),
   extension: z.string().optional(),
   department: z.string().optional(),
+  location_id: z.string().optional(),
   account_status: z.string().optional(),
 })
 
@@ -98,6 +100,17 @@ export function UsersPage() {
     queryKey: ['users'],
     queryFn: users.list,
   })
+
+  const { data: locationList = [] } = useQuery({
+    queryKey: ['locations'],
+    queryFn: locations.list,
+  })
+
+  const locationName = (id: string | null) => {
+    if (!id) return '-'
+    const loc = locationList.find((l: Location) => l.id === id)
+    return loc ? loc.name : id
+  }
 
   const createMutation = useMutation({
     mutationFn: users.create,
@@ -195,6 +208,11 @@ export function UsersPage() {
       cell: ({ row }) => row.original.extension || '-',
     },
     {
+      accessorKey: 'location_id',
+      header: 'Location',
+      cell: ({ row }) => locationName(row.original.location_id),
+    },
+    {
       id: 'actions',
       cell: ({ row }) => (
         <DropdownMenu>
@@ -274,6 +292,7 @@ export function UsersPage() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         mutation={createMutation}
+        locationList={locationList}
       />
 
       {/* Edit User Dialog */}
@@ -281,6 +300,7 @@ export function UsersPage() {
         user={editUser}
         onOpenChange={(open) => { if (!open) setEditUser(null) }}
         mutation={updateMutation}
+        locationList={locationList}
       />
 
       {/* Change Password Dialog */}
@@ -312,10 +332,12 @@ function CreateUserDialog({
   open,
   onOpenChange,
   mutation,
+  locationList,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   mutation: ReturnType<typeof useMutation<User, Error, Parameters<typeof users.create>[0]>>
+  locationList: Location[]
 }) {
   const {
     register,
@@ -335,6 +357,7 @@ function CreateUserDialog({
       display_name: data.display_name || undefined,
       extension: data.extension || undefined,
       department: data.department || undefined,
+      location_id: data.location_id || undefined,
     })
   }
 
@@ -389,6 +412,18 @@ function CreateUserDialog({
               <Input id="create-department" {...register('department')} />
             </div>
           </div>
+          <div className="space-y-2">
+            <Label>Location</Label>
+            <Select onValueChange={(v) => setValue('location_id', v === '__none__' ? '' : v)}>
+              <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">None</SelectItem>
+                {locationList.map((loc: Location) => (
+                  <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={mutation.isPending}>
@@ -408,10 +443,12 @@ function EditUserDialog({
   user,
   onOpenChange,
   mutation,
+  locationList,
 }: {
   user: User | null
   onOpenChange: (open: boolean) => void
   mutation: ReturnType<typeof useMutation<unknown, Error, { username: string; data: EditUserForm }>>
+  locationList: Location[]
 }) {
   const {
     register,
@@ -433,6 +470,7 @@ function EditUserDialog({
       role: user.role || '',
       extension: user.extension || '',
       department: user.department || '',
+      location_id: user.location_id || '',
       account_status: user.account_status || 'active',
     })
   }
@@ -447,6 +485,7 @@ function EditUserDialog({
         display_name: data.display_name || undefined,
         extension: data.extension || undefined,
         department: data.department || undefined,
+        location_id: data.location_id || undefined,
       },
     })
   }
@@ -504,6 +543,18 @@ function EditUserDialog({
               <Label htmlFor="edit-department">Department</Label>
               <Input id="edit-department" {...register('department')} />
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Location</Label>
+            <Select defaultValue={user?.location_id || '__none__'} onValueChange={(v) => setValue('location_id', v === '__none__' ? '' : v)}>
+              <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">None</SelectItem>
+                {locationList.map((loc: Location) => (
+                  <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -581,7 +632,7 @@ function ChangePasswordDialog({
 
 // --- CSV Export / Import Helpers ---
 
-const EXPORT_COLUMNS = ['username', 'display_name', 'email', 'role', 'extension', 'department', 'account_status'] as const
+const EXPORT_COLUMNS = ['username', 'display_name', 'email', 'role', 'extension', 'department', 'location_id', 'account_status'] as const
 
 function escapeCSVField(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -605,7 +656,7 @@ function exportUsers(userList: User[]) {
   URL.revokeObjectURL(url)
 }
 
-const IMPORT_COLUMNS = ['username', 'password', 'display_name', 'email', 'role', 'extension', 'department'] as const
+const IMPORT_COLUMNS = ['username', 'password', 'display_name', 'email', 'role', 'extension', 'department', 'location_id'] as const
 const KNOWN_ROLES = ['end_user', 'read_only', 'department_admin', 'user_admin', 'telecom_admin', 'super_admin']
 
 interface ParsedRow {
@@ -829,6 +880,7 @@ function BulkImportDialog({
       else updateData.role = 'end_user'
       if (row.data.extension?.trim()) updateData.extension = row.data.extension.trim()
       if (row.data.department?.trim()) updateData.department = row.data.department.trim()
+      if (row.data.location_id?.trim()) updateData.location_id = row.data.location_id.trim()
 
       try {
         const req: CreateUserRequest = { username, password, ...updateData }

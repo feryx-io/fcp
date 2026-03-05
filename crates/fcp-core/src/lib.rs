@@ -26,6 +26,7 @@ pub mod routing_engine;
 pub mod service;
 pub mod sip_handler;
 pub mod sip_trace;
+pub mod site_location;
 pub mod storage;
 pub mod tenant;
 pub mod time;
@@ -75,7 +76,7 @@ pub use crate::sip_handler::{
     InviteContext, InviteHandler, InviteResponse, SipError, SipResponseCode, SipResult,
 };
 pub use crate::storage::{
-    AccountStatus, ApiToken, ApiTokenStore, CallDetailRecord, CallDisposition, CdrQuery, CdrStore,
+    AccountStatus, ApiToken, ApiTokenStore, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, SiteLocationStore,
     ClusterParkedCall, ClusterParkingStore, ConferenceStore, CredentialStore, DynStorage,
     EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences, PresenceStore,
     QueueStore, Registration, RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
@@ -92,6 +93,7 @@ pub use crate::config_store::{
     AuditEntry, ConfigEntry, ConfigStore, ConfigWatcher, get_config_with_tenant_fallback,
     load_or_seed_config, spawn_config_poll_loop,
 };
+pub use crate::site_location::SiteLocation;
 pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
 pub use crate::voicemail::{
     GreetingType, MessagePriority, MessageStatus, MwiNotifier, MwiStatus, VoicemailGreeting,

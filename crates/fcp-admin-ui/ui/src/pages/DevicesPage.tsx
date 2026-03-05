@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { devices } from '@/api/endpoints'
+import { devices, locations } from '@/api/endpoints'
 import type { Device, CreateDeviceRequest } from '@/types'
 
 const createSchema = z.object({
@@ -27,6 +27,7 @@ const createSchema = z.object({
   mac_address: z.string().optional(),
   model: z.string().optional(),
   location: z.string().optional(),
+  location_id: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -36,6 +37,7 @@ const editSchema = z.object({
   model: z.string().optional(),
   firmware_version: z.string().optional(),
   location: z.string().optional(),
+  location_id: z.string().optional(),
   enabled: z.boolean().optional(),
 })
 
@@ -61,6 +63,17 @@ export function DevicesPage() {
     queryKey: ['devices'],
     queryFn: devices.list,
   })
+
+  const { data: locationList = [] } = useQuery({
+    queryKey: ['locations'],
+    queryFn: locations.list,
+  })
+
+  const locationName = (id: string | null) => {
+    if (!id) return '-'
+    const loc = locationList.find((l) => l.id === id)
+    return loc ? loc.name : id
+  }
 
   const createMutation = useMutation({
     mutationFn: devices.create,
@@ -127,6 +140,11 @@ export function DevicesPage() {
       ),
     },
     {
+      accessorKey: 'location_id',
+      header: 'Location',
+      cell: ({ row }) => locationName(row.original.location_id),
+    },
+    {
       accessorKey: 'enabled',
       header: 'Status',
       cell: ({ row }) => (
@@ -178,6 +196,7 @@ export function DevicesPage() {
       model: editItem.model || '',
       firmware_version: editItem.firmware_version || '',
       location: editItem.location || '',
+      location_id: editItem.location_id || '',
       enabled: editItem.enabled,
     })
   }
@@ -190,6 +209,7 @@ export function DevicesPage() {
       mac_address: data.mac_address || undefined,
       model: data.model || undefined,
       location: data.location || undefined,
+      location_id: data.location_id || undefined,
     })
   }
 
@@ -204,6 +224,7 @@ export function DevicesPage() {
         model: data.model || undefined,
         firmware_version: data.firmware_version || undefined,
         location: data.location || undefined,
+        location_id: data.location_id || undefined,
         enabled: data.enabled,
       },
     })
@@ -286,6 +307,18 @@ export function DevicesPage() {
               <Label htmlFor="c-location">Location</Label>
               <Input id="c-location" placeholder="e.g., Floor 2, Room 201" {...createForm.register('location')} />
             </div>
+            <div className="space-y-2">
+              <Label>Site Location</Label>
+              <Select onValueChange={(v) => createForm.setValue('location_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {locationList.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -335,6 +368,18 @@ export function DevicesPage() {
               <Label htmlFor="e-location">Location</Label>
               <Input id="e-location" {...editForm.register('location')} />
             </div>
+            <div className="space-y-2">
+              <Label>Site Location</Label>
+              <Select defaultValue={editItem?.location_id || '__none__'} onValueChange={(v) => editForm.setValue('location_id', v === '__none__' ? '' : v)}>
+                <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {locationList.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>
               <Button type="submit" disabled={updateMutation.isPending}>
@@ -361,7 +406,7 @@ export function DevicesPage() {
 
 // --- CSV Export / Import Helpers ---
 
-const EXPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location', 'enabled'] as const
+const EXPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location', 'location_id', 'enabled'] as const
 
 function escapeCSVField(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
@@ -385,7 +430,7 @@ function exportDevices(deviceList: Device[]) {
   URL.revokeObjectURL(url)
 }
 
-const IMPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location'] as const
+const IMPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location', 'location_id'] as const
 const KNOWN_DEVICE_TYPES = ['desk_phone', 'softphone', 'webrtc', 'conference_room', 'ata', 'gateway', 'mobile', 'other']
 
 interface ParsedRow {
@@ -605,6 +650,7 @@ function BulkImportDialog({
       if (row.data.model?.trim()) createData.model = row.data.model.trim()
       if (row.data.sip_uri?.trim()) createData.sip_uri = row.data.sip_uri.trim()
       if (row.data.location?.trim()) createData.location = row.data.location.trim()
+      if (row.data.location_id?.trim()) createData.location_id = row.data.location_id.trim()
 
       try {
         await devices.create(createData)
