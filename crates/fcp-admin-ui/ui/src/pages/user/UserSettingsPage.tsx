@@ -9,7 +9,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import {
-  Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { Moon, Sun, Monitor, Camera, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -17,32 +17,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { me } from '@/api/endpoints'
 import type { MeProfile } from '@/types'
-
-const TIMEZONES: { value: string; label: string }[] = [
-  { value: 'Pacific/Honolulu', label: '(UTC-10:00) Hawaii' },
-  { value: 'America/Anchorage', label: '(UTC-09:00) Alaska' },
-  { value: 'America/Los_Angeles', label: '(UTC-08:00) Pacific Time' },
-  { value: 'America/Denver', label: '(UTC-07:00) Mountain Time' },
-  { value: 'America/Chicago', label: '(UTC-06:00) Central Time' },
-  { value: 'America/New_York', label: '(UTC-05:00) Eastern Time' },
-  { value: 'America/Halifax', label: '(UTC-04:00) Atlantic Time' },
-  { value: 'America/St_Johns', label: '(UTC-03:30) Newfoundland' },
-  { value: 'America/Sao_Paulo', label: '(UTC-03:00) Brasilia' },
-  { value: 'Atlantic/Cape_Verde', label: '(UTC-01:00) Cape Verde' },
-  { value: 'Europe/London', label: '(UTC+00:00) London' },
-  { value: 'Europe/Paris', label: '(UTC+01:00) Paris / Berlin' },
-  { value: 'Europe/Helsinki', label: '(UTC+02:00) Helsinki / Bucharest' },
-  { value: 'Europe/Moscow', label: '(UTC+03:00) Moscow' },
-  { value: 'Asia/Dubai', label: '(UTC+04:00) Dubai' },
-  { value: 'Asia/Karachi', label: '(UTC+05:00) Karachi' },
-  { value: 'Asia/Kolkata', label: '(UTC+05:30) India' },
-  { value: 'Asia/Dhaka', label: '(UTC+06:00) Dhaka' },
-  { value: 'Asia/Bangkok', label: '(UTC+07:00) Bangkok' },
-  { value: 'Asia/Shanghai', label: '(UTC+08:00) Shanghai / Singapore' },
-  { value: 'Asia/Tokyo', label: '(UTC+09:00) Tokyo' },
-  { value: 'Australia/Sydney', label: '(UTC+10:00) Sydney' },
-  { value: 'Pacific/Auckland', label: '(UTC+12:00) Auckland' },
-]
+import { TIMEZONE_GROUPS } from '@/constants/timezones'
 
 const LANGUAGES: { value: string; label: string }[] = [
   { value: 'en-US', label: 'English (US)' },
@@ -443,11 +418,14 @@ export function UserSettingsPage() {
                     <SelectValue placeholder="Select timezone" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectGroup>
-                      {TIMEZONES.map((tz) => (
-                        <SelectItem key={tz.value} value={tz.value}>{tz.label}</SelectItem>
-                      ))}
-                    </SelectGroup>
+                    {TIMEZONE_GROUPS.map((group) => (
+                      <SelectGroup key={group.region}>
+                        <SelectLabel>{group.region}</SelectLabel>
+                        {group.zones.map((tz) => (
+                          <SelectItem key={tz.value} value={tz.value}>{tz.label}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
