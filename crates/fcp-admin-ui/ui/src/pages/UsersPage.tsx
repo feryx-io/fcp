@@ -836,9 +836,9 @@ function BulkImportDialog({
         created++
         setImportedCount(created)
         setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success' } : r))
-      } catch (createErr) {
-        const createMsg = createErr instanceof Error ? createErr.message : ''
-        const isConflict = createMsg.toLowerCase().includes('already exists') || createMsg.includes('409') || createMsg.toLowerCase().includes('conflict')
+      } catch (createErr: unknown) {
+        const createMsg = createErr instanceof Error ? createErr.message : 'Unknown error'
+        const isConflict = (createErr as { status?: number }).status === 409
 
         if (overrideExisting && isConflict) {
           try {
