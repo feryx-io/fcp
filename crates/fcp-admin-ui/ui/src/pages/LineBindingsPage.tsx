@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, X } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, X, Voicemail } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -62,6 +62,9 @@ const editSchema = z.object({
   forward_on_busy: z.string().optional(),
   forward_on_no_answer: z.string().optional(),
   forward_unconditional: z.string().optional(),
+  vm_forward_unconditional: z.boolean().optional(),
+  vm_forward_on_busy: z.boolean().optional(),
+  vm_forward_on_no_answer: z.boolean().optional(),
   outbound_caller_id: z.string().optional(),
   outbound_cnam: z.string().optional(),
 })
@@ -224,9 +227,12 @@ export function LineBindingsPage() {
     editForm.reset({
       ring_strategy: editItem.ring_strategy,
       no_answer_timeout_secs: editItem.no_answer_timeout_secs,
-      forward_on_busy: editItem.forward_on_busy || '',
-      forward_on_no_answer: editItem.forward_on_no_answer || '',
-      forward_unconditional: editItem.forward_unconditional || '',
+      vm_forward_unconditional: editItem.forward_unconditional?.toLowerCase() === 'voicemail',
+      forward_unconditional: editItem.forward_unconditional?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_unconditional || ''),
+      vm_forward_on_busy: editItem.forward_on_busy?.toLowerCase() === 'voicemail',
+      forward_on_busy: editItem.forward_on_busy?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_on_busy || ''),
+      vm_forward_on_no_answer: editItem.forward_on_no_answer?.toLowerCase() === 'voicemail',
+      forward_on_no_answer: editItem.forward_on_no_answer?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_on_no_answer || ''),
       outbound_caller_id: editItem.outbound_caller_id || '',
       outbound_cnam: editItem.outbound_cnam || '',
     })
@@ -253,9 +259,9 @@ export function LineBindingsPage() {
         ring_strategy: data.ring_strategy || undefined,
         no_answer_timeout_secs: data.no_answer_timeout_secs,
         devices: validDevices,
-        forward_on_busy: data.forward_on_busy || undefined,
-        forward_on_no_answer: data.forward_on_no_answer || undefined,
-        forward_unconditional: data.forward_unconditional || undefined,
+        forward_unconditional: data.vm_forward_unconditional ? 'voicemail' : (data.forward_unconditional || undefined),
+        forward_on_busy: data.vm_forward_on_busy ? 'voicemail' : (data.forward_on_busy || undefined),
+        forward_on_no_answer: data.vm_forward_on_no_answer ? 'voicemail' : (data.forward_on_no_answer || undefined),
         outbound_caller_id: data.outbound_caller_id || undefined,
         outbound_cnam: data.outbound_cnam || undefined,
       },
@@ -499,15 +505,69 @@ export function LineBindingsPage() {
               <div className="space-y-3">
                 <div className="space-y-2">
                   <Label htmlFor="e-forward_unconditional">Forward Unconditional</Label>
-                  <Input id="e-forward_unconditional" placeholder="voicemail, extension, or SIP URI" {...editForm.register('forward_unconditional')} />
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editForm.watch('vm_forward_unconditional') || false}
+                      onChange={(e) => {
+                        editForm.setValue('vm_forward_unconditional', e.target.checked)
+                        if (e.target.checked) editForm.setValue('forward_unconditional', '')
+                      }}
+                    />
+                    <Voicemail className="h-4 w-4 text-muted-foreground" />
+                    Send to voicemail
+                  </label>
+                  <Input
+                    id="e-forward_unconditional"
+                    placeholder="Extension or SIP URI"
+                    disabled={editForm.watch('vm_forward_unconditional') || false}
+                    className={editForm.watch('vm_forward_unconditional') ? 'opacity-50' : ''}
+                    {...editForm.register('forward_unconditional')}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="e-forward_on_no_answer">Forward on No Answer</Label>
-                  <Input id="e-forward_on_no_answer" placeholder="voicemail, extension, or SIP URI" {...editForm.register('forward_on_no_answer')} />
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editForm.watch('vm_forward_on_no_answer') || false}
+                      onChange={(e) => {
+                        editForm.setValue('vm_forward_on_no_answer', e.target.checked)
+                        if (e.target.checked) editForm.setValue('forward_on_no_answer', '')
+                      }}
+                    />
+                    <Voicemail className="h-4 w-4 text-muted-foreground" />
+                    Send to voicemail
+                  </label>
+                  <Input
+                    id="e-forward_on_no_answer"
+                    placeholder="Extension or SIP URI"
+                    disabled={editForm.watch('vm_forward_on_no_answer') || false}
+                    className={editForm.watch('vm_forward_on_no_answer') ? 'opacity-50' : ''}
+                    {...editForm.register('forward_on_no_answer')}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="e-forward_on_busy">Forward on Busy</Label>
-                  <Input id="e-forward_on_busy" placeholder="voicemail, extension, or SIP URI" {...editForm.register('forward_on_busy')} />
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editForm.watch('vm_forward_on_busy') || false}
+                      onChange={(e) => {
+                        editForm.setValue('vm_forward_on_busy', e.target.checked)
+                        if (e.target.checked) editForm.setValue('forward_on_busy', '')
+                      }}
+                    />
+                    <Voicemail className="h-4 w-4 text-muted-foreground" />
+                    Send to voicemail
+                  </label>
+                  <Input
+                    id="e-forward_on_busy"
+                    placeholder="Extension or SIP URI"
+                    disabled={editForm.watch('vm_forward_on_busy') || false}
+                    className={editForm.watch('vm_forward_on_busy') ? 'opacity-50' : ''}
+                    {...editForm.register('forward_on_busy')}
+                  />
                 </div>
               </div>
             </div>
