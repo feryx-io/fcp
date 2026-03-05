@@ -1475,7 +1475,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
         fcp_media::TtsConfig {
             provider: fcp_media::TtsProviderConfig::Local {
                 engine: engine.clone(),
-                executable_path: None,
+                executable_path: config.media.tts_python.as_ref().map(std::path::PathBuf::from),
             },
             cache_dir: std::path::PathBuf::from(&config.media.tts_cache_dir),
             cache_max_size_mb: 500,

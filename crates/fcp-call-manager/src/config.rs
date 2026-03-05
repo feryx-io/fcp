@@ -392,6 +392,10 @@ pub struct MediaSection {
     /// TTS cache directory for generated audio files
     #[serde(default = "default_tts_cache_dir")]
     pub tts_cache_dir: String,
+
+    /// Path to Python interpreter for local TTS (e.g., ".venv/bin/python3")
+    #[serde(default)]
+    pub tts_python: Option<String>,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -420,6 +424,7 @@ impl Default for MediaSection {
             tts_engine: None,
             tts_voice: None,
             tts_cache_dir: default_tts_cache_dir(),
+            tts_python: None,
         }
     }
 }
