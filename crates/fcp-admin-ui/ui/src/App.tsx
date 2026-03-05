@@ -33,6 +33,7 @@ const AuditLogPage = lazy(() => import('@/pages/AuditLogPage').then((m) => ({ de
 const ApiTokensPage = lazy(() => import('@/pages/ApiTokensPage').then((m) => ({ default: m.ApiTokensPage })))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const SystemSettingsPage = lazy(() => import('@/pages/SystemSettingsPage').then((m) => ({ default: m.SystemSettingsPage })))
+const PromptsPage = lazy(() => import('@/pages/PromptsPage').then((m) => ({ default: m.PromptsPage })))
 const SipLadderPage = lazy(() => import('@/pages/SipLadderPage').then((m) => ({ default: m.SipLadderPage })))
 
 // User portal pages
@@ -114,6 +115,7 @@ export function App() {
               <Route path="queues" element={<Suspense fallback={<PageLoader />}><QueuesPage /></Suspense>} />
               <Route path="voicemail" element={<Suspense fallback={<PageLoader />}><VoicemailPage /></Suspense>} />
               <Route path="presence" element={<Suspense fallback={<PageLoader />}><PresencePage /></Suspense>} />
+              <Route path="prompts" element={<Suspense fallback={<PageLoader />}><PromptsPage /></Suspense>} />
               <Route path="events" element={<Suspense fallback={<PageLoader />}><EventsPage /></Suspense>} />
               {/* Advanced */}
               <Route path="trunks" element={<Suspense fallback={<PageLoader />}><TrunksPage /></Suspense>} />

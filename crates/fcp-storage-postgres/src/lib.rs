@@ -29,6 +29,7 @@
 
 pub mod api_token;
 pub mod config;
+pub mod prompt;
 pub mod sip_trace;
 
 use anyhow::{Context, Result};

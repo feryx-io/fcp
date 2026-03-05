@@ -644,6 +644,49 @@ async fn main() -> Result<()> {
         config.media.rtp_port_start,
     )
     .with_voicemail_service(Arc::clone(&voicemail_service));
+
+    // 17e. Create PromptService for system prompt resolution (WAV file → TTS fallback)
+    let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {
+        let default_tenant_id = fcp_core::TenantId::from_uuid(uuid::Uuid::nil());
+        let prompt_service = Arc::new(fcp_core::PromptService::new(
+            Arc::clone(prompt_store),
+            default_tenant_id.clone(),
+            "en-US",
+        ));
+
+        // Seed system prompts at startup
+        let system_prompts = vec![
+            ("vm_enter_pin", "PIN entry prompt", "Enter your PIN followed by pound."),
+            ("vm_incorrect_pin", "Wrong PIN", "Incorrect PIN. Please try again."),
+            ("vm_auth_failed", "Auth failure", "Authentication failed. Goodbye."),
+            ("vm_post_message_menu", "Message controls", "Press 1 to replay. Press 2 to save. Press 3 to delete. Press 4 for next message. Press star for main menu."),
+            ("vm_message_saved", "Confirmation", "Message saved."),
+            ("vm_message_deleted", "Confirmation", "Message deleted."),
+            ("vm_end_of_messages", "End of list", "End of messages."),
+            ("vm_goodbye", "Goodbye", "Goodbye."),
+        ];
+
+        for (name, description, tts_text) in &system_prompts {
+            let mut prompt = fcp_core::Prompt::new_tts(
+                default_tenant_id.clone(),
+                *name,
+                fcp_core::PromptCategory::System,
+                "en-US",
+                *tts_text,
+            );
+            prompt.description = Some(description.to_string());
+            prompt.is_system = true;
+            if let Err(e) = prompt_store.put_prompt(prompt).await {
+                warn!(name = name, error = %e, "Failed to seed system prompt");
+            }
+        }
+        info!("Seeded {} system prompts", system_prompts.len());
+
+        flow_handler.with_prompt_service(prompt_service)
+    } else {
+        warn!("No prompt store configured — IVR will use TTS fallback only");
+        flow_handler
+    };
     let flow_handler = Arc::new(flow_handler);
 
     let mut handler = SipMessageHandler::new(

@@ -90,6 +90,9 @@ pub struct ApiState {
     /// Directory for profile picture uploads
     pub profile_pictures_dir: Option<PathBuf>,
 
+    /// Directory for audio prompt files (used by prompt upload/download endpoints)
+    pub prompts_dir: Option<PathBuf>,
+
     /// Security policy for login protection (lockout, password expiration)
     pub security_policy: SecurityPolicy,
 }
@@ -128,6 +131,7 @@ impl ApiState {
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
             profile_pictures_dir: None,
+            prompts_dir: None,
             security_policy: SecurityPolicy::default(),
         }
     }
@@ -159,6 +163,12 @@ impl ApiState {
     /// Set the profile pictures directory.
     pub fn with_profile_pictures_dir(mut self, dir: PathBuf) -> Self {
         self.profile_pictures_dir = Some(dir);
+        self
+    }
+
+    /// Set the prompts directory for audio prompt files.
+    pub fn with_prompts_dir(mut self, dir: PathBuf) -> Self {
+        self.prompts_dir = Some(dir);
         self
     }
 

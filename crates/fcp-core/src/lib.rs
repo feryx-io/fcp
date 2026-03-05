@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod permissions;
 pub mod phone_number;
 pub mod porting;
+pub mod prompt;
 pub mod routing;
 pub mod routing_engine;
 pub mod service;
@@ -83,6 +84,7 @@ pub use crate::storage::{
     StoredSubscription, TenantStore, User, UserFileEntry, WebhookDeliveryLog, WebhookEndpoint,
     WebhookStore,
 };
+pub use crate::prompt::{Prompt, PromptCategory, PromptService, PromptSourceType, PromptStore};
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,

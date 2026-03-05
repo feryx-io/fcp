@@ -16,6 +16,7 @@ pub mod media;
 pub mod metrics;
 pub mod phone_numbers;
 pub mod presence;
+pub mod prompts;
 pub mod queues;
 pub mod registrations;
 pub mod self_service;
@@ -232,6 +233,21 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/config/:service/:section/validate",
             post(config::validate_config),
+        )
+        // Audio Prompts
+        .route(
+            "/prompts",
+            get(prompts::list_prompts).post(prompts::create_prompt),
+        )
+        .route(
+            "/prompts/:id",
+            get(prompts::get_prompt)
+                .put(prompts::update_prompt)
+                .delete(prompts::delete_prompt),
+        )
+        .route(
+            "/prompts/:id/audio",
+            get(prompts::download_audio).post(prompts::upload_audio),
         )
         // Voicemail
         .route(

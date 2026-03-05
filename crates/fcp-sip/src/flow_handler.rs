@@ -82,6 +82,9 @@ pub struct FlowCallHandler {
 
     /// Voicemail service for recording voicemail messages
     voicemail_service: Option<Arc<VoicemailService>>,
+
+    /// Prompt service for resolving system prompts to audio files
+    prompt_service: Option<Arc<fcp_core::PromptService>>,
 }
 
 impl FlowCallHandler {
@@ -107,6 +110,7 @@ impl FlowCallHandler {
             local_addr: None,
             rtp_port: 8000,
             voicemail_service: None,
+            prompt_service: None,
         }
     }
 
@@ -154,6 +158,12 @@ impl FlowCallHandler {
     /// Set the voicemail service (for Voicemail flow nodes).
     pub fn with_voicemail_service(mut self, voicemail_service: Arc<VoicemailService>) -> Self {
         self.voicemail_service = Some(voicemail_service);
+        self
+    }
+
+    /// Set the prompt service (for resolving system prompts to audio files).
+    pub fn with_prompt_service(mut self, prompt_service: Arc<fcp_core::PromptService>) -> Self {
+        self.prompt_service = Some(prompt_service);
         self
     }
 
@@ -1174,8 +1184,39 @@ impl FlowCallHandler {
             "Resolved voicemail access target"
         );
 
-        // Helper: play TTS prompt and wait for completion
-        let play_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, text: String| {
+        // Helper: play a named system prompt — tries WAV file first, falls back to TTS
+        let prompt_service = self.prompt_service.clone();
+        let play_system_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, prompt_name: &str, fallback_text: String| {
+            let mm = Arc::clone(mm);
+            let cid = cid.clone();
+            let ps = prompt_service.clone();
+            let prompt_name = prompt_name.to_string();
+            async move {
+                // 1. Try cached WAV file via PromptService
+                if let Some(ref ps) = ps {
+                    if let Ok(Some(path)) = ps.resolve(&prompt_name, None).await {
+                        match mm.play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both).await {
+                            Ok(playback_id) => { let _ = mm.wait_playback_completion(playback_id).await; return; }
+                            Err(e) => { warn!(error = %e, prompt = %prompt_name, "Prompt file playback failed, trying TTS"); }
+                        }
+                    }
+                }
+                // 2. TTS fallback
+                match mm.play_tts(&cid, fallback_text, "en-US".to_string(), None, AudioTarget::Both).await {
+                    Ok(playback_id) => {
+                        let _ = mm.wait_playback_completion(playback_id).await;
+                        // 3. Cache TTS result back to prompt DB
+                        if let Some(ref ps) = ps {
+                            let _ = ps.cache_tts_audio(&prompt_name, "en-US", std::path::PathBuf::new(), 0).await;
+                        }
+                    }
+                    Err(e) => { warn!(error = %e, "TTS playback failed"); }
+                }
+            }
+        };
+
+        // Helper: play dynamic content (always TTS — uses TtsService's built-in LRU cache)
+        let play_dynamic = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, text: String| {
             let mm = Arc::clone(mm);
             let cid = cid.clone();
             async move {
@@ -1214,7 +1255,7 @@ impl FlowCallHandler {
         let mut authenticated = false;
         for attempt in 1..=max_pin_attempts {
             // Play PIN prompt
-            play_prompt(&mm, &media_call_id, "Enter your PIN followed by pound".to_string()).await;
+            play_system_prompt(&mm, &media_call_id, "vm_enter_pin", "Enter your PIN followed by pound".to_string()).await;
 
             // Collect DTMF digits (finish on #, timeout 10s)
             let pin_digits = collect_digits(&mm, 0, Some('#'), 10).await;
@@ -1241,7 +1282,7 @@ impl FlowCallHandler {
                         max = max_pin_attempts,
                         "Incorrect PIN"
                     );
-                    play_prompt(&mm, &media_call_id, "Incorrect PIN. Please try again.".to_string()).await;
+                    play_system_prompt(&mm, &media_call_id, "vm_incorrect_pin", "Incorrect PIN. Please try again.".to_string()).await;
                 }
                 Err(e) => {
                     warn!(call_id = %call_id, error = %e, "PIN verification error");
@@ -1252,7 +1293,7 @@ impl FlowCallHandler {
 
         if !authenticated {
             info!(call_id = %call_id, "Voicemail access: auth failed");
-            play_prompt(&mm, &media_call_id, "Authentication failed. Goodbye.".to_string()).await;
+            play_system_prompt(&mm, &media_call_id, "vm_auth_failed", "Authentication failed. Goodbye.".to_string()).await;
 
             let mut context_guard = context.write().await;
             context_guard.set_variable("voicemail_access_status".to_string(), "auth_failed".to_string());
@@ -1273,8 +1314,8 @@ impl FlowCallHandler {
             let new_count = messages.iter().filter(|m| m.status == MessageStatus::New).count();
             let saved_count = messages.iter().filter(|m| m.status == MessageStatus::Saved).count();
 
-            // Play message count and menu
-            play_prompt(
+            // Play message count and menu (dynamic — depends on message counts)
+            play_dynamic(
                 &mm,
                 &media_call_id,
                 format!(
@@ -1303,7 +1344,7 @@ impl FlowCallHandler {
                 .collect();
 
             if filtered.is_empty() {
-                play_prompt(
+                play_dynamic(
                     &mm,
                     &media_call_id,
                     format!("No {} messages.", filter_status),
@@ -1327,8 +1368,8 @@ impl FlowCallHandler {
                     })
                     .unwrap_or_else(|_| "unknown time".to_string());
 
-                // Play envelope
-                play_prompt(
+                // Play envelope (dynamic — depends on message info)
+                play_dynamic(
                     &mm,
                     &media_call_id,
                     format!(
@@ -1345,9 +1386,10 @@ impl FlowCallHandler {
                 let _ = voicemail_service.play_message(&media_call_id, &msg.id).await;
 
                 // Post-message menu
-                play_prompt(
+                play_system_prompt(
                     &mm,
                     &media_call_id,
+                    "vm_post_message_menu",
                     "Press 1 to replay. Press 2 to save. Press 3 to delete. \
                      Press 4 for next message. Press star for main menu."
                         .to_string(),
@@ -1365,7 +1407,7 @@ impl FlowCallHandler {
                         if let Err(e) = voicemail_service.save_message(msg).await {
                             warn!(call_id = %call_id, error = %e, "Failed to save message");
                         } else {
-                            play_prompt(&mm, &media_call_id, "Message saved.".to_string()).await;
+                            play_system_prompt(&mm, &media_call_id, "vm_message_saved", "Message saved.".to_string()).await;
                         }
                         msg_idx += 1;
                     }
@@ -1374,7 +1416,7 @@ impl FlowCallHandler {
                         if let Err(e) = voicemail_service.delete_message(&msg.id).await {
                             warn!(call_id = %call_id, error = %e, "Failed to delete message");
                         } else {
-                            play_prompt(&mm, &media_call_id, "Message deleted.".to_string()).await;
+                            play_system_prompt(&mm, &media_call_id, "vm_message_deleted", "Message deleted.".to_string()).await;
                         }
                         msg_idx += 1;
                     }
@@ -1391,11 +1433,11 @@ impl FlowCallHandler {
             }
 
             // All messages played
-            play_prompt(&mm, &media_call_id, "End of messages.".to_string()).await;
+            play_system_prompt(&mm, &media_call_id, "vm_end_of_messages", "End of messages.".to_string()).await;
         }
 
         // 5. Exit — send MWI update and set success status
-        play_prompt(&mm, &media_call_id, "Goodbye.".to_string()).await;
+        play_system_prompt(&mm, &media_call_id, "vm_goodbye", "Goodbye.".to_string()).await;
         let _ = voicemail_service.send_mwi(&target_mailbox).await;
 
         let mut context_guard = context.write().await;

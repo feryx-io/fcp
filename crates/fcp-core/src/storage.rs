@@ -1944,6 +1944,7 @@ pub struct DynStorage {
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
+    prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
 }
 
 impl DynStorage {
@@ -1988,6 +1989,7 @@ impl DynStorage {
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
+            prompt_store: None,
         }
     }
 
@@ -2037,6 +2039,7 @@ impl DynStorage {
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
+            prompt_store: None,
         }
     }
 
@@ -2113,6 +2116,17 @@ impl DynStorage {
     /// Get the API token store, if one has been set.
     pub fn api_token_store(&self) -> Option<&Arc<dyn ApiTokenStore>> {
         self.api_token_store.as_ref()
+    }
+
+    /// Replace the prompt store with a specific implementation.
+    pub fn with_prompt_store(mut self, store: Arc<dyn crate::prompt::PromptStore>) -> Self {
+        self.prompt_store = Some(store);
+        self
+    }
+
+    /// Get the prompt store, if one has been set.
+    pub fn prompt_store(&self) -> Option<&Arc<dyn crate::prompt::PromptStore>> {
+        self.prompt_store.as_ref()
     }
 
     /// Get the site location store.

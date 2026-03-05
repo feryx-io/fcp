@@ -241,6 +241,69 @@ export const voicemail = {
     `/api/v1/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}/audio`,
 }
 
+// Audio Prompts
+export interface PromptResponse {
+  id: string
+  tenant_id: string
+  name: string
+  description: string | null
+  category: string
+  language: string
+  source_type: string
+  tts_text: string | null
+  tts_voice: string | null
+  audio_path: string | null
+  audio_format: string | null
+  duration_ms: number | null
+  file_size: number | null
+  is_system: boolean
+  has_audio: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface CreatePromptRequest {
+  name: string
+  description?: string
+  category?: string
+  language?: string
+  source_type?: string
+  tts_text?: string
+  tts_voice?: string
+}
+
+export interface UpdatePromptRequest {
+  description?: string
+  category?: string
+  tts_text?: string
+  tts_voice?: string
+}
+
+export const prompts = {
+  list: (params?: { category?: string; language?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.category) query.set('category', params.category)
+    if (params?.language) query.set('language', params.language)
+    const qs = query.toString()
+    return apiClient.get<PromptResponse[]>(`/prompts${qs ? `?${qs}` : ''}`)
+  },
+  get: (id: string) => apiClient.get<PromptResponse>(`/prompts/${id}`),
+  create: (data: CreatePromptRequest) => apiClient.post<PromptResponse>('/prompts', data),
+  update: (id: string, data: UpdatePromptRequest) => apiClient.put<PromptResponse>(`/prompts/${id}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/prompts/${id}`),
+  uploadAudio: async (id: string, audioFile: File) => {
+    const formData = new FormData()
+    formData.append('audio', audioFile)
+    const resp = await fetch(`/api/v1/prompts/${id}/audio`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
+    return resp.json() as Promise<PromptResponse>
+  },
+  audioUrl: (id: string) => `/api/v1/prompts/${id}/audio`,
+}
+
 // Presence (Phase 2)
 export const presence = {
   list: () => apiClient.get<PresenceResponse[]>('/presence'),
