@@ -4,9 +4,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Voicemail } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { me } from '@/api/endpoints'
 import type { MeForwarding } from '@/types'
+
+const VM_DEST = 'voicemail'
 
 interface ForwardingState {
   forward_unconditional: string
@@ -16,17 +19,26 @@ interface ForwardingState {
   fwd_all_enabled: boolean
   fwd_busy_enabled: boolean
   fwd_noanswer_enabled: boolean
+  vm_all: boolean
+  vm_busy: boolean
+  vm_noanswer: boolean
 }
 
 function stateFromBinding(b: MeForwarding): ForwardingState {
+  const isVmAll = b.forward_unconditional?.toLowerCase() === VM_DEST
+  const isVmBusy = b.forward_on_busy?.toLowerCase() === VM_DEST
+  const isVmNoAnswer = b.forward_on_no_answer?.toLowerCase() === VM_DEST
   return {
-    forward_unconditional: b.forward_unconditional || '',
-    forward_on_busy: b.forward_on_busy || '',
-    forward_on_no_answer: b.forward_on_no_answer || '',
+    forward_unconditional: isVmAll ? '' : (b.forward_unconditional || ''),
+    forward_on_busy: isVmBusy ? '' : (b.forward_on_busy || ''),
+    forward_on_no_answer: isVmNoAnswer ? '' : (b.forward_on_no_answer || ''),
     no_answer_timeout_secs: b.no_answer_timeout_secs,
     fwd_all_enabled: !!b.forward_unconditional,
     fwd_busy_enabled: !!b.forward_on_busy,
     fwd_noanswer_enabled: !!b.forward_on_no_answer,
+    vm_all: isVmAll,
+    vm_busy: isVmBusy,
+    vm_noanswer: isVmNoAnswer,
   }
 }
 
@@ -73,9 +85,9 @@ export function UserForwardingPage() {
 
     try {
       const updated = await me.updateForwarding(id, {
-        forward_unconditional: form.fwd_all_enabled ? form.forward_unconditional : '',
-        forward_on_busy: form.fwd_busy_enabled ? form.forward_on_busy : '',
-        forward_on_no_answer: form.fwd_noanswer_enabled ? form.forward_on_no_answer : '',
+        forward_unconditional: form.fwd_all_enabled ? (form.vm_all ? VM_DEST : form.forward_unconditional) : '',
+        forward_on_busy: form.fwd_busy_enabled ? (form.vm_busy ? VM_DEST : form.forward_on_busy) : '',
+        forward_on_no_answer: form.fwd_noanswer_enabled ? (form.vm_noanswer ? VM_DEST : form.forward_on_no_answer) : '',
         no_answer_timeout_secs: form.no_answer_timeout_secs,
       })
       setBindings((prev) => prev.map((b) => (b.id === id ? updated : b)))
@@ -147,11 +159,25 @@ export function UserForwardingPage() {
                     />
                   </div>
                   {form.fwd_all_enabled && (
-                    <Input
-                      placeholder="Destination (e.g., +15551234567)"
-                      value={form.forward_unconditional}
-                      onChange={(e) => updateForm(binding.id, { forward_unconditional: e.target.value })}
-                    />
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm">
+                        <input
+                          type="checkbox"
+                          checked={form.vm_all}
+                          onChange={(e) => updateForm(binding.id, { vm_all: e.target.checked })}
+                          className="rounded border-input"
+                        />
+                        <Voicemail className="h-4 w-4 text-muted-foreground" />
+                        Send to voicemail
+                      </label>
+                      <Input
+                        placeholder="Phone number or SIP URI"
+                        value={form.vm_all ? '' : form.forward_unconditional}
+                        onChange={(e) => updateForm(binding.id, { forward_unconditional: e.target.value })}
+                        disabled={form.vm_all}
+                        className={form.vm_all ? 'opacity-50' : ''}
+                      />
+                    </div>
                   )}
                 </div>
 
@@ -168,11 +194,25 @@ export function UserForwardingPage() {
                     />
                   </div>
                   {form.fwd_busy_enabled && (
-                    <Input
-                      placeholder="Destination (e.g., +15551234567)"
-                      value={form.forward_on_busy}
-                      onChange={(e) => updateForm(binding.id, { forward_on_busy: e.target.value })}
-                    />
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm">
+                        <input
+                          type="checkbox"
+                          checked={form.vm_busy}
+                          onChange={(e) => updateForm(binding.id, { vm_busy: e.target.checked })}
+                          className="rounded border-input"
+                        />
+                        <Voicemail className="h-4 w-4 text-muted-foreground" />
+                        Send to voicemail
+                      </label>
+                      <Input
+                        placeholder="Phone number or SIP URI"
+                        value={form.vm_busy ? '' : form.forward_on_busy}
+                        onChange={(e) => updateForm(binding.id, { forward_on_busy: e.target.value })}
+                        disabled={form.vm_busy}
+                        className={form.vm_busy ? 'opacity-50' : ''}
+                      />
+                    </div>
                   )}
                 </div>
 
@@ -190,10 +230,22 @@ export function UserForwardingPage() {
                   </div>
                   {form.fwd_noanswer_enabled && (
                     <div className="space-y-3">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm">
+                        <input
+                          type="checkbox"
+                          checked={form.vm_noanswer}
+                          onChange={(e) => updateForm(binding.id, { vm_noanswer: e.target.checked })}
+                          className="rounded border-input"
+                        />
+                        <Voicemail className="h-4 w-4 text-muted-foreground" />
+                        Send to voicemail
+                      </label>
                       <Input
-                        placeholder="Destination (e.g., +15551234567)"
-                        value={form.forward_on_no_answer}
+                        placeholder="Phone number or SIP URI"
+                        value={form.vm_noanswer ? '' : form.forward_on_no_answer}
                         onChange={(e) => updateForm(binding.id, { forward_on_no_answer: e.target.value })}
+                        disabled={form.vm_noanswer}
+                        className={form.vm_noanswer ? 'opacity-50' : ''}
                       />
                       <div className="space-y-1">
                         <Label className="text-xs">No-answer timeout (seconds)</Label>
