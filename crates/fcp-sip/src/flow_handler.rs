@@ -1201,16 +1201,12 @@ impl FlowCallHandler {
                         }
                     }
                 }
-                // 2. TTS fallback
+                // 2. TTS fallback (requires a TTS provider to be configured in the media backend)
                 match mm.play_tts(&cid, fallback_text, "en-US".to_string(), None, AudioTarget::Both).await {
                     Ok(playback_id) => {
                         let _ = mm.wait_playback_completion(playback_id).await;
-                        // 3. Cache TTS result back to prompt DB
-                        if let Some(ref ps) = ps {
-                            let _ = ps.cache_tts_audio(&prompt_name, "en-US", std::path::PathBuf::new(), 0).await;
-                        }
                     }
-                    Err(e) => { warn!(error = %e, "TTS playback failed"); }
+                    Err(e) => { warn!(error = %e, prompt = %prompt_name, "TTS fallback failed — upload a WAV file via Admin UI"); }
                 }
             }
         };

@@ -46,6 +46,10 @@ pub struct AdminConfig {
     #[serde(default)]
     pub profile_pictures_dir: Option<String>,
 
+    /// Directory for audio prompt files (IVR, voicemail, system prompts)
+    #[serde(default)]
+    pub prompts_dir: Option<String>,
+
     /// Security policy configuration (account lockout, password expiration)
     #[serde(default)]
     pub security: SecurityConfig,
@@ -97,6 +101,7 @@ impl Default for AdminConfig {
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
             profile_pictures_dir: None,
+            prompts_dir: None,
             security: SecurityConfig::default(),
         }
     }

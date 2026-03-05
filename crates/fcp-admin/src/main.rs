@@ -245,6 +245,13 @@ async fn main() -> Result<()> {
         api_state.with_voicemail_recordings_dir(std::path::PathBuf::from("/tmp/fcp/voicemail/recordings"))
     };
 
+    // Set audio prompts directory (default: /tmp/fcp/audio/prompts)
+    let api_state = if let Some(ref dir) = config.prompts_dir {
+        api_state.with_prompts_dir(std::path::PathBuf::from(dir))
+    } else {
+        api_state.with_prompts_dir(std::path::PathBuf::from("/tmp/fcp/audio/prompts"))
+    };
+
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
         match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
