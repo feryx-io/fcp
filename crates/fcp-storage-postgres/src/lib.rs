@@ -1114,7 +1114,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    created_at, updated_at
+                    location_id, created_at, updated_at
              FROM phone_numbers
              WHERE id = $1",
         )
@@ -1135,7 +1135,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    created_at, updated_at
+                    location_id, created_at, updated_at
              FROM phone_numbers
              WHERE e164 = $1",
         )
@@ -1156,7 +1156,7 @@ impl PhoneNumberStore for PostgresStorage {
                     carrier, lrn, ocn, rate_center, lata,
                     acquired_at, activated_at, ported_at, loa_date, foc_date,
                     recording_enabled, block_anonymous, allow_list, block_list, tags,
-                    created_at, updated_at
+                    location_id, created_at, updated_at
              FROM phone_numbers
              WHERE tenant_id = $1
              ORDER BY e164",
