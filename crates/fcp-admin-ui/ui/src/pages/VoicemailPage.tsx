@@ -29,7 +29,6 @@ import type { MailboxResponse, VoicemailMessage, CreateMailboxRequest, UpdateMai
 const createSchema = z.object({
   user_id: z.string().min(1, 'User is required'),
   line_binding_id: z.string().min(1, 'Line binding is required'),
-  extension: z.string().min(1, 'Extension is required'),
   pin: z.string().min(1, 'PIN is required'),
   max_message_duration: z.coerce.number().min(1).max(3600).optional(),
   max_messages: z.coerce.number().min(1).max(10000).optional(),
@@ -206,17 +205,14 @@ export function VoicemailPage() {
 
   const mailboxColumns: ColumnDef<MailboxResponse>[] = [
     {
-      accessorKey: 'extension',
+      id: 'owner',
       header: ({ column }) => (
         <Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}>
-          Extension <ArrowUpDown className="ml-2 h-4 w-4" />
+          User <ArrowUpDown className="ml-2 h-4 w-4" />
         </Button>
       ),
-    },
-    {
-      id: 'owner',
-      header: 'Owner',
-      cell: ({ row }) => userMap.get(row.original.user_id) || row.original.user_id.slice(0, 8),
+      accessorFn: (row) => userMap.get(row.user_id) || row.extension,
+      cell: ({ row }) => userMap.get(row.original.user_id) || row.original.extension,
     },
     {
       accessorKey: 'enabled',
@@ -278,7 +274,7 @@ export function VoicemailPage() {
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => {
-                if (confirm(`Delete mailbox "${row.original.extension}"?`)) {
+                if (confirm(`Delete mailbox for "${userMap.get(row.original.user_id) || row.original.extension}"?`)) {
                   deleteMutation.mutate(row.original.id)
                 }
               }}
@@ -388,7 +384,6 @@ export function VoicemailPage() {
       tenant_id: tenantId,
       user_id: data.user_id,
       line_binding_id: data.line_binding_id,
-      extension: data.extension,
       pin: data.pin,
       max_message_duration: data.max_message_duration,
       max_messages: data.max_messages,
@@ -459,7 +454,7 @@ export function VoicemailPage() {
         <DataTable
           columns={mailboxColumns}
           data={mailboxes}
-          searchKey="extension"
+          searchKey="owner"
           searchPlaceholder="Search mailboxes..."
         />
       )}
@@ -504,17 +499,10 @@ export function VoicemailPage() {
               </Select>
               {createForm.formState.errors.line_binding_id && <p className="text-sm text-destructive">{createForm.formState.errors.line_binding_id.message}</p>}
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="c-ext">Extension *</Label>
-                <Input id="c-ext" placeholder="e.g., 100" {...createForm.register('extension')} />
-                {createForm.formState.errors.extension && <p className="text-sm text-destructive">{createForm.formState.errors.extension.message}</p>}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="c-pin">PIN *</Label>
-                <Input id="c-pin" type="password" placeholder="Numeric PIN" {...createForm.register('pin')} />
-                {createForm.formState.errors.pin && <p className="text-sm text-destructive">{createForm.formState.errors.pin.message}</p>}
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="c-pin">PIN *</Label>
+              <Input id="c-pin" type="password" placeholder="Numeric PIN" {...createForm.register('pin')} />
+              {createForm.formState.errors.pin && <p className="text-sm text-destructive">{createForm.formState.errors.pin.message}</p>}
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -543,7 +531,7 @@ export function VoicemailPage() {
       <Dialog open={!!editItem} onOpenChange={(v) => { if (!v) { setEditItem(null); setLastEditId(null); editForm.reset() } }}>
         <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Mailbox: {editItem?.extension}</DialogTitle>
+            <DialogTitle>Edit Mailbox: {editItem ? (userMap.get(editItem.user_id) || editItem.extension) : ''}</DialogTitle>
             <DialogDescription>
               Owner: {editItem ? (userMap.get(editItem.user_id) || editItem.user_id.slice(0, 8)) : ''}
             </DialogDescription>
@@ -707,7 +695,7 @@ export function VoicemailPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Voicemail className="h-5 w-5" />
-              Mailbox: {selectedMailbox?.extension}
+              Mailbox: {selectedMailbox ? (userMap.get(selectedMailbox.user_id) || selectedMailbox.extension) : ''}
             </DialogTitle>
             <DialogDescription>Messages and statistics for this mailbox.</DialogDescription>
           </DialogHeader>

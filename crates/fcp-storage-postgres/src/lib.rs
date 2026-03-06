@@ -258,6 +258,28 @@ impl CredentialStore for PostgresStorage {
         }
     }
 
+    async fn get_user_by_id(&self, user_id: &fcp_core::UserId) -> Result<Option<User>> {
+        let row = sqlx::query(
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, location_id, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id, profile_picture,
+                    failed_login_attempts, account_locked_until
+             FROM users
+             WHERE id = $1",
+        )
+        .bind(user_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_user(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn put_user(&self, user: User) -> Result<()> {
         let id = user.id.to_string();
         let tenant_id = user.tenant_id.to_string();

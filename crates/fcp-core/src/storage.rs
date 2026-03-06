@@ -638,6 +638,15 @@ pub trait CredentialStore: Send + Sync {
     /// List all users.
     async fn list_users(&self) -> Result<Vec<User>>;
 
+    /// Get a user by their ID.
+    ///
+    /// Default implementation iterates `list_users()`. Backends should override
+    /// this with a direct query for better performance.
+    async fn get_user_by_id(&self, user_id: &crate::UserId) -> Result<Option<User>> {
+        let users = self.list_users().await?;
+        Ok(users.into_iter().find(|u| u.id == *user_id))
+    }
+
     /// Check if a username/password combination is valid.
     /// Uses bcrypt to verify the password against the stored hash.
     ///
@@ -2151,6 +2160,10 @@ impl CredentialStore for DynStorage {
 
     async fn list_users(&self) -> Result<Vec<User>> {
         self.credential_store.list_users().await
+    }
+
+    async fn get_user_by_id(&self, user_id: &crate::UserId) -> Result<Option<User>> {
+        self.credential_store.get_user_by_id(user_id).await
     }
 }
 

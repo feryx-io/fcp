@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use fcp_core::storage::{LineBindingStore, PhoneNumberStore, VoicemailStore};
+use fcp_core::{CredentialStore, storage::ExtensionStore};
 use tracing::{info, warn};
 
 mod cli;
@@ -399,9 +400,23 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Auto-discover mailboxes from DB and register routes by extension + phone number
+    // Auto-discover mailboxes from DB and register routes by extension, username,
+    // phone number E.164, and any dial plan extensions that target the same phone number.
     {
         let tenant_id = fcp_core::TenantId::nil();
+
+        // Pre-load extensions for alias resolution
+        let all_extensions: Vec<fcp_core::Extension> = match dyn_storage.list_extensions(&tenant_id).await {
+            Ok(exts) => {
+                info!(count = exts.len(), "Loaded extensions for voicemail alias resolution");
+                exts
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to list extensions for voicemail alias resolution");
+                Vec::new()
+            }
+        };
+
         match dyn_storage.list_mailboxes(&tenant_id).await {
             Ok(mailboxes) => {
                 let mut auto_routes = 0u32;
@@ -421,11 +436,20 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    // Register by extension
-                    flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+                    // Register by owner's SIP username (primary identifier)
+                    if let Ok(Some(user)) = dyn_storage.get_user_by_id(&mb.user_id).await {
+                        flow_handler.add_route(user.username.clone(), flow_id.clone()).await;
+                        // Also register by mailbox extension if different from username
+                        if mb.extension != user.username {
+                            flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+                        }
+                    } else {
+                        // Fallback: register by extension if user not found
+                        flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+                    }
                     auto_routes += 1;
 
-                    // Also register by associated phone number E.164
+                    // Register by associated phone number E.164 and dial plan extensions
                     if let Ok(Some(lb)) = dyn_storage.get_line_binding(&mb.line_binding_id).await {
                         if let Ok(Some(pn)) = dyn_storage.get_phone_number(&lb.phone_number_id).await {
                             flow_handler.add_route(pn.e164.clone(), flow_id.clone()).await;
@@ -433,6 +457,18 @@ async fn main() -> Result<()> {
                             if let Some(stripped) = pn.e164.strip_prefix('+') {
                                 flow_handler.add_route(stripped.to_string(), flow_id.clone()).await;
                             }
+
+                            // Register any dial plan extensions that target this phone number
+                            for ext in &all_extensions {
+                                if ext.enabled {
+                                    if let fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) = ext.target {
+                                        if *pn_id == pn.id && ext.number != mb.extension {
+                                            flow_handler.add_route(ext.number.clone(), flow_id.clone()).await;
+                                        }
+                                    }
+                                }
+                            }
+
                             info!(
                                 mailbox = %mb.id,
                                 extension = %mb.extension,

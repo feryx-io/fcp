@@ -506,7 +506,6 @@ export interface CreateMailboxRequest {
   tenant_id: string
   user_id: string
   line_binding_id: string
-  extension: string
   pin: string
   enabled?: boolean
   max_message_duration?: number

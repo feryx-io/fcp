@@ -8,8 +8,8 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    storage::VoicemailStore, GreetingType, LineBindingId, MessageStatus, TenantId, UserId,
-    VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
+    storage::VoicemailStore, CredentialStore, GreetingType, LineBindingId, MessageStatus, TenantId,
+    UserId, VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -113,7 +113,6 @@ pub struct CreateMailboxRequest {
     pub tenant_id: String,
     pub user_id: String,
     pub line_binding_id: String,
-    pub extension: String,
     pub pin: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -226,11 +225,18 @@ pub async fn create_mailbox(
     let line_binding_id = LineBindingId::from_str(&req.line_binding_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid line_binding_id: {}", e)))?;
 
+    // Derive the mailbox extension from the user's username
+    let user = storage
+        .get_user_by_id(&user_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("User {} not found", req.user_id)))?;
+
     let mut mailbox = VoicemailMailbox::new(
         tenant_id,
         user_id,
         line_binding_id,
-        req.extension.clone(),
+        user.username.clone(),
         req.pin,
     );
 
@@ -245,7 +251,7 @@ pub async fn create_mailbox(
 
     info!(
         mailbox_id = %mailbox.id,
-        extension = %req.extension,
+        user = %user.username,
         enabled = %mailbox.enabled,
         max_message_duration = %mailbox.max_message_duration,
         max_messages = %mailbox.max_messages,

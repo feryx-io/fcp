@@ -1492,7 +1492,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1526,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "axum",
  "include_dir",
@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1565,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1866,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1963,7 +1963,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2075,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2177,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2253,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2272,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.1"
+version = "0.25.2"
 dependencies = [
  "anyhow",
  "axum",

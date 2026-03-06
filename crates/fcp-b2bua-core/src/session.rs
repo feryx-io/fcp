@@ -91,6 +91,14 @@ impl SessionTimerConfig {
     }
 }
 
+fn default_max_forwards() -> u8 {
+    70
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Unified B2BUA configuration.
 ///
 /// Aggregates all sub-configurations that control B2BUA behavior. Each
@@ -99,24 +107,31 @@ impl SessionTimerConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct B2buaConfig {
     /// Topology hiding settings.
+    #[serde(default)]
     pub topology_hiding: TopologyHidingConfig,
 
     /// Media anchoring policy.
+    #[serde(default)]
     pub media_anchoring: MediaAnchoringConfig,
 
     /// Call forking policy.
+    #[serde(default)]
     pub forking: ForkingConfig,
 
     /// Call transfer policy.
+    #[serde(default)]
     pub transfer: TransferConfig,
 
     /// Max-Forwards value for outbound requests (RFC 3261 §8.1.1.6).
+    #[serde(default = "default_max_forwards")]
     pub max_forwards: u8,
 
     /// Whether to relay provisional responses (1xx) to the caller.
+    #[serde(default = "default_true")]
     pub relay_provisional_responses: bool,
 
     /// Whether to insert Record-Route headers for mid-dialog routing.
+    #[serde(default = "default_true")]
     pub insert_record_route: bool,
 
     /// RFC 4028 session timer enforcement.

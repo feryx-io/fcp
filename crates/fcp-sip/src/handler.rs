@@ -197,6 +197,7 @@ use crate::settings::ServerSettings;
 use fcp_b2bua_core::B2buaConfig;
 use fcp_core::storage::{
     CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
+    VoicemailStore,
 };
 
 /// Result of outbound route resolution.
@@ -2864,6 +2865,37 @@ impl SipMessageHandler {
                                 contacts = bindings.len(),
                                 "Found registered contacts for destination"
                             );
+
+                            // Look up line binding for the callee user so CFNA/voicemail work
+                            if let Some(storage) = &self.storage {
+                                let callee_username = destination_aor
+                                    .strip_prefix("sip:")
+                                    .or_else(|| destination_aor.strip_prefix("sips:"))
+                                    .unwrap_or(destination_aor)
+                                    .split('@')
+                                    .next()
+                                    .unwrap_or(destination_aor);
+                                if let Ok(Some(user)) = storage.get_user(callee_username).await {
+                                    if let Ok(lbs) = storage.list_line_bindings_by_user(&user.id).await {
+                                        if let Some(lb) = lbs.first() {
+                                            let lb_id = lb.id;
+                                            let callee = destination_aor.to_string();
+                                            let rna_timeout = lb.no_answer_timeout;
+                                            debug!(
+                                                call_id = %call_id,
+                                                line_binding_id = %lb_id,
+                                                "Stored line binding for direct-registration callee"
+                                            );
+                                            let _ = self.call_manager.update_call(&call_id, |call| {
+                                                call.line_binding_id = Some(lb_id);
+                                                call.original_callee = Some(callee);
+                                                call.no_answer_timeout = Some(rna_timeout);
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
                             bindings
                         }
                         Ok(_) => {
@@ -4550,14 +4582,60 @@ impl SipMessageHandler {
                     }
                 }
             } else {
-                // No CFNA configured — original behavior
-                warn!(call_id = %call_id, "All B-legs failed, returning 480");
-                let response =
-                    self.create_simple_response(&request, 480, "Temporarily Unavailable");
-                a_leg_handle.send_final(response).await;
-                let _ = self
-                    .call_manager
-                    .terminate_call(&call_id, Some("All B-legs failed".to_string()));
+                // No CFNA configured — try voicemail fallback for no-answer/busy
+                let has_voicemail = if let (Some(ref call), Some(storage)) =
+                    (&call, &self.storage)
+                {
+                    if let Some(ref lb_id) = call.line_binding_id {
+                        storage
+                            .get_mailbox_by_line_binding(lb_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|mb| mb.enabled)
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if has_voicemail {
+                    let reason = match last_failure_code {
+                        Some(486) | Some(600) | Some(603) => "busy",
+                        _ => "no-answer",
+                    };
+                    info!(call_id = %call_id, reason = %reason, "No CFNA configured, falling back to voicemail");
+                    let callee = call.as_ref().and_then(|c| c.original_callee.as_deref());
+                    match self
+                        .route_cfna(&request, &a_leg_handle, call_id, "voicemail", callee, Some(reason))
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(e) => {
+                            error!(call_id = %call_id, error = %e, "Voicemail fallback failed, sending 480");
+                            let resp = self.create_simple_response(
+                                &request,
+                                480,
+                                "Temporarily Unavailable",
+                            );
+                            a_leg_handle.send_final(resp).await;
+                            let _ = self.call_manager.terminate_call(
+                                &call_id,
+                                Some(format!("Voicemail fallback failed: {}", e)),
+                            );
+                        }
+                    }
+                } else {
+                    warn!(call_id = %call_id, "All B-legs failed, no voicemail — returning 480");
+                    let response =
+                        self.create_simple_response(&request, 480, "Temporarily Unavailable");
+                    a_leg_handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(&call_id, Some("All B-legs failed".to_string()));
+                }
             }
         }
 
