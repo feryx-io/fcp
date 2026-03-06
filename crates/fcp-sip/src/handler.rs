@@ -8402,12 +8402,45 @@ impl SipMessageHandler {
             let media_profile = answer_media_profile.clone();
             let call_id = answer_call_id;
             Box::pin(async move {
-                // Generate SDP
+                // Check if a media session already exists (created by evaluate_media_anchoring)
+                let mut actual_rtp_port = rtp_port;
+                let existing_session_id = call_manager.get_call(&call_id)
+                    .and_then(|c| c.media_session_id.clone());
+
+                if let Some(mm) = &media_manager {
+                    if let Some(ref existing_msid) = existing_session_id {
+                        // Reuse existing session — just feed it the remote SDP
+                        if let Ok(session) = mm.get_session(existing_msid).await {
+                            actual_rtp_port = session.ports().0;
+                        }
+                        if !request.body().is_empty() {
+                            let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                            let _ = mm.update_session(existing_msid, remote_sdp).await;
+                        }
+                    } else {
+                        // No existing session — create one
+                        let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
+                        let fcp_dialog_id = fcp_core::DialogId::new();
+                        if let Ok(session) = mm.create_session_default(core_call_id.clone(), fcp_dialog_id).await {
+                            actual_rtp_port = session.ports().0;
+                            if !request.body().is_empty() {
+                                let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                                let _ = mm.update_session(&core_call_id, remote_sdp).await;
+                            }
+                            let _ = call_manager.update_call(&call_id, |c| {
+                                c.media_session_id = Some(core_call_id);
+                                c.media_anchored = true;
+                            });
+                        }
+                    }
+                }
+
+                // Generate SDP with the actual RTP port from the media session
                 let sdp_string = if let Some(profile) = media_profile {
-                    let sdp = profile.build("fcp", &local_addr, rtp_port, None);
+                    let sdp = profile.build("fcp", &local_addr, actual_rtp_port, None);
                     Some(sdp.to_string())
                 } else {
-                    Some(generate_basic_sdp(&local_addr, rtp_port))
+                    Some(generate_basic_sdp(&local_addr, actual_rtp_port))
                 };
 
                 // Build 200 OK with SDP
@@ -8429,24 +8462,6 @@ impl SipMessageHandler {
                     sip_uas::UserAgentServer::create_response(&request, 200, "OK")
                 };
                 handle.send_final(response).await;
-
-                // Create media session for the call
-                if let Some(mm) = &media_manager {
-                    let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
-                    let fcp_dialog_id = fcp_core::DialogId::new();
-                    if let Ok(_session) = mm.create_session_default(core_call_id.clone(), fcp_dialog_id).await {
-                        // Feed remote SDP from INVITE if present
-                        if !request.body().is_empty() {
-                            let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
-                            let _ = mm.update_session(&core_call_id, remote_sdp).await;
-                        }
-                        // Update the call with media session
-                        let _ = call_manager.update_call(&call_id, |c| {
-                            c.media_session_id = Some(core_call_id);
-                            c.media_anchored = true;
-                        });
-                    }
-                }
 
                 Ok(())
             })
@@ -10200,9 +10215,11 @@ fn generate_basic_sdp(local_addr: &str, rtp_port: u16) -> String {
          s=-\r\n\
          c=IN IP4 {addr}\r\n\
          t=0 0\r\n\
-         m=audio {port} RTP/AVP 0 8\r\n\
+         m=audio {port} RTP/AVP 0 8 101\r\n\
          a=rtpmap:0 PCMU/8000\r\n\
          a=rtpmap:8 PCMA/8000\r\n\
+         a=rtpmap:101 telephone-event/8000\r\n\
+         a=fmtp:101 0-16\r\n\
          a=sendrecv\r\n",
         addr = local_addr,
         port = rtp_port,

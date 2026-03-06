@@ -152,36 +152,17 @@ impl MediaManager {
         self.backend.send_dtmf(call_id, digit, duration_ms).await
     }
 
-    /// Create a DTMF collector for gathering digits
+    /// Create a DTMF collector wired to the media backend for a specific call.
     ///
-    /// # Arguments
-    /// * `max_digits` - Maximum number of digits to collect
-    /// * `finish_on_key` - Optional key that ends collection (e.g., '#')
-    ///
-    /// # Returns
-    /// A `DtmfCollector` that can be used to collect DTMF digits with timeout logic
-    ///
-    /// # Note
-    /// The caller is responsible for:
-    /// 1. Calling `collect()` with desired timeout
-    /// 2. Forwarding DTMF events from media backend to the collector via `get_sender()`
-    ///
-    /// # Example
-    /// ```ignore
-    /// let collector = manager.create_dtmf_collector(4, Some('#'));
-    /// let result = collector.collect(Duration::from_secs(10)).await;
-    /// match result {
-    ///     CollectionResult::Complete(digits) => println!("Collected: {}", digits),
-    ///     CollectionResult::Timeout(digits) => println!("Timeout, partial: {}", digits),
-    ///     CollectionResult::Cancelled => println!("Cancelled"),
-    /// }
-    /// ```
+    /// The returned collector automatically receives DTMF events detected by
+    /// the media engine (RFC 2833 / in-band) for the given call.
     pub fn create_dtmf_collector(
         &self,
+        call_id: &CallId,
         max_digits: usize,
         finish_on_key: Option<char>,
     ) -> crate::dtmf_collector::DtmfCollector {
-        crate::dtmf_collector::DtmfCollector::new(max_digits, finish_on_key)
+        self.backend.create_dtmf_collector(call_id, max_digits, finish_on_key)
     }
 
     /// Start recording a call

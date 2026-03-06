@@ -148,7 +148,7 @@ impl DtmfCollector {
                             return CollectionResult::Complete(digits);
                         }
 
-                        if state.digits.len() >= state.max_digits {
+                        if state.max_digits > 0 && state.digits.len() >= state.max_digits {
                             let digits = state.digits.clone();
                             state.active = false;
                             info!(

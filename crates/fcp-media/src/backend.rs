@@ -93,6 +93,20 @@ pub trait MediaBackend: Send + Sync {
     /// Send DTMF digit
     async fn send_dtmf(&self, call_id: &CallId, digit: char, duration_ms: u32) -> Result<()>;
 
+    /// Create a DTMF collector wired to the media backend's event stream.
+    ///
+    /// The returned collector automatically receives DTMF events for the
+    /// given call from the media engine.
+    fn create_dtmf_collector(
+        &self,
+        _call_id: &CallId,
+        max_digits: usize,
+        finish_on_key: Option<char>,
+    ) -> crate::dtmf_collector::DtmfCollector {
+        // Default: disconnected collector (no DTMF events will arrive)
+        crate::dtmf_collector::DtmfCollector::new(max_digits, finish_on_key)
+    }
+
     /// Start recording
     async fn start_recording(&self, call_id: &CallId, path: String) -> Result<()>;
 
@@ -268,6 +282,9 @@ pub mod embedded {
 
         /// TTS service for text-to-speech synthesis (None if not configured)
         tts_service: Option<Arc<crate::tts::TtsService>>,
+
+        /// Forge event bus for subscribing to DTMF and other media events
+        event_bus: Arc<EventBus>,
     }
 
     /// Information about a forge-media session
@@ -365,7 +382,7 @@ pub mod embedded {
             let event_bus = Arc::new(EventBus::new());
 
             // Initialize SessionManager (returns Arc<Self>)
-            let session_manager = SessionManager::new(manager_config, Some(event_bus));
+            let session_manager = SessionManager::new(manager_config, Some(event_bus.clone()));
 
             // Initialize PlaybackManager for audio injection (with session_manager reference)
             let playback_manager = Arc::new(PlaybackManager::new_with_session_manager(
@@ -412,6 +429,7 @@ pub mod embedded {
                 playback_handles: DashMap::new(),
                 advertise_ip,
                 tts_service,
+                event_bus,
             })
         }
     }
@@ -586,10 +604,13 @@ pub mod embedded {
             }
 
             // Extract telephone-event PT from A-leg's SDP and store on forge session
-            if let Some(te_pt) = crate::sdp::extract_telephone_event_pt(&remote_sdp) {
-                session_info.forge_session.set_telephone_event_pt_a(te_pt);
-                debug!(?call_id, te_pt, "A-leg telephone-event PT set from SDP");
-            }
+            let te_pt = crate::sdp::extract_telephone_event_pt(&remote_sdp).unwrap_or_else(|| {
+                // Default to PT 101 — virtually all phones use this
+                debug!(?call_id, "No telephone-event PT in A-leg SDP, defaulting to 101");
+                101
+            });
+            session_info.forge_session.set_telephone_event_pt_a(te_pt);
+            debug!(?call_id, te_pt, "A-leg telephone-event PT set");
 
             // Wire SRTP keys for A-leg if SRTP was negotiated
             if let (Some(ref local_material), Some(ref remote_crypto)) =
@@ -840,6 +861,66 @@ pub mod embedded {
 
             drop(session_info); // Explicit drop to release lock
             Ok(())
+        }
+
+        fn create_dtmf_collector(
+            &self,
+            call_id: &fcp_core::CallId,
+            max_digits: usize,
+            finish_on_key: Option<char>,
+        ) -> crate::dtmf_collector::DtmfCollector {
+            let collector = crate::dtmf_collector::DtmfCollector::new(max_digits, finish_on_key);
+            let sender = collector.get_sender();
+
+            // Look up the forge CallId for this FCP call
+            let forge_call_id = self
+                .sessions
+                .get(call_id)
+                .map(|s| s.forge_call_id.clone());
+
+            if let Some(forge_call_id) = forge_call_id {
+                debug!(
+                    fcp_call_id = %call_id,
+                    forge_call_id = %forge_call_id,
+                    "DTMF collector wired to forge EventBus"
+                );
+                let mut rx = self.event_bus.subscribe();
+                // Spawn a task that filters forge DTMF events and forwards to the collector
+                tokio::spawn(async move {
+                    use forge_core::{DtmfEventKind, ForgeEvent};
+                    loop {
+                        match rx.recv().await {
+                            Ok(ForgeEvent::DtmfDigitDetected {
+                                call_id: ref event_cid,
+                                digit,
+                                event_type,
+                                ..
+                            }) if *event_cid == forge_call_id
+                                && event_type == DtmfEventKind::End =>
+                            {
+                                debug!(
+                                    digit = %digit,
+                                    call_id = %forge_call_id,
+                                    "Forwarding DTMF to collector"
+                                );
+                                if sender.send(digit).is_err() {
+                                    // Collector dropped — stop listening
+                                    break;
+                                }
+                            }
+                            Ok(_) => {} // ignore other events
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(lagged = n, "DTMF event receiver lagged");
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                });
+            } else {
+                warn!(call_id = %call_id, "No forge session found for DTMF collector");
+            }
+
+            collector
         }
 
         async fn start_recording(&self, call_id: &fcp_core::CallId, path: String) -> Result<()> {

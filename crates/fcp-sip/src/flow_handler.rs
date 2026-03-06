@@ -1224,8 +1224,8 @@ impl FlowCallHandler {
         };
 
         // Helper: collect DTMF digits
-        let collect_digits = |mm: &Arc<fcp_media::MediaManager>, max: usize, finish_key: Option<char>, timeout_secs: u64| {
-            let collector = mm.create_dtmf_collector(max, finish_key);
+        let collect_digits = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, max: usize, finish_key: Option<char>, timeout_secs: u64| {
+            let collector = mm.create_dtmf_collector(cid, max, finish_key);
             async move {
                 match collector.collect(std::time::Duration::from_secs(timeout_secs)).await {
                     CollectionResult::Complete(d) => d,
@@ -1254,7 +1254,7 @@ impl FlowCallHandler {
             play_system_prompt(&mm, &media_call_id, "vm_enter_pin", "Enter your PIN followed by pound".to_string()).await;
 
             // Collect DTMF digits (finish on #, timeout 10s)
-            let pin_digits = collect_digits(&mm, 0, Some('#'), 10).await;
+            let pin_digits = collect_digits(&mm, &media_call_id, 0, Some('#'), 10).await;
 
             // Strip trailing '#' from collected digits
             let pin_digits = pin_digits.trim_end_matches('#');
@@ -1324,7 +1324,7 @@ impl FlowCallHandler {
             .await;
 
             // Collect single DTMF digit
-            let digit = collect_digits(&mm, 1, None, 10).await;
+            let digit = collect_digits(&mm, &media_call_id, 1, None, 10).await;
 
             let filter_status = match digit.as_str() {
                 "1" => MessageStatus::New,
@@ -1392,7 +1392,7 @@ impl FlowCallHandler {
                 )
                 .await;
 
-                let action = collect_digits(&mm, 1, None, 10).await;
+                let action = collect_digits(&mm, &media_call_id, 1, None, 10).await;
 
                 match action.as_str() {
                     "1" => {
@@ -2218,7 +2218,8 @@ impl FlowCallHandler {
 
                 // Create DTMF collector
                 if let Some(media_manager) = &self.media_manager {
-                    let collector = media_manager.create_dtmf_collector(num_digits, finish_on_key);
+                    let gather_call_id = media_session_id.unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
+                    let collector = media_manager.create_dtmf_collector(&gather_call_id, num_digits, finish_on_key);
 
                     info!(
                         call_id = %call_id,
