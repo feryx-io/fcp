@@ -128,12 +128,21 @@ def main():
 
             pipeline = get_pipeline(lang)
 
-            # Generate audio segments
-            # KPipeline returns generator of Result objects with .audio property
-            audio_segments = []
-            for result in pipeline(text, voice=voice):
-                if result.audio is not None:
-                    audio_segments.append(result.audio.numpy())
+            # Redirect stdout to stderr during synthesis to prevent any
+            # library output (huggingface_hub downloads, tqdm, etc.) from
+            # corrupting the JSONL protocol stream.
+            real_stdout = sys.stdout
+            sys.stdout = sys.stderr
+
+            try:
+                # Generate audio segments
+                # KPipeline returns generator of Result objects with .audio property
+                audio_segments = []
+                for result in pipeline(text, voice=voice):
+                    if result.audio is not None:
+                        audio_segments.append(result.audio.numpy())
+            finally:
+                sys.stdout = real_stdout
 
             if not audio_segments:
                 resp = {"ok": False, "error": "No audio generated"}

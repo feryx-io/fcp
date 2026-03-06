@@ -319,7 +319,7 @@ pub async fn update_prompt(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(id = %id, error = %e, "Re-synthesis failed, clearing audio");
+                    tracing::warn!(id = %id, error = ?e, "Re-synthesis failed, clearing audio");
                     prompt.audio_path = None;
                     prompt.file_size = None;
                     prompt.duration_ms = None;

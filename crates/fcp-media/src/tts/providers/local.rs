@@ -277,20 +277,44 @@ impl TtsProvider for LocalTts {
                 .await
                 .context("Failed to flush worker stdin")?;
 
-            // Read response
+            // Read response (allow extra time for first-use voice pack downloads)
             let mut response_line = String::new();
-            tokio::time::timeout(
-                std::time::Duration::from_secs(60),
+            let read_result = tokio::time::timeout(
+                std::time::Duration::from_secs(180),
                 worker.stdout.read_line(&mut response_line),
             )
-            .await
-            .context("Timeout waiting for Kokoro synthesis response")?
-            .context("Failed to read synthesis response")?;
+            .await;
 
-            let resp: WorkerResponse = serde_json::from_str(response_line.trim())
-                .context("Failed to parse worker response")?;
+            match read_result {
+                Err(_) => {
+                    warn!("Timeout waiting for Kokoro synthesis response, killing worker");
+                    *guard = None;
+                    bail!("Timeout waiting for Kokoro synthesis response (180s)");
+                }
+                Ok(Err(e)) => {
+                    warn!(error = %e, "Failed to read synthesis response, killing worker");
+                    *guard = None;
+                    bail!("Failed to read synthesis response: {}", e);
+                }
+                Ok(Ok(_)) => {}
+            }
 
-            resp
+            match serde_json::from_str::<WorkerResponse>(response_line.trim()) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    warn!(
+                        raw_response = %response_line.trim(),
+                        error = %e,
+                        "Failed to parse worker response — stdout may be corrupted, killing worker"
+                    );
+                    *guard = None;
+                    bail!(
+                        "Failed to parse worker response: {} (raw: {})",
+                        e,
+                        response_line.trim()
+                    );
+                }
+            }
         };
 
         if !response.ok {
