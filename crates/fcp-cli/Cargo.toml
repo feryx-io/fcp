@@ -20,8 +20,8 @@ clap = { version = "4", features = ["derive", "env", "color", "suggestions"] }
 
 # TUI framework (for Phase 3+)
 ratatui = "0.30"
-crossterm = "0.28"
-tui-input = "0.11"
+crossterm = "0.29"
+tui-input = "0.15"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
