@@ -302,6 +302,7 @@ export const prompts = {
     return resp.json() as Promise<PromptResponse>
   },
   audioUrl: (id: string) => `/api/v1/prompts/${id}/audio`,
+  synthesize: (id: string) => apiClient.post<PromptResponse>(`/prompts/${id}/synthesize`, {}),
 }
 
 // Presence (Phase 2)

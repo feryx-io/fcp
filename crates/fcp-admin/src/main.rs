@@ -252,6 +252,33 @@ async fn main() -> Result<()> {
         api_state.with_prompts_dir(std::path::PathBuf::from("/tmp/fcp/audio/prompts"))
     };
 
+    // Initialize TTS service for prompt audio synthesis (optional)
+    let api_state = if let Some(ref tts_config) = config.tts {
+        match fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
+            provider: fcp_media::tts::TtsProviderConfig::Local {
+                engine: tts_config.engine.clone(),
+                executable_path: tts_config.python_path.as_ref().map(std::path::PathBuf::from),
+            },
+            cache_dir: std::path::PathBuf::from(&tts_config.cache_dir),
+            cache_max_size_mb: 500,
+            default_language: "en-US".to_string(),
+            default_voice: tts_config.voice.clone(),
+        })
+        .await
+        {
+            Ok(tts_service) => {
+                info!(engine = %tts_config.engine, "TTS service initialized for prompt synthesis");
+                api_state.with_tts_service(std::sync::Arc::new(tts_service))
+            }
+            Err(e) => {
+                warn!(error = %e, "TTS service initialization failed — prompt synthesis unavailable");
+                api_state
+            }
+        }
+    } else {
+        api_state
+    };
+
     // Initialize cluster reader (optional — only when Redis is configured)
     let cluster_reader = if let Some(ref redis_url) = config.cluster.redis_url {
         match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {

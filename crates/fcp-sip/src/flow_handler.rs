@@ -1791,6 +1791,19 @@ impl FlowCallHandler {
                         // Re-acquire lock and continue to next node
                         let mut context_guard = context.write().await;
                         context_guard.current_node = next.clone();
+
+                        // Propagate media_session_id from Call to flow context
+                        // (the answer callback creates the media session and updates the Call)
+                        if context_guard.media_session_id.is_none() {
+                            if let Some(ref cm) = self.call_manager {
+                                if let Some(call_entry) = cm.get_call(&call_id) {
+                                    if let Some(ref msid) = call_entry.media_session_id {
+                                        context_guard.set_media_session_id(msid.clone());
+                                    }
+                                }
+                            }
+                        }
+
                         drop(context_guard);
 
                         return Box::pin(self.execute_next_node(call_id)).await;

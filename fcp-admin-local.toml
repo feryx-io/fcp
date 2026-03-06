@@ -17,6 +17,14 @@ server_url = "http://localhost:8081/ingest"
 level = "info"
 format = "pretty"
 
+prompts_dir = "/tmp/fcp/audio/prompts"
+
+[tts]
+engine = "kokoro"
+python_path = ".venv/bin/python3"
+cache_dir = "/tmp/fcp/tts_cache"
+voice = "af_heart"
+
 [cluster]
 redis_url = "redis://localhost:6379"
 key_prefix = "fcp:"

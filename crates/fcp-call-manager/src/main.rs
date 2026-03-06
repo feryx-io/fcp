@@ -682,6 +682,20 @@ async fn main() -> Result<()> {
         }
         info!("Seeded {} system prompts", system_prompts.len());
 
+        // Pre-generate TTS audio for system prompts that don't have audio files yet
+        if config.media.tts_engine.is_some() {
+            let prompts_dir = PathBuf::from(&config.media.prompts_dir);
+            if let Err(e) = pre_generate_prompt_audio(
+                &prompt_service,
+                &default_tenant_id,
+                &config.media,
+                &prompts_dir,
+                &system_prompts,
+            ).await {
+                warn!(error = %e, "Failed to pre-generate prompt audio (TTS will be used at call-time)");
+            }
+        }
+
         flow_handler.with_prompt_service(prompt_service)
     } else {
         warn!("No prompt store configured — IVR will use TTS fallback only");
@@ -1508,6 +1522,102 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
     );
 
     Ok(Arc::new(manager))
+}
+
+/// Pre-generate TTS audio for system prompts that don't have audio files yet.
+///
+/// Creates a standalone TtsService, synthesizes audio for each prompt, saves
+/// the WAV files to `prompts_dir`, and updates the prompt DB records with the
+/// file path so that `PromptService::resolve()` can serve them without TTS.
+async fn pre_generate_prompt_audio(
+    prompt_service: &Arc<fcp_core::PromptService>,
+    tenant_id: &fcp_core::TenantId,
+    media_config: &crate::config::MediaSection,
+    prompts_dir: &std::path::Path,
+    system_prompts: &[(&str, &str, &str)],
+) -> Result<()> {
+    use fcp_media::tts::{TtsConfig, TtsProviderConfig, TtsService};
+
+    // Check which prompts already have audio
+    let mut need_generation = Vec::new();
+    for (name, _desc, tts_text) in system_prompts {
+        if let Ok(Some(_path)) = prompt_service.resolve(name, Some("en-US")).await {
+            // Already has a valid audio file
+            continue;
+        }
+        need_generation.push((*name, *tts_text));
+    }
+
+    if need_generation.is_empty() {
+        info!("All system prompts already have audio files");
+        return Ok(());
+    }
+
+    info!(
+        count = need_generation.len(),
+        "Pre-generating TTS audio for system prompts"
+    );
+
+    // Create a standalone TTS service for pre-generation
+    let engine = media_config.tts_engine.as_deref().unwrap_or("kokoro");
+    let tts_config = TtsConfig {
+        provider: TtsProviderConfig::Local {
+            engine: engine.to_string(),
+            executable_path: media_config.tts_python.as_ref().map(PathBuf::from),
+        },
+        cache_dir: PathBuf::from(&media_config.tts_cache_dir),
+        cache_max_size_mb: 500,
+        default_language: "en-US".to_string(),
+        default_voice: media_config.tts_voice.clone(),
+    };
+
+    let tts_service = TtsService::new(tts_config)
+        .await
+        .context("Failed to create TTS service for prompt pre-generation")?;
+
+    // Ensure prompts directory exists
+    let tenant_dir = prompts_dir.join(tenant_id.to_string());
+    tokio::fs::create_dir_all(&tenant_dir)
+        .await
+        .context("Failed to create prompts directory")?;
+
+    let mut generated = 0u32;
+    for (name, tts_text) in &need_generation {
+        let voice = media_config.tts_voice.as_deref();
+        match tts_service.synthesize(tts_text, Some("en-US"), voice).await {
+            Ok(cached_path) => {
+                // Copy from TTS cache to permanent prompts directory
+                let dest_path = tenant_dir.join(format!("{}.wav", name));
+                if let Err(e) = tokio::fs::copy(&cached_path, &dest_path).await {
+                    warn!(name = name, error = %e, "Failed to copy TTS audio to prompts dir");
+                    continue;
+                }
+
+                let file_size = tokio::fs::metadata(&dest_path)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+
+                // Update the prompt record with the audio path
+                if let Err(e) = prompt_service
+                    .cache_tts_audio(name, "en-US", dest_path.clone(), file_size)
+                    .await
+                {
+                    warn!(name = name, error = %e, "Failed to update prompt record with audio path");
+                    continue;
+                }
+
+                info!(name = name, path = %dest_path.display(), "Generated prompt audio");
+                generated += 1;
+            }
+            Err(e) => {
+                warn!(name = name, error = %e, "Failed to synthesize prompt audio");
+            }
+        }
+    }
+
+    info!(generated = generated, total = need_generation.len(), "Prompt audio pre-generation complete");
+    Ok(())
 }
 
 /// Derive local IP from bind address string.

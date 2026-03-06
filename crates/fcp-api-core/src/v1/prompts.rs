@@ -211,7 +211,37 @@ pub async fn create_prompt(
     };
 
     prompt.description = req.description;
-    prompt.tts_voice = req.tts_voice;
+    prompt.tts_voice = req.tts_voice.clone();
+
+    // Auto-synthesize TTS audio if TTS service is available
+    if source_type == PromptSourceType::Tts {
+        if let (Some(tts_service), Some(prompts_dir)) =
+            (&state.tts_service, &state.prompts_dir)
+        {
+            let tts_text = prompt.tts_text.as_deref().unwrap_or("");
+            let voice = req.tts_voice.as_deref();
+            match tts_service.synthesize(tts_text, Some(language), voice).await {
+                Ok(cached_path) => {
+                    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+                    let _ = tokio::fs::create_dir_all(&tenant_dir).await;
+                    let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
+                    if let Ok(_) = tokio::fs::copy(&cached_path, &dest_path).await {
+                        let file_size = tokio::fs::metadata(&dest_path)
+                            .await
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        prompt.audio_path = Some(dest_path);
+                        prompt.audio_format = Some("wav".to_string());
+                        prompt.file_size = Some(file_size);
+                        info!(name = %req.name, "Auto-synthesized TTS audio for new prompt");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(name = %req.name, error = %e, "Auto-synthesis failed (prompt created without audio)");
+                }
+            }
+        }
+    }
 
     prompt_store
         .put_prompt(prompt.clone())
@@ -260,11 +290,42 @@ pub async fn update_prompt(
         prompt.tts_voice = Some(voice);
     }
 
-    // Clear cached audio if TTS parameters changed
+    // Re-synthesize audio if TTS parameters changed
     if tts_changed && prompt.source_type == PromptSourceType::Tts {
-        prompt.audio_path = None;
-        prompt.file_size = None;
-        prompt.duration_ms = None;
+        if let (Some(tts_service), Some(prompts_dir)) =
+            (&state.tts_service, &state.prompts_dir)
+        {
+            let tts_text = prompt.tts_text.as_deref().unwrap_or("");
+            let voice = prompt.tts_voice.as_deref();
+            match tts_service.synthesize(tts_text, Some(&prompt.language), voice).await {
+                Ok(cached_path) => {
+                    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+                    let _ = tokio::fs::create_dir_all(&tenant_dir).await;
+                    let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
+                    if let Ok(_) = tokio::fs::copy(&cached_path, &dest_path).await {
+                        let file_size = tokio::fs::metadata(&dest_path)
+                            .await
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        prompt.audio_path = Some(dest_path);
+                        prompt.audio_format = Some("wav".to_string());
+                        prompt.file_size = Some(file_size);
+                        info!(id = %id, "Re-synthesized TTS audio after text change");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(id = %id, error = %e, "Re-synthesis failed, clearing audio");
+                    prompt.audio_path = None;
+                    prompt.file_size = None;
+                    prompt.duration_ms = None;
+                }
+            }
+        } else {
+            // No TTS service, just clear the old audio
+            prompt.audio_path = None;
+            prompt.file_size = None;
+            prompt.duration_ms = None;
+        }
     }
 
     prompt.updated_at = SystemTime::now();
@@ -387,6 +448,80 @@ pub async fn download_audio(
         ],
         data,
     ))
+}
+
+/// POST /api/v1/prompts/:id/synthesize — Generate TTS audio for a prompt
+pub async fn synthesize_prompt(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let prompt_store = require_prompt_store(&state)?;
+
+    let prompts_dir = state
+        .prompts_dir
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Prompts directory not configured".to_string()))?;
+
+    let tts_service = state
+        .tts_service
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("TTS service not configured".to_string()))?;
+
+    let prompt_id: PromptId = id
+        .parse()
+        .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
+
+    let mut prompt = prompt_store
+        .get_prompt(&prompt_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+
+    let tts_text = prompt
+        .tts_text
+        .as_ref()
+        .ok_or_else(|| ApiError::BadRequest("Prompt has no TTS text to synthesize".to_string()))?
+        .clone();
+
+    let voice = prompt.tts_voice.as_deref();
+    let language = &prompt.language;
+
+    // Synthesize via TTS service
+    let cached_path = tts_service
+        .synthesize(&tts_text, Some(language), voice)
+        .await
+        .map_err(|e| ApiError::Internal(format!("TTS synthesis failed: {}", e)))?;
+
+    // Copy to permanent prompts directory
+    let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
+    tokio::fs::create_dir_all(&tenant_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create prompts directory: {}", e)))?;
+
+    let dest_path = tenant_dir.join(format!("{}.wav", prompt.id));
+    tokio::fs::copy(&cached_path, &dest_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to save audio file: {}", e)))?;
+
+    let file_size = tokio::fs::metadata(&dest_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    // Update prompt record
+    prompt.audio_path = Some(dest_path);
+    prompt.audio_format = Some("wav".to_string());
+    prompt.file_size = Some(file_size);
+    prompt.updated_at = SystemTime::now();
+
+    prompt_store
+        .put_prompt(prompt.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(id = %id, name = %prompt.name, size = file_size, "Synthesized prompt audio via TTS");
+
+    Ok(Json(PromptResponse::from(prompt)))
 }
 
 /// DELETE /api/v1/prompts/:id

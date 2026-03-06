@@ -396,6 +396,10 @@ pub struct MediaSection {
     /// Path to Python interpreter for local TTS (e.g., ".venv/bin/python3")
     #[serde(default)]
     pub tts_python: Option<String>,
+
+    /// Directory for pre-generated prompt audio files
+    #[serde(default = "default_prompts_dir")]
+    pub prompts_dir: String,
 }
 
 fn default_rtp_port_start() -> u16 {
@@ -414,6 +418,10 @@ fn default_tts_cache_dir() -> String {
     "/tmp/fcp/tts_cache".to_string()
 }
 
+fn default_prompts_dir() -> String {
+    "/tmp/fcp/audio/prompts".to_string()
+}
+
 impl Default for MediaSection {
     fn default() -> Self {
         Self {
@@ -425,6 +433,7 @@ impl Default for MediaSection {
             tts_voice: None,
             tts_cache_dir: default_tts_cache_dir(),
             tts_python: None,
+            prompts_dir: default_prompts_dir(),
         }
     }
 }

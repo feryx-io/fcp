@@ -53,6 +53,33 @@ pub struct AdminConfig {
     /// Security policy configuration (account lockout, password expiration)
     #[serde(default)]
     pub security: SecurityConfig,
+
+    /// TTS configuration for prompt audio synthesis
+    #[serde(default)]
+    pub tts: Option<TtsSection>,
+}
+
+/// TTS configuration for synthesizing prompt audio.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TtsSection {
+    /// TTS engine name (e.g., "kokoro")
+    pub engine: String,
+
+    /// Path to Python interpreter (e.g., ".venv/bin/python3")
+    #[serde(default)]
+    pub python_path: Option<String>,
+
+    /// TTS cache directory
+    #[serde(default = "default_tts_cache_dir")]
+    pub cache_dir: String,
+
+    /// Default voice
+    #[serde(default)]
+    pub voice: Option<String>,
+}
+
+fn default_tts_cache_dir() -> String {
+    "/tmp/fcp/tts_cache".to_string()
 }
 
 /// Security policy configuration for login protection.
@@ -103,6 +130,7 @@ impl Default for AdminConfig {
             profile_pictures_dir: None,
             prompts_dir: None,
             security: SecurityConfig::default(),
+            tts: None,
         }
     }
 }

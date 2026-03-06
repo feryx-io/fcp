@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Trash2, Upload, Play, Pause } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Trash2, Upload, Play, Pause, Pencil, Volume2 } from 'lucide-react'
 import { DataTable } from '@/components/DataTable'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,7 +14,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { prompts, type PromptResponse, type CreatePromptRequest } from '@/api/endpoints'
+import { prompts, type PromptResponse, type CreatePromptRequest, type UpdatePromptRequest } from '@/api/endpoints'
 
 const CATEGORIES = ['system', 'ivr', 'voicemail', 'queue', 'greeting', 'moh', 'custom'] as const
 
@@ -36,6 +36,7 @@ function formatBytes(bytes: number): string {
 
 export function PromptsPage() {
   const [createOpen, setCreateOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<PromptResponse | null>(null)
   const [uploadTarget, setUploadTarget] = useState<PromptResponse | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const [playingId, setPlayingId] = useState<string | null>(null)
@@ -43,7 +44,7 @@ export function PromptsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
 
-  // Form state
+  // Create form state
   const [formName, setFormName] = useState('')
   const [formDescription, setFormDescription] = useState('')
   const [formCategory, setFormCategory] = useState('custom')
@@ -51,12 +52,19 @@ export function PromptsPage() {
   const [formSourceType, setFormSourceType] = useState('tts')
   const [formTtsText, setFormTtsText] = useState('')
 
+  // Edit form state
+  const [editDescription, setEditDescription] = useState('')
+  const [editCategory, setEditCategory] = useState('')
+  const [editTtsText, setEditTtsText] = useState('')
+  const [editTtsVoice, setEditTtsVoice] = useState('')
+
   const { data: items = [] } = useQuery({
     queryKey: ['prompts', categoryFilter],
     queryFn: () => prompts.list(categoryFilter !== 'all' ? { category: categoryFilter } : undefined),
   })
 
   const [createError, setCreateError] = useState<string | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
 
   const createMutation = useMutation({
     mutationFn: prompts.create,
@@ -71,6 +79,18 @@ export function PromptsPage() {
     },
   })
 
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdatePromptRequest }) => prompts.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['prompts'] })
+      setEditTarget(null)
+      setEditError(null)
+    },
+    onError: (err: Error) => {
+      setEditError(err.message || 'Failed to update prompt')
+    },
+  })
+
   const deleteMutation = useMutation({
     mutationFn: prompts.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['prompts'] }),
@@ -81,6 +101,13 @@ export function PromptsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prompts'] })
       setUploadTarget(null)
+    },
+  })
+
+  const synthesizeMutation = useMutation({
+    mutationFn: prompts.synthesize,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['prompts'] })
     },
   })
 
@@ -103,6 +130,26 @@ export function PromptsPage() {
       tts_text: formTtsText || undefined,
     }
     createMutation.mutate(data)
+  }
+
+  function openEdit(p: PromptResponse) {
+    setEditDescription(p.description || '')
+    setEditCategory(p.category)
+    setEditTtsText(p.tts_text || '')
+    setEditTtsVoice(p.tts_voice || '')
+    setEditError(null)
+    setEditTarget(p)
+  }
+
+  function handleUpdate() {
+    if (!editTarget) return
+    const data: UpdatePromptRequest = {
+      description: editDescription || undefined,
+      category: editCategory,
+      tts_text: editTtsText || undefined,
+      tts_voice: editTtsVoice || undefined,
+    }
+    updateMutation.mutate({ id: editTarget.id, data })
   }
 
   function handleUpload(file: File) {
@@ -209,6 +256,18 @@ export function PromptsPage() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => openEdit(p)}>
+                <Pencil className="mr-2 h-4 w-4" /> Edit
+              </DropdownMenuItem>
+              {p.source_type === 'tts' && p.tts_text && (
+                <DropdownMenuItem
+                  onClick={() => synthesizeMutation.mutate(p.id)}
+                  disabled={synthesizeMutation.isPending}
+                >
+                  <Volume2 className="mr-2 h-4 w-4" />
+                  {synthesizeMutation.isPending ? 'Synthesizing...' : 'Synthesize Audio'}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => setUploadTarget(p)}>
                 <Upload className="mr-2 h-4 w-4" /> Upload Audio
               </DropdownMenuItem>
@@ -333,6 +392,68 @@ export function PromptsPage() {
                 disabled={!formName || (formSourceType === 'tts' && !formTtsText) || createMutation.isPending}
               >
                 {createMutation.isPending ? 'Creating...' : 'Create'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editTarget} onOpenChange={() => setEditTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Prompt</DialogTitle>
+            <DialogDescription>
+              Update prompt "{editTarget?.name}".
+              {editTarget?.source_type === 'tts' && ' Changing TTS text will regenerate audio automatically.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="edit-description">Description</Label>
+              <Input id="edit-description" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
+            </div>
+            <div>
+              <Label>Category</Label>
+              <Select value={editCategory} onValueChange={setEditCategory}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CATEGORIES.map((cat) => (
+                    <SelectItem key={cat} value={cat}>
+                      {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {editTarget?.source_type === 'tts' && (
+              <>
+                <div>
+                  <Label htmlFor="edit-tts-text">TTS Text</Label>
+                  <textarea
+                    id="edit-tts-text"
+                    value={editTtsText}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEditTtsText(e.target.value)}
+                    rows={3}
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-tts-voice">TTS Voice (optional)</Label>
+                  <Input id="edit-tts-voice" value={editTtsVoice} onChange={(e) => setEditTtsVoice(e.target.value)} placeholder="af_heart" />
+                </div>
+              </>
+            )}
+            {editError && (
+              <p className="text-sm text-red-600 dark:text-red-400">{editError}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => { setEditTarget(null); setEditError(null) }}>Cancel</Button>
+              <Button
+                onClick={handleUpdate}
+                disabled={updateMutation.isPending}
+              >
+                {updateMutation.isPending ? 'Saving...' : 'Save'}
               </Button>
             </div>
           </div>

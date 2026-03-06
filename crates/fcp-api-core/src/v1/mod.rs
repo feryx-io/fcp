@@ -249,6 +249,10 @@ pub fn router() -> Router<ApiState> {
             "/prompts/:id/audio",
             get(prompts::download_audio).post(prompts::upload_audio),
         )
+        .route(
+            "/prompts/:id/synthesize",
+            post(prompts::synthesize_prompt),
+        )
         // Voicemail
         .route(
             "/voicemail/mailboxes",

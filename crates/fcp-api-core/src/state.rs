@@ -95,6 +95,9 @@ pub struct ApiState {
 
     /// Security policy for login protection (lockout, password expiration)
     pub security_policy: SecurityPolicy,
+
+    /// TTS service for synthesizing prompt audio (optional)
+    pub tts_service: Option<Arc<fcp_media::tts::TtsService>>,
 }
 
 impl ApiState {
@@ -133,6 +136,7 @@ impl ApiState {
             profile_pictures_dir: None,
             prompts_dir: None,
             security_policy: SecurityPolicy::default(),
+            tts_service: None,
         }
     }
 
@@ -175,6 +179,12 @@ impl ApiState {
     /// Set the security policy for login protection.
     pub fn with_security_policy(mut self, policy: SecurityPolicy) -> Self {
         self.security_policy = policy;
+        self
+    }
+
+    /// Set the TTS service for prompt audio synthesis.
+    pub fn with_tts_service(mut self, tts: Arc<fcp_media::tts::TtsService>) -> Self {
+        self.tts_service = Some(tts);
         self
     }
 }
