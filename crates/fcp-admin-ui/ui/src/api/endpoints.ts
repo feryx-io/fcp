@@ -275,6 +275,7 @@ export interface CreatePromptRequest {
 export interface UpdatePromptRequest {
   description?: string
   category?: string
+  language?: string
   tts_text?: string
   tts_voice?: string
 }

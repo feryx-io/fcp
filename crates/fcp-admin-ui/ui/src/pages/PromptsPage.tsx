@@ -18,6 +18,88 @@ import { prompts, type PromptResponse, type CreatePromptRequest, type UpdateProm
 
 const CATEGORIES = ['system', 'ivr', 'voicemail', 'queue', 'greeting', 'moh', 'custom'] as const
 
+// Kokoro-82M TTS voices — prefix encodes language + gender
+const KOKORO_VOICES: { value: string; label: string; lang: string }[] = [
+  // American English — Female
+  { value: 'af_heart', label: 'Heart (American Female)', lang: 'en-US' },
+  { value: 'af_alloy', label: 'Alloy (American Female)', lang: 'en-US' },
+  { value: 'af_aoede', label: 'Aoede (American Female)', lang: 'en-US' },
+  { value: 'af_bella', label: 'Bella (American Female)', lang: 'en-US' },
+  { value: 'af_jessica', label: 'Jessica (American Female)', lang: 'en-US' },
+  { value: 'af_kore', label: 'Kore (American Female)', lang: 'en-US' },
+  { value: 'af_nicole', label: 'Nicole (American Female)', lang: 'en-US' },
+  { value: 'af_nova', label: 'Nova (American Female)', lang: 'en-US' },
+  { value: 'af_river', label: 'River (American Female)', lang: 'en-US' },
+  { value: 'af_sarah', label: 'Sarah (American Female)', lang: 'en-US' },
+  { value: 'af_sky', label: 'Sky (American Female)', lang: 'en-US' },
+  // American English — Male
+  { value: 'am_adam', label: 'Adam (American Male)', lang: 'en-US' },
+  { value: 'am_echo', label: 'Echo (American Male)', lang: 'en-US' },
+  { value: 'am_eric', label: 'Eric (American Male)', lang: 'en-US' },
+  { value: 'am_fenrir', label: 'Fenrir (American Male)', lang: 'en-US' },
+  { value: 'am_liam', label: 'Liam (American Male)', lang: 'en-US' },
+  { value: 'am_michael', label: 'Michael (American Male)', lang: 'en-US' },
+  { value: 'am_onyx', label: 'Onyx (American Male)', lang: 'en-US' },
+  { value: 'am_puck', label: 'Puck (American Male)', lang: 'en-US' },
+  { value: 'am_santa', label: 'Santa (American Male)', lang: 'en-US' },
+  // British English — Female
+  { value: 'bf_alice', label: 'Alice (British Female)', lang: 'en-GB' },
+  { value: 'bf_emma', label: 'Emma (British Female)', lang: 'en-GB' },
+  { value: 'bf_isabella', label: 'Isabella (British Female)', lang: 'en-GB' },
+  { value: 'bf_lily', label: 'Lily (British Female)', lang: 'en-GB' },
+  // British English — Male
+  { value: 'bm_daniel', label: 'Daniel (British Male)', lang: 'en-GB' },
+  { value: 'bm_fable', label: 'Fable (British Male)', lang: 'en-GB' },
+  { value: 'bm_george', label: 'George (British Male)', lang: 'en-GB' },
+  { value: 'bm_lewis', label: 'Lewis (British Male)', lang: 'en-GB' },
+  // Spanish
+  { value: 'ef_dora', label: 'Dora (Spanish Female)', lang: 'es-ES' },
+  { value: 'em_alex', label: 'Alex (Spanish Male)', lang: 'es-ES' },
+  { value: 'em_santa', label: 'Santa (Spanish Male)', lang: 'es-ES' },
+  // French
+  { value: 'ff_siwis', label: 'Siwis (French Female)', lang: 'fr-FR' },
+  // Hindi
+  { value: 'hf_alpha', label: 'Alpha (Hindi Female)', lang: 'hi-IN' },
+  { value: 'hf_beta', label: 'Beta (Hindi Female)', lang: 'hi-IN' },
+  { value: 'hm_omega', label: 'Omega (Hindi Male)', lang: 'hi-IN' },
+  { value: 'hm_psi', label: 'Psi (Hindi Male)', lang: 'hi-IN' },
+  // Italian
+  { value: 'if_sara', label: 'Sara (Italian Female)', lang: 'it-IT' },
+  { value: 'im_nicola', label: 'Nicola (Italian Male)', lang: 'it-IT' },
+  // Japanese
+  { value: 'jf_alpha', label: 'Alpha (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jf_gongitsune', label: 'Gongitsune (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jf_nezumi', label: 'Nezumi (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jf_tebukuro', label: 'Tebukuro (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jm_kumo', label: 'Kumo (Japanese Male)', lang: 'ja-JP' },
+  // Chinese
+  { value: 'zf_xiaobei', label: 'Xiaobei (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zf_xiaoni', label: 'Xiaoni (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zf_xiaoxiao', label: 'Xiaoxiao (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zf_xiaoyi', label: 'Xiaoyi (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zm_yunjian', label: 'Yunjian (Chinese Male)', lang: 'zh-CN' },
+  { value: 'zm_yunxi', label: 'Yunxi (Chinese Male)', lang: 'zh-CN' },
+  { value: 'zm_yunxia', label: 'Yunxia (Chinese Male)', lang: 'zh-CN' },
+  { value: 'zm_yunyang', label: 'Yunyang (Chinese Male)', lang: 'zh-CN' },
+  // Portuguese
+  { value: 'pf_dora', label: 'Dora (Portuguese Female)', lang: 'pt-BR' },
+  { value: 'pm_alex', label: 'Alex (Portuguese Male)', lang: 'pt-BR' },
+  { value: 'pm_santa', label: 'Santa (Portuguese Male)', lang: 'pt-BR' },
+]
+
+// Supported languages (derived from kokoro_tts_worker.py LANG_MAP)
+const LANGUAGES: { value: string; label: string }[] = [
+  { value: 'en-US', label: 'English (US)' },
+  { value: 'en-GB', label: 'English (UK)' },
+  { value: 'es-ES', label: 'Spanish' },
+  { value: 'fr-FR', label: 'French' },
+  { value: 'hi-IN', label: 'Hindi' },
+  { value: 'it-IT', label: 'Italian' },
+  { value: 'ja-JP', label: 'Japanese' },
+  { value: 'zh-CN', label: 'Chinese (Mandarin)' },
+  { value: 'pt-BR', label: 'Portuguese (Brazil)' },
+]
+
 const categoryColors: Record<string, string> = {
   system: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
   ivr: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
@@ -51,12 +133,14 @@ export function PromptsPage() {
   const [formLanguage, setFormLanguage] = useState('en-US')
   const [formSourceType, setFormSourceType] = useState('tts')
   const [formTtsText, setFormTtsText] = useState('')
+  const [formTtsVoice, setFormTtsVoice] = useState('af_heart')
 
   // Edit form state
   const [editDescription, setEditDescription] = useState('')
   const [editCategory, setEditCategory] = useState('')
   const [editTtsText, setEditTtsText] = useState('')
   const [editTtsVoice, setEditTtsVoice] = useState('')
+  const [editLanguage, setEditLanguage] = useState('en-US')
 
   const { data: items = [] } = useQuery({
     queryKey: ['prompts', categoryFilter],
@@ -118,6 +202,7 @@ export function PromptsPage() {
     setFormLanguage('en-US')
     setFormSourceType('tts')
     setFormTtsText('')
+    setFormTtsVoice('af_heart')
   }
 
   function handleCreate() {
@@ -128,6 +213,7 @@ export function PromptsPage() {
       language: formLanguage,
       source_type: formSourceType,
       tts_text: formTtsText || undefined,
+      tts_voice: formSourceType === 'tts' ? formTtsVoice || undefined : undefined,
     }
     createMutation.mutate(data)
   }
@@ -136,7 +222,8 @@ export function PromptsPage() {
     setEditDescription(p.description || '')
     setEditCategory(p.category)
     setEditTtsText(p.tts_text || '')
-    setEditTtsVoice(p.tts_voice || '')
+    setEditTtsVoice(p.tts_voice || 'af_heart')
+    setEditLanguage(p.language || 'en-US')
     setEditError(null)
     setEditTarget(p)
   }
@@ -146,6 +233,7 @@ export function PromptsPage() {
     const data: UpdatePromptRequest = {
       description: editDescription || undefined,
       category: editCategory,
+      language: editLanguage || undefined,
       tts_text: editTtsText || undefined,
       tts_voice: editTtsVoice || undefined,
     }
@@ -355,8 +443,15 @@ export function PromptsPage() {
                 </Select>
               </div>
               <div>
-                <Label htmlFor="language">Language</Label>
-                <Input id="language" value={formLanguage} onChange={(e) => setFormLanguage(e.target.value)} placeholder="en-US" />
+                <Label>Language</Label>
+                <Select value={formLanguage} onValueChange={setFormLanguage}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {LANGUAGES.map((l) => (
+                      <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <div>
@@ -370,17 +465,36 @@ export function PromptsPage() {
               </Select>
             </div>
             {formSourceType === 'tts' && (
-              <div>
-                <Label htmlFor="tts_text">TTS Text</Label>
-                <textarea
-                  id="tts_text"
-                  value={formTtsText}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFormTtsText(e.target.value)}
-                  placeholder="Enter your PIN followed by pound."
-                  rows={3}
-                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                />
-              </div>
+              <>
+                <div>
+                  <Label htmlFor="tts_text">TTS Text</Label>
+                  <textarea
+                    id="tts_text"
+                    value={formTtsText}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setFormTtsText(e.target.value)}
+                    placeholder="Enter your PIN followed by pound."
+                    rows={3}
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  />
+                </div>
+                <div>
+                  <Label>TTS Voice</Label>
+                  <Select value={formTtsVoice} onValueChange={setFormTtsVoice}>
+                    <SelectTrigger><SelectValue placeholder="Select a voice" /></SelectTrigger>
+                    <SelectContent>
+                      {KOKORO_VOICES
+                        .filter((v) => v.lang === formLanguage)
+                        .map((v) => (
+                          <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
+                        ))}
+                      {KOKORO_VOICES.filter((v) => v.lang === formLanguage).length === 0 && (
+                        <SelectItem value="af_heart" disabled>No voices for this language — using default</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">Kokoro-82M voice pack</p>
+                </div>
+              </>
             )}
             {createError && (
               <p className="text-sm text-red-600 dark:text-red-400">{createError}</p>
@@ -426,6 +540,17 @@ export function PromptsPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div>
+              <Label>Language</Label>
+              <Select value={editLanguage} onValueChange={setEditLanguage}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {LANGUAGES.map((l) => (
+                    <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             {editTarget?.source_type === 'tts' && (
               <>
                 <div>
@@ -439,8 +564,21 @@ export function PromptsPage() {
                   />
                 </div>
                 <div>
-                  <Label htmlFor="edit-tts-voice">TTS Voice (optional)</Label>
-                  <Input id="edit-tts-voice" value={editTtsVoice} onChange={(e) => setEditTtsVoice(e.target.value)} placeholder="af_heart" />
+                  <Label>TTS Voice</Label>
+                  <Select value={editTtsVoice} onValueChange={setEditTtsVoice}>
+                    <SelectTrigger><SelectValue placeholder="Select a voice" /></SelectTrigger>
+                    <SelectContent>
+                      {KOKORO_VOICES
+                        .filter((v) => v.lang === editLanguage)
+                        .map((v) => (
+                          <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
+                        ))}
+                      {KOKORO_VOICES.filter((v) => v.lang === editLanguage).length === 0 && (
+                        <SelectItem value="af_heart" disabled>No voices for this language — using default</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">Kokoro-82M voice pack</p>
                 </div>
               </>
             )}

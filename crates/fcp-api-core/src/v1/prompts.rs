@@ -107,6 +107,7 @@ pub struct CreatePromptRequest {
 pub struct UpdatePromptRequest {
     pub description: Option<String>,
     pub category: Option<String>,
+    pub language: Option<String>,
     pub tts_text: Option<String>,
     pub tts_voice: Option<String>,
 }
@@ -273,7 +274,8 @@ pub async fn update_prompt(
 
     // Track if TTS parameters changed (invalidates cached audio)
     let tts_changed = (req.tts_text.is_some() && req.tts_text != prompt.tts_text)
-        || (req.tts_voice.is_some() && req.tts_voice != prompt.tts_voice);
+        || (req.tts_voice.is_some() && req.tts_voice != prompt.tts_voice)
+        || (req.language.is_some() && req.language.as_deref() != Some(&prompt.language));
 
     if let Some(desc) = req.description {
         prompt.description = Some(desc);
@@ -282,6 +284,9 @@ pub async fn update_prompt(
         prompt.category = cat
             .parse()
             .map_err(|e: anyhow::Error| ApiError::BadRequest(e.to_string()))?;
+    }
+    if let Some(lang) = req.language {
+        prompt.language = lang;
     }
     if let Some(text) = req.tts_text {
         prompt.tts_text = Some(text);
