@@ -196,7 +196,7 @@ use crate::registrar::FcpRegistrar;
 use crate::settings::ServerSettings;
 use fcp_b2bua_core::B2buaConfig;
 use fcp_core::storage::{
-    DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
+    CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
 };
 
 /// Result of outbound route resolution.
@@ -8305,9 +8305,20 @@ impl SipMessageHandler {
         // Determine the target mailbox: explicit or derive from caller extension
         let mailbox_str = mailbox.unwrap_or_default();
 
-        let caller_ext = sip_parse::header(request.headers(), "From")
+        let sip_username = sip_parse::header(request.headers(), "From")
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
             .unwrap_or_default();
+
+        // Resolve the actual extension from the User record (the SIP username
+        // may differ from the extension, e.g. "polycom" vs "1556").
+        let caller_ext = if let Some(storage) = &self.storage {
+            match storage.get_user(&sip_username).await {
+                Ok(Some(user)) => user.extension.unwrap_or_else(|| sip_username.clone()),
+                _ => sip_username.clone(),
+            }
+        } else {
+            sip_username.clone()
+        };
 
         // Build an inline voicemail access flow: Answer → VoicemailAccess → Hangup
         let flow_id = format!("vm-access-{}", call_id);

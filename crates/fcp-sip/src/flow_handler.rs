@@ -1171,7 +1171,7 @@ impl FlowCallHandler {
         drop(context_guard);
 
         // 1. Resolve mailbox — if empty, derive from caller extension
-        let target_mailbox = if mailbox.is_empty() {
+        let mut target_mailbox = if mailbox.is_empty() {
             caller_extension.clone()
         } else {
             mailbox
@@ -1184,9 +1184,10 @@ impl FlowCallHandler {
             "Resolved voicemail access target"
         );
 
-        // Helper: play a named system prompt — tries WAV file first, falls back to TTS
+        // Helper: start playback of a named system prompt (non-blocking).
+        // Returns the playback_id so the caller can stop or wait on it.
         let prompt_service = self.prompt_service.clone();
-        let play_system_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, prompt_name: &str, fallback_text: String| {
+        let start_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, prompt_name: &str, fallback_text: String| {
             let mm = Arc::clone(mm);
             let cid = cid.clone();
             let ps = prompt_service.clone();
@@ -1196,38 +1197,77 @@ impl FlowCallHandler {
                 if let Some(ref ps) = ps {
                     if let Ok(Some(path)) = ps.resolve(&prompt_name, None).await {
                         match mm.play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both).await {
-                            Ok(playback_id) => { let _ = mm.wait_playback_completion(playback_id).await; return; }
+                            Ok(playback_id) => return Some(playback_id),
                             Err(e) => { warn!(error = %e, prompt = %prompt_name, "Prompt file playback failed, trying TTS"); }
                         }
                     }
                 }
-                // 2. TTS fallback (requires a TTS provider to be configured in the media backend)
+                // 2. TTS fallback
                 match mm.play_tts(&cid, fallback_text, "en-US".to_string(), None, AudioTarget::Both).await {
-                    Ok(playback_id) => {
-                        let _ = mm.wait_playback_completion(playback_id).await;
-                    }
-                    Err(e) => { warn!(error = %e, prompt = %prompt_name, "TTS fallback failed — upload a WAV file via Admin UI"); }
+                    Ok(playback_id) => Some(playback_id),
+                    Err(e) => { warn!(error = %e, prompt = %prompt_name, "TTS fallback failed — upload a WAV file via Admin UI"); None }
                 }
             }
         };
 
-        // Helper: play dynamic content (always TTS — uses TtsService's built-in LRU cache)
-        let play_dynamic = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, text: String| {
+        // Helper: play prompt and wait for completion (no barge-in).
+        let play_system_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, prompt_name: &str, fallback_text: String| {
+            let mm2 = Arc::clone(mm);
+            let start = start_prompt(mm, cid, prompt_name, fallback_text);
+            async move {
+                if let Some(playback_id) = start.await {
+                    let _ = mm2.wait_playback_completion(playback_id).await;
+                }
+            }
+        };
+
+        // Helper: play prompt with DTMF barge-in. Starts DTMF collection
+        // first, then begins playback. When the collector finishes (digit
+        // received, max_digits reached, finish_key, or timeout) any
+        // still-active playback is stopped immediately.
+        //
+        // If `bargein` is false, plays to completion first then collects.
+        let prompt_service2 = self.prompt_service.clone();
+        let play_and_collect = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId,
+                                prompt_name: Option<&str>, dynamic_text: Option<String>,
+                                max: usize, finish_key: Option<char>, timeout_secs: u64| {
             let mm = Arc::clone(mm);
             let cid = cid.clone();
+            let ps = prompt_service2.clone();
+            let prompt_name = prompt_name.map(|s| s.to_string());
             async move {
-                match mm.play_tts(&cid, text, "en-US".to_string(), None, AudioTarget::Both).await {
-                    Ok(playback_id) => { let _ = mm.wait_playback_completion(playback_id).await; }
-                    Err(e) => { warn!(error = %e, "TTS playback failed"); }
-                }
-            }
-        };
+                let collector = mm.create_dtmf_collector(&cid, max, finish_key);
+                let timeout_dur = std::time::Duration::from_secs(timeout_secs);
 
-        // Helper: collect DTMF digits
-        let collect_digits = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, max: usize, finish_key: Option<char>, timeout_secs: u64| {
-            let collector = mm.create_dtmf_collector(cid, max, finish_key);
-            async move {
-                match collector.collect(std::time::Duration::from_secs(timeout_secs)).await {
+                // Start playback
+                let playback_id: Option<String> = if let Some(ref pn) = prompt_name {
+                    // System prompt (WAV file first, TTS fallback)
+                    let mut pid = None;
+                    if let Some(ref ps) = ps {
+                        if let Ok(Some(path)) = ps.resolve(pn, None).await {
+                            if let Ok(id) = mm.play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both).await {
+                                pid = Some(id);
+                            }
+                        }
+                    }
+                    if pid.is_none() {
+                        if let Some(ref text) = dynamic_text {
+                            pid = mm.play_tts(&cid, text.clone(), "en-US".to_string(), None, AudioTarget::Both).await.ok();
+                        }
+                    }
+                    pid
+                } else if let Some(ref text) = dynamic_text {
+                    mm.play_tts(&cid, text.clone(), "en-US".to_string(), None, AudioTarget::Both).await.ok()
+                } else {
+                    None
+                };
+
+                // Collect DTMF — when done, stop any remaining playback
+                let result = collector.collect(timeout_dur).await;
+                if let Some(pid) = playback_id {
+                    let _ = mm.stop_playback(&cid, pid).await;
+                }
+                match result {
                     CollectionResult::Complete(d) => d,
                     CollectionResult::Timeout(d) => d,
                     CollectionResult::Cancelled => String::new(),
@@ -1250,11 +1290,12 @@ impl FlowCallHandler {
         // 2. PIN authentication loop
         let mut authenticated = false;
         for attempt in 1..=max_pin_attempts {
-            // Play PIN prompt
-            play_system_prompt(&mm, &media_call_id, "vm_enter_pin", "Enter your PIN followed by pound".to_string()).await;
-
-            // Collect DTMF digits (finish on #, timeout 10s)
-            let pin_digits = collect_digits(&mm, &media_call_id, 0, Some('#'), 10).await;
+            // Play PIN prompt with barge-in — user can start typing PIN immediately
+            let pin_digits = play_and_collect(
+                &mm, &media_call_id,
+                Some("vm_enter_pin"), Some("Enter your PIN followed by pound".to_string()),
+                0, Some('#'), 10,
+            ).await;
 
             // Strip trailing '#' from collected digits
             let pin_digits = pin_digits.trim_end_matches('#');
@@ -1264,14 +1305,16 @@ impl FlowCallHandler {
                 continue;
             }
 
-            // Verify PIN via VoicemailService
+            // Verify PIN via VoicemailService (returns resolved mailbox ID on success)
             match voicemail_service.verify_pin(&target_mailbox, pin_digits).await {
-                Ok(true) => {
+                Ok(Some(resolved_id)) => {
+                    // Update target_mailbox to the resolved mailbox ID for subsequent operations
+                    target_mailbox = resolved_id;
                     authenticated = true;
                     info!(call_id = %call_id, mailbox = %target_mailbox, "PIN verified");
                     break;
                 }
-                Ok(false) => {
+                Ok(None) => {
                     info!(
                         call_id = %call_id,
                         attempt = attempt,
@@ -1310,21 +1353,18 @@ impl FlowCallHandler {
             let new_count = messages.iter().filter(|m| m.status == MessageStatus::New).count();
             let saved_count = messages.iter().filter(|m| m.status == MessageStatus::Saved).count();
 
-            // Play message count and menu (dynamic — depends on message counts)
-            play_dynamic(
-                &mm,
-                &media_call_id,
-                format!(
+            // Play message count and menu with barge-in
+            let digit = play_and_collect(
+                &mm, &media_call_id,
+                None,
+                Some(format!(
                     "You have {} new messages and {} saved messages. \
                      Press 1 for new messages. Press 2 for saved messages. \
                      Press star to exit.",
                     new_count, saved_count
-                ),
-            )
-            .await;
-
-            // Collect single DTMF digit
-            let digit = collect_digits(&mm, &media_call_id, 1, None, 10).await;
+                )),
+                1, None, 10,
+            ).await;
 
             let filter_status = match digit.as_str() {
                 "1" => MessageStatus::New,
@@ -1340,12 +1380,7 @@ impl FlowCallHandler {
                 .collect();
 
             if filtered.is_empty() {
-                play_dynamic(
-                    &mm,
-                    &media_call_id,
-                    format!("No {} messages.", filter_status),
-                )
-                .await;
+                play_system_prompt(&mm, &media_call_id, "vm_no_messages", format!("No {} messages.", filter_status)).await;
                 continue 'main_menu;
             }
 
@@ -1365,9 +1400,10 @@ impl FlowCallHandler {
                     .unwrap_or_else(|_| "unknown time".to_string());
 
                 // Play envelope (dynamic — depends on message info)
-                play_dynamic(
+                play_system_prompt(
                     &mm,
                     &media_call_id,
+                    "vm_message_envelope",
                     format!(
                         "Message {} of {}. From {}. Received at {}.",
                         msg_idx + 1,
@@ -1381,18 +1417,14 @@ impl FlowCallHandler {
                 // Play the message audio
                 let _ = voicemail_service.play_message(&media_call_id, &msg.id).await;
 
-                // Post-message menu
-                play_system_prompt(
-                    &mm,
-                    &media_call_id,
-                    "vm_post_message_menu",
-                    "Press 1 to replay. Press 2 to save. Press 3 to delete. \
-                     Press 4 for next message. Press star for main menu."
-                        .to_string(),
-                )
-                .await;
-
-                let action = collect_digits(&mm, &media_call_id, 1, None, 10).await;
+                // Post-message menu with barge-in
+                let action = play_and_collect(
+                    &mm, &media_call_id,
+                    Some("vm_post_message_menu"),
+                    Some("Press 1 to replay. Press 2 to save. Press 3 to delete. \
+                     Press 4 for next message. Press star for main menu.".to_string()),
+                    1, None, 10,
+                ).await;
 
                 match action.as_str() {
                     "1" => {

@@ -416,6 +416,19 @@ pub mod embedded {
                 None => None,
             };
 
+            // Warm up TTS worker eagerly so the first live synthesis doesn't
+            // stall while loading the model (Kokoro cold-start can take 30-90s).
+            if let Some(ref tts) = tts_service {
+                info!("Warming up TTS worker (model load)…");
+                let tts_clone = Arc::clone(tts);
+                tokio::spawn(async move {
+                    match tts_clone.synthesize("warmup", Some("en-US"), None).await {
+                        Ok(_) => info!("TTS worker warm-up complete"),
+                        Err(e) => warn!(error = %e, "TTS warm-up failed (non-fatal)"),
+                    }
+                });
+            }
+
             info!(
                 tts = tts_service.is_some(),
                 "Embedded media backend initialized, advertise_ip: {}",

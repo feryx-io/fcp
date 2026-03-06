@@ -511,25 +511,45 @@ impl VoicemailService {
         Ok(())
     }
 
+    /// Resolves a mailbox by ID or extension.
+    ///
+    /// Tries lookup by mailbox ID first, then falls back to extension-based
+    /// lookup (using the nil tenant).
+    pub async fn resolve_mailbox(&self, id_or_extension: &str) -> Result<Option<VoicemailMailbox>> {
+        if let Some(mb) = self.storage.get_mailbox(id_or_extension).await? {
+            return Ok(Some(mb));
+        }
+        debug!(id_or_extension = %id_or_extension, "Mailbox not found by ID, trying extension lookup");
+        self.storage
+            .get_mailbox_by_extension(&fcp_core::TenantId::nil(), id_or_extension)
+            .await
+    }
+
     /// Verifies a PIN against a mailbox.
     ///
-    /// Loads the mailbox from storage and compares the provided PIN.
+    /// Tries lookup by mailbox ID first, then falls back to extension-based
+    /// lookup (using the nil tenant). This allows callers to pass either a
+    /// mailbox UUID or an extension number.
     ///
     /// # Returns
-    /// - `Ok(true)` if the PIN matches
-    /// - `Ok(false)` if the PIN is wrong or the mailbox is not found/disabled
+    /// - `Ok(Some(mailbox_id))` if the PIN matches (returns the resolved mailbox ID)
+    /// - `Ok(None)` if the PIN is wrong or the mailbox is not found/disabled
     /// - `Err(...)` on storage errors
-    pub async fn verify_pin(&self, mailbox_id: &str, pin: &str) -> Result<bool> {
-        let mailbox = match self.storage.get_mailbox(mailbox_id).await? {
+    pub async fn verify_pin(&self, mailbox_id: &str, pin: &str) -> Result<Option<String>> {
+        let mailbox = match self.resolve_mailbox(mailbox_id).await? {
             Some(mb) => mb,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
         if !mailbox.enabled {
-            return Ok(false);
+            return Ok(None);
         }
 
-        Ok(mailbox.verify_pin(pin))
+        if mailbox.verify_pin(pin) {
+            Ok(Some(mailbox.id))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Saves a message by updating its status to Saved.
