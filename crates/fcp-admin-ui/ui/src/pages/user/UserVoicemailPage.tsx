@@ -1,14 +1,88 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Play, Pause, Trash2, Upload, CheckCircle, Clock, CalendarClock, MailOpen, Mail, Save, Download, Power, PowerOff } from 'lucide-react'
+import { Play, Pause, Trash2, Upload, CheckCircle, Clock, CalendarClock, MailOpen, Mail, Save, Download, Power, PowerOff, Volume2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { me } from '@/api/endpoints'
 import type { VoicemailMessage, MeMailbox, GreetingResponse } from '@/types'
+
+// Kokoro-82M TTS voices
+const KOKORO_VOICES: { value: string; label: string; lang: string }[] = [
+  { value: 'af_heart', label: 'Heart (American Female)', lang: 'en-US' },
+  { value: 'af_alloy', label: 'Alloy (American Female)', lang: 'en-US' },
+  { value: 'af_aoede', label: 'Aoede (American Female)', lang: 'en-US' },
+  { value: 'af_bella', label: 'Bella (American Female)', lang: 'en-US' },
+  { value: 'af_jessica', label: 'Jessica (American Female)', lang: 'en-US' },
+  { value: 'af_kore', label: 'Kore (American Female)', lang: 'en-US' },
+  { value: 'af_nicole', label: 'Nicole (American Female)', lang: 'en-US' },
+  { value: 'af_nova', label: 'Nova (American Female)', lang: 'en-US' },
+  { value: 'af_river', label: 'River (American Female)', lang: 'en-US' },
+  { value: 'af_sarah', label: 'Sarah (American Female)', lang: 'en-US' },
+  { value: 'af_sky', label: 'Sky (American Female)', lang: 'en-US' },
+  { value: 'am_adam', label: 'Adam (American Male)', lang: 'en-US' },
+  { value: 'am_echo', label: 'Echo (American Male)', lang: 'en-US' },
+  { value: 'am_eric', label: 'Eric (American Male)', lang: 'en-US' },
+  { value: 'am_fenrir', label: 'Fenrir (American Male)', lang: 'en-US' },
+  { value: 'am_liam', label: 'Liam (American Male)', lang: 'en-US' },
+  { value: 'am_michael', label: 'Michael (American Male)', lang: 'en-US' },
+  { value: 'am_onyx', label: 'Onyx (American Male)', lang: 'en-US' },
+  { value: 'am_puck', label: 'Puck (American Male)', lang: 'en-US' },
+  { value: 'am_santa', label: 'Santa (American Male)', lang: 'en-US' },
+  { value: 'bf_alice', label: 'Alice (British Female)', lang: 'en-GB' },
+  { value: 'bf_emma', label: 'Emma (British Female)', lang: 'en-GB' },
+  { value: 'bf_isabella', label: 'Isabella (British Female)', lang: 'en-GB' },
+  { value: 'bf_lily', label: 'Lily (British Female)', lang: 'en-GB' },
+  { value: 'bm_daniel', label: 'Daniel (British Male)', lang: 'en-GB' },
+  { value: 'bm_fable', label: 'Fable (British Male)', lang: 'en-GB' },
+  { value: 'bm_george', label: 'George (British Male)', lang: 'en-GB' },
+  { value: 'bm_lewis', label: 'Lewis (British Male)', lang: 'en-GB' },
+  { value: 'ef_dora', label: 'Dora (Spanish Female)', lang: 'es-ES' },
+  { value: 'em_alex', label: 'Alex (Spanish Male)', lang: 'es-ES' },
+  { value: 'em_santa', label: 'Santa (Spanish Male)', lang: 'es-ES' },
+  { value: 'ff_siwis', label: 'Siwis (French Female)', lang: 'fr-FR' },
+  { value: 'hf_alpha', label: 'Alpha (Hindi Female)', lang: 'hi-IN' },
+  { value: 'hf_beta', label: 'Beta (Hindi Female)', lang: 'hi-IN' },
+  { value: 'hm_omega', label: 'Omega (Hindi Male)', lang: 'hi-IN' },
+  { value: 'hm_psi', label: 'Psi (Hindi Male)', lang: 'hi-IN' },
+  { value: 'if_sara', label: 'Sara (Italian Female)', lang: 'it-IT' },
+  { value: 'im_nicola', label: 'Nicola (Italian Male)', lang: 'it-IT' },
+  { value: 'jf_alpha', label: 'Alpha (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jf_gongitsune', label: 'Gongitsune (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jf_nezumi', label: 'Nezumi (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jf_tebukuro', label: 'Tebukuro (Japanese Female)', lang: 'ja-JP' },
+  { value: 'jm_kumo', label: 'Kumo (Japanese Male)', lang: 'ja-JP' },
+  { value: 'zf_xiaobei', label: 'Xiaobei (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zf_xiaoni', label: 'Xiaoni (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zf_xiaoxiao', label: 'Xiaoxiao (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zf_xiaoyi', label: 'Xiaoyi (Chinese Female)', lang: 'zh-CN' },
+  { value: 'zm_yunjian', label: 'Yunjian (Chinese Male)', lang: 'zh-CN' },
+  { value: 'zm_yunxi', label: 'Yunxi (Chinese Male)', lang: 'zh-CN' },
+  { value: 'zm_yunxia', label: 'Yunxia (Chinese Male)', lang: 'zh-CN' },
+  { value: 'zm_yunyang', label: 'Yunyang (Chinese Male)', lang: 'zh-CN' },
+  { value: 'pf_dora', label: 'Dora (Portuguese Female)', lang: 'pt-BR' },
+  { value: 'pm_alex', label: 'Alex (Portuguese Male)', lang: 'pt-BR' },
+  { value: 'pm_santa', label: 'Santa (Portuguese Male)', lang: 'pt-BR' },
+]
+
+const LANGUAGES: { value: string; label: string }[] = [
+  { value: 'en-US', label: 'English (US)' },
+  { value: 'en-GB', label: 'English (UK)' },
+  { value: 'es-ES', label: 'Spanish' },
+  { value: 'fr-FR', label: 'French' },
+  { value: 'hi-IN', label: 'Hindi' },
+  { value: 'it-IT', label: 'Italian' },
+  { value: 'ja-JP', label: 'Japanese' },
+  { value: 'zh-CN', label: 'Chinese (Mandarin)' },
+  { value: 'pt-BR', label: 'Portuguese (Brazil)' },
+]
 
 type Tab = 'messages' | 'greetings' | 'settings'
 
@@ -301,6 +375,15 @@ function GreetingsTab() {
   const audioRef = useRef<HTMLAudioElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // TTS dialog state
+  const [ttsTarget, setTtsTarget] = useState<string | null>(null)
+  const [ttsText, setTtsText] = useState('')
+  const [ttsLang, setTtsLang] = useState('en-US')
+  const [ttsVoice, setTtsVoice] = useState('af_heart')
+  const [ttsExpires, setTtsExpires] = useState('')
+  const [ttsSaving, setTtsSaving] = useState(false)
+  const [ttsError, setTtsError] = useState<string | null>(null)
+
   useEffect(() => {
     me.listGreetings()
       .then(setGreetings)
@@ -329,6 +412,41 @@ function GreetingsTab() {
     } finally {
       setUploadType(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const openTtsDialog = (type: string) => {
+    setTtsTarget(type)
+    setTtsText('')
+    setTtsLang('en-US')
+    setTtsVoice('af_heart')
+    setTtsExpires('')
+    setTtsError(null)
+  }
+
+  const handleTtsSynthesize = async () => {
+    if (!ttsTarget || !ttsText.trim()) return
+    setTtsSaving(true)
+    setTtsError(null)
+
+    try {
+      const hours = ttsTarget === 'temporary' && ttsExpires ? parseInt(ttsExpires) : undefined
+      const greeting = await me.synthesizeGreeting({
+        greeting_type: ttsTarget,
+        text: ttsText,
+        language: ttsLang,
+        voice: ttsVoice,
+        expires_in_hours: hours,
+      })
+      setGreetings((prev) => {
+        const filtered = prev.filter((g) => g.greeting_type !== ttsTarget)
+        return [...filtered, greeting]
+      })
+      setTtsTarget(null)
+    } catch (err) {
+      setTtsError(err instanceof Error ? err.message : 'TTS synthesis failed')
+    } finally {
+      setTtsSaving(false)
     }
   }
 
@@ -381,6 +499,8 @@ function GreetingsTab() {
       if (audioUrl) URL.revokeObjectURL(audioUrl)
     }
   }, [audioUrl])
+
+  const filteredVoices = KOKORO_VOICES.filter((v) => v.lang === ttsLang)
 
   if (loading) {
     return (
@@ -441,6 +561,12 @@ function GreetingsTab() {
                     >
                       {greeting.is_active ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
                     </Button>
+                    <Button variant="ghost" size="icon" title="Replace with TTS" onClick={() => openTtsDialog(gt.id)}>
+                      <Volume2 className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="icon" title="Replace with file" onClick={() => handleUpload(gt.id)}>
+                      <Upload className="h-4 w-4" />
+                    </Button>
                     <Button variant="ghost" size="icon" title="Delete" onClick={() => handleDelete(gt.id)}>
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
@@ -457,6 +583,10 @@ function GreetingsTab() {
                         onChange={(e) => setExpiresHours(e.target.value)}
                       />
                     )}
+                    <Button variant="outline" size="sm" className="gap-1" onClick={() => openTtsDialog(gt.id)}>
+                      <Volume2 className="h-3 w-3" />
+                      TTS
+                    </Button>
                     <Button variant="outline" size="sm" className="gap-1" onClick={() => handleUpload(gt.id)}>
                       <Upload className="h-3 w-3" />
                       Upload
@@ -468,6 +598,79 @@ function GreetingsTab() {
           </Card>
         )
       })}
+
+      {/* TTS Synthesis Dialog */}
+      <Dialog open={!!ttsTarget} onOpenChange={(open) => { if (!open) setTtsTarget(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Generate Greeting with TTS</DialogTitle>
+            <DialogDescription>
+              Type your greeting message and choose a voice. The audio will be generated automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Greeting Text</Label>
+              <textarea
+                value={ttsText}
+                onChange={(e) => setTtsText(e.target.value)}
+                placeholder="Hi, you've reached my voicemail. Please leave a message after the tone."
+                rows={3}
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Language</Label>
+                <Select value={ttsLang} onValueChange={(v) => { setTtsLang(v); setTtsVoice(KOKORO_VOICES.find((x) => x.lang === v)?.value || 'af_heart') }}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {LANGUAGES.map((l) => (
+                      <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Voice</Label>
+                <Select value={ttsVoice} onValueChange={setTtsVoice}>
+                  <SelectTrigger><SelectValue placeholder="Select voice" /></SelectTrigger>
+                  <SelectContent>
+                    {filteredVoices.map((v) => (
+                      <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
+                    ))}
+                    {filteredVoices.length === 0 && (
+                      <SelectItem value="af_heart" disabled>No voices for this language</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {ttsTarget === 'temporary' && (
+              <div>
+                <Label>Expires in (hours, optional)</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={ttsExpires}
+                  onChange={(e) => setTtsExpires(e.target.value)}
+                  placeholder="e.g. 24"
+                  className="w-32"
+                />
+              </div>
+            )}
+            {ttsError && (
+              <p className="text-sm text-destructive">{ttsError}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setTtsTarget(null)}>Cancel</Button>
+              <Button onClick={handleTtsSynthesize} disabled={ttsSaving || !ttsText.trim()}>
+                {ttsSaving ? 'Generating...' : 'Generate Greeting'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

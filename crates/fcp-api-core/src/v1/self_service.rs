@@ -628,6 +628,92 @@ pub async fn upload_voicemail_greeting(
     ))
 }
 
+/// POST /me/voicemail/greetings/synthesize
+///
+/// Synthesize a greeting from text using TTS.
+pub async fn synthesize_voicemail_greeting(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<SynthesizeGreetingRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims_from_headers(&headers)?;
+    let storage = require_storage!(state);
+    let greetings_dir = require_greetings_dir(&state)?;
+    let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+
+    let tts_service = state
+        .tts_service
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("TTS service is not configured".to_string()))?;
+
+    let greeting_type = parse_greeting_type(&body.greeting_type)?;
+
+    if body.text.trim().is_empty() {
+        return Err(ApiError::BadRequest("Text must not be empty".to_string()));
+    }
+
+    let language = body.language.as_deref().unwrap_or("en-US");
+    let voice = body.voice.as_deref();
+
+    // Synthesize audio via TTS
+    let cached_path = tts_service
+        .synthesize(&body.text, Some(language), voice)
+        .await
+        .map_err(|e| ApiError::Internal(format!("TTS synthesis failed: {}", e)))?;
+
+    // Copy to greeting file location
+    let mailbox_dir = greetings_dir.join(&mailbox.id);
+    tokio::fs::create_dir_all(&mailbox_dir)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create greetings directory: {}", e)))?;
+
+    let file_path = mailbox_dir.join(format!("{}.wav", greeting_type));
+    tokio::fs::copy(&cached_path, &file_path)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to copy synthesized audio: {}", e)))?;
+
+    // Create greeting (with optional expiration for temporary greetings)
+    let greeting = if let Some(hours) = body.expires_in_hours {
+        let expires_at = SystemTime::now() + std::time::Duration::from_secs(hours * 3600);
+        VoicemailGreeting::with_expiration(greeting_type, file_path, expires_at)
+    } else {
+        VoicemailGreeting::new(greeting_type, file_path)
+    };
+
+    mailbox.add_greeting(greeting.clone());
+
+    storage
+        .put_mailbox(mailbox)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        username = %claims.sub,
+        greeting_type = %body.greeting_type,
+        voice = ?voice,
+        "User synthesized voicemail greeting via TTS"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(GreetingResponse {
+            greeting_type: greeting.greeting_type.to_string(),
+            is_active: greeting.is_active,
+            created_at: system_time_to_epoch_secs(greeting.created_at),
+            expires_at: greeting.expires_at.map(system_time_to_epoch_secs),
+        }),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SynthesizeGreetingRequest {
+    pub greeting_type: String,
+    pub text: String,
+    pub language: Option<String>,
+    pub voice: Option<String>,
+    pub expires_in_hours: Option<u64>,
+}
+
 /// DELETE /me/voicemail/greetings/:type
 pub async fn delete_voicemail_greeting(
     State(state): State<ApiState>,

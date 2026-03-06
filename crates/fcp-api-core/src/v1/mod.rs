@@ -334,6 +334,10 @@ pub fn router() -> Router<ApiState> {
             get(self_service::list_voicemail_greetings).post(self_service::upload_voicemail_greeting),
         )
         .route(
+            "/me/voicemail/greetings/synthesize",
+            post(self_service::synthesize_voicemail_greeting),
+        )
+        .route(
             "/me/voicemail/greetings/:greeting_type",
             delete(self_service::delete_voicemail_greeting),
         )

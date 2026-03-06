@@ -526,6 +526,13 @@ export const me = {
     if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
     return resp.json() as Promise<import('@/types').GreetingResponse>
   },
+  synthesizeGreeting: (data: {
+    greeting_type: string
+    text: string
+    language?: string
+    voice?: string
+    expires_in_hours?: number
+  }) => apiClient.post<import('@/types').GreetingResponse>('/me/voicemail/greetings/synthesize', data),
   deleteGreeting: (greetingType: string) =>
     apiClient.delete<void>(`/me/voicemail/greetings/${greetingType}`),
   setGreetingActive: (greetingType: string, active: boolean) =>
