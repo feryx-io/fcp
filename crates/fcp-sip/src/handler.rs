@@ -8953,10 +8953,20 @@ impl SipMessageHandler {
             None
         };
 
+        // Preserve caller identity from the original A-leg request
+        let caller_display_name = extract_from_display_name(original_request);
+        let caller_from_uri = extract_from_uri(original_request).ok().map(normalize_from_uri);
+        uac.inner().set_display_name(caller_display_name).await;
+        uac.inner().set_from_uri(caller_from_uri).await;
+
         // Create the outbound call
         let outbound_call = self
             .create_outbound_call(original_request, &target_uri, uac, sdp_override)
             .await?;
+
+        // Clear caller identity overrides after INVITE sent
+        uac.inner().set_display_name(None).await;
+        uac.inner().set_from_uri(None).await;
 
         // Create a fresh cancel_notify for the CFNA B-leg
         let cancel_notify = Arc::new(tokio::sync::Notify::new());
