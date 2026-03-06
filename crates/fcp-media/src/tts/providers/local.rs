@@ -62,6 +62,7 @@ struct WorkerRequest {
 /// JSON response received from the worker.
 #[derive(Deserialize)]
 struct WorkerResponse {
+    #[serde(default)]
     ok: bool,
     #[serde(default)]
     duration_ms: Option<u64>,
