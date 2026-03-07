@@ -3053,18 +3053,17 @@ impl FlowStore for PostgresStorage {
     }
 
     async fn delete_flow(&self, id: &str) -> std::result::Result<(), FlowError> {
-        let result =
-            sqlx::query("UPDATE flows SET enabled = false, updated_at = NOW() WHERE id = $1")
-                .bind(id)
-                .execute(&self.pool)
-                .await
-                .map_err(|e| FlowError::StorageError(e.to_string()))?;
+        let result = sqlx::query("DELETE FROM flows WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| FlowError::StorageError(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(FlowError::NotFound(format!("Flow not found: {}", id)));
         }
 
-        debug!(flow_id = %id, "Flow deleted (soft delete) in PostgreSQL");
+        debug!(flow_id = %id, "Flow deleted from PostgreSQL");
         Ok(())
     }
 
