@@ -117,7 +117,7 @@ impl LocalTts {
             engine = %engine,
             python = %python_path.display(),
             worker = %worker_script.display(),
-            "Local TTS provider created (worker will start on first synthesis)"
+            "Local TTS provider created"
         );
 
         Ok(Self {
@@ -127,6 +127,11 @@ impl LocalTts {
             worker: Mutex::new(None),
             default_voice: "af_heart".to_string(),
         })
+    }
+
+    /// Pre-warm the worker subprocess so the model is loaded and ready.
+    pub async fn warm_up(&self) -> Result<()> {
+        self.ensure_worker().await
     }
 
     /// Ensure the worker subprocess is running, spawning it if needed.

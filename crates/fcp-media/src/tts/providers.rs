@@ -51,6 +51,8 @@ pub async fn create_provider(config: TtsProviderConfig) -> Result<Arc<dyn TtsPro
             executable_path,
         } => {
             let provider = local::LocalTts::new(engine, executable_path)?;
+            // Eagerly start the worker so the model is pre-loaded and ready
+            provider.warm_up().await?;
             Ok(Arc::new(provider))
         }
     }
