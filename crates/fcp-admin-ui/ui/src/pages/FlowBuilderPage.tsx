@@ -150,9 +150,12 @@ const FIELD_LABELS: Record<string, string> = {
   prompt: 'Prompt',
 }
 
+type PositionMap = Record<string, { x: number; y: number }>
+
 function flowNodesToReactFlow(
   flowNodes: Record<string, FlowNode>,
   initialNode: string,
+  savedPositions?: PositionMap,
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = []
   const edges: Edge[] = []
@@ -160,10 +163,11 @@ function flowNodesToReactFlow(
 
   entries.forEach(([id, node], index) => {
     const palette = NODE_TYPES_PALETTE.find((p) => p.type === node.type)
+    const pos = savedPositions?.[id] ?? { x: 250, y: index * 120 }
     nodes.push({
       id,
       type: 'default',
-      position: { x: 250, y: index * 120 },
+      position: pos,
       data: {
         label: (
           <div className="text-xs">
@@ -280,9 +284,11 @@ export function FlowBuilderPage() {
   useEffect(() => {
     if (flow) {
       const nodesData = flow.nodes || {}
+      const savedPositions = (flow.variables as Record<string, unknown>)?._ui_positions as PositionMap | undefined
       const { nodes: rfNodes, edges: rfEdges } = flowNodesToReactFlow(
         nodesData,
         flow.initial_node,
+        savedPositions,
       )
       setNodes(rfNodes)
       setEdges(rfEdges)
@@ -293,6 +299,16 @@ export function FlowBuilderPage() {
       setDirty(false)
     }
   }, [flow, setNodes, setEdges])
+
+  const handleNodesChange: typeof onNodesChange = useCallback(
+    (changes) => {
+      onNodesChange(changes)
+      if (changes.some((c) => c.type === 'position' && c.dragging === false)) {
+        setDirty(true)
+      }
+    },
+    [onNodesChange],
+  )
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -389,10 +405,20 @@ export function FlowBuilderPage() {
     mutationFn: () => {
       // Merge local flowNodes with edge-derived connections
       const mergedNodes = reactFlowToFlowNodes(nodes, edges, flowNodes)
+      // Save node positions so they persist across reloads
+      const positions: PositionMap = {}
+      for (const n of nodes) {
+        positions[n.id] = { x: n.position.x, y: n.position.y }
+      }
+      const variables = {
+        ...((flow?.variables as Record<string, unknown>) || {}),
+        _ui_positions: positions,
+      }
       return flows.update(id!, {
         name: flowName,
         description: flowDescription || undefined,
         nodes: mergedNodes,
+        variables,
       })
     },
     onSuccess: () => {
@@ -756,7 +782,7 @@ export function FlowBuilderPage() {
           <ReactFlow
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
+            onNodesChange={handleNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={(_, node) => setSelectedNode(node.id)}
