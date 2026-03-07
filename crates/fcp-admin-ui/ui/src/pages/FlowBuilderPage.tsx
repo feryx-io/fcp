@@ -552,6 +552,10 @@ export function FlowBuilderPage() {
       queryClient.invalidateQueries({ queryKey: ['flows'] })
       setDirty(false)
     },
+    onError: (error) => {
+      console.error('Failed to save flow:', error)
+      alert(`Failed to save flow: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    },
   })
 
   const addNode = (type: string) => {

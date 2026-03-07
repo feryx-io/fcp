@@ -2762,7 +2762,7 @@ fn parse_flow_from_row_pg(
             node.id = key.clone();
         }
     }
-    let variables: HashMap<String, String> = serde_json::from_value(variables_json)?;
+    let variables: HashMap<String, serde_json::Value> = serde_json::from_value(variables_json)?;
 
     Ok(FlowDefinition {
         id,

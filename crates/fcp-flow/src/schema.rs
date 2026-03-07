@@ -30,7 +30,7 @@ pub struct FlowDefinition {
 
     /// Global variables and their default values
     #[serde(default)]
-    pub variables: HashMap<String, String>,
+    pub variables: HashMap<String, serde_json::Value>,
 
     /// Tenant ID this flow belongs to
     #[serde(skip_serializing_if = "Option::is_none")]

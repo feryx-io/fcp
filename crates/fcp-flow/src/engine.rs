@@ -809,7 +809,18 @@ impl FlowContext {
         call_id: CallId,
         initial_variables: HashMap<String, String>,
     ) -> Self {
-        let mut variables = flow.variables.clone();
+        // Extract string variables from flow definition (skip non-string/internal entries)
+        let mut variables: HashMap<String, String> = flow
+            .variables
+            .iter()
+            .filter(|(k, _)| !k.starts_with('_'))
+            .filter_map(|(k, v)| {
+                match v {
+                    serde_json::Value::String(s) => Some((k.clone(), s.clone())),
+                    _ => None,
+                }
+            })
+            .collect();
         variables.extend(initial_variables);
 
         Self {
