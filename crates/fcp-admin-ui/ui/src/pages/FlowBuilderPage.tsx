@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -16,8 +16,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import {
-  Save, ArrowLeft, Trash2, Play, Mic, Phone,
+  Save, ArrowLeft, Trash2, Play, Pause, Mic, Phone,
   Voicemail, GitBranch, PhoneOff, Globe, Users, KeyRound,
+  Upload, Volume2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,8 +32,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { flows } from '@/api/endpoints'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
+import { flows, prompts, type PromptResponse } from '@/api/endpoints'
 import type { FlowNode } from '@/types'
+
+// Kokoro TTS voices
+const KOKORO_VOICES: { value: string; label: string }[] = [
+  { value: 'af_heart', label: 'Heart (American Female)' },
+  { value: 'af_bella', label: 'Bella (American Female)' },
+  { value: 'af_nicole', label: 'Nicole (American Female)' },
+  { value: 'af_sarah', label: 'Sarah (American Female)' },
+  { value: 'af_sky', label: 'Sky (American Female)' },
+  { value: 'am_adam', label: 'Adam (American Male)' },
+  { value: 'am_michael', label: 'Michael (American Male)' },
+  { value: 'am_eric', label: 'Eric (American Male)' },
+  { value: 'bf_emma', label: 'Emma (British Female)' },
+  { value: 'bf_isabella', label: 'Isabella (British Female)' },
+  { value: 'bm_george', label: 'George (British Male)' },
+  { value: 'bm_lewis', label: 'Lewis (British Male)' },
+]
 
 const NODE_TYPES_PALETTE = [
   { type: 'answer', label: 'Answer', icon: Phone, color: '#22c55e' },
@@ -117,7 +141,7 @@ const FIELD_LABELS: Record<string, string> = {
   next_on_success: 'On Success',
   next_on_error: 'On Error',
   text: 'Text',
-  url: 'URL',
+  url: 'Audio Prompt',
   voice: 'Voice',
   language: 'Language',
   destination: 'Destination',
@@ -280,6 +304,27 @@ export function FlowBuilderPage() {
   const [flowNodes, setFlowNodes] = useState<Record<string, FlowNode>>({})
   const [dirty, setDirty] = useState(false)
 
+  // Audio prompt dialog state
+  const [audioDialogOpen, setAudioDialogOpen] = useState(false)
+  const [audioDialogNodeId, setAudioDialogNodeId] = useState<string>('')
+  const [audioDialogField, setAudioDialogField] = useState<string>('url')
+  const [audioTab, setAudioTab] = useState<'existing' | 'upload' | 'tts'>('existing')
+  const [ttsText, setTtsText] = useState('')
+  const [ttsVoice, setTtsVoice] = useState('af_heart')
+  const [ttsPromptName, setTtsPromptName] = useState('')
+  const [uploadPromptName, setUploadPromptName] = useState('')
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [audioGenerating, setAudioGenerating] = useState(false)
+  const [playingPromptId, setPlayingPromptId] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Fetch available prompts
+  const { data: promptsList } = useQuery({
+    queryKey: ['prompts'],
+    queryFn: () => prompts.list(),
+  })
+
   // Initialize from flow data
   useEffect(() => {
     if (flow) {
@@ -400,6 +445,87 @@ export function FlowBuilderPage() {
     },
     [],
   )
+
+  // Open audio prompt dialog for a url field
+  const openAudioDialog = (nodeId: string, field: string) => {
+    setAudioDialogNodeId(nodeId)
+    setAudioDialogField(field)
+    setAudioTab('existing')
+    setTtsText('')
+    setTtsVoice('af_heart')
+    setTtsPromptName('')
+    setUploadPromptName('')
+    setUploadFile(null)
+    setAudioDialogOpen(true)
+  }
+
+  // Select an existing prompt and set its audio URL on the node
+  const selectPrompt = (prompt: PromptResponse) => {
+    const audioUrl = prompts.audioUrl(prompt.id)
+    updateNodeProperty(audioDialogNodeId, audioDialogField, audioUrl)
+    setAudioDialogOpen(false)
+  }
+
+  // Upload audio file as new prompt
+  const handleUploadAudio = async () => {
+    if (!uploadFile || !uploadPromptName.trim()) return
+    setAudioGenerating(true)
+    try {
+      const created = await prompts.create({
+        name: uploadPromptName.trim(),
+        category: 'ivr',
+        source_type: 'upload',
+      })
+      await prompts.uploadAudio(created.id, uploadFile)
+      queryClient.invalidateQueries({ queryKey: ['prompts'] })
+      const audioUrl = prompts.audioUrl(created.id)
+      updateNodeProperty(audioDialogNodeId, audioDialogField, audioUrl)
+      setAudioDialogOpen(false)
+    } catch (e) {
+      console.error('Failed to upload audio:', e)
+    } finally {
+      setAudioGenerating(false)
+    }
+  }
+
+  // Generate TTS as new prompt
+  const handleGenerateTts = async () => {
+    if (!ttsText.trim() || !ttsPromptName.trim()) return
+    setAudioGenerating(true)
+    try {
+      const created = await prompts.create({
+        name: ttsPromptName.trim(),
+        category: 'ivr',
+        source_type: 'tts',
+        tts_text: ttsText.trim(),
+        tts_voice: ttsVoice,
+      })
+      await prompts.synthesize(created.id)
+      queryClient.invalidateQueries({ queryKey: ['prompts'] })
+      const audioUrl = prompts.audioUrl(created.id)
+      updateNodeProperty(audioDialogNodeId, audioDialogField, audioUrl)
+      setAudioDialogOpen(false)
+    } catch (e) {
+      console.error('Failed to generate TTS:', e)
+    } finally {
+      setAudioGenerating(false)
+    }
+  }
+
+  // Preview audio
+  const togglePlayPrompt = (promptId: string) => {
+    if (playingPromptId === promptId) {
+      audioRef.current?.pause()
+      setPlayingPromptId(null)
+    } else {
+      if (audioRef.current) audioRef.current.pause()
+      const audio = new Audio(prompts.audioUrl(promptId))
+      audio.onended = () => setPlayingPromptId(null)
+      audio.play()
+      audioRef.current = audio
+      setPlayingPromptId(promptId)
+    }
+  }
 
   const saveMutation = useMutation({
     mutationFn: () => {
@@ -588,6 +714,50 @@ export function FlowBuilderPage() {
             }}
             className="mt-1 w-full h-20 rounded-md border border-input bg-background px-2 py-1 text-xs font-mono resize-y"
           />
+        </div>
+      )
+    }
+
+    // Audio URL fields - render as prompt picker with upload/TTS options
+    if (key === 'url') {
+      const urlStr = String(value ?? '')
+      // Try to resolve the prompt name from the URL
+      const promptIdMatch = urlStr.match(/\/prompts\/([^/]+)\/audio/)
+      const matchedPrompt = promptIdMatch
+        ? promptsList?.find((p: PromptResponse) => p.id === promptIdMatch[1])
+        : null
+      return (
+        <div key={key}>
+          <Label className="text-xs font-medium">{label}</Label>
+          <div className="mt-1 space-y-1">
+            {urlStr ? (
+              <div className="flex items-center gap-1 rounded-md border border-input bg-muted px-2 py-1.5">
+                <Volume2 className="h-3 w-3 text-muted-foreground shrink-0" />
+                <span className="text-xs truncate flex-1">
+                  {matchedPrompt?.name || urlStr}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5 shrink-0"
+                  onClick={() => updateNodeProperty(nodeId, key, '')}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground italic">No audio selected</p>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full h-7 text-xs"
+              onClick={() => openAudioDialog(nodeId, key)}
+            >
+              <Volume2 className="mr-1 h-3 w-3" />
+              {urlStr ? 'Change Audio' : 'Select Audio'}
+            </Button>
+          </div>
         </div>
       )
     }
@@ -839,6 +1009,178 @@ export function FlowBuilderPage() {
           </div>
         )}
       </div>
+
+      {/* Audio Prompt Dialog */}
+      <Dialog open={audioDialogOpen} onOpenChange={setAudioDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Select Audio Prompt</DialogTitle>
+            <DialogDescription>
+              Choose an existing prompt, upload an audio file, or generate speech from text.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Tabs */}
+          <div className="flex border-b">
+            {(['existing', 'upload', 'tts'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setAudioTab(tab)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  audioTab === tab
+                    ? 'border-primary text-primary'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {tab === 'existing' && 'Existing Prompts'}
+                {tab === 'upload' && 'Upload'}
+                {tab === 'tts' && 'Text to Speech'}
+              </button>
+            ))}
+          </div>
+
+          {/* Existing Prompts Tab */}
+          {audioTab === 'existing' && (
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {!promptsList?.length ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No prompts available. Upload or generate one.
+                </p>
+              ) : (
+                promptsList.map((p: PromptResponse) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-2 rounded-md border px-3 py-2 hover:bg-accent cursor-pointer"
+                    onClick={() => selectPrompt(p)}
+                  >
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (p.has_audio) togglePlayPrompt(p.id)
+                      }}
+                      disabled={!p.has_audio}
+                    >
+                      {playingPromptId === p.id ? (
+                        <Pause className="h-3 w-3" />
+                      ) : (
+                        <Play className="h-3 w-3" />
+                      )}
+                    </Button>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{p.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {p.category}
+                        {p.duration_ms ? ` \u00b7 ${(p.duration_ms / 1000).toFixed(1)}s` : ''}
+                        {p.source_type === 'tts' ? ' \u00b7 TTS' : ''}
+                      </p>
+                    </div>
+                    {p.has_audio && (
+                      <Badge variant="outline" className="shrink-0 text-xs">
+                        Ready
+                      </Badge>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {/* Upload Tab */}
+          {audioTab === 'upload' && (
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs font-medium">Prompt Name</Label>
+                <Input
+                  value={uploadPromptName}
+                  onChange={(e) => setUploadPromptName(e.target.value)}
+                  placeholder="e.g. Main Menu Greeting"
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-medium">Audio File (WAV)</Label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="audio/*"
+                  className="hidden"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                />
+                <div className="mt-1 flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload className="mr-1 h-3 w-3" />
+                    Choose File
+                  </Button>
+                  <span className="text-xs text-muted-foreground truncate">
+                    {uploadFile?.name || 'No file selected'}
+                  </span>
+                </div>
+              </div>
+              <Button
+                className="w-full"
+                disabled={!uploadFile || !uploadPromptName.trim() || audioGenerating}
+                onClick={handleUploadAudio}
+              >
+                {audioGenerating ? 'Uploading...' : 'Upload & Use'}
+              </Button>
+            </div>
+          )}
+
+          {/* TTS Tab */}
+          {audioTab === 'tts' && (
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs font-medium">Prompt Name</Label>
+                <Input
+                  value={ttsPromptName}
+                  onChange={(e) => setTtsPromptName(e.target.value)}
+                  placeholder="e.g. Welcome Message"
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-medium">Text to Speak</Label>
+                <textarea
+                  value={ttsText}
+                  onChange={(e) => setTtsText(e.target.value)}
+                  placeholder="Enter the text you want spoken..."
+                  className="mt-1 w-full h-20 rounded-md border border-input bg-background px-3 py-2 text-sm resize-y"
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-medium">Voice</Label>
+                <Select value={ttsVoice} onValueChange={setTtsVoice}>
+                  <SelectTrigger className="mt-1 h-8 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {KOKORO_VOICES.map((v) => (
+                      <SelectItem key={v.value} value={v.value}>
+                        {v.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                className="w-full"
+                disabled={!ttsText.trim() || !ttsPromptName.trim() || audioGenerating}
+                onClick={handleGenerateTts}
+              >
+                <Mic className="mr-1 h-3 w-3" />
+                {audioGenerating ? 'Generating...' : 'Generate & Use'}
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
