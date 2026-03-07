@@ -371,16 +371,19 @@ export function FlowBuilderPage() {
     [setEdges],
   )
 
-  // Update a property on a flow node
+  // Update a property on a flow node (supports dot-paths like "prompt.url")
   const updateNodeProperty = useCallback(
     (nodeId: string, key: string, value: unknown) => {
-      setFlowNodes((prev) => ({
-        ...prev,
-        [nodeId]: {
-          ...prev[nodeId],
-          [key]: value,
-        },
-      }))
+      setFlowNodes((prev) => {
+        const node = { ...prev[nodeId] } as Record<string, unknown>
+        if (key.includes('.')) {
+          const [parent, child] = key.split('.', 2)
+          node[parent] = { ...(node[parent] as Record<string, unknown> || {}), [child]: value }
+        } else {
+          node[key] = value
+        }
+        return { ...prev, [nodeId]: node as FlowNode }
+      })
       setDirty(true)
     },
     [],
@@ -700,8 +703,130 @@ export function FlowBuilderPage() {
       )
     }
 
-    // Nested objects (prompt, headers, destinations) - render as JSON for now
-    if (key === 'headers' || key === 'destinations' || key === 'prompt') {
+    // Gather prompt field - type selector + audio picker or TTS fields
+    if (key === 'prompt') {
+      const prompt = (value as Record<string, unknown>) || null
+      const promptType = prompt?.type as string || 'play'
+      const promptUrl = (prompt?.url as string) || ''
+      const promptText = (prompt?.text as string) || ''
+      const promptVoice = (prompt?.voice as string) || ''
+      const promptLang = (prompt?.language as string) || 'en-US'
+
+      // Resolve prompt name from URL
+      const promptIdMatch = promptUrl.match(/\/prompts\/([^/]+)\/audio/)
+      const matchedPrompt = promptIdMatch
+        ? promptsList?.find((p: PromptResponse) => p.id === promptIdMatch[1])
+        : null
+
+      const updatePromptField = (field: string, val: unknown) => {
+        updateNodeProperty(nodeId, key, { ...prompt, [field]: val })
+      }
+
+      return (
+        <div key={key} className="space-y-2">
+          <Label className="text-xs font-medium">{label}</Label>
+          <div>
+            <Label className="text-xs text-muted-foreground">Prompt Type</Label>
+            <Select
+              value={promptType}
+              onValueChange={(v) => {
+                if (v === 'play') {
+                  updateNodeProperty(nodeId, key, { type: 'play', url: '' })
+                } else {
+                  updateNodeProperty(nodeId, key, { type: 'say', text: '', voice: '', language: 'en-US' })
+                }
+              }}
+            >
+              <SelectTrigger className="mt-1 h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="play">Play Audio File</SelectItem>
+                <SelectItem value="say">Text to Speech</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {promptType === 'play' && (
+            <div>
+              <Label className="text-xs text-muted-foreground">Audio</Label>
+              <div className="mt-1 space-y-1">
+                {promptUrl ? (
+                  <div className="flex items-center gap-1 rounded-md border border-input bg-muted px-2 py-1.5">
+                    <Volume2 className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <span className="text-xs truncate flex-1">
+                      {matchedPrompt?.name || promptUrl}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 shrink-0"
+                      onClick={() => updatePromptField('url', '')}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground italic">No audio selected</p>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full h-7 text-xs"
+                  onClick={() => openAudioDialog(nodeId, key + '.url')}
+                >
+                  <Volume2 className="mr-1 h-3 w-3" />
+                  {promptUrl ? 'Change Audio' : 'Select Audio'}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {promptType === 'say' && (
+            <>
+              <div>
+                <Label className="text-xs text-muted-foreground">Text</Label>
+                <textarea
+                  value={promptText}
+                  onChange={(e) => updatePromptField('text', e.target.value)}
+                  placeholder="Enter text to speak..."
+                  className="mt-1 w-full h-14 rounded-md border border-input bg-background px-2 py-1 text-xs resize-y"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Voice</Label>
+                <Select
+                  value={promptVoice || '__default__'}
+                  onValueChange={(v) => updatePromptField('voice', v === '__default__' ? '' : v)}
+                >
+                  <SelectTrigger className="mt-1 h-8 text-xs">
+                    <SelectValue placeholder="Default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">Default</SelectItem>
+                    {KOKORO_VOICES.map((v) => (
+                      <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Language</Label>
+                <Input
+                  value={promptLang}
+                  onChange={(e) => updatePromptField('language', e.target.value)}
+                  className="mt-1 h-8 text-xs"
+                  placeholder="en-US"
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )
+    }
+
+    // Nested objects (headers, destinations) - render as JSON
+    if (key === 'headers' || key === 'destinations') {
       const jsonStr = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value ?? '')
       return (
         <div key={key}>
