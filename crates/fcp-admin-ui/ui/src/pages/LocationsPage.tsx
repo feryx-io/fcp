@@ -14,10 +14,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { locations } from '@/api/endpoints'
 import type { Location, CreateLocationRequest } from '@/types'
+
+const TIMEZONES: Record<string, string[]> = (() => {
+  const grouped: Record<string, string[]> = {}
+  for (const tz of (Intl as unknown as { supportedValuesOf(key: string): string[] }).supportedValuesOf('timeZone')) {
+    const region = tz.split('/')[0]
+    ;(grouped[region] ??= []).push(tz)
+  }
+  return grouped
+})()
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -218,8 +230,20 @@ export function LocationsPage() {
         <Input id="f-phone_number" placeholder="+1-555-0100" {...form.register('phone_number')} />
       </div>
       <div className="space-y-2">
-        <Label htmlFor="f-timezone">Timezone</Label>
-        <Input id="f-timezone" placeholder="America/New_York" {...form.register('timezone')} />
+        <Label>Timezone</Label>
+        <Select value={form.watch('timezone') || ''} onValueChange={(v) => form.setValue('timezone', v)}>
+          <SelectTrigger><SelectValue placeholder="Select timezone" /></SelectTrigger>
+          <SelectContent className="max-h-72">
+            {Object.entries(TIMEZONES).map(([region, zones]) => (
+              <SelectGroup key={region}>
+                <SelectLabel>{region}</SelectLabel>
+                {zones.map((tz) => (
+                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                ))}
+              </SelectGroup>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Address */}

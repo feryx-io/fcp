@@ -303,7 +303,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
 dependencies = [
  "async-trait",
- "axum-core",
+ "axum-core 0.4.5",
  "axum-macros",
  "base64 0.22.1",
  "bytes",
@@ -314,7 +314,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "itoa",
- "matchit",
+ "matchit 0.7.3",
  "memchr",
  "mime",
  "multer",
@@ -329,6 +329,43 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "tower 0.5.3",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "axum"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b52af3cb4058c895d37317bb27508dccc8e5f2d39454016b297bf4a400597b8"
+dependencies = [
+ "axum-core 0.5.6",
+ "base64 0.22.1",
+ "bytes",
+ "form_urlencoded",
+ "futures-util",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
+ "itoa",
+ "matchit 0.8.4",
+ "memchr",
+ "mime",
+ "multer",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
+ "sha1",
+ "sync_wrapper 1.0.2",
+ "tokio",
+ "tokio-tungstenite 0.28.0",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
@@ -357,6 +394,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-core"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "sync_wrapper 1.0.2",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "axum-macros"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -369,12 +425,13 @@ dependencies = [
 
 [[package]]
 name = "axum-server"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9"
+checksum = "b1df331683d982a0b9492b38127151e6453639cd34926eb9c07d4cd8c6d22bfc"
 dependencies = [
  "arc-swap",
  "bytes",
+ "either",
  "fs-err",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -382,7 +439,6 @@ dependencies = [
  "hyper-util",
  "pin-project-lite",
  "rustls 0.23.37",
- "rustls-pemfile 2.2.0",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -1492,11 +1548,11 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fcp-admin"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -1517,7 +1573,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.24.0",
- "toml",
+ "toml 0.8.23",
  "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
@@ -1526,20 +1582,20 @@ dependencies = [
 
 [[package]]
 name = "fcp-admin-ui"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
- "axum",
+ "axum 0.7.9",
  "include_dir",
  "mime_guess",
 ]
 
 [[package]]
 name = "fcp-api-core"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "base64 0.22.1",
  "chrono",
  "fcp-core",
@@ -1565,10 +1621,10 @@ dependencies = [
 
 [[package]]
 name = "fcp-api-gateway"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -1583,7 +1639,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tower 0.4.13",
  "tower-http 0.5.2",
  "tracing",
@@ -1593,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-b2bua-core"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1615,11 +1671,11 @@ dependencies = [
 
 [[package]]
 name = "fcp-call-manager"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -1663,7 +1719,7 @@ dependencies = [
  "smol_str",
  "socket2 0.5.10",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1671,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cli"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1695,7 +1751,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "tui-input",
@@ -1704,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-cluster"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1723,12 +1779,12 @@ dependencies = [
 
 [[package]]
 name = "fcp-conference-server"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -1769,7 +1825,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
- "toml",
+ "toml 0.8.23",
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
@@ -1797,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-events"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1814,10 +1870,10 @@ dependencies = [
 
 [[package]]
 name = "fcp-events-server"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
- "axum",
+ "axum 0.7.9",
  "clap",
  "dashmap 6.1.0",
  "fcp-cluster",
@@ -1833,7 +1889,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.21.0",
- "toml",
+ "toml 0.8.23",
  "tower 0.4.13",
  "tower-http 0.5.2",
  "tracing",
@@ -1866,11 +1922,11 @@ dependencies = [
 
 [[package]]
 name = "fcp-ivr"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -1898,7 +1954,7 @@ dependencies = [
  "sip-uac",
  "socket2 0.5.10",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1906,10 +1962,10 @@ dependencies = [
 
 [[package]]
 name = "fcp-jobs"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
- "axum",
+ "axum 0.7.9",
  "chrono",
  "clap",
  "fcp-core",
@@ -1920,7 +1976,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
@@ -1963,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-media-server"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -1977,7 +2033,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1985,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-pbx"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "dashmap 6.1.0",
  "fcp-b2bua-core",
@@ -1995,14 +2051,14 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "fcp-presence"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2029,10 +2085,10 @@ dependencies = [
 
 [[package]]
 name = "fcp-presence-server"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
- "axum",
+ "axum 0.7.9",
  "clap",
  "fcp-cluster",
  "fcp-core",
@@ -2045,7 +2101,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2053,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-queue"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2068,18 +2124,18 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "fcp-registrar"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "fcp-core",
@@ -2095,7 +2151,7 @@ dependencies = [
  "sip-transport",
  "smol_str",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2127,11 +2183,11 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "base64 0.22.1",
  "bytes",
  "clap",
@@ -2167,7 +2223,7 @@ dependencies = [
  "sip-uas",
  "socket2 0.5.10",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
@@ -2177,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-sbc-core"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2245,7 +2301,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-rustls 0.25.0",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "urlencoding",
  "uuid",
@@ -2253,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-postgres"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2272,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-storage-redis"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2306,11 +2362,11 @@ dependencies = [
 
 [[package]]
 name = "fcp-voicemail-server"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
+ "axum 0.7.9",
  "bytes",
  "clap",
  "dashmap 6.1.0",
@@ -2339,7 +2395,7 @@ dependencies = [
  "sip-uac",
  "socket2 0.5.10",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2347,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "fcp-webhooks"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "fcp-core",
  "fcp-events",
@@ -2365,10 +2421,10 @@ dependencies = [
 
 [[package]]
 name = "fcp-webrtc-gateway"
-version = "0.25.2"
+version = "0.25.3"
 dependencies = [
  "anyhow",
- "axum",
+ "axum 0.7.9",
  "clap",
  "dashmap 6.1.0",
  "fcp-cluster",
@@ -2394,7 +2450,7 @@ dependencies = [
  "sip-uac",
  "socket2 0.5.10",
  "tokio",
- "toml",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2518,7 +2574,7 @@ dependencies = [
  "reqwest 0.11.27",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tracing",
@@ -2529,7 +2585,7 @@ dependencies = [
 name = "forge-api"
 version = "0.3.0"
 dependencies = [
- "axum",
+ "axum 0.8.8",
  "axum-server",
  "chrono",
  "dashmap 5.5.3",
@@ -2549,10 +2605,10 @@ dependencies = [
  "metrics-exporter-prometheus",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
- "tower 0.4.13",
- "tower-http 0.5.2",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
  "tracing",
  "url",
  "uuid",
@@ -2565,7 +2621,7 @@ version = "0.2.0"
 dependencies = [
  "ezk-g722",
  "lazy_static",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2583,9 +2639,9 @@ dependencies = [
  "metrics 0.21.1",
  "parking_lot 0.12.5",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
- "toml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
 ]
 
@@ -2596,7 +2652,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -2609,7 +2665,7 @@ version = "0.2.1"
 dependencies = [
  "chrono",
  "forge-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2636,7 +2692,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -2656,7 +2712,7 @@ dependencies = [
  "serde",
  "sha1",
  "socket2 0.5.10",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2668,7 +2724,7 @@ dependencies = [
  "forge-core",
  "rubato",
  "symphonia",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2682,7 +2738,7 @@ dependencies = [
  "forge-core",
  "forge-recorder",
  "parking_lot 0.12.5",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2694,7 +2750,7 @@ dependencies = [
  "forge-core",
  "hound",
  "parking_lot 0.12.5",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2703,7 +2759,7 @@ dependencies = [
 name = "forge-resampler"
 version = "0.1.1"
 dependencies = [
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2726,7 +2782,7 @@ dependencies = [
  "sha2",
  "socket2 0.5.10",
  "subtle",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2740,7 +2796,7 @@ dependencies = [
  "forge-ice",
  "sip-sdp 0.1.0",
  "smol_str",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2757,7 +2813,7 @@ dependencies = [
  "quick-xml 0.36.2",
  "rand 0.8.5",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tracing",
@@ -2770,7 +2826,7 @@ version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2783,7 +2839,7 @@ dependencies = [
  "forge-codecs",
  "forge-core",
  "forge-resampler",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -2797,7 +2853,7 @@ dependencies = [
  "forge-rtp",
  "forge-sdp",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -3942,6 +3998,12 @@ name = "matchit"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
+
+[[package]]
+name = "matchit"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "md-5"
@@ -5793,6 +5855,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8bbf91e5a4d6315eee45e704372590b30e260ee83af6639d64557f51b067776"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7082,6 +7153,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite 0.28.0",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7102,9 +7185,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_edit",
+]
+
+[[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap 2.13.0",
+ "serde_core",
+ "serde_spanned 1.0.4",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
 ]
 
 [[package]]
@@ -7117,6 +7215,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7124,9 +7231,18 @@ checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
 dependencies = [
  "indexmap 2.13.0",
  "serde",
- "serde_spanned",
- "toml_datetime",
+ "serde_spanned 0.6.9",
+ "toml_datetime 0.6.11",
  "toml_write",
+ "winnow",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.0.9+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
+dependencies = [
  "winnow",
 ]
 
@@ -7135,6 +7251,12 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
+
+[[package]]
+name = "toml_writer"
+version = "1.0.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab16f14aed21ee8bfd8ec22513f7287cd4a91aa92e44edfe2c17ddd004e92607"
 
 [[package]]
 name = "tower"
@@ -7168,6 +7290,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper 1.0.2",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -7200,13 +7323,17 @@ version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
 dependencies = [
+ "async-compression",
  "bitflags 2.11.0",
  "bytes",
+ "futures-core",
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
  "iri-string",
  "pin-project-lite",
+ "tokio",
+ "tokio-util",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
@@ -7363,6 +7490,23 @@ dependencies = [
  "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
+ "utf-8",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http 1.4.0",
+ "httparse",
+ "log",
+ "rand 0.9.2",
+ "sha1",
+ "thiserror 2.0.18",
  "utf-8",
 ]
 

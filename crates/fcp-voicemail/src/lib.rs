@@ -222,8 +222,8 @@ impl VoicemailService {
                 .play_tone(
                     call_id,
                     1000.0,  // 1kHz tone
-                    500,     // 500ms duration
-                    0.6,     // -4dB amplitude
+                    300,     // 300ms duration
+                    0.5,     // -6dB amplitude
                     fcp_media::AudioTarget::ParticipantA,
                 )
                 .await

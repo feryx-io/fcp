@@ -5,16 +5,23 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatDate(date: string | Date): string {
-  return new Date(date).toLocaleDateString('en-US', {
+function toDate(date: string | Date | { secs_since_epoch: number; nanos_since_epoch: number }): Date {
+  if (typeof date === 'object' && 'secs_since_epoch' in date) {
+    return new Date(date.secs_since_epoch * 1000)
+  }
+  return new Date(date)
+}
+
+export function formatDate(date: string | Date | { secs_since_epoch: number; nanos_since_epoch: number }): string {
+  return toDate(date).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
   })
 }
 
-export function formatDateTime(date: string | Date): string {
-  return new Date(date).toLocaleString('en-US', {
+export function formatDateTime(date: string | Date | { secs_since_epoch: number; nanos_since_epoch: number }): string {
+  return toDate(date).toLocaleString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
