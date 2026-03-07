@@ -492,6 +492,23 @@ async fn main() -> Result<()> {
                     }
                 }
                 info!(auto_routes, "Auto-discovered mailbox routes from database");
+
+                // Clean up orphaned vm-auto-* flows that no longer have a mailbox
+                let mailbox_ids: std::collections::HashSet<String> =
+                    mailboxes.iter().map(|mb| mb.id.clone()).collect();
+                if let Ok(all_flows) = flow_store.list_flows(None).await {
+                    for flow in &all_flows {
+                        if let Some(mb_id) = flow.id.strip_prefix("vm-auto-") {
+                            if !mailbox_ids.contains(mb_id) {
+                                if let Err(e) = flow_store.delete_flow(&flow.id).await {
+                                    warn!(flow_id = %flow.id, error = %e, "Failed to delete orphaned voicemail flow");
+                                } else {
+                                    info!(flow_id = %flow.id, "Deleted orphaned voicemail flow");
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 warn!(error = %e, "Failed to list mailboxes for auto-discovery");
