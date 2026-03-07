@@ -39,7 +39,7 @@ sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 
 # HTTP API
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

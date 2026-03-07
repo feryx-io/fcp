@@ -2427,7 +2427,7 @@ name = "fcp-webrtc-gateway"
 version = "0.25.4"
 dependencies = [
  "anyhow",
- "axum 0.7.9",
+ "axum 0.8.8",
  "clap",
  "dashmap 6.1.0",
  "fcp-cluster",
