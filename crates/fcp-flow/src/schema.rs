@@ -61,6 +61,7 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowNode {
     /// Unique identifier for this node
+    #[serde(default)]
     pub id: String,
 
     /// Human-readable name for this node

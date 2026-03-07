@@ -175,37 +175,51 @@ VALUES (
     'greeting',
     '{
         "greeting": {
+            "id": "greeting",
             "type": "play",
-            "audio_url": "/audio/welcome.wav",
+            "url": "/audio/welcome.wav",
+            "loop_count": 0,
             "next": "menu"
         },
         "menu": {
-            "type": "menu",
-            "prompt_url": "/audio/menu-prompt.wav",
-            "options": {
+            "id": "menu",
+            "type": "gather",
+            "prompt": {"type": "play", "url": "/audio/menu-prompt.wav"},
+            "num_digits": 1,
+            "timeout": 5,
+            "variable": "menu_choice",
+            "transitions": {
                 "1": "sales",
                 "2": "support",
                 "0": "operator"
             },
-            "timeout_seconds": 5,
-            "max_retries": 3,
-            "invalid_next": "menu",
-            "timeout_next": "operator"
+            "default": "operator",
+            "on_timeout": "operator"
         },
         "sales": {
-            "type": "transfer",
-            "target": "100",
-            "target_type": "extension"
+            "id": "sales",
+            "type": "dial",
+            "destination": "100",
+            "timeout": 30,
+            "next": "hangup"
         },
         "support": {
-            "type": "transfer",
-            "target": "101",
-            "target_type": "extension"
+            "id": "support",
+            "type": "dial",
+            "destination": "101",
+            "timeout": 30,
+            "next": "hangup"
         },
         "operator": {
-            "type": "transfer",
-            "target": "100",
-            "target_type": "extension"
+            "id": "operator",
+            "type": "dial",
+            "destination": "100",
+            "timeout": 30,
+            "next": "hangup"
+        },
+        "hangup": {
+            "id": "hangup",
+            "type": "hangup"
         }
     }'::jsonb,
     '{}'::jsonb,

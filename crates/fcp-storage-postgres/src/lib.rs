@@ -2755,7 +2755,13 @@ fn parse_flow_from_row_pg(
     let created_at: DateTime<Utc> = row.get("created_at");
     let updated_at: DateTime<Utc> = row.get("updated_at");
 
-    let nodes: HashMap<String, FlowNode> = serde_json::from_value(nodes_json)?;
+    let mut nodes: HashMap<String, FlowNode> = serde_json::from_value(nodes_json)?;
+    // Backfill node id from the HashMap key for flows that were stored without it
+    for (key, node) in nodes.iter_mut() {
+        if node.id.is_empty() {
+            node.id = key.clone();
+        }
+    }
     let variables: HashMap<String, String> = serde_json::from_value(variables_json)?;
 
     Ok(FlowDefinition {
@@ -2849,7 +2855,13 @@ impl FlowStore for PostgresStorage {
 
         let mut flows = Vec::new();
         for row in &rows {
-            flows.push(parse_flow_from_row_pg(row)?);
+            match parse_flow_from_row_pg(row) {
+                Ok(flow) => flows.push(flow),
+                Err(e) => {
+                    let id: String = row.get("id");
+                    tracing::warn!(flow_id = %id, error = %e, "Skipping flow with incompatible schema");
+                }
+            }
         }
 
         Ok(flows)
@@ -2960,7 +2972,13 @@ impl FlowStore for PostgresStorage {
 
         let mut flows = Vec::new();
         for row in &rows {
-            flows.push(parse_flow_from_row_pg(row)?);
+            match parse_flow_from_row_pg(row) {
+                Ok(flow) => flows.push(flow),
+                Err(e) => {
+                    let id: String = row.get("id");
+                    tracing::warn!(flow_id = %id, error = %e, "Skipping flow with incompatible schema");
+                }
+            }
         }
 
         Ok(FlowQueryResult {
@@ -3068,7 +3086,12 @@ impl FlowStore for PostgresStorage {
 
         let mut flows = Vec::new();
         for row in &rows {
-            flows.push(parse_flow_from_row_pg(row)?);
+            match parse_flow_from_row_pg(row) {
+                Ok(flow) => flows.push(flow),
+                Err(e) => {
+                    tracing::warn!(flow_id = %id, error = %e, "Skipping flow version with incompatible schema");
+                }
+            }
         }
 
         Ok(flows)

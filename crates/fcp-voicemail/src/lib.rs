@@ -584,17 +584,30 @@ impl VoicemailService {
                     &self.config.greetings_dir,
                 )
                 .context("Custom greeting path failed safety check")?;
-                &greeting.audio_path
+                Some(&greeting.audio_path)
             }
             None => {
-                // Fall back to system default greeting
-                self.config.default_greeting_path.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("No greeting available and no default configured")
-                })?
+                // Fall back to system default greeting (if configured and exists)
+                self.config
+                    .default_greeting_path
+                    .as_ref()
+                    .filter(|p| p.exists())
             }
         };
 
-        self.play_audio(call_id, audio_path).await
+        match audio_path {
+            Some(path) => self.play_audio(call_id, path).await,
+            None => {
+                // No greeting available — play 1 second of silence as a brief pause
+                // before the beep. This is better than failing the call entirely.
+                info!(call_id = %call_id, "No greeting configured, playing silence before beep");
+                self.media_manager
+                    .play_tone(call_id, 0.0, 1000, 0.0, fcp_media::AudioTarget::ParticipantA)
+                    .await
+                    .context("Failed to play silence as greeting fallback")?;
+                Ok(())
+            }
+        }
     }
 
     /// Plays an audio file to the caller.

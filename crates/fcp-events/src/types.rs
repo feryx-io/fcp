@@ -945,6 +945,30 @@ pub enum VoicemailEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Mailbox created (triggers voicemail server to register routes)
+    MailboxCreated {
+        mailbox_id: String,
+        user_id: String,
+        extension: String,
+        tenant_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Mailbox updated (triggers voicemail server to refresh routes)
+    MailboxUpdated {
+        mailbox_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Mailbox deleted (triggers voicemail server to remove routes)
+    MailboxDeleted {
+        mailbox_id: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// SIP protocol trace events for ladder diagram visualization.
@@ -1081,6 +1105,9 @@ impl PlatformEvent {
                 VoicemailEvent::MessageDeleted { .. } => "voicemail.message_deleted",
                 VoicemailEvent::MessagePlayed { .. } => "voicemail.message_played",
                 VoicemailEvent::MwiUpdated { .. } => "voicemail.mwi_updated",
+                VoicemailEvent::MailboxCreated { .. } => "voicemail.mailbox_created",
+                VoicemailEvent::MailboxUpdated { .. } => "voicemail.mailbox_updated",
+                VoicemailEvent::MailboxDeleted { .. } => "voicemail.mailbox_deleted",
             },
             PlatformEvent::Conference(e) => match e {
                 ConferenceEvent::ParticipantJoined { .. } => "conference.participant_joined",
@@ -1411,7 +1438,11 @@ impl VoicemailEvent {
         match self {
             VoicemailEvent::MessageRecorded { call_id, .. }
             | VoicemailEvent::MessagePlayed { call_id, .. } => Some(call_id),
-            VoicemailEvent::MessageDeleted { .. } | VoicemailEvent::MwiUpdated { .. } => None,
+            VoicemailEvent::MessageDeleted { .. }
+            | VoicemailEvent::MwiUpdated { .. }
+            | VoicemailEvent::MailboxCreated { .. }
+            | VoicemailEvent::MailboxUpdated { .. }
+            | VoicemailEvent::MailboxDeleted { .. } => None,
         }
     }
 
@@ -1420,7 +1451,10 @@ impl VoicemailEvent {
             VoicemailEvent::MessageRecorded { timestamp, .. }
             | VoicemailEvent::MessageDeleted { timestamp, .. }
             | VoicemailEvent::MessagePlayed { timestamp, .. }
-            | VoicemailEvent::MwiUpdated { timestamp, .. } => *timestamp,
+            | VoicemailEvent::MwiUpdated { timestamp, .. }
+            | VoicemailEvent::MailboxCreated { timestamp, .. }
+            | VoicemailEvent::MailboxUpdated { timestamp, .. }
+            | VoicemailEvent::MailboxDeleted { timestamp, .. } => *timestamp,
         }
     }
 }

@@ -12,7 +12,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
-use fcp_flow::InMemoryFlowStore;
 use fcp_media::{BackendType, MediaConfig};
 use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
 use fcp_sip::flow_handler::FlowCallHandler;
@@ -112,6 +111,7 @@ async fn main() -> Result<()> {
     let storage_result = storage::initialize_storage(&config.storage).await?;
     let config_store = storage_result.config_store;
     let dyn_storage = storage_result.dyn_storage;
+    let flow_store_db = storage_result.flow_store;
 
     // 4b. Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, sip, storage, http, logging) stay TOML-only.
@@ -326,7 +326,7 @@ async fn main() -> Result<()> {
     info!("VoicemailService created");
 
     // 17. Create flow store and FlowCallHandler with voicemail service wired in
-    let flow_store: Arc<dyn fcp_flow::FlowStore> = Arc::new(InMemoryFlowStore::new());
+    let flow_store: Arc<dyn fcp_flow::FlowStore> = Arc::clone(&flow_store_db);
 
     let local_uri = create_local_uri(&config)?;
     let contact_uri = local_uri.clone();
@@ -362,10 +362,13 @@ async fn main() -> Result<()> {
             config.voicemail.play_beep,
         );
 
-        flow_store
-            .insert_flow(flow_def)
-            .await
-            .with_context(|| format!("Failed to save voicemail flow for route {}", route.did))?;
+        // Only insert if the flow doesn't already exist (preserves user edits)
+        if flow_store.get_flow(&flow_id).await?.is_none() {
+            flow_store
+                .insert_flow(flow_def)
+                .await
+                .with_context(|| format!("Failed to save voicemail flow for route {}", route.did))?;
+        }
 
         flow_handler
             .add_route(route.did.clone(), flow_id.clone())
@@ -389,7 +392,9 @@ async fn main() -> Result<()> {
             config.voicemail.play_beep,
         );
 
-        flow_store.insert_flow(flow_def).await?;
+        if flow_store.get_flow(&flow_id).await?.is_none() {
+            flow_store.insert_flow(flow_def).await?;
+        }
         flow_handler
             .add_route("_default".to_string(), flow_id)
             .await;
@@ -431,9 +436,14 @@ async fn main() -> Result<()> {
                         config.voicemail.max_message_duration,
                         config.voicemail.play_beep,
                     );
-                    if let Err(e) = flow_store.insert_flow(flow_def).await {
-                        warn!(mailbox_id = %mb.id, error = %e, "Failed to create auto-flow for mailbox");
-                        continue;
+                    match flow_store.get_flow(&flow_id).await {
+                        Ok(Some(_)) => {} // Flow already exists, preserve user edits
+                        _ => {
+                            if let Err(e) = flow_store.insert_flow(flow_def).await {
+                                warn!(mailbox_id = %mb.id, error = %e, "Failed to create auto-flow for mailbox");
+                                continue;
+                            }
+                        }
                     }
 
                     // Register by owner's SIP username (primary identifier)
@@ -490,10 +500,12 @@ async fn main() -> Result<()> {
     if let Some(ref access_ext) = config.voicemail.access_extension {
         let flow_id = "vm-access-flow";
         let flow_def = build_voicemail_access_flow(flow_id);
-        flow_store
-            .insert_flow(flow_def)
-            .await
-            .context("Failed to save voicemail access flow")?;
+        if flow_store.get_flow(flow_id).await?.is_none() {
+            flow_store
+                .insert_flow(flow_def)
+                .await
+                .context("Failed to save voicemail access flow")?;
+        }
         flow_handler
             .add_route(access_ext.clone(), flow_id.to_string())
             .await;
@@ -627,6 +639,34 @@ async fn main() -> Result<()> {
             }
         });
         info!(events_url = %config.events.server_url.as_deref().unwrap_or(""), "Event forwarding enabled");
+    }
+
+    // 23b. Spawn event subscriber (receives mailbox lifecycle events from admin API)
+    if let Some(ref events_url) = config.events.server_url {
+        let ws_url = events_url
+            .trim_end_matches("/ingest")
+            .trim_end_matches('/')
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+        let tenant_id = "tenant-00000000-0000-0000-0000-000000000000";
+        let ws_url = format!("{}/ws/{}", ws_url, tenant_id);
+
+        let sub_flow_store = Arc::clone(&flow_store);
+        let sub_flow_handler = Arc::clone(&flow_handler);
+        let sub_storage = Arc::clone(&dyn_storage);
+        let sub_max_duration = config.voicemail.max_message_duration;
+        let sub_play_beep = config.voicemail.play_beep;
+        tokio::spawn(async move {
+            run_events_subscriber(
+                &ws_url,
+                sub_flow_store,
+                sub_flow_handler,
+                sub_storage,
+                sub_max_duration,
+                sub_play_beep,
+            ).await;
+        });
+        info!("Events subscriber started (listening for mailbox lifecycle events)");
     }
 
     // 24. Log startup summary
@@ -1076,6 +1116,186 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                     }
                 }
             }
+        }
+    }
+}
+
+/// Subscribe to the events server WebSocket and handle mailbox lifecycle events.
+async fn run_events_subscriber(
+    ws_url: &str,
+    flow_store: Arc<dyn fcp_flow::FlowStore>,
+    flow_handler: Arc<fcp_sip::flow_handler::FlowCallHandler>,
+    storage: Arc<fcp_core::DynStorage>,
+    max_message_duration: u32,
+    play_beep: bool,
+) {
+    use futures_util::StreamExt;
+
+    loop {
+        info!(url = %ws_url, "Connecting to events server WebSocket for mailbox events");
+        match tokio_tungstenite::connect_async(ws_url).await {
+            Ok((ws_stream, _)) => {
+                info!("Connected to events server WebSocket");
+                let (_write, mut read) = ws_stream.split();
+
+                while let Some(msg) = read.next().await {
+                    match msg {
+                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                            if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
+                                if wrapper.get("type").and_then(|t| t.as_str()) == Some("events") {
+                                    if let Some(events) = wrapper.get("events").and_then(|e| e.as_array()) {
+                                        for event_val in events {
+                                            if let Ok(event) = serde_json::from_value::<fcp_events::PlatformEvent>(event_val.clone()) {
+                                                match event {
+                                                    fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MailboxCreated { ref mailbox_id, .. }) => {
+                                                        info!(mailbox_id = %mailbox_id, "Received MailboxCreated event");
+                                                        handle_mailbox_created(
+                                                            mailbox_id,
+                                                            &flow_store,
+                                                            &flow_handler,
+                                                            &storage,
+                                                            max_message_duration,
+                                                            play_beep,
+                                                        ).await;
+                                                    }
+                                                    fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MailboxDeleted { ref mailbox_id, .. }) => {
+                                                        info!(mailbox_id = %mailbox_id, "Received MailboxDeleted event");
+                                                        let flow_id = format!("vm-auto-{}", mailbox_id);
+                                                        flow_handler.remove_routes_for_flow(&flow_id).await;
+                                                        if let Err(e) = flow_store.delete_flow(&flow_id).await {
+                                                            warn!(flow_id = %flow_id, error = %e, "Failed to delete flow for mailbox");
+                                                        }
+                                                        info!(mailbox_id = %mailbox_id, flow_id = %flow_id, "Removed voicemail routes");
+                                                    }
+                                                    fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MailboxUpdated { ref mailbox_id, .. }) => {
+                                                        info!(mailbox_id = %mailbox_id, "Received MailboxUpdated event");
+                                                        // Re-register routes in case enabled/disabled changed
+                                                        let flow_id = format!("vm-auto-{}", mailbox_id);
+                                                        flow_handler.remove_routes_for_flow(&flow_id).await;
+                                                        handle_mailbox_created(
+                                                            mailbox_id,
+                                                            &flow_store,
+                                                            &flow_handler,
+                                                            &storage,
+                                                            max_message_duration,
+                                                            play_beep,
+                                                        ).await;
+                                                    }
+                                                    _ => {} // Ignore other events
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                            info!("Events server WebSocket closed");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(%e, "Events server WebSocket error");
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(%e, "Failed to connect to events server WebSocket");
+            }
+        }
+        // Reconnect after a short delay
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
+/// Handle a MailboxCreated (or MailboxUpdated) event: create flow and register routes.
+async fn handle_mailbox_created(
+    mailbox_id: &str,
+    flow_store: &Arc<dyn fcp_flow::FlowStore>,
+    flow_handler: &Arc<fcp_sip::flow_handler::FlowCallHandler>,
+    storage: &Arc<fcp_core::DynStorage>,
+    max_message_duration: u32,
+    play_beep: bool,
+) {
+    use fcp_core::storage::{ExtensionStore, LineBindingStore, PhoneNumberStore};
+
+    let mb = match storage.get_mailbox(mailbox_id).await {
+        Ok(Some(mb)) => mb,
+        Ok(None) => {
+            warn!(mailbox_id = %mailbox_id, "Mailbox not found in database");
+            return;
+        }
+        Err(e) => {
+            warn!(mailbox_id = %mailbox_id, error = %e, "Failed to look up mailbox");
+            return;
+        }
+    };
+
+    if !mb.enabled {
+        info!(mailbox_id = %mailbox_id, "Mailbox is disabled, skipping route registration");
+        return;
+    }
+
+    let flow_id = format!("vm-auto-{}", mb.id);
+    let flow_def = build_voicemail_flow(&flow_id, &mb.id, max_message_duration, play_beep);
+
+    // Insert or update flow
+    match flow_store.get_flow(&flow_id).await {
+        Ok(Some(_)) => {
+            // Flow exists — update it
+            if let Err(e) = flow_store.update_flow(flow_def).await {
+                warn!(flow_id = %flow_id, error = %e, "Failed to update flow");
+            }
+        }
+        _ => {
+            if let Err(e) = flow_store.insert_flow(flow_def).await {
+                warn!(flow_id = %flow_id, error = %e, "Failed to create flow");
+                return;
+            }
+        }
+    }
+
+    // Register by owner's SIP username
+    if let Ok(Some(user)) = storage.get_user_by_id(&mb.user_id).await {
+        flow_handler.add_route(user.username.clone(), flow_id.clone()).await;
+        if mb.extension != user.username {
+            flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+        }
+    } else {
+        flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+    }
+
+    // Register by phone number and dial plan extensions
+    if let Ok(Some(lb)) = storage.get_line_binding(&mb.line_binding_id).await {
+        if let Ok(Some(pn)) = storage.get_phone_number(&lb.phone_number_id).await {
+            flow_handler.add_route(pn.e164.clone(), flow_id.clone()).await;
+            if let Some(stripped) = pn.e164.strip_prefix('+') {
+                flow_handler.add_route(stripped.to_string(), flow_id.clone()).await;
+            }
+
+            // Register dial plan extensions targeting this phone number
+            let tenant_id = fcp_core::TenantId::nil();
+            if let Ok(exts) = storage.list_extensions(&tenant_id).await {
+                for ext in &exts {
+                    if ext.enabled {
+                        if let fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) = ext.target {
+                            if *pn_id == pn.id && ext.number != mb.extension {
+                                flow_handler.add_route(ext.number.clone(), flow_id.clone()).await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            info!(
+                mailbox = %mb.id,
+                extension = %mb.extension,
+                e164 = %pn.e164,
+                flow_id = %flow_id,
+                "Dynamically registered voicemail route"
+            );
         }
     }
 }

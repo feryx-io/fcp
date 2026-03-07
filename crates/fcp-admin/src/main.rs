@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use fcp_events::{EventBus, EventFilter, InMemoryEventBus};
+use fcp_events::{EventBus, InMemoryEventBus};
 use fcp_sip::exports::{
     DialogManager, SubscriptionManager, TransactionManager, TransportContext,
     TransportDispatcher,
@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to initialize storage backend")?;
     let storage = storage_result.dyn_storage;
+    let flow_store = storage_result.flow_store;
     let config_store = storage_result.config_store;
 
     info!("Storage backend initialized successfully");
@@ -202,7 +203,7 @@ async fn main() -> Result<()> {
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
-        None, // flow_store
+        Some(flow_store),
         dialog_manager,
         subscription_manager,
         call_manager,
@@ -371,10 +372,10 @@ async fn main() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    // Note: event forwarding is intentionally disabled for the admin service.
-    // The admin subscribes to the events server WebSocket to receive cluster-wide
-    // events for the UI, but does not generate events of its own. Forwarding
-    // received events back to the events server would create an infinite loop.
+    // Event forwarding from admin is handled by ApiState::publish_event(),
+    // which POSTs directly to the events server ingest endpoint. This avoids
+    // the infinite loop that would occur if we forwarded all local bus events
+    // (since the WebSocket subscriber also republishes to the local bus).
     let _ = event_bus_for_forward;
 
     // Start events server subscriber (receives cluster-wide events for the admin UI WebSocket)

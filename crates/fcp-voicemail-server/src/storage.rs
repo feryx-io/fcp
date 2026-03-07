@@ -13,6 +13,7 @@ use crate::config::StorageSection;
 pub struct StorageResult {
     pub dyn_storage: Arc<DynStorage>,
     pub config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
+    pub flow_store: Arc<dyn fcp_flow::storage::FlowStore>,
 }
 
 /// Initialize PostgreSQL storage backend from configuration.
@@ -32,6 +33,7 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
         dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
+        flow_store: storage.clone() as Arc<dyn fcp_flow::storage::FlowStore>,
         config_store: storage,
     })
 }

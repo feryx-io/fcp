@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::SystemTime;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -244,6 +244,56 @@ pub async fn create_mailbox(
     mailbox.max_message_duration = req.max_message_duration;
     mailbox.max_messages = req.max_messages;
 
+    // Generate TTS default greeting if TTS service is available
+    if let Some(ref tts_service) = state.tts_service {
+        let display_name = user.display_name.as_deref().unwrap_or(&user.username);
+        let greeting_text = format!(
+            "Sorry, {} is not available. Please record your message after the beep.",
+            display_name
+        );
+
+        match tts_service.synthesize(&greeting_text, None, None).await {
+            Ok(tts_path) => {
+                // Copy TTS output to greetings directory with a stable filename
+                if let Some(ref greetings_dir) = state.voicemail_greetings_dir {
+                    if let Err(e) = tokio::fs::create_dir_all(greetings_dir).await {
+                        warn!(error = %e, "Failed to create voicemail greetings directory");
+                    } else {
+                        let greeting_filename = format!("{}_unavailable.wav", mailbox.id);
+                        let greeting_path = greetings_dir.join(&greeting_filename);
+                        match tokio::fs::copy(&tts_path, &greeting_path).await {
+                            Ok(_) => {
+                                let greeting = VoicemailGreeting::new(
+                                    GreetingType::Unavailable,
+                                    greeting_path,
+                                );
+                                mailbox.add_greeting(greeting);
+                                info!(
+                                    mailbox_id = %mailbox.id,
+                                    "Generated TTS default greeting for mailbox"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    mailbox_id = %mailbox.id,
+                                    "Failed to copy TTS greeting to greetings directory"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    mailbox_id = %mailbox.id,
+                    "Failed to generate TTS default greeting"
+                );
+            }
+        }
+    }
+
     storage
         .put_mailbox(mailbox.clone())
         .await
@@ -257,6 +307,17 @@ pub async fn create_mailbox(
         max_messages = %mailbox.max_messages,
         "Created voicemail mailbox"
     );
+
+    // Publish mailbox created event so voicemail server can register routes
+    state.publish_event(fcp_events::PlatformEvent::Voicemail(
+        fcp_events::VoicemailEvent::MailboxCreated {
+            mailbox_id: mailbox.id.clone(),
+            user_id: req.user_id.clone(),
+            extension: user.username.clone(),
+            tenant_id: req.tenant_id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )).await;
 
     Ok((StatusCode::CREATED, Json(MailboxResponse::from(mailbox))))
 }
@@ -339,6 +400,14 @@ pub async fn update_mailbox(
 
     info!(mailbox_id = %id, "Updated voicemail mailbox");
 
+    // Publish mailbox updated event
+    state.publish_event(fcp_events::PlatformEvent::Voicemail(
+        fcp_events::VoicemailEvent::MailboxUpdated {
+            mailbox_id: id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )).await;
+
     Ok(Json(MailboxResponse::from(mailbox)))
 }
 
@@ -355,6 +424,14 @@ pub async fn delete_mailbox(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     info!(mailbox_id = %id, "Deleted voicemail mailbox");
+
+    // Publish mailbox deleted event so voicemail server can remove routes
+    state.publish_event(fcp_events::PlatformEvent::Voicemail(
+        fcp_events::VoicemailEvent::MailboxDeleted {
+            mailbox_id: id.clone(),
+            timestamp: SystemTime::now(),
+        },
+    )).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

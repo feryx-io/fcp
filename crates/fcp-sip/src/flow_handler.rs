@@ -209,6 +209,12 @@ impl FlowCallHandler {
         self.routing.write().await.remove(did).is_some()
     }
 
+    /// Remove all DID routes that point to a given flow ID.
+    pub async fn remove_routes_for_flow(&self, flow_id: &str) {
+        let mut routing = self.routing.write().await;
+        routing.retain(|_did, fid| fid != flow_id);
+    }
+
     /// Start flow execution for a call.
     ///
     /// Loads the flow definition and begins execution from the initial node.
