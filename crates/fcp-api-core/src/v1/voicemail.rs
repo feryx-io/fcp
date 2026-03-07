@@ -244,56 +244,6 @@ pub async fn create_mailbox(
     mailbox.max_message_duration = req.max_message_duration;
     mailbox.max_messages = req.max_messages;
 
-    // Generate TTS default greeting if TTS service is available
-    if let Some(ref tts_service) = state.tts_service {
-        let display_name = user.display_name.as_deref().unwrap_or(&user.username);
-        let greeting_text = format!(
-            "Sorry, {} is not available. Please record your message after the beep.",
-            display_name
-        );
-
-        match tts_service.synthesize(&greeting_text, None, None).await {
-            Ok(tts_path) => {
-                // Copy TTS output to greetings directory with a stable filename
-                if let Some(ref greetings_dir) = state.voicemail_greetings_dir {
-                    if let Err(e) = tokio::fs::create_dir_all(greetings_dir).await {
-                        warn!(error = %e, "Failed to create voicemail greetings directory");
-                    } else {
-                        let greeting_filename = format!("{}_unavailable.wav", mailbox.id);
-                        let greeting_path = greetings_dir.join(&greeting_filename);
-                        match tokio::fs::copy(&tts_path, &greeting_path).await {
-                            Ok(_) => {
-                                let greeting = VoicemailGreeting::new(
-                                    GreetingType::Unavailable,
-                                    greeting_path,
-                                );
-                                mailbox.add_greeting(greeting);
-                                info!(
-                                    mailbox_id = %mailbox.id,
-                                    "Generated TTS default greeting for mailbox"
-                                );
-                            }
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    mailbox_id = %mailbox.id,
-                                    "Failed to copy TTS greeting to greetings directory"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    mailbox_id = %mailbox.id,
-                    "Failed to generate TTS default greeting"
-                );
-            }
-        }
-    }
-
     storage
         .put_mailbox(mailbox.clone())
         .await
@@ -318,6 +268,67 @@ pub async fn create_mailbox(
             timestamp: SystemTime::now(),
         },
     )).await;
+
+    // Generate TTS default greeting in the background so the API returns immediately
+    if let (Some(tts_service), Some(greetings_dir)) =
+        (state.tts_service.clone(), state.voicemail_greetings_dir.clone())
+    {
+        let storage = storage.clone();
+        let mailbox_id = mailbox.id.clone();
+        let display_name = user
+            .display_name
+            .unwrap_or(user.username)
+            .clone();
+
+        tokio::spawn(async move {
+            let greeting_text = format!(
+                "Sorry, {} is not available. Please record your message after the beep.",
+                display_name
+            );
+
+            match tts_service.synthesize(&greeting_text, None, None).await {
+                Ok(tts_path) => {
+                    if let Err(e) = tokio::fs::create_dir_all(&greetings_dir).await {
+                        warn!(error = %e, "Failed to create voicemail greetings directory");
+                        return;
+                    }
+                    let greeting_filename = format!("{}_unavailable.wav", mailbox_id);
+                    let greeting_path = greetings_dir.join(&greeting_filename);
+                    match tokio::fs::copy(&tts_path, &greeting_path).await {
+                        Ok(_) => {
+                            // Re-load mailbox, add greeting, and save
+                            match storage.get_mailbox(&mailbox_id).await {
+                                Ok(Some(mut mb)) => {
+                                    let greeting = VoicemailGreeting::new(
+                                        GreetingType::Unavailable,
+                                        greeting_path,
+                                    );
+                                    mb.add_greeting(greeting);
+                                    if let Err(e) = storage.put_mailbox(mb).await {
+                                        warn!(error = %e, mailbox_id = %mailbox_id, "Failed to save mailbox with TTS greeting");
+                                    } else {
+                                        info!(mailbox_id = %mailbox_id, "Generated TTS default greeting for mailbox");
+                                    }
+                                }
+                                Ok(None) => {
+                                    warn!(mailbox_id = %mailbox_id, "Mailbox deleted before TTS greeting could be saved");
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, mailbox_id = %mailbox_id, "Failed to reload mailbox for TTS greeting");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, mailbox_id = %mailbox_id, "Failed to copy TTS greeting file");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, mailbox_id = %mailbox_id, "Failed to generate TTS default greeting");
+                }
+            }
+        });
+    }
 
     Ok((StatusCode::CREATED, Json(MailboxResponse::from(mailbox))))
 }
