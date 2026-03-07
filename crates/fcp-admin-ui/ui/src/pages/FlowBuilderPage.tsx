@@ -502,13 +502,16 @@ export function FlowBuilderPage() {
                   readOnly
                 />
                 <Select
-                  value={target}
-                  onValueChange={(v) => updateMapEntry(nodeId, key, dtmfKey, v)}
+                  value={target || '__unset__'}
+                  onValueChange={(v) => updateMapEntry(nodeId, key, dtmfKey, v === '__unset__' ? '' : v)}
                 >
                   <SelectTrigger className="h-7 text-xs flex-1">
                     <SelectValue placeholder="Select node..." />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="__unset__">
+                      <span className="text-muted-foreground">Select node...</span>
+                    </SelectItem>
                     {allNodeIds
                       .filter((nid) => nid !== nodeId)
                       .map((nid) => (
@@ -565,18 +568,20 @@ export function FlowBuilderPage() {
 
     // Node reference fields - render as select dropdown
     if (NODE_REF_FIELDS.has(key)) {
+      const NONE = '__none__'
+      const currentValue = String(value ?? '') || NONE
       return (
         <div key={key}>
           <Label className="text-xs font-medium">{label}</Label>
           <Select
-            value={String(value ?? '')}
-            onValueChange={(v) => updateNodeProperty(nodeId, key, v)}
+            value={currentValue}
+            onValueChange={(v) => updateNodeProperty(nodeId, key, v === NONE ? '' : v)}
           >
             <SelectTrigger className="mt-1 h-8 text-xs">
               <SelectValue placeholder="Select node..." />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">
+              <SelectItem value={NONE}>
                 <span className="text-muted-foreground">None</span>
               </SelectItem>
               {allNodeIds
