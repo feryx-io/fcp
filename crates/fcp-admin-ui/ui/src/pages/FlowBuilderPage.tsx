@@ -274,10 +274,17 @@ function reactFlowToFlowNodes(
     const outgoing = edges.filter((e) => e.source === node.id)
     const mainEdge = outgoing.find((e) => !e.label)
 
-    result[node.id] = {
-      ...existing,
-      next: mainEdge?.target ?? null,
-    } as FlowNode & { next: string | null }
+    // Build node, replacing null values with empty strings to satisfy backend schema
+    const merged = { ...existing } as Record<string, unknown>
+    // Only override next if the node type uses it (not branch/hangup)
+    if ('next' in merged || mainEdge) {
+      merged.next = mainEdge?.target ?? ''
+    }
+    // Strip any null values — the backend expects strings, not nulls
+    for (const [k, v] of Object.entries(merged)) {
+      if (v === null) merged[k] = ''
+    }
+    result[node.id] = merged as FlowNode
   })
 
   return result
