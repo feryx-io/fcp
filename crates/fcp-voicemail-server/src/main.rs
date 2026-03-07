@@ -358,6 +358,7 @@ async fn main() -> Result<()> {
         let flow_def = build_voicemail_flow(
             &flow_id,
             &route.mailbox_id,
+            &route.did,
             config.voicemail.max_message_duration,
             config.voicemail.play_beep,
         );
@@ -388,6 +389,7 @@ async fn main() -> Result<()> {
         let flow_def = build_voicemail_flow(
             &flow_id,
             default_mailbox_id,
+            "default",
             config.voicemail.max_message_duration,
             config.voicemail.play_beep,
         );
@@ -433,6 +435,7 @@ async fn main() -> Result<()> {
                     let flow_def = build_voicemail_flow(
                         &flow_id,
                         &mb.id,
+                        &mb.extension,
                         config.voicemail.max_message_duration,
                         config.voicemail.play_beep,
                     );
@@ -738,6 +741,7 @@ async fn main() -> Result<()> {
 fn build_voicemail_flow(
     flow_id: &str,
     mailbox_id: &str,
+    extension: &str,
     max_duration: u32,
     play_beep: bool,
 ) -> fcp_flow::FlowDefinition {
@@ -760,7 +764,7 @@ fn build_voicemail_flow(
         "voicemail".to_string(),
         FlowNode {
             id: "voicemail".to_string(),
-            name: Some(format!("Record voicemail for {}", mailbox_id)),
+            name: Some(format!("Record voicemail for {}", extension)),
             node_type: NodeType::Voicemail {
                 mailbox: mailbox_id.to_string(),
                 is_busy: false,
@@ -783,10 +787,10 @@ fn build_voicemail_flow(
 
     FlowDefinition {
         id: flow_id.to_string(),
-        name: format!("Voicemail: {}", mailbox_id),
+        name: format!("Voicemail: {}", extension),
         description: Some(format!(
-            "Auto-generated voicemail flow for mailbox {}",
-            mailbox_id
+            "Auto-generated voicemail flow for {}",
+            extension
         )),
         version: 1,
         initial_node: "answer".to_string(),
@@ -1239,7 +1243,7 @@ async fn handle_mailbox_created(
     }
 
     let flow_id = format!("vm-auto-{}", mb.id);
-    let flow_def = build_voicemail_flow(&flow_id, &mb.id, max_message_duration, play_beep);
+    let flow_def = build_voicemail_flow(&flow_id, &mb.id, &mb.extension, max_message_duration, play_beep);
 
     // Insert or update flow
     match flow_store.get_flow(&flow_id).await {
