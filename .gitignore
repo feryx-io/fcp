@@ -28,3 +28,7 @@ data/
 fcp.db.backup
 deploy/docker-compose/certs/server.key
 deploy/docker-compose/certs/
+
+# Python pip cache
+.pip-cache/
+.pip-tmp/
