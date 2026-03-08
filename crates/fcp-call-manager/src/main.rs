@@ -645,28 +645,10 @@ async fn main() -> Result<()> {
     )
     .with_voicemail_service(Arc::clone(&voicemail_service));
 
-    // Wire TTS service to FlowEngine for Gather Say prompts and Say node pre-synthesis
-    if let Some(ref engine) = config.media.tts_engine {
-        match fcp_media::TtsService::new(fcp_media::TtsConfig {
-            provider: fcp_media::TtsProviderConfig::Local {
-                engine: engine.clone(),
-                executable_path: config.media.tts_python.as_ref().map(PathBuf::from),
-            },
-            cache_dir: PathBuf::from(&config.media.tts_cache_dir),
-            cache_max_size_mb: 500,
-            default_language: "en-US".to_string(),
-            default_voice: config.media.tts_voice.clone(),
-        })
-        .await
-        {
-            Ok(tts) => {
-                info!("TTS service wired to FlowEngine for Gather/Say nodes");
-                flow_handler = flow_handler.with_tts_service(Arc::new(tts));
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to create TTS service for FlowEngine — Gather Say prompts will be silent");
-            }
-        }
+    // Wire shared TTS service to FlowEngine for Gather Say prompts and Say node pre-synthesis
+    if let Some(tts) = media_manager.tts_service() {
+        info!("Shared TTS service wired to FlowEngine for Gather/Say nodes");
+        flow_handler = flow_handler.with_tts_service(Arc::clone(tts));
     }
 
     // 17e. Create PromptService for system prompt resolution (WAV file → TTS fallback)
@@ -690,7 +672,16 @@ async fn main() -> Result<()> {
             ("vm_goodbye", "Goodbye", "Goodbye."),
         ];
 
+        let mut seeded = 0u32;
         for (name, description, tts_text) in &system_prompts {
+            // Only create the prompt record if it doesn't already exist —
+            // re-seeding would overwrite the audio_path set by TTS pre-generation.
+            if let Ok(Some(_existing)) = prompt_store
+                .get_prompt_by_name_and_language(&default_tenant_id, name, "en-US")
+                .await
+            {
+                continue;
+            }
             let mut prompt = fcp_core::Prompt::new_tts(
                 default_tenant_id.clone(),
                 *name,
@@ -703,16 +694,20 @@ async fn main() -> Result<()> {
             if let Err(e) = prompt_store.put_prompt(prompt).await {
                 warn!(name = name, error = %e, "Failed to seed system prompt");
             }
+            seeded += 1;
         }
-        info!("Seeded {} system prompts", system_prompts.len());
+        if seeded > 0 {
+            info!(seeded, "Seeded new system prompts");
+        }
 
         // Pre-generate TTS audio for system prompts that don't have audio files yet
-        if config.media.tts_engine.is_some() {
+        if let Some(tts) = media_manager.tts_service() {
             let prompts_dir = PathBuf::from(&config.media.prompts_dir);
             if let Err(e) = pre_generate_prompt_audio(
                 &prompt_service,
                 &default_tenant_id,
-                &config.media,
+                tts,
+                config.media.tts_voice.as_deref(),
                 &prompts_dir,
                 &system_prompts,
             ).await {
@@ -1517,9 +1512,9 @@ fn create_local_uri(config: &CallManagerConfig) -> Result<SipUri> {
 
 /// Create a media manager from configuration.
 async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_media::MediaManager>> {
-    // Build TTS config from call-manager media section
-    let tts_config = config.media.tts_engine.as_ref().map(|engine| {
-        fcp_media::TtsConfig {
+    // Create a single shared TTS service for the entire system
+    let tts_service = if let Some(ref engine) = config.media.tts_engine {
+        let tts_config = fcp_media::TtsConfig {
             provider: fcp_media::TtsProviderConfig::Local {
                 engine: engine.clone(),
                 executable_path: config.media.tts_python.as_ref().map(std::path::PathBuf::from),
@@ -1528,15 +1523,29 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
             cache_max_size_mb: 500,
             default_language: "en-US".to_string(),
             default_voice: config.media.tts_voice.clone(),
+        };
+        match fcp_media::TtsService::new(tts_config).await {
+            Ok(svc) => {
+                let svc = Arc::new(svc);
+                info!(provider = %svc.provider_name(), "Shared TTS service created");
+                Some(svc)
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to create TTS service — TTS will be unavailable");
+                None
+            }
         }
-    });
+    } else {
+        None
+    };
 
     let media_config = MediaConfig {
         backend: BackendType::Embedded,
         rtp_port_start: config.media.rtp_port_start,
         rtp_port_end: config.media.rtp_port_end,
         public_ip: config.media.public_ip.clone(),
-        tts: tts_config,
+        tts: None, // TTS config not needed — injecting shared service directly
+        tts_service,
         ..Default::default()
     };
 
@@ -1559,18 +1568,17 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
 
 /// Pre-generate TTS audio for system prompts that don't have audio files yet.
 ///
-/// Creates a standalone TtsService, synthesizes audio for each prompt, saves
+/// Uses the shared TtsService to synthesize audio for each prompt, saves
 /// the WAV files to `prompts_dir`, and updates the prompt DB records with the
 /// file path so that `PromptService::resolve()` can serve them without TTS.
 async fn pre_generate_prompt_audio(
     prompt_service: &Arc<fcp_core::PromptService>,
     tenant_id: &fcp_core::TenantId,
-    media_config: &crate::config::MediaSection,
+    tts_service: &Arc<fcp_media::TtsService>,
+    tts_voice: Option<&str>,
     prompts_dir: &std::path::Path,
     system_prompts: &[(&str, &str, &str)],
 ) -> Result<()> {
-    use fcp_media::tts::{TtsConfig, TtsProviderConfig, TtsService};
-
     // Check which prompts already have audio
     let mut need_generation = Vec::new();
     for (name, _desc, tts_text) in system_prompts {
@@ -1591,23 +1599,6 @@ async fn pre_generate_prompt_audio(
         "Pre-generating TTS audio for system prompts"
     );
 
-    // Create a standalone TTS service for pre-generation
-    let engine = media_config.tts_engine.as_deref().unwrap_or("kokoro");
-    let tts_config = TtsConfig {
-        provider: TtsProviderConfig::Local {
-            engine: engine.to_string(),
-            executable_path: media_config.tts_python.as_ref().map(PathBuf::from),
-        },
-        cache_dir: PathBuf::from(&media_config.tts_cache_dir),
-        cache_max_size_mb: 500,
-        default_language: "en-US".to_string(),
-        default_voice: media_config.tts_voice.clone(),
-    };
-
-    let tts_service = TtsService::new(tts_config)
-        .await
-        .context("Failed to create TTS service for prompt pre-generation")?;
-
     // Ensure prompts directory exists
     let tenant_dir = prompts_dir.join(tenant_id.to_string());
     tokio::fs::create_dir_all(&tenant_dir)
@@ -1616,8 +1607,7 @@ async fn pre_generate_prompt_audio(
 
     let mut generated = 0u32;
     for (name, tts_text) in &need_generation {
-        let voice = media_config.tts_voice.as_deref();
-        match tts_service.synthesize(tts_text, Some("en-US"), voice).await {
+        match tts_service.synthesize(tts_text, Some("en-US"), tts_voice).await {
             Ok(cached_path) => {
                 // Copy from TTS cache to permanent prompts directory
                 let dest_path = tenant_dir.join(format!("{}.wav", name));

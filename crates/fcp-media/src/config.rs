@@ -2,13 +2,14 @@
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 const MAX_RTP_PORT_SPAN: u16 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 120_000;
 const MAX_MAX_RETRIES: u32 = 10;
 
 /// Media subsystem configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MediaConfig {
     /// Backend deployment mode
     #[serde(default)]
@@ -59,6 +60,11 @@ pub struct MediaConfig {
     #[serde(default)]
     pub tts: Option<crate::tts::TtsConfig>,
 
+    /// Pre-created TTS service to share across the system.
+    /// When set, the media backend uses this instead of creating its own.
+    #[serde(skip)]
+    pub tts_service: Option<Arc<crate::tts::TtsService>>,
+
     /// Enable XDP kernel-level RTP forwarding (Linux only).
     #[serde(default)]
     pub xdp_enabled: bool,
@@ -104,6 +110,19 @@ pub enum BackendType {
     },
 }
 
+impl std::fmt::Debug for MediaConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MediaConfig")
+            .field("backend", &self.backend)
+            .field("rtp_port_start", &self.rtp_port_start)
+            .field("rtp_port_end", &self.rtp_port_end)
+            .field("public_ip", &self.public_ip)
+            .field("tts", &self.tts.is_some())
+            .field("tts_service", &self.tts_service.is_some())
+            .finish()
+    }
+}
+
 impl Default for BackendType {
     fn default() -> Self {
         // Default to embedded for Phase 1
@@ -127,6 +146,7 @@ impl Default for MediaConfig {
             stun_server: None,
             turn_server: None,
             tts: None,
+            tts_service: None,
             xdp_enabled: false,
             xdp_interface: default_xdp_interface(),
             xdp_mode: default_xdp_mode(),

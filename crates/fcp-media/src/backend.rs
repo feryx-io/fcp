@@ -399,21 +399,26 @@ pub mod embedded {
                 "127.0.0.1".to_string()
             };
 
-            // Initialize TTS service if configured
-            let tts_service = match config.tts.clone() {
-                Some(tts_config) => {
-                    match crate::tts::TtsService::new(tts_config).await {
-                        Ok(svc) => {
-                            info!(provider = %svc.provider_name(), "TTS service initialized");
-                            Some(Arc::new(svc))
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "TTS service initialization failed, TTS will be unavailable");
-                            None
+            // Use shared TTS service if injected, otherwise create one from config
+            let tts_service = if let Some(shared_tts) = config.tts_service.clone() {
+                info!(provider = %shared_tts.provider_name(), "Using shared TTS service");
+                Some(shared_tts)
+            } else {
+                match config.tts.clone() {
+                    Some(tts_config) => {
+                        match crate::tts::TtsService::new(tts_config).await {
+                            Ok(svc) => {
+                                info!(provider = %svc.provider_name(), "TTS service initialized");
+                                Some(Arc::new(svc))
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "TTS service initialization failed, TTS will be unavailable");
+                                None
+                            }
                         }
                     }
+                    None => None,
                 }
-                None => None,
             };
 
             // Warm up TTS worker eagerly so the first live synthesis doesn't

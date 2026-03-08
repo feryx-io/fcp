@@ -19,6 +19,9 @@ pub struct MediaManager {
 
     /// Configuration
     config: MediaConfig,
+
+    /// Shared TTS service (available for other subsystems to reuse)
+    tts_service: Option<Arc<crate::tts::TtsService>>,
 }
 
 impl MediaManager {
@@ -62,7 +65,10 @@ impl MediaManager {
             "Media manager initialized"
         );
 
-        Ok(Self { backend, config })
+        // Capture TTS service for sharing with other subsystems
+        let tts_service = config.tts_service.clone();
+
+        Ok(Self { backend, config, tts_service })
     }
 
     /// Create a media session for a call
@@ -325,6 +331,14 @@ impl MediaManager {
     /// Get backend type name
     pub fn backend_name(&self) -> &str {
         self.backend.backend_name()
+    }
+
+    /// Get the shared TTS service, if configured.
+    ///
+    /// Other subsystems (FlowEngine, prompt pre-generation) can reuse this
+    /// instead of creating their own TTS instance.
+    pub fn tts_service(&self) -> Option<&Arc<crate::tts::TtsService>> {
+        self.tts_service.as_ref()
     }
 
     /// Bridge two calls together for B2BUA operation

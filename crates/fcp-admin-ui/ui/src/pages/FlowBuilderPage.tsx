@@ -188,6 +188,7 @@ function flowNodesToReactFlow(
   entries.forEach(([id, node], index) => {
     const palette = NODE_TYPES_PALETTE.find((p) => p.type === node.type)
     const pos = savedPositions?.[id] ?? { x: 250, y: index * 120 }
+    const isEntry = id === initialNode
     nodes.push({
       id,
       type: 'default',
@@ -195,6 +196,11 @@ function flowNodesToReactFlow(
       data: {
         label: (
           <div className="text-xs">
+            {isEntry && (
+              <div className="text-[10px] font-semibold text-green-600 uppercase tracking-wide mb-0.5">
+                Start
+              </div>
+            )}
             <div className="font-bold" style={{ color: palette?.color }}>
               {node.label || id}
             </div>
@@ -203,10 +209,11 @@ function flowNodesToReactFlow(
         ),
       },
       style: {
-        border: `2px solid ${palette?.color ?? '#888'}`,
+        border: `${isEntry ? '3' : '2'}px solid ${palette?.color ?? '#888'}`,
         borderRadius: 8,
         padding: 8,
         background: 'var(--card)',
+        boxShadow: isEntry ? '0 0 0 2px rgba(34,197,94,0.3)' : undefined,
       },
     })
 
@@ -310,6 +317,7 @@ export function FlowBuilderPage() {
   // Local mutable copy of flow nodes (source of truth for property editing)
   const [flowNodes, setFlowNodes] = useState<Record<string, FlowNode>>({})
   const [dirty, setDirty] = useState(false)
+  const [entryNode, setEntryNode] = useState<string>('')
 
   // Audio prompt dialog state
   const [audioDialogOpen, setAudioDialogOpen] = useState(false)
@@ -348,9 +356,46 @@ export function FlowBuilderPage() {
       setFlowDescription(flow.description || '')
       setNodeCounter(Object.keys(nodesData).length)
       setFlowNodes(structuredClone(nodesData))
+      setEntryNode(flow.initial_node)
       setDirty(false)
     }
   }, [flow, setNodes, setEdges])
+
+  // Update node visuals when entry node changes
+  useEffect(() => {
+    if (!entryNode) return
+    setNodes((nds) =>
+      nds.map((n) => {
+        const fn = flowNodes[n.id]
+        if (!fn) return n
+        const palette = NODE_TYPES_PALETTE.find((p) => p.type === fn.type)
+        const isEntry = n.id === entryNode
+        return {
+          ...n,
+          data: {
+            label: (
+              <div className="text-xs">
+                {isEntry && (
+                  <div className="text-[10px] font-semibold text-green-600 uppercase tracking-wide mb-0.5">
+                    Start
+                  </div>
+                )}
+                <div className="font-bold" style={{ color: palette?.color }}>
+                  {fn.label || n.id}
+                </div>
+                <div className="text-muted-foreground">{fn.type}</div>
+              </div>
+            ),
+          },
+          style: {
+            ...n.style,
+            border: `${isEntry ? '3' : '2'}px solid ${palette?.color ?? '#888'}`,
+            boxShadow: isEntry ? '0 0 0 2px rgba(34,197,94,0.3)' : undefined,
+          },
+        }
+      }),
+    )
+  }, [entryNode, flowNodes, setNodes])
 
   const handleNodesChange: typeof onNodesChange = useCallback(
     (changes) => {
@@ -550,9 +595,20 @@ export function FlowBuilderPage() {
         ...((flow?.variables as Record<string, unknown>) || {}),
         _ui_positions: positions,
       }
+      // Use explicit entry node; fall back to auto-detect (Answer node with
+      // no incoming edges, then first root node).
+      let initial_node = entryNode
+      if (!initial_node || !mergedNodes[initial_node]) {
+        const targetIds = new Set(edges.map((e) => e.target))
+        const roots = nodes.filter((n) => !targetIds.has(n.id))
+        const answerRoot = roots.find((n) => mergedNodes[n.id]?.type === 'answer')
+        initial_node = answerRoot?.id ?? roots[0]?.id ?? flow?.initial_node ?? ''
+      }
+
       return flows.update(id!, {
         name: flowName,
         description: flowDescription || undefined,
+        initial_node,
         nodes: mergedNodes,
         variables,
       })
@@ -1120,6 +1176,25 @@ export function FlowBuilderPage() {
                   {selectedFlowNode.type}
                 </p>
               </div>
+
+              {/* Entry point */}
+              {selectedNode === entryNode ? (
+                <div className="flex items-center gap-2 text-xs text-green-600 font-medium">
+                  <Phone className="h-3 w-3" /> Entry Point
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full text-xs"
+                  onClick={() => {
+                    setEntryNode(selectedNode)
+                    setDirty(true)
+                  }}
+                >
+                  Set as Entry Point
+                </Button>
+              )}
 
               {/* Label (editable) */}
               <div>

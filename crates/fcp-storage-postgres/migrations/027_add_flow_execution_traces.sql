@@ -13,13 +13,13 @@ CREATE TABLE IF NOT EXISTS flow_execution_traces (
 );
 
 -- Primary lookup: all events for a given call
-CREATE INDEX idx_flow_traces_call_id ON flow_execution_traces (call_id);
+CREATE INDEX IF NOT EXISTS idx_flow_traces_call_id ON flow_execution_traces (call_id);
 
 -- Filter by flow definition
-CREATE INDEX idx_flow_traces_flow_id ON flow_execution_traces (flow_id);
+CREATE INDEX IF NOT EXISTS idx_flow_traces_flow_id ON flow_execution_traces (flow_id);
 
 -- Time-range queries and retention cleanup
-CREATE INDEX idx_flow_traces_timestamp ON flow_execution_traces (timestamp);
+CREATE INDEX IF NOT EXISTS idx_flow_traces_timestamp ON flow_execution_traces (timestamp);
 
 -- Composite for common query: call_id + timestamp ordering
-CREATE INDEX idx_flow_traces_call_ts ON flow_execution_traces (call_id, timestamp ASC);
+CREATE INDEX IF NOT EXISTS idx_flow_traces_call_ts ON flow_execution_traces (call_id, timestamp ASC);
