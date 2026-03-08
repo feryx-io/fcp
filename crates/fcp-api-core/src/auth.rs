@@ -29,12 +29,32 @@ pub enum AuthIdentity {
 
 impl AuthIdentity {
     /// Returns true if the caller has admin-level access (not an end user).
+    ///
+    /// - **StaticToken**: always admin (it's the master config token).
+    /// - **ApiToken**: admin only when permissions include `"admin"` or `"*"`.
+    ///   Tokens created with empty or scoped permissions are non-admin.
+    /// - **Session**: admin when the DB role is anything other than `"end_user"`.
     pub fn is_admin(&self) -> bool {
         match self {
-            // Static token and API tokens are always admin-level
-            Self::StaticToken | Self::ApiToken { .. } => true,
-            // JWT session: check role
+            Self::StaticToken => true,
+            Self::ApiToken { permissions } => {
+                permissions.iter().any(|p| p == "admin" || p == "*")
+            }
             Self::Session { role, .. } => role != "end_user",
+        }
+    }
+
+    /// Check whether this identity holds a specific permission.
+    ///
+    /// Returns `true` for static tokens (unrestricted) and for API tokens
+    /// whose permissions list contains `permission`, `"admin"`, or `"*"`.
+    /// JWT sessions always return `true` (role-gated separately).
+    pub fn has_permission(&self, permission: &str) -> bool {
+        match self {
+            Self::StaticToken | Self::Session { .. } => true,
+            Self::ApiToken { permissions } => {
+                permissions.iter().any(|p| p == permission || p == "admin" || p == "*")
+            }
         }
     }
 }
