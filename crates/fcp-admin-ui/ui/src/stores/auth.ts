@@ -19,40 +19,28 @@ export const useAuthStore = create<AuthState>()(
     isAuthenticated: false,
     login: (token: string, user: AuthUser) => {
       apiClient.setToken(token)
-      // Persist to sessionStorage for same-tab reload survival only.
-      // sessionStorage is not shared across tabs (limits blast radius)
-      // and is cleared when the tab/browser closes.
-      try { sessionStorage.setItem('fcp-auth-token', token) } catch {}
-      try { sessionStorage.setItem('fcp-auth-user', JSON.stringify(user)) } catch {}
+      // Token lives only in JS heap (Zustand store + apiClient).
+      // No Web Storage persistence — eliminates XSS token exfiltration.
+      // Trade-off: page refresh requires re-login.
       set({ token, user, isAuthenticated: true })
     },
     logout: () => {
       // Fire server-side logout (best-effort, don't block on failure)
       auth.logout().catch(() => {})
       apiClient.setToken(null)
+      // Clear any legacy storage entries from previous versions
       try { sessionStorage.removeItem('fcp-auth-token') } catch {}
       try { sessionStorage.removeItem('fcp-auth-user') } catch {}
-      // Also clear legacy localStorage entry if present
       try { localStorage.removeItem('fcp-auth') } catch {}
       set({ token: null, user: null, isAuthenticated: false })
     },
     setUser: (user: AuthUser) => {
-      try { sessionStorage.setItem('fcp-auth-user', JSON.stringify(user)) } catch {}
       set({ user })
     },
   }),
 )
 
-// Restore token on page load from sessionStorage (survives F5 refresh)
-try {
-  const savedToken = sessionStorage.getItem('fcp-auth-token')
-  const savedUser = sessionStorage.getItem('fcp-auth-user')
-  if (savedToken) {
-    const user = savedUser ? JSON.parse(savedUser) as AuthUser : null
-    apiClient.setToken(savedToken)
-    useAuthStore.setState({ token: savedToken, user, isAuthenticated: true })
-  }
-} catch {}
-
-// Clear any legacy localStorage token left from before this migration
+// Clear any legacy storage entries left from previous versions
+try { sessionStorage.removeItem('fcp-auth-token') } catch {}
+try { sessionStorage.removeItem('fcp-auth-user') } catch {}
 try { localStorage.removeItem('fcp-auth') } catch {}

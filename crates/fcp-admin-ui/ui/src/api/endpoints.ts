@@ -69,11 +69,11 @@ export const users = {
 // Tenants
 export const tenants = {
   list: () => apiClient.get<Tenant[]>('/tenants'),
-  get: (id: string) => apiClient.get<Tenant>(`/tenants/${id}`),
+  get: (id: string) => apiClient.get<Tenant>(`/tenants/${encodeURIComponent(id)}`),
   create: (data: CreateTenantRequest) => apiClient.post<Tenant>('/tenants', data),
   update: (id: string, data: Partial<CreateTenantRequest>) =>
-    apiClient.put<Tenant>(`/tenants/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/tenants/${id}`),
+    apiClient.put<Tenant>(`/tenants/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/tenants/${encodeURIComponent(id)}`),
 }
 
 // Extensions
@@ -89,56 +89,56 @@ export const extensions = {
 // Devices
 export const devices = {
   list: () => apiClient.get<Device[]>('/devices'),
-  get: (id: string) => apiClient.get<Device>(`/devices/${id}`),
+  get: (id: string) => apiClient.get<Device>(`/devices/${encodeURIComponent(id)}`),
   create: (data: CreateDeviceRequest) => apiClient.post<Device>('/devices', data),
   update: (id: string, data: Partial<CreateDeviceRequest>) =>
-    apiClient.patch<Device>(`/devices/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/devices/${id}`),
+    apiClient.patch<Device>(`/devices/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/devices/${encodeURIComponent(id)}`),
 }
 
 // Locations
 export const locations = {
   list: () => apiClient.get<Location[]>('/locations'),
-  get: (id: string) => apiClient.get<Location>(`/locations/${id}`),
+  get: (id: string) => apiClient.get<Location>(`/locations/${encodeURIComponent(id)}`),
   create: (data: CreateLocationRequest) => apiClient.post<Location>('/locations', data),
   update: (id: string, data: Partial<CreateLocationRequest>) =>
-    apiClient.patch<Location>(`/locations/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/locations/${id}`),
+    apiClient.patch<Location>(`/locations/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/locations/${encodeURIComponent(id)}`),
 }
 
 // Phone Numbers
 export const phoneNumbers = {
   list: () => apiClient.get<PhoneNumber[]>('/phone-numbers'),
-  get: (id: string) => apiClient.get<PhoneNumber>(`/phone-numbers/${id}`),
+  get: (id: string) => apiClient.get<PhoneNumber>(`/phone-numbers/${encodeURIComponent(id)}`),
   create: (data: CreatePhoneNumberRequest) => apiClient.post<PhoneNumber>('/phone-numbers', data),
   update: (id: string, data: Partial<CreatePhoneNumberRequest>) =>
-    apiClient.patch<PhoneNumber>(`/phone-numbers/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/phone-numbers/${id}`),
-  activate: (id: string) => apiClient.post<void>(`/phone-numbers/${id}/activate`),
+    apiClient.patch<PhoneNumber>(`/phone-numbers/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/phone-numbers/${encodeURIComponent(id)}`),
+  activate: (id: string) => apiClient.post<void>(`/phone-numbers/${encodeURIComponent(id)}/activate`),
 }
 
 // Line Bindings
 export const lineBindings = {
   list: () => apiClient.get<LineBinding[]>('/line-bindings'),
-  get: (id: string) => apiClient.get<LineBinding>(`/line-bindings/${id}`),
+  get: (id: string) => apiClient.get<LineBinding>(`/line-bindings/${encodeURIComponent(id)}`),
   create: (data: CreateLineBindingRequest) => apiClient.post<LineBinding>('/line-bindings', data),
   update: (id: string, data: UpdateLineBindingRequest) =>
-    apiClient.patch<LineBinding>(`/line-bindings/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/line-bindings/${id}`),
+    apiClient.patch<LineBinding>(`/line-bindings/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/line-bindings/${encodeURIComponent(id)}`),
 }
 
 // Calls (Phase 2 - live operations)
 export const calls = {
   list: () => apiClient.get<CallInfo[]>('/calls'),
-  get: (callId: string) => apiClient.get<CallInfo>(`/calls/${callId}`),
+  get: (callId: string) => apiClient.get<CallInfo>(`/calls/${encodeURIComponent(callId)}`),
   originate: (data: OriginateCallRequest) => apiClient.post<CallInfo>('/calls', data),
-  hangup: (callId: string) => apiClient.delete<void>(`/calls/${callId}`),
-  hold: (callId: string) => apiClient.post<void>(`/calls/${callId}/hold`),
-  resume: (callId: string) => apiClient.post<void>(`/calls/${callId}/resume`),
+  hangup: (callId: string) => apiClient.delete<void>(`/calls/${encodeURIComponent(callId)}`),
+  hold: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/hold`),
+  resume: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/resume`),
   transfer: (callId: string, target: string) =>
-    apiClient.post<void>(`/calls/${callId}/transfer`, { target }),
-  mute: (callId: string) => apiClient.post<void>(`/calls/${callId}/mute`),
-  unmute: (callId: string) => apiClient.post<void>(`/calls/${callId}/unmute`),
+    apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/transfer`, { target }),
+  mute: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/mute`),
+  unmute: (callId: string) => apiClient.post<void>(`/calls/${encodeURIComponent(callId)}/unmute`),
 }
 
 // CDRs (Phase 2 - call detail records)
@@ -155,7 +155,7 @@ export const cdrs = {
     const query = searchParams.toString()
     return apiClient.get<ListCdrsResponse>(`/cdrs${query ? `?${query}` : ''}`)
   },
-  get: (callId: string) => apiClient.get<CdrResponse>(`/cdrs/${callId}`),
+  get: (callId: string) => apiClient.get<CdrResponse>(`/cdrs/${encodeURIComponent(callId)}`),
 }
 
 // SIP Trace (for ladder diagram debugging)
@@ -181,7 +181,7 @@ export interface SipTraceListResponse {
 
 export const sipTrace = {
   getMessages: (callId: string) =>
-    apiClient.get<SipTraceListResponse>(`/calls/${callId}/sip-messages`),
+    apiClient.get<SipTraceListResponse>(`/calls/${encodeURIComponent(callId)}/sip-messages`),
 }
 
 // Queues (Phase 2 - ACD queues)
@@ -193,49 +193,49 @@ export const queues = {
   loginAgent: (name: string, data: AgentLoginRequest) =>
     apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents`, data),
   logoutAgent: (name: string, agentId: string) =>
-    apiClient.delete<void>(`/queues/${encodeURIComponent(name)}/agents/${agentId}`),
+    apiClient.delete<void>(`/queues/${encodeURIComponent(name)}/agents/${encodeURIComponent(agentId)}`),
   pauseAgent: (name: string, agentId: string) =>
-    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents/${agentId}/pause`),
+    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents/${encodeURIComponent(agentId)}/pause`),
   resumeAgent: (name: string, agentId: string) =>
-    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents/${agentId}/resume`),
+    apiClient.post<void>(`/queues/${encodeURIComponent(name)}/agents/${encodeURIComponent(agentId)}/resume`),
 }
 
 // Voicemail (Phase 2)
 export const voicemail = {
   listMailboxes: () => apiClient.get<MailboxResponse[]>('/voicemail/mailboxes'),
-  getMailbox: (id: string) => apiClient.get<MailboxResponse>(`/voicemail/mailboxes/${id}`),
-  getMailboxStats: (id: string) => apiClient.get<MailboxStats>(`/voicemail/mailboxes/${id}/stats`),
+  getMailbox: (id: string) => apiClient.get<MailboxResponse>(`/voicemail/mailboxes/${encodeURIComponent(id)}`),
+  getMailboxStats: (id: string) => apiClient.get<MailboxStats>(`/voicemail/mailboxes/${encodeURIComponent(id)}/stats`),
   listMessages: (mailboxId: string) =>
-    apiClient.get<VoicemailMessage[]>(`/voicemail/mailboxes/${mailboxId}/messages`),
+    apiClient.get<VoicemailMessage[]>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages`),
   getMessage: (mailboxId: string, messageId: string) =>
-    apiClient.get<VoicemailMessage>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}`),
+    apiClient.get<VoicemailMessage>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}`),
   deleteMessage: (mailboxId: string, messageId: string) =>
-    apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}`),
+    apiClient.delete<void>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}`),
   markHeard: (mailboxId: string, messageId: string) =>
-    apiClient.post<void>(`/voicemail/mailboxes/${mailboxId}/messages/${messageId}/heard`),
+    apiClient.post<void>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(messageId)}/heard`),
   createMailbox: (data: CreateMailboxRequest) =>
     apiClient.post<MailboxResponse>('/voicemail/mailboxes', data),
   updateMailbox: (id: string, data: UpdateMailboxRequest) =>
-    apiClient.put<MailboxResponse>(`/voicemail/mailboxes/${id}`, data),
+    apiClient.put<MailboxResponse>(`/voicemail/mailboxes/${encodeURIComponent(id)}`, data),
   deleteMailbox: (id: string) =>
-    apiClient.delete<void>(`/voicemail/mailboxes/${id}`),
+    apiClient.delete<void>(`/voicemail/mailboxes/${encodeURIComponent(id)}`),
   listGreetings: (mailboxId: string) =>
-    apiClient.get<import('@/types').GreetingResponse[]>(`/voicemail/mailboxes/${mailboxId}/greetings`),
+    apiClient.get<import('@/types').GreetingResponse[]>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings`),
   uploadGreeting: async (mailboxId: string, greetingType: string, audioFile: File, expiresInHours?: number) => {
     const formData = new FormData()
     formData.append('greeting_type', greetingType)
     formData.append('audio', audioFile)
     if (expiresInHours) formData.append('expires_in', String(expiresInHours))
     return apiClient.uploadForm<import('@/types').GreetingResponse>(
-      `/voicemail/mailboxes/${mailboxId}/greetings`, formData,
+      `/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings`, formData,
     )
   },
   deleteGreeting: (mailboxId: string, greetingType: string) =>
-    apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}`),
+    apiClient.delete<void>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings/${encodeURIComponent(greetingType)}`),
   setGreetingActive: (mailboxId: string, greetingType: string, active: boolean) =>
-    apiClient.put<void>(`/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}/active`, { active }),
+    apiClient.put<void>(`/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings/${encodeURIComponent(greetingType)}/active`, { active }),
   downloadGreetingUrl: (mailboxId: string, greetingType: string) =>
-    `/api/v1/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}/audio`,
+    `/api/v1/voicemail/mailboxes/${encodeURIComponent(mailboxId)}/greetings/${encodeURIComponent(greetingType)}/audio`,
 }
 
 // Audio Prompts
@@ -285,17 +285,17 @@ export const prompts = {
     const qs = query.toString()
     return apiClient.get<PromptResponse[]>(`/prompts${qs ? `?${qs}` : ''}`)
   },
-  get: (id: string) => apiClient.get<PromptResponse>(`/prompts/${id}`),
+  get: (id: string) => apiClient.get<PromptResponse>(`/prompts/${encodeURIComponent(id)}`),
   create: (data: CreatePromptRequest) => apiClient.post<PromptResponse>('/prompts', data),
-  update: (id: string, data: UpdatePromptRequest) => apiClient.put<PromptResponse>(`/prompts/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/prompts/${id}`),
+  update: (id: string, data: UpdatePromptRequest) => apiClient.put<PromptResponse>(`/prompts/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/prompts/${encodeURIComponent(id)}`),
   uploadAudio: async (id: string, audioFile: File) => {
     const formData = new FormData()
     formData.append('audio', audioFile)
-    return apiClient.uploadForm<PromptResponse>(`/prompts/${id}/audio`, formData)
+    return apiClient.uploadForm<PromptResponse>(`/prompts/${encodeURIComponent(id)}/audio`, formData)
   },
-  audioUrl: (id: string) => `/api/v1/prompts/${id}/audio`,
-  synthesize: (id: string) => apiClient.post<PromptResponse>(`/prompts/${id}/synthesize`, {}),
+  audioUrl: (id: string) => `/api/v1/prompts/${encodeURIComponent(id)}/audio`,
+  synthesize: (id: string) => apiClient.post<PromptResponse>(`/prompts/${encodeURIComponent(id)}/synthesize`, {}),
 }
 
 // Presence (Phase 2)
@@ -329,11 +329,11 @@ export const trunks = {
 // Routing / Policy Rules
 export const routing = {
   list: () => apiClient.get<PolicyRule[]>('/routing/rules'),
-  get: (id: string) => apiClient.get<PolicyRule>(`/routing/rules/${id}`),
+  get: (id: string) => apiClient.get<PolicyRule>(`/routing/rules/${encodeURIComponent(id)}`),
   create: (data: CreatePolicyRuleRequest) => apiClient.post<PolicyRule>('/routing/rules', data),
   update: (id: string, data: Partial<CreatePolicyRuleRequest>) =>
-    apiClient.put<PolicyRule>(`/routing/rules/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/routing/rules/${id}`),
+    apiClient.put<PolicyRule>(`/routing/rules/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/routing/rules/${encodeURIComponent(id)}`),
 }
 
 // IVR Flows
@@ -350,12 +350,12 @@ export const flows = {
     const query = searchParams.toString()
     return apiClient.get<ListFlowsResponse>(`/flows${query ? `?${query}` : ''}`)
   },
-  get: (id: string) => apiClient.get<FlowResponse>(`/flows/${id}`),
+  get: (id: string) => apiClient.get<FlowResponse>(`/flows/${encodeURIComponent(id)}`),
   create: (data: CreateFlowRequest) => apiClient.post<FlowResponse>('/flows', data),
   update: (id: string, data: UpdateFlowRequest) =>
-    apiClient.put<FlowResponse>(`/flows/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/flows/${id}`),
-  versions: (id: string) => apiClient.get<FlowResponse[]>(`/flows/${id}/versions`),
+    apiClient.put<FlowResponse>(`/flows/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/flows/${encodeURIComponent(id)}`),
+  versions: (id: string) => apiClient.get<FlowResponse[]>(`/flows/${encodeURIComponent(id)}/versions`),
 }
 
 // System / Cluster
@@ -369,13 +369,13 @@ export const cluster = {
 // Number Porting
 export const porting = {
   list: () => apiClient.get<PortRequest[]>('/porting/requests'),
-  get: (id: string) => apiClient.get<PortRequest>(`/porting/requests/${id}`),
+  get: (id: string) => apiClient.get<PortRequest>(`/porting/requests/${encodeURIComponent(id)}`),
   create: (data: CreatePortRequest) => apiClient.post<PortRequest>('/porting/requests', data),
   update: (id: string, data: Partial<CreatePortRequest>) =>
-    apiClient.put<PortRequest>(`/porting/requests/${id}`, data),
-  delete: (id: string) => apiClient.delete<void>(`/porting/requests/${id}`),
-  submit: (id: string) => apiClient.post<void>(`/porting/requests/${id}/submit`),
-  cancel: (id: string) => apiClient.post<void>(`/porting/requests/${id}/cancel`),
+    apiClient.put<PortRequest>(`/porting/requests/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/porting/requests/${encodeURIComponent(id)}`),
+  submit: (id: string) => apiClient.post<void>(`/porting/requests/${encodeURIComponent(id)}/submit`),
+  cancel: (id: string) => apiClient.post<void>(`/porting/requests/${encodeURIComponent(id)}/cancel`),
 }
 
 // Audit Log
@@ -392,14 +392,14 @@ export const auditLog = {
     const query = searchParams.toString()
     return apiClient.get<ListAuditResponse>(`/audit-logs${query ? `?${query}` : ''}`)
   },
-  get: (id: string) => apiClient.get<AuditEntry>(`/audit-logs/${id}`),
+  get: (id: string) => apiClient.get<AuditEntry>(`/audit-logs/${encodeURIComponent(id)}`),
 }
 
 // API Tokens
 export const apiTokens = {
   list: () => apiClient.get<ApiToken[]>('/api-tokens'),
   create: (data: CreateApiTokenRequest) => apiClient.post<CreateApiTokenResponse>('/api-tokens', data),
-  delete: (id: string) => apiClient.delete<void>(`/api-tokens/${id}`),
+  delete: (id: string) => apiClient.delete<void>(`/api-tokens/${encodeURIComponent(id)}`),
 }
 
 // Configuration Management
@@ -446,9 +446,9 @@ export const config = {
     return apiClient.get<ConfigEntry[]>(`/config${q ? `?${q}` : ''}`)
   },
   listService: (service: string, tenant_id = '_system') =>
-    apiClient.get<ConfigEntry[]>(`/config/${encodeURIComponent(service)}?tenant_id=${tenant_id}`),
+    apiClient.get<ConfigEntry[]>(`/config/${encodeURIComponent(service)}?tenant_id=${encodeURIComponent(tenant_id)}`),
   get: (service: string, section: string, tenant_id = '_system') =>
-    apiClient.get<ConfigEntry>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${tenant_id}`),
+    apiClient.get<ConfigEntry>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${encodeURIComponent(tenant_id)}`),
   update: (service: string, section: string, value: Record<string, unknown>, tenant_id = '_system', updated_by?: string) =>
     apiClient.put<UpdateConfigResponse>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}`, {
       value,
@@ -456,7 +456,7 @@ export const config = {
       updated_by,
     }),
   delete: (service: string, section: string, tenant_id = '_system') =>
-    apiClient.delete<{ deleted: boolean }>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${tenant_id}`),
+    apiClient.delete<{ deleted: boolean }>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}?tenant_id=${encodeURIComponent(tenant_id)}`),
   validate: (service: string, section: string, value: Record<string, unknown>, tenant_id = '_system') =>
     apiClient.post<ValidateConfigResponse>(`/config/${encodeURIComponent(service)}/${encodeURIComponent(section)}/validate`, {
       value,
@@ -485,10 +485,10 @@ export const me = {
   getMailboxStats: () => apiClient.get<MeMailboxStats>('/me/voicemail/stats'),
   listMessages: () => apiClient.get<VoicemailMessage[]>('/me/voicemail/messages'),
   updateMessage: (id: string, data: { status?: string }) =>
-    apiClient.put<VoicemailMessage>(`/me/voicemail/messages/${id}`, data),
-  deleteMessage: (id: string) => apiClient.delete<void>(`/me/voicemail/messages/${id}`),
+    apiClient.put<VoicemailMessage>(`/me/voicemail/messages/${encodeURIComponent(id)}`, data),
+  deleteMessage: (id: string) => apiClient.delete<void>(`/me/voicemail/messages/${encodeURIComponent(id)}`),
   fetchMessageAudio: (id: string): Promise<string> =>
-    apiClient.fetchBlobUrl(`/me/voicemail/messages/${id}/audio`),
+    apiClient.fetchBlobUrl(`/me/voicemail/messages/${encodeURIComponent(id)}/audio`),
 
   // Greetings
   listGreetings: () =>
@@ -510,11 +510,11 @@ export const me = {
     expires_in_hours?: number
   }) => apiClient.post<import('@/types').GreetingResponse>('/me/voicemail/greetings/synthesize', data),
   deleteGreeting: (greetingType: string) =>
-    apiClient.delete<void>(`/me/voicemail/greetings/${greetingType}`),
+    apiClient.delete<void>(`/me/voicemail/greetings/${encodeURIComponent(greetingType)}`),
   setGreetingActive: (greetingType: string, active: boolean) =>
-    apiClient.put<void>(`/me/voicemail/greetings/${greetingType}/active`, { active }),
+    apiClient.put<void>(`/me/voicemail/greetings/${encodeURIComponent(greetingType)}/active`, { active }),
   fetchGreetingAudio: (greetingType: string): Promise<string> =>
-    apiClient.fetchBlobUrl(`/me/voicemail/greetings/${greetingType}/audio`),
+    apiClient.fetchBlobUrl(`/me/voicemail/greetings/${encodeURIComponent(greetingType)}/audio`),
 
   // Avatar
   uploadAvatar: async (file: File) => {
@@ -530,5 +530,5 @@ export const me = {
   // Forwarding
   getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),
   updateForwarding: (id: string, data: UpdateForwardingRequest) =>
-    apiClient.patch<MeForwarding>(`/me/forwarding/${id}`, data),
+    apiClient.patch<MeForwarding>(`/me/forwarding/${encodeURIComponent(id)}`, data),
 }

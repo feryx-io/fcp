@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { PlatformEvent, ToastMessage } from '@/types'
+import { apiClient } from '@/api/client'
 
 interface WebSocketState {
   connected: boolean
@@ -19,7 +20,9 @@ const RECONNECT_DELAY = 3000
 
 function getWsUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/api/v1/events`
+  const base = `${protocol}//${window.location.host}/api/v1/events`
+  const token = apiClient.getToken()
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base
 }
 
 function createToastFromEvent(event: PlatformEvent): ToastMessage | null {
