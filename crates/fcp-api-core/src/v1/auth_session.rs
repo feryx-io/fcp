@@ -21,9 +21,6 @@ use std::time::{Duration, SystemTime};
 
 use fcp_core::UserRole;
 
-/// JWT secret — in production this should come from config/env.
-/// For now we use the same auth_token or a derived key.
-const JWT_SECRET: &[u8] = b"fcp-admin-jwt-secret-change-in-production";
 const JWT_EXPIRY_HOURS: i64 = 24;
 
 /// Serialize a UserRole to its serde snake_case string (e.g. EndUser -> "end_user").
@@ -200,7 +197,8 @@ pub async fn login(
     };
 
     // Encode JWT using HMAC-SHA256
-    let token = encode_jwt(&claims)?;
+    let jwt_secret = get_jwt_secret(&state)?;
+    let token = encode_jwt(&claims, jwt_secret)?;
 
     let auth_user = AuthUserResponse {
         username: user.username,
@@ -235,7 +233,7 @@ pub async fn me(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
 
     // Optionally refresh user data from storage
     if let Some(storage) = &state.storage {
@@ -263,7 +261,7 @@ pub async fn refresh(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
 
     // Verify user still exists and is active
     if let Some(storage) = &state.storage {
@@ -296,7 +294,8 @@ pub async fn refresh(
             iat: now,
         };
 
-        let token = encode_jwt(&new_claims)?;
+        let jwt_secret = get_jwt_secret(&state)?;
+        let token = encode_jwt(&new_claims, jwt_secret)?;
 
         return Ok(Json(LoginResponse {
             token,
@@ -392,7 +391,8 @@ pub async fn change_expired_password(
         iat: epoch_secs,
     };
 
-    let token = encode_jwt(&claims)?;
+    let jwt_secret = get_jwt_secret(&state)?;
+    let token = encode_jwt(&claims, jwt_secret)?;
 
     let auth_user = AuthUserResponse {
         username: user.username,
@@ -410,7 +410,15 @@ pub async fn change_expired_password(
 
 // ---- JWT helpers ----
 
-fn encode_jwt(claims: &Claims) -> Result<String, ApiError> {
+/// Get the JWT secret from ApiState, or return an error.
+fn get_jwt_secret(state: &ApiState) -> Result<&[u8], ApiError> {
+    state
+        .jwt_secret
+        .as_deref()
+        .ok_or_else(|| ApiError::Internal("JWT secret not configured".to_string()))
+}
+
+fn encode_jwt(claims: &Claims, secret: &[u8]) -> Result<String, ApiError> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
@@ -421,7 +429,7 @@ fn encode_jwt(claims: &Claims) -> Result<String, ApiError> {
 
     let message = format!("{}.{}", header, payload);
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(JWT_SECRET)
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     mac.update(message.as_bytes());
     let signature = base64url_encode(&mac.finalize().into_bytes());
@@ -429,7 +437,7 @@ fn encode_jwt(claims: &Claims) -> Result<String, ApiError> {
     Ok(format!("{}.{}", message, signature))
 }
 
-fn decode_jwt(token: &str) -> Result<Claims, ApiError> {
+fn decode_jwt(token: &str, secret: &[u8]) -> Result<Claims, ApiError> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
@@ -440,7 +448,7 @@ fn decode_jwt(token: &str) -> Result<Claims, ApiError> {
 
     // Verify signature
     let message = format!("{}.{}", parts[0], parts[1]);
-    let mut mac = Hmac::<Sha256>::new_from_slice(JWT_SECRET)
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     mac.update(message.as_bytes());
 
@@ -470,14 +478,16 @@ fn decode_jwt(token: &str) -> Result<Claims, ApiError> {
     Ok(claims)
 }
 
-pub fn extract_claims(req: &axum::extract::Request) -> Result<Claims, ApiError> {
-    extract_claims_from_headers(req.headers())
+pub fn extract_claims(req: &axum::extract::Request, state: &ApiState) -> Result<Claims, ApiError> {
+    extract_claims_from_headers(req.headers(), state)
 }
 
 /// Extract JWT claims from a `HeaderMap` (useful when Request is not available).
 pub fn extract_claims_from_headers(
     headers: &axum::http::HeaderMap,
+    state: &ApiState,
 ) -> Result<Claims, ApiError> {
+    let secret = get_jwt_secret(state)?;
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
@@ -487,7 +497,7 @@ pub fn extract_claims_from_headers(
         .strip_prefix("Bearer ")
         .ok_or_else(|| ApiError::Unauthorized("Invalid Authorization format".to_string()))?;
 
-    decode_jwt(token)
+    decode_jwt(token, secret)
 }
 
 fn base64url_encode(data: &[u8]) -> String {

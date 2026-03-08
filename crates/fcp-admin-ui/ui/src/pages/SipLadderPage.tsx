@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { SipLadder } from '@/components/SipLadder'
 import { sipTrace } from '@/api/endpoints'
+import { apiClient } from '@/api/client'
 import type { SipTraceMessage } from '@/api/endpoints'
 
 export function SipLadderPage() {
@@ -28,9 +29,19 @@ export function SipLadderPage() {
     const wsUrl = `${protocol}//${window.location.host}/api/v1/events?event_types=sip`
     const ws = new WebSocket(wsUrl)
 
+    ws.onopen = () => {
+      // Send auth token as first message (not in URL, to avoid log leakage)
+      const token = apiClient.getToken()
+      if (token) {
+        ws.send(JSON.stringify({ type: 'auth', token }))
+      }
+    }
+
     ws.onmessage = (evt) => {
       try {
         const event = JSON.parse(evt.data)
+        // Skip auth/control messages
+        if (event.type === 'auth_ok' || event.type === 'auth_error' || event.type === 'connected') return
         if (event.event_type === 'sip.message_captured' && event.call_id === callId) {
           const msg: SipTraceMessage = {
             id: Date.now(), // temporary ID for live messages

@@ -31,14 +31,19 @@ use tower_http::{
 };
 
 /// Create the API router with all routes and middleware.
-pub fn create_router(state: ApiState, api_config: &ApiConfig) -> Router {
+///
+/// # Panics
+///
+/// Panics if `auth_enabled` is true but `auth_token` is not configured.
+/// This is intentional — fail closed rather than silently running without auth.
+pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     // CORS configuration
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
-    // Build the API router with metrics at root level (no auth required for metrics)
+    // Build the auth-protected API router
     let mut router = Router::new()
         .route(
             "/metrics",
@@ -48,19 +53,31 @@ pub fn create_router(state: ApiState, api_config: &ApiConfig) -> Router {
 
     // Conditionally apply authentication middleware
     if api_config.auth_enabled {
-        if let Some(auth_token) = &api_config.auth_token {
-            tracing::info!("API authentication enabled");
-            let auth_config = auth::AuthConfig::new(auth_token.clone());
-            router = router.layer(middleware::from_fn(move |req, next| {
-                let config = auth_config.clone();
-                auth::validate_bearer_token(config, req, next)
-            }));
-        } else {
-            tracing::warn!(
-                "API authentication is enabled but no auth_token is configured - authentication disabled"
-            );
-        }
+        let auth_token = api_config.auth_token.as_ref().unwrap_or_else(|| {
+            panic!(
+                "FATAL: auth_enabled=true but no auth_token configured. \
+                 Set api.auth_token in config or disable auth with api.auth_enabled=false."
+            )
+        });
+
+        tracing::info!("API authentication enabled");
+        let auth_config = auth::AuthConfig::new(auth_token.clone());
+        // Store auth config in ApiState for WebSocket first-message auth
+        state.auth_config = Some(auth_config.clone());
+        // Derive JWT signing secret from auth token
+        state = state.with_jwt_secret_from_token(auth_token);
+        router = router.layer(middleware::from_fn(move |req, next| {
+            let config = auth_config.clone();
+            auth::validate_bearer_token(config, req, next)
+        }));
     }
+
+    // WebSocket routes are merged AFTER the auth layer so they bypass it.
+    // They handle auth inline via first-message protocol because browsers
+    // cannot set Authorization headers on WebSocket connections.
+    router = router.merge(
+        Router::new().nest("/api/v1", v1::ws_router()),
+    );
 
     router
         .layer(cors)

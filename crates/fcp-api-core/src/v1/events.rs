@@ -2,7 +2,24 @@
 //!
 //! Provides a WebSocket endpoint that streams platform events in real-time.
 //! Clients can subscribe to events filtered by tenant_id, call_id, or event types.
+//!
+//! ## Authentication
+//!
+//! When auth is enabled, the client must send an auth message as the very first
+//! WebSocket frame after connection:
+//!
+//! ```json
+//! {"type": "auth", "token": "<bearer-token>"}
+//! ```
+//!
+//! The server validates the token and responds with either:
+//! - `{"type": "auth_ok"}` — proceed to event streaming
+//! - `{"type": "auth_error", "message": "..."}` — connection is closed
+//!
+//! This avoids putting the token in the URL (which leaks via access logs,
+//! proxies, and monitoring tools).
 
+use crate::auth;
 use crate::state::ApiState;
 use axum::{
     extract::{
@@ -16,6 +33,7 @@ use fcp_events::{filter::EventType, EventFilter};
 use futures_util::{stream::StreamExt, SinkExt};
 use serde::Deserialize;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 /// Query parameters for event stream filtering.
@@ -29,6 +47,14 @@ pub struct EventStreamQuery {
 
     /// Filter by event types (comma-separated: call,media,ivr,recording,system)
     pub event_types: Option<String>,
+}
+
+/// First-message auth payload sent by the client.
+#[derive(Debug, Deserialize)]
+struct WsAuthMessage {
+    #[serde(rename = "type")]
+    msg_type: String,
+    token: Option<String>,
 }
 
 /// WebSocket handler for event streaming.
@@ -59,6 +85,55 @@ pub async fn event_stream_websocket(
 /// Handle WebSocket connection.
 async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: ApiState) {
     let (mut sender, mut receiver) = socket.split();
+
+    // --- First-message authentication ---
+    // When auth is configured, the client must send {"type":"auth","token":"..."}
+    // as the first message. This keeps the token out of the URL entirely.
+    if let Some(ref auth_config) = state.auth_config {
+        let auth_result = tokio::time::timeout(Duration::from_secs(5), receiver.next()).await;
+
+        let authenticated = match auth_result {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                match serde_json::from_str::<WsAuthMessage>(&text) {
+                    Ok(msg) if msg.msg_type == "auth" => {
+                        if let Some(ref token) = msg.token {
+                            auth::validate_token(token, auth_config).await
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+
+        if !authenticated {
+            let _ = sender
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "auth_error",
+                        "message": "Invalid or missing authentication token"
+                    })
+                    .to_string(),
+                ))
+                .await;
+            debug!("WebSocket auth failed — closing connection");
+            return;
+        }
+
+        // Auth succeeded — confirm to client
+        if let Err(e) = sender
+            .send(Message::Text(
+                serde_json::json!({"type": "auth_ok"}).to_string(),
+            ))
+            .await
+        {
+            warn!(error = %e, "Failed to send auth_ok");
+            return;
+        }
+        debug!("WebSocket auth succeeded");
+    }
 
     // Parse filter parameters
     let filter = match build_event_filter(&params) {

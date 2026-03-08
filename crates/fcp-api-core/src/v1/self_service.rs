@@ -55,7 +55,7 @@ pub async fn get_profile(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
 
     let user = storage
@@ -96,7 +96,7 @@ pub async fn update_profile(
     headers: HeaderMap,
     Json(body): Json<UpdateProfileRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
     let mut user = storage
@@ -158,7 +158,7 @@ pub async fn change_password(
     headers: HeaderMap,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
     let mut user = storage
@@ -219,7 +219,7 @@ pub async fn get_voicemail(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -250,7 +250,7 @@ pub async fn update_voicemail(
     headers: HeaderMap,
     Json(body): Json<UpdateVoicemailRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -303,7 +303,7 @@ pub async fn get_voicemail_stats(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -356,7 +356,7 @@ pub async fn list_voicemail_messages(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -381,7 +381,7 @@ pub async fn update_voicemail_message(
     headers: HeaderMap,
     Json(body): Json<UpdateMessageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -427,7 +427,7 @@ pub async fn delete_voicemail_message(
     Path(message_id): Path<String>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -460,7 +460,7 @@ pub async fn get_message_audio(
     Path(message_id): Path<String>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -507,7 +507,7 @@ pub async fn list_voicemail_greetings(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -531,7 +531,7 @@ pub async fn upload_voicemail_greeting(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let greetings_dir = require_greetings_dir(&state)?;
     let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
@@ -636,7 +636,7 @@ pub async fn synthesize_voicemail_greeting(
     headers: HeaderMap,
     Json(body): Json<SynthesizeGreetingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let greetings_dir = require_greetings_dir(&state)?;
     let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
@@ -720,7 +720,7 @@ pub async fn delete_voicemail_greeting(
     Path(greeting_type_str): Path<String>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -764,7 +764,7 @@ pub async fn set_voicemail_greeting_active(
     headers: HeaderMap,
     Json(body): Json<SetGreetingActiveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -796,7 +796,7 @@ pub async fn download_voicemail_greeting_audio(
     Path(greeting_type_str): Path<String>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
 
@@ -843,7 +843,7 @@ pub async fn get_forwarding(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
 
     let user = storage
@@ -896,7 +896,7 @@ pub async fn update_forwarding(
     headers: HeaderMap,
     Json(body): Json<UpdateForwardingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
     let user = storage
@@ -1015,7 +1015,7 @@ pub async fn upload_avatar(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims_from_headers(&headers)?;
+    let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
@@ -1106,7 +1106,7 @@ pub async fn get_avatar(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
@@ -1148,7 +1148,7 @@ pub async fn delete_avatar(
     State(state): State<ApiState>,
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
-    let claims = extract_claims(&req)?;
+    let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 

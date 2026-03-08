@@ -20,9 +20,7 @@ const RECONNECT_DELAY = 3000
 
 function getWsUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const base = `${protocol}//${window.location.host}/api/v1/events`
-  const token = apiClient.getToken()
-  return token ? `${base}?token=${encodeURIComponent(token)}` : base
+  return `${protocol}//${window.location.host}/api/v1/events`
 }
 
 function createToastFromEvent(event: PlatformEvent): ToastMessage | null {
@@ -84,7 +82,12 @@ export const useWebSocketStore = create<WebSocketState>()((set, get) => ({
       ws = new WebSocket(getWsUrl())
 
       ws.onopen = () => {
-        set({ connected: true })
+        // Send auth token as the first message (not in URL, to avoid
+        // leaking credentials via access logs, proxies, and monitoring).
+        const token = apiClient.getToken()
+        if (token) {
+          ws?.send(JSON.stringify({ type: 'auth', token }))
+        }
         if (reconnectTimer) {
           clearTimeout(reconnectTimer)
           reconnectTimer = null
@@ -93,8 +96,25 @@ export const useWebSocketStore = create<WebSocketState>()((set, get) => ({
 
       ws.onmessage = (msg) => {
         try {
-          const event = JSON.parse(msg.data) as PlatformEvent
-          // Skip control messages (e.g. {"type":"connected",...}) that aren't real events
+          const data = JSON.parse(msg.data) as Record<string, unknown>
+
+          // Handle auth response from server
+          if (data.type === 'auth_error') {
+            ws?.close()
+            return
+          }
+          if (data.type === 'auth_ok') {
+            // Auth succeeded, wait for 'connected' message
+            return
+          }
+          // Mark as connected once the server confirms subscription
+          if (data.type === 'connected') {
+            set({ connected: true })
+            return
+          }
+
+          // Process platform events
+          const event = data as unknown as PlatformEvent
           if (!event.event_type) return
           const { events } = get()
           const newEvents = [event, ...events].slice(0, MAX_EVENTS)

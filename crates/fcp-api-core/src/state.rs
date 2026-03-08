@@ -98,6 +98,15 @@ pub struct ApiState {
 
     /// TTS service for synthesizing prompt audio (optional)
     pub tts_service: Option<Arc<fcp_media::tts::TtsService>>,
+
+    /// Auth config for WebSocket first-message authentication (optional).
+    /// When set, WebSocket endpoints require a valid token in the first message.
+    pub auth_config: Option<crate::auth::AuthConfig>,
+
+    /// JWT signing secret for auth session tokens.
+    /// Derived from the configured `auth_token` at startup. When `None`,
+    /// JWT-based auth endpoints (login, me, refresh) will fail.
+    pub jwt_secret: Option<Vec<u8>>,
 }
 
 impl ApiState {
@@ -137,6 +146,8 @@ impl ApiState {
             prompts_dir: None,
             security_policy: SecurityPolicy::default(),
             tts_service: None,
+            auth_config: None,
+            jwt_secret: None,
         }
     }
 
@@ -185,6 +196,27 @@ impl ApiState {
     /// Set the TTS service for prompt audio synthesis.
     pub fn with_tts_service(mut self, tts: Arc<fcp_media::tts::TtsService>) -> Self {
         self.tts_service = Some(tts);
+        self
+    }
+
+    /// Set the auth config for WebSocket first-message authentication.
+    pub fn with_auth_config(mut self, config: crate::auth::AuthConfig) -> Self {
+        self.auth_config = Some(config);
+        self
+    }
+
+    /// Derive and set the JWT signing secret from an auth token.
+    ///
+    /// Uses HMAC-SHA256 as a KDF to derive a 32-byte key from the auth token,
+    /// so the JWT secret is never the same as the bearer token itself.
+    pub fn with_jwt_secret_from_token(mut self, auth_token: &str) -> Self {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"fcp-jwt-key-derivation")
+            .expect("HMAC accepts any key length");
+        mac.update(auth_token.as_bytes());
+        self.jwt_secret = Some(mac.finalize().into_bytes().to_vec());
         self
     }
 

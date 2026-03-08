@@ -31,6 +31,26 @@ impl AuthConfig {
     }
 }
 
+/// Validate a bearer token string against the auth config.
+///
+/// Used by both the HTTP middleware and the WebSocket first-message auth.
+/// Returns `true` if the token is valid.
+pub async fn validate_token(token: &str, config: &AuthConfig) -> bool {
+    // Fast path: constant-time comparison against static config token
+    if constant_time_compare(token, &config.token) {
+        return true;
+    }
+
+    // Check API tokens (fcp_... prefix) if a store is configured
+    if token.starts_with("fcp_") {
+        if let Some(ref store) = config.api_token_store {
+            return validate_api_token(token, store).await;
+        }
+    }
+
+    false
+}
+
 /// Extract and validate the Bearer token from the Authorization header.
 ///
 /// Expected format: "Authorization: Bearer <token>"
@@ -41,6 +61,10 @@ impl AuthConfig {
 /// 3. Token starts with `fcp_` and an `ApiTokenStore` is configured:
 ///    hash with SHA-256, look up in DB, check expiry, update `last_used_at`
 /// 4. Otherwise → 401
+///
+/// Note: WebSocket endpoints that need auth exemption must be registered
+/// outside the middleware-protected router and handle auth inline (e.g.,
+/// first-message auth protocol in events.rs).
 pub async fn validate_bearer_token(
     auth_config: AuthConfig,
     req: Request,
@@ -55,18 +79,8 @@ pub async fn validate_bearer_token(
     if let Some(auth_value) = auth_header {
         // Check if it's a Bearer token
         if let Some(token) = auth_value.strip_prefix("Bearer ") {
-            // Fast path: constant-time comparison against static config token
-            if constant_time_compare(token, &auth_config.token) {
+            if validate_token(token, &auth_config).await {
                 return Ok(next.run(req).await);
-            }
-
-            // Check API tokens (fcp_... prefix) if a store is configured
-            if token.starts_with("fcp_") {
-                if let Some(ref store) = auth_config.api_token_store {
-                    if validate_api_token(token, store).await {
-                        return Ok(next.run(req).await);
-                    }
-                }
             }
         }
     }

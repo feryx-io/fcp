@@ -32,6 +32,15 @@ use axum::{
     Router,
 };
 
+/// WebSocket routes that bypass the auth middleware layer.
+///
+/// These are registered outside the auth-protected router because browsers
+/// cannot set `Authorization` headers on WebSocket connections. Each handler
+/// validates auth inline via the first-message protocol.
+pub fn ws_router() -> Router<ApiState> {
+    Router::new().route("/events", get(events::event_stream_websocket))
+}
+
 /// Create the v1 API router.
 pub fn router() -> Router<ApiState> {
     Router::new()
@@ -46,8 +55,9 @@ pub fn router() -> Router<ApiState> {
         // System endpoints
         .route("/health", get(system::health))
         .route("/status", get(system::status))
-        // Event streaming (WebSocket)
-        .route("/events", get(events::event_stream_websocket))
+        // NOTE: /events WebSocket is registered separately via ws_router()
+        // because browsers cannot send Authorization headers on WebSocket
+        // connections. The WS handler does its own first-message auth.
         // Debug endpoints (for live system inspection)
         .route("/debug/summary", get(debug::debug_summary))
         .route("/debug/dialogs", get(debug::list_dialogs))

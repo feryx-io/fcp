@@ -254,7 +254,7 @@ async fn main() -> Result<()> {
     };
 
     // Initialize TTS service for prompt audio synthesis (optional)
-    let api_state = if let Some(ref tts_config) = config.tts {
+    let mut api_state = if let Some(ref tts_config) = config.tts {
         match fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
             provider: fcp_media::tts::TtsProviderConfig::Local {
                 engine: tts_config.engine.clone(),
@@ -345,19 +345,33 @@ async fn main() -> Result<()> {
             .nest("/api/v1", v1);
 
         if api_config.auth_enabled {
-            if let Some(auth_token) = &api_config.auth_token {
-                tracing::info!("API authentication enabled");
-                let mut auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
-                if let Some(store) = api_state.storage.as_ref().and_then(|s| s.api_token_store().cloned()) {
-                    auth_config = auth_config.with_api_token_store(store);
-                    tracing::info!("API token authentication enabled");
-                }
-                router = router.layer(axum::middleware::from_fn(move |req, next| {
-                    let config = auth_config.clone();
-                    fcp_api_core::auth::validate_bearer_token(config, req, next)
-                }));
+            let auth_token = api_config.auth_token.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "FATAL: auth_enabled=true but no auth_token configured. \
+                     Set api.auth_token in config or disable auth with api.auth_enabled=false."
+                )
+            });
+            tracing::info!("API authentication enabled");
+            let mut auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
+            if let Some(store) = api_state.storage.as_ref().and_then(|s| s.api_token_store().cloned()) {
+                auth_config = auth_config.with_api_token_store(store);
+                tracing::info!("API token authentication enabled");
             }
+            // Store auth config in ApiState for WebSocket first-message auth
+            api_state.auth_config = Some(auth_config.clone());
+            // Derive JWT signing secret from auth token
+            api_state = api_state.with_jwt_secret_from_token(auth_token);
+            router = router.layer(axum::middleware::from_fn(move |req, next| {
+                let config = auth_config.clone();
+                fcp_api_core::auth::validate_bearer_token(config, req, next)
+            }));
         }
+
+        // WebSocket routes merged AFTER the auth layer — they handle auth
+        // inline via first-message protocol (browsers can't set headers on WS).
+        router = router.merge(
+            axum::Router::new().nest("/api/v1", fcp_api_core::v1::ws_router()),
+        );
 
         let mut app = router
             .layer(cors)
