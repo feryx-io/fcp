@@ -1442,9 +1442,9 @@ impl LineBindingStore for PostgresStorage {
                 id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                 no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
                 forward_unconditional, outbound_caller_id, outbound_cnam,
-                created_at, updated_at
+                flow_id, created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              ON CONFLICT(id) DO UPDATE SET
                  ring_strategy = EXCLUDED.ring_strategy,
                  no_answer_timeout_secs = EXCLUDED.no_answer_timeout_secs,
@@ -1453,6 +1453,7 @@ impl LineBindingStore for PostgresStorage {
                  forward_unconditional = EXCLUDED.forward_unconditional,
                  outbound_caller_id = EXCLUDED.outbound_caller_id,
                  outbound_cnam = EXCLUDED.outbound_cnam,
+                 flow_id = EXCLUDED.flow_id,
                  updated_at = EXCLUDED.updated_at",
         )
         .bind(&id)
@@ -1467,6 +1468,7 @@ impl LineBindingStore for PostgresStorage {
         .bind(&binding.forward_unconditional)
         .bind(&binding.outbound_caller_id)
         .bind(&binding.outbound_cnam)
+        .bind(&binding.flow_id)
         .bind(&created_at)
         .bind(&updated_at)
         .execute(&self.pool)
@@ -2083,6 +2085,7 @@ fn row_to_line_binding(row: sqlx::postgres::PgRow) -> Result<LineBinding> {
         forward_unconditional: row.get("forward_unconditional"),
         outbound_caller_id: row.get("outbound_caller_id"),
         outbound_cnam: row.get("outbound_cnam"),
+        flow_id: row.try_get("flow_id").unwrap_or(None),
         created_at,
         updated_at,
     })

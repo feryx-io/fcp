@@ -42,6 +42,7 @@ pub struct LineBindingResponse {
     pub forward_unconditional: Option<String>,
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
+    pub flow_id: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -96,6 +97,7 @@ impl From<LineBinding> for LineBindingResponse {
             forward_unconditional: binding.forward_unconditional,
             outbound_caller_id: binding.outbound_caller_id,
             outbound_cnam: binding.outbound_cnam,
+            flow_id: binding.flow_id,
             created_at: binding.created_at,
             updated_at: binding.updated_at,
         }
@@ -116,6 +118,7 @@ pub struct CreateLineBindingRequest {
     pub forward_on_busy: Option<String>,
     pub forward_on_no_answer: Option<String>,
     pub forward_unconditional: Option<String>,
+    pub flow_id: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
@@ -133,6 +136,7 @@ pub struct UpdateLineBindingRequest {
     pub forward_unconditional: Option<String>,
     pub outbound_caller_id: Option<String>,
     pub outbound_cnam: Option<String>,
+    pub flow_id: Option<String>,
 }
 
 /// List line bindings.
@@ -213,6 +217,7 @@ pub async fn create_line_binding(
     binding.forward_on_busy = req.forward_on_busy;
     binding.forward_on_no_answer = req.forward_on_no_answer;
     binding.forward_unconditional = req.forward_unconditional;
+    binding.flow_id = req.flow_id;
 
     // Store the line binding
     storage
@@ -280,6 +285,10 @@ pub async fn update_line_binding(
 
     if req.outbound_cnam.is_some() {
         binding.outbound_cnam = req.outbound_cnam;
+    }
+
+    if req.flow_id.is_some() {
+        binding.flow_id = req.flow_id;
     }
 
     // Update timestamp

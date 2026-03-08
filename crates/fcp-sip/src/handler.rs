@@ -2168,19 +2168,162 @@ impl SipMessageHandler {
                                         all_contacts
                                     }
                                     fcp_core::BindingType::Ivr => {
-                                        // IVR not yet implemented (Phase 2)
-                                        info!(call_id = %call_id, "IVR routing not yet implemented");
-                                        let response = self.create_simple_response(
-                                            request,
-                                            501,
-                                            "Not Implemented",
-                                        );
-                                        a_leg_handle.send_final(response).await;
-                                        let _ = self.call_manager.terminate_call(
-                                            &call_id,
-                                            Some("IVR not implemented".to_string()),
-                                        );
-                                        return Ok(());
+                                        // IVR routing - execute a flow
+                                        let flow_id = line_binding.flow_id.clone();
+                                        if let (Some(flow_id), Some(flow_handler)) = (flow_id, &self.flow_handler) {
+                                            info!(
+                                                call_id = %call_id,
+                                                flow_id = %flow_id,
+                                                "Starting IVR flow execution for inbound call"
+                                            );
+
+                                            // Build initial variables from call context
+                                            let mut initial_variables = std::collections::HashMap::new();
+
+                                            if let Some(from_header) = sip_parse::header(request.headers(), "From") {
+                                                let from_str = from_header.as_str();
+                                                if let Some(caller) = Self::extract_did_from_uri(from_str) {
+                                                    initial_variables.insert("caller_number".to_string(), caller.clone());
+                                                    initial_variables.insert("caller".to_string(), caller);
+                                                }
+                                                if let Some(display_name) = Self::extract_display_name(from_str) {
+                                                    initial_variables.insert("caller_name".to_string(), display_name);
+                                                }
+                                            }
+
+                                            initial_variables.insert("called_number".to_string(), destination_aor.to_string());
+
+                                            if let Some(sip_call_id) = sip_parse::header(request.headers(), "Call-ID") {
+                                                initial_variables.insert("sip_call_id".to_string(), sip_call_id.to_string());
+                                            }
+
+                                            // Create answer callback
+                                            let answer_handle = a_leg_handle.clone();
+                                            let answer_request = request.clone();
+                                            let answer_call_id = call_id;
+                                            let answer_call_manager = Arc::clone(&self.call_manager);
+                                            let answer_media_manager = self.media_manager.clone();
+                                            let answer_uas = self.uas.clone();
+                                            let answer_dialog_manager = Arc::clone(&self.dialog_manager);
+                                            let answer_callback: fcp_flow::AnswerCallback = Arc::new(move || {
+                                                let handle = answer_handle.clone();
+                                                let request = answer_request.clone();
+                                                let call_id = answer_call_id;
+                                                let call_manager = Arc::clone(&answer_call_manager);
+                                                let media_manager = answer_media_manager.clone();
+                                                let uas = answer_uas.clone();
+                                                let dialog_manager = Arc::clone(&answer_dialog_manager);
+                                                Box::pin(async move {
+                                                    info!(call_id = %call_id, "IVR Answer callback executing - creating 200 OK");
+                                                    let mut response = sip_uas::UserAgentServer::create_response(&request, 200, "OK");
+                                                    add_response_headers(&request, &mut response, &uas);
+
+                                                    if let Some(media_mgr) = media_manager {
+                                                        if let Some(call) = call_manager.get_call(&call_id) {
+                                                            if let Some(ref media_session_id) = call.media_session_id {
+                                                                if !request.body().is_empty() {
+                                                                    let remote_sdp = String::from_utf8_lossy(request.body()).to_string();
+                                                                    match media_mgr.update_session(media_session_id, remote_sdp).await {
+                                                                        Ok(local_sdp) => {
+                                                                            let sdp_bytes = bytes::Bytes::from(local_sdp);
+                                                                            let mut headers = response.headers().clone();
+                                                                            let _ = headers.push(smol_str::SmolStr::new("Content-Type"), smol_str::SmolStr::new("application/sdp"));
+                                                                            let _ = headers.push(smol_str::SmolStr::new("Content-Length"), smol_str::SmolStr::new(&sdp_bytes.len().to_string()));
+                                                                            response = sip_core::Response::new(response.start_line().clone(), headers, sdp_bytes).expect("Failed to create response with SDP");
+                                                                            info!(call_id = %call_id, "Added SDP to 200 OK response");
+                                                                        }
+                                                                        Err(e) => {
+                                                                            error!(call_id = %call_id, error = %e, "Failed to update media session with SDP");
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+
+                                                    handle.send_final(response.clone()).await;
+
+                                                    if let Some(a_leg_dialog) = sip_dialog::Dialog::new_uas(
+                                                        &request, &response, uas.local_uri.clone(),
+                                                        extract_from_uri(&request).unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
+                                                    ) {
+                                                        let _ = dialog_manager.insert(a_leg_dialog.clone());
+                                                        let _ = call_manager.update_call(&call_id, |call| {
+                                                            call.a_leg.dialog = Some(a_leg_dialog.clone());
+                                                            call.state = fcp_b2bua_core::CallState::Established;
+                                                        });
+                                                    }
+
+                                                    Ok(())
+                                                })
+                                            });
+
+                                            // Create hangup callback
+                                            let hangup_call_id = call_id;
+                                            let hangup_call_manager = Arc::clone(&self.call_manager);
+                                            let hangup_uac = self.uac.clone();
+                                            let hangup_dialog_manager = Arc::clone(&self.dialog_manager);
+                                            let hangup_media_manager = self.media_manager.clone();
+                                            let hangup_callback: fcp_flow::HangupCallback = Arc::new(move |reason| {
+                                                let call_id = hangup_call_id;
+                                                let call_manager = Arc::clone(&hangup_call_manager);
+                                                let uac_opt = hangup_uac.clone();
+                                                let dialog_manager = Arc::clone(&hangup_dialog_manager);
+                                                let media_manager = hangup_media_manager.clone();
+                                                Box::pin(async move {
+                                                    info!(call_id = %call_id, "IVR Hangup callback executing");
+                                                    if let Some(call_entry) = call_manager.get_call(&call_id) {
+                                                        if call_entry.media_anchored {
+                                                            if let (Some(ref media_session_id), Some(ref media_mgr)) = (&call_entry.media_session_id, &media_manager) {
+                                                                let _ = media_mgr.terminate_session(media_session_id).await;
+                                                            }
+                                                        }
+                                                        if let Some(dialog) = call_entry.a_leg.dialog.clone() {
+                                                            if let Some(uac) = uac_opt {
+                                                                match uac.bye(&dialog).await {
+                                                                    Ok(_) => { dialog_manager.remove(dialog.id()); }
+                                                                    Err(e) => { error!(call_id = %call_id, error = %e, "Failed to send BYE"); }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    let _ = call_manager.terminate_call(&call_id, reason);
+                                                    Ok(())
+                                                })
+                                            });
+
+                                            // Start the flow
+                                            if let Some(mut call_entry) = self.call_manager.get_call(&call_id) {
+                                                match flow_handler.start_flow(&mut call_entry, flow_id, initial_variables, answer_callback, hangup_callback).await {
+                                                    Ok(()) => {
+                                                        info!(call_id = %call_id, "IVR flow execution started successfully");
+                                                        let mut progress = sip_uas::UserAgentServer::create_response(request, 183, "Session Progress");
+                                                        self.ensure_response_hygiene(request, &mut progress);
+                                                        a_leg_handle.send_provisional(progress).await;
+                                                        return Ok(());
+                                                    }
+                                                    Err(e) => {
+                                                        error!(call_id = %call_id, error = %e, "Failed to start IVR flow execution");
+                                                        let response = self.create_simple_response(request, 500, "Internal Server Error");
+                                                        a_leg_handle.send_final(response).await;
+                                                        let _ = self.call_manager.terminate_call(&call_id, Some("IVR flow error".to_string()));
+                                                        return Ok(());
+                                                    }
+                                                }
+                                            }
+                                            return Ok(());
+                                        } else {
+                                            let detail = if line_binding.flow_id.is_none() {
+                                                "No flow configured for IVR binding"
+                                            } else {
+                                                "Flow handler not available"
+                                            };
+                                            warn!(call_id = %call_id, "{}", detail);
+                                            let response = self.create_simple_response(request, 501, "Not Implemented");
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(&call_id, Some(detail.to_string()));
+                                            return Ok(());
+                                        }
                                     }
                                     _ => {
                                         // Other binding types not yet implemented

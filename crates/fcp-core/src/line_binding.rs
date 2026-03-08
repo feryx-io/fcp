@@ -61,6 +61,10 @@ pub struct LineBinding {
     /// Override outbound CNAM for this line
     pub outbound_cnam: Option<String>,
 
+    // ===== IVR / Flow =====
+    /// Flow ID to execute for IVR bindings
+    pub flow_id: Option<String>,
+
     // ===== Audit =====
     /// When this binding was created
     pub created_at: SystemTime,
@@ -93,6 +97,7 @@ impl LineBinding {
             forward_unconditional: None,
             outbound_caller_id: None,
             outbound_cnam: None,
+            flow_id: None,
             created_at: now,
             updated_at: now,
         }

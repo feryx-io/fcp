@@ -15,7 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { lineBindings, users, devices, phoneNumbers } from '@/api/endpoints'
+import { lineBindings, users, devices, phoneNumbers, flows } from '@/api/endpoints'
 import type { LineBinding, DeviceBinding, UpdateLineBindingRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 
@@ -77,6 +77,9 @@ export function LineBindingsPage() {
   const [editItem, setEditItem] = useState<LineBinding | null>(null)
   const [createDevices, setCreateDevices] = useState<DeviceBinding[]>([])
   const [editDevices, setEditDevices] = useState<DeviceBinding[]>([])
+  const [createFlowId, setCreateFlowId] = useState<string>('')
+  const [editFlowId, setEditFlowId] = useState<string>('')
+  const [createBindingType, setCreateBindingType] = useState<string>('user')
   const queryClient = useQueryClient()
 
   const { data: items = [], isLoading } = useQuery({
@@ -96,6 +99,11 @@ export function LineBindingsPage() {
     queryKey: ['phone-numbers'],
     queryFn: phoneNumbers.list,
   })
+  const { data: flowsData } = useQuery({
+    queryKey: ['flows'],
+    queryFn: () => flows.list(),
+  })
+  const flowList = flowsData?.flows ?? []
 
   const userMap = useMemo(() => new Map(userList.map(u => [u.id, u])), [userList])
   const deviceMap = useMemo(() => new Map(deviceList.map(d => [d.id, d])), [deviceList])
@@ -153,6 +161,15 @@ export function LineBindingsPage() {
       cell: ({ row }) => <Badge variant="outline">{formatLabel(row.original.binding_type)}</Badge>,
     },
     {
+      accessorKey: 'flow_id',
+      header: 'Flow',
+      cell: ({ row }) => {
+        if (row.original.binding_type !== 'ivr' || !row.original.flow_id) return <span className="text-muted-foreground">-</span>
+        const flow = flowList.find(f => f.id === row.original.flow_id)
+        return flow ? flow.name : row.original.flow_id.slice(0, 8)
+      },
+    },
+    {
       accessorKey: 'devices',
       header: 'Devices',
       cell: ({ row }) => {
@@ -192,6 +209,7 @@ export function LineBindingsPage() {
             <DropdownMenuItem onClick={() => {
               setEditItem(row.original)
               setEditDevices(row.original.devices ? [...row.original.devices] : [])
+              setEditFlowId(row.original.flow_id || '')
             }}>
               <Pencil className="mr-2 h-4 w-4" />
               Edit
@@ -247,6 +265,7 @@ export function LineBindingsPage() {
       ring_strategy: data.ring_strategy,
       no_answer_timeout_secs: data.no_answer_timeout_secs,
       devices: validDevices.length > 0 ? validDevices : undefined,
+      flow_id: data.binding_type === 'ivr' && createFlowId ? createFlowId : undefined,
     })
   }
 
@@ -264,6 +283,7 @@ export function LineBindingsPage() {
         forward_on_no_answer: data.vm_forward_on_no_answer ? 'voicemail' : (data.forward_on_no_answer || undefined),
         outbound_caller_id: data.outbound_caller_id || undefined,
         outbound_cnam: data.outbound_cnam || undefined,
+        flow_id: editItem.binding_type === 'ivr' ? (editFlowId || undefined) : undefined,
       },
     })
   }
@@ -335,7 +355,7 @@ export function LineBindingsPage() {
           <h1 className="text-3xl font-bold tracking-tight">Line Bindings</h1>
           <p className="text-muted-foreground">Bind phone numbers to users, devices, and call handling</p>
         </div>
-        <Button onClick={() => { createForm.reset({ binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30 }); setCreateDevices([]); setCreateOpen(true) }}>
+        <Button onClick={() => { createForm.reset({ binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30 }); setCreateDevices([]); setCreateFlowId(''); setCreateBindingType('user'); setCreateOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Binding
         </Button>
       </div>
@@ -385,7 +405,7 @@ export function LineBindingsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Binding Type *</Label>
-                <Select defaultValue="user" onValueChange={(v) => createForm.setValue('binding_type', v)}>
+                <Select defaultValue="user" onValueChange={(v) => { createForm.setValue('binding_type', v); setCreateBindingType(v) }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {BINDING_TYPES.map(t => (
@@ -406,6 +426,21 @@ export function LineBindingsPage() {
                 </Select>
               </div>
             </div>
+            {createBindingType === 'ivr' && (
+              <div className="space-y-2">
+                <Label>IVR Flow *</Label>
+                <Select value={createFlowId || '__none__'} onValueChange={(v) => setCreateFlowId(v === '__none__' ? '' : v)}>
+                  <SelectTrigger><SelectValue placeholder="Select flow" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">None</SelectItem>
+                    {flowList.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="c-timeout">No Answer Timeout (seconds)</Label>
               <Input id="c-timeout" type="number" min="5" max="300" {...createForm.register('no_answer_timeout_secs')} />
@@ -461,6 +496,21 @@ export function LineBindingsPage() {
           )}
 
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+            {editItem?.binding_type === 'ivr' && (
+              <div className="space-y-2">
+                <Label>IVR Flow</Label>
+                <Select value={editFlowId || '__none__'} onValueChange={(v) => setEditFlowId(v === '__none__' ? '' : v)}>
+                  <SelectTrigger><SelectValue placeholder="Select flow" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">None</SelectItem>
+                    {flowList.map(f => (
+                      <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Ring Strategy</Label>

@@ -229,6 +229,7 @@ export interface LineBinding {
   forward_unconditional: string | null
   outbound_caller_id: string | null
   outbound_cnam: string | null
+  flow_id: string | null
   created_at: string
   updated_at: string
 }
@@ -244,6 +245,7 @@ export interface CreateLineBindingRequest {
   forward_on_busy?: string
   forward_on_no_answer?: string
   forward_unconditional?: string
+  flow_id?: string
 }
 
 export interface UpdateLineBindingRequest {
@@ -255,6 +257,7 @@ export interface UpdateLineBindingRequest {
   forward_unconditional?: string
   outbound_caller_id?: string
   outbound_cnam?: string
+  flow_id?: string
 }
 
 export interface CallDetailRecord {
