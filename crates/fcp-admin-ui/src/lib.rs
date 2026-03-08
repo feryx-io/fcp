@@ -7,7 +7,7 @@ use axum::{
     body::Body,
     extract::Path,
     http::{header, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::get,
     Router,
 };
@@ -38,16 +38,29 @@ where
         .route("/user/*path", get(serve_spa_fallback))
 }
 
-/// Common security headers applied to all responses.
+/// Security headers applied to all responses (including errors).
+const SECURITY_HEADERS: [(&str, &str); 4] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ("X-Frame-Options", "DENY"),
+    ("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"),
+];
+
 fn add_security_headers(builder: axum::http::response::Builder) -> axum::http::response::Builder {
-    builder
-        .header("X-Content-Type-Options", "nosniff")
-        .header("Referrer-Policy", "strict-origin-when-cross-origin")
-        .header("X-Frame-Options", "DENY")
-        .header(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
-        )
+    let mut b = builder;
+    for (name, value) in &SECURITY_HEADERS {
+        b = b.header(*name, *value);
+    }
+    b
+}
+
+/// Build an error response with security headers applied.
+fn error_response(status: StatusCode, body: &str) -> Response {
+    let builder = Response::builder().status(status);
+    add_security_headers(builder)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 /// Serve a static asset from the embedded dist directory.
@@ -69,7 +82,7 @@ async fn serve_asset(Path(path): Path<String>) -> Response {
                 .body(Body::from(file.contents().to_vec()))
                 .unwrap()
         }
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => error_response(StatusCode::NOT_FOUND, "Not Found"),
     }
 }
 
@@ -99,10 +112,9 @@ fn serve_index_html() -> Response {
                 .body(Body::from(content.to_string()))
                 .unwrap()
         }
-        None => (
+        None => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Admin UI not built. Run: cd crates/fcp-admin-ui/ui && npm run build",
-        )
-            .into_response(),
+        ),
     }
 }

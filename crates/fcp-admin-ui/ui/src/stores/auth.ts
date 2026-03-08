@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { AuthUser } from '@/types'
 import { apiClient } from '@/api/client'
+import { auth } from '@/api/endpoints'
 
 interface AuthState {
   token: string | null
@@ -26,6 +27,8 @@ export const useAuthStore = create<AuthState>()(
       set({ token, user, isAuthenticated: true })
     },
     logout: () => {
+      // Fire server-side logout (best-effort, don't block on failure)
+      auth.logout().catch(() => {})
       apiClient.setToken(null)
       try { sessionStorage.removeItem('fcp-auth-token') } catch {}
       try { sessionStorage.removeItem('fcp-auth-user') } catch {}

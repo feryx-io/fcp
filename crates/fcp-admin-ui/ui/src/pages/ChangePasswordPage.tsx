@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { KeyRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,13 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useAuthStore } from '@/stores/auth'
 import { auth } from '@/api/endpoints'
 import { ApiRequestError } from '@/api/client'
-
-interface LocationState {
-  username: string
-  currentPassword: string
-  token: string
-  user: { username: string; role: string; tenant_id: string; display_name: string | null }
-}
+import { consumeExpiredPasswordState } from '@/stores/expired-password'
 
 export function ChangePasswordPage() {
   const [newPassword, setNewPassword] = useState('')
@@ -22,10 +16,10 @@ export function ChangePasswordPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
-  const location = useLocation()
   const { login } = useAuthStore()
 
-  const state = location.state as LocationState | null
+  // Consume credentials from in-memory store (one-shot read, then cleared)
+  const state = useMemo(() => consumeExpiredPasswordState(), [])
 
   // If no state, redirect to login
   if (!state?.username) {

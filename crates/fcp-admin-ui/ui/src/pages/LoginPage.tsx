@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useAuthStore } from '@/stores/auth'
 import { auth } from '@/api/endpoints'
 import { ApiRequestError } from '@/api/client'
+import { setExpiredPasswordState } from '@/stores/expired-password'
 
 export function LoginPage() {
   const [username, setUsername] = useState('')
@@ -25,8 +26,9 @@ export function LoginPage() {
     try {
       const response = await auth.login({ username, password })
       if (response.password_expired) {
-        // Redirect to change-password page with credentials in state
-        navigate('/change-password', { state: { username, currentPassword: password, token: response.token, user: response.user } })
+        // Store credentials in ephemeral memory (not in browser history state)
+        setExpiredPasswordState({ username, currentPassword: password })
+        navigate('/change-password', { replace: true })
         return
       }
       login(response.token, response.user)
