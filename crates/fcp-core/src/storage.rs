@@ -2127,6 +2127,11 @@ impl DynStorage {
         self.api_token_store.as_ref()
     }
 
+    /// Get a clone of the credential store Arc.
+    pub fn credential_store_arc(&self) -> Arc<dyn CredentialStore> {
+        Arc::clone(&self.credential_store)
+    }
+
     /// Replace the prompt store with a specific implementation.
     pub fn with_prompt_store(mut self, store: Arc<dyn crate::prompt::PromptStore>) -> Self {
         self.prompt_store = Some(store);

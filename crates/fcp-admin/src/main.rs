@@ -344,6 +344,12 @@ async fn main() -> Result<()> {
             )
             .nest("/api/v1", v1);
 
+        // Always derive JWT secret from auth_token when available.
+        // JWT session auth (admin UI login) is independent of bearer middleware.
+        if let Some(ref auth_token) = api_config.auth_token {
+            api_state = api_state.with_jwt_secret_from_token(auth_token);
+        }
+
         if api_config.auth_enabled {
             let auth_token = api_config.auth_token.as_ref().unwrap_or_else(|| {
                 panic!(
@@ -357,18 +363,28 @@ async fn main() -> Result<()> {
                 auth_config = auth_config.with_api_token_store(store);
                 tracing::info!("API token authentication enabled");
             }
+            // Share JWT secret so bearer middleware also accepts JWT session tokens
+            if let Some(ref jwt_secret) = api_state.jwt_secret {
+                auth_config = auth_config.with_jwt_secret(jwt_secret.clone());
+            }
+            // Share credential store so JWT auth can verify user is still active
+            if let Some(ref storage) = api_state.storage {
+                auth_config = auth_config.with_credential_store(
+                    storage.credential_store_arc(),
+                );
+            }
             // Store auth config in ApiState for WebSocket first-message auth
             api_state.auth_config = Some(auth_config.clone());
-            // Derive JWT signing secret from auth token
-            api_state = api_state.with_jwt_secret_from_token(auth_token);
             router = router.layer(axum::middleware::from_fn(move |req, next| {
                 let config = auth_config.clone();
                 fcp_api_core::auth::validate_bearer_token(config, req, next)
             }));
         }
 
-        // WebSocket routes merged AFTER the auth layer — they handle auth
-        // inline via first-message protocol (browsers can't set headers on WS).
+        // Pre-auth, WebSocket routes merged AFTER the auth layer so they bypass it
+        router = router.merge(
+            axum::Router::new().nest("/api/v1", fcp_api_core::v1::pre_auth_router()),
+        );
         router = router.merge(
             axum::Router::new().nest("/api/v1", fcp_api_core::v1::ws_router()),
         );

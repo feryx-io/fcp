@@ -51,7 +51,13 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
         )
         .nest("/api/v1", v1::router());
 
-    // Conditionally apply authentication middleware
+    // Always derive JWT secret from auth_token when available.
+    // JWT session auth (admin UI login) is independent of bearer middleware.
+    if let Some(ref auth_token) = api_config.auth_token {
+        state = state.with_jwt_secret_from_token(auth_token);
+    }
+
+    // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {
         let auth_token = api_config.auth_token.as_ref().unwrap_or_else(|| {
             panic!(
@@ -61,20 +67,32 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
         });
 
         tracing::info!("API authentication enabled");
-        let auth_config = auth::AuthConfig::new(auth_token.clone());
+        let mut auth_config = auth::AuthConfig::new(auth_token.clone());
+        // Share JWT secret so bearer middleware also accepts JWT session tokens
+        if let Some(ref jwt_secret) = state.jwt_secret {
+            auth_config = auth_config.with_jwt_secret(jwt_secret.clone());
+        }
+        // Share credential store so JWT auth can verify user is still active
+        if let Some(ref storage) = state.storage {
+            auth_config = auth_config.with_credential_store(
+                storage.credential_store_arc(),
+            );
+        }
         // Store auth config in ApiState for WebSocket first-message auth
         state.auth_config = Some(auth_config.clone());
-        // Derive JWT signing secret from auth token
-        state = state.with_jwt_secret_from_token(auth_token);
         router = router.layer(middleware::from_fn(move |req, next| {
             let config = auth_config.clone();
             auth::validate_bearer_token(config, req, next)
         }));
     }
 
-    // WebSocket routes are merged AFTER the auth layer so they bypass it.
-    // They handle auth inline via first-message protocol because browsers
-    // cannot set Authorization headers on WebSocket connections.
+    // Pre-auth, WebSocket, and metrics routes merged AFTER the auth layer
+    // so they bypass bearer middleware:
+    // - pre_auth: login/logout/change-expired-password (user has no token yet)
+    // - ws: browsers can't set Authorization headers on WebSocket connections
+    router = router.merge(
+        Router::new().nest("/api/v1", v1::pre_auth_router()),
+    );
     router = router.merge(
         Router::new().nest("/api/v1", v1::ws_router()),
     );

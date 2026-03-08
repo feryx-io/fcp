@@ -334,19 +334,107 @@ pub async fn change_expired_password(
         return Err(ApiError::BadRequest("New password must be different from current password".to_string()));
     }
 
-    // Get user
-    let mut user = storage
-        .get_user(&req.username)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::Unauthorized("Invalid username or password".to_string()))?;
+    // Get user (with constant-time bcrypt on miss to prevent timing attacks)
+    let mut user = match storage.get_user(&req.username).await {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            let _ = password::verify_password(&req.current_password, "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC");
+            return Err(ApiError::Unauthorized("Invalid username or password".to_string()));
+        }
+        Err(e) => return Err(ApiError::Internal(e.to_string())),
+    };
+
+    let now = SystemTime::now();
+    let policy = &state.security_policy;
+
+    // Check if account is locked
+    if user.account_status == AccountStatus::Locked {
+        if let Some(locked_until) = user.account_locked_until {
+            if now < locked_until {
+                let _ = password::verify_password(&req.current_password, &user.password);
+                return Err(ApiError::Forbidden("Account is locked. Try again later.".to_string()));
+            }
+            // Lock expired — auto-unlock
+            user.account_status = AccountStatus::Active;
+            user.failed_login_attempts = 0;
+            user.account_locked_until = None;
+            user.updated_at = now;
+            let _ = storage.put_user(user.clone()).await;
+            tracing::info!(
+                event = "account_auto_unlocked",
+                username = %user.username,
+                "Account auto-unlocked after lockout expiry"
+            );
+        } else {
+            let _ = password::verify_password(&req.current_password, &user.password);
+            return Err(ApiError::Forbidden("Account is locked. Contact an administrator.".to_string()));
+        }
+    }
+
+    // Check account is enabled
+    if !user.enabled {
+        let _ = password::verify_password(&req.current_password, &user.password);
+        return Err(ApiError::Forbidden("Account is disabled".to_string()));
+    }
+
+    // Check account is not suspended
+    if user.account_status == AccountStatus::Suspended {
+        let _ = password::verify_password(&req.current_password, &user.password);
+        return Err(ApiError::Forbidden("Account is suspended".to_string()));
+    }
 
     // Verify current password
     let valid = password::verify_password(&req.current_password, &user.password)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     if !valid {
+        // Increment failed attempts
+        user.failed_login_attempts += 1;
+        user.updated_at = now;
+
+        if user.failed_login_attempts >= policy.max_failed_attempts as i32 {
+            user.account_status = AccountStatus::Locked;
+            user.account_locked_until = Some(now + Duration::from_secs(policy.lockout_duration_secs));
+            tracing::warn!(
+                event = "account_locked",
+                username = %user.username,
+                attempts = user.failed_login_attempts,
+                lockout_secs = policy.lockout_duration_secs,
+                "Account locked after too many failed password change attempts"
+            );
+        }
+
+        let _ = storage.put_user(user).await;
         return Err(ApiError::Unauthorized("Invalid username or password".to_string()));
+    }
+
+    // Password correct — reset failed attempts
+    user.failed_login_attempts = 0;
+
+    // Verify the password is actually expired (prevent using this as a
+    // general password-change path that bypasses the /me/password flow)
+    if let Some(expiration_days) = state.security_policy.password_expiration_days {
+        if expiration_days > 0 {
+            let expired = if let Some(last_reset) = user.password_last_reset {
+                let expiry = last_reset + Duration::from_secs(expiration_days as u64 * 86400);
+                now > expiry
+            } else {
+                true // No reset date → treat as expired
+            };
+            if !expired {
+                return Err(ApiError::BadRequest(
+                    "Password is not expired. Use the regular password change endpoint.".to_string(),
+                ));
+            }
+        } else {
+            return Err(ApiError::BadRequest(
+                "Password expiration is not enabled".to_string(),
+            ));
+        }
+    } else {
+        return Err(ApiError::BadRequest(
+            "Password expiration is not enabled".to_string(),
+        ));
     }
 
     // Hash new password
@@ -355,8 +443,6 @@ pub async fn change_expired_password(
 
     // Compute SIP HA1 hash for digest authentication
     let sip_ha1_hash = password::compute_ha1(&req.username, &state.realm, &req.new_password);
-
-    let now = SystemTime::now();
 
     // Update user
     user.password = password_hash;
@@ -437,7 +523,7 @@ fn encode_jwt(claims: &Claims, secret: &[u8]) -> Result<String, ApiError> {
     Ok(format!("{}.{}", message, signature))
 }
 
-fn decode_jwt(token: &str, secret: &[u8]) -> Result<Claims, ApiError> {
+pub(crate) fn decode_jwt(token: &str, secret: &[u8]) -> Result<Claims, ApiError> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 

@@ -7,13 +7,51 @@ use axum::{
     response::Response,
 };
 use fcp_core::storage::ApiTokenStore;
+use fcp_core::{AccountStatus, CredentialStore};
 use std::sync::Arc;
+
+/// Identity of the authenticated caller, inserted into request extensions
+/// after successful authentication by the bearer middleware.
+#[derive(Clone, Debug)]
+pub enum AuthIdentity {
+    /// Static config token — full admin access.
+    StaticToken,
+    /// Database API token with stored permissions.
+    ApiToken {
+        permissions: Vec<String>,
+    },
+    /// JWT session token with role from claims.
+    Session {
+        username: String,
+        role: String,
+    },
+}
+
+impl AuthIdentity {
+    /// Returns true if the caller has admin-level access (not an end user).
+    pub fn is_admin(&self) -> bool {
+        match self {
+            // Static token and API tokens are always admin-level
+            Self::StaticToken | Self::ApiToken { .. } => true,
+            // JWT session: check role
+            Self::Session { role, .. } => role != "end_user",
+        }
+    }
+}
 
 /// Authentication middleware state.
 #[derive(Clone)]
 pub struct AuthConfig {
     pub token: String,
     pub api_token_store: Option<Arc<dyn ApiTokenStore>>,
+    /// JWT secret for validating session tokens in the bearer middleware.
+    /// When set, `validate_token` also accepts valid JWT session tokens,
+    /// so the admin UI can use its JWT for both REST and WebSocket requests.
+    pub jwt_secret: Option<Vec<u8>>,
+    /// Credential store for checking user status (enabled/locked) on JWT auth.
+    /// When set, JWT tokens for disabled/locked users are rejected at the
+    /// middleware level without waiting for token expiry.
+    pub credential_store: Option<Arc<dyn CredentialStore>>,
 }
 
 impl AuthConfig {
@@ -21,6 +59,8 @@ impl AuthConfig {
         Self {
             token,
             api_token_store: None,
+            jwt_secret: None,
+            credential_store: None,
         }
     }
 
@@ -29,16 +69,28 @@ impl AuthConfig {
         self.api_token_store = Some(store);
         self
     }
+
+    /// Attach a JWT secret so the bearer middleware also accepts JWT session tokens.
+    pub fn with_jwt_secret(mut self, secret: Vec<u8>) -> Self {
+        self.jwt_secret = Some(secret);
+        self
+    }
+
+    /// Attach a credential store for per-request user status checks on JWT auth.
+    pub fn with_credential_store(mut self, store: Arc<dyn CredentialStore>) -> Self {
+        self.credential_store = Some(store);
+        self
+    }
 }
 
 /// Validate a bearer token string against the auth config.
 ///
 /// Used by both the HTTP middleware and the WebSocket first-message auth.
-/// Returns `true` if the token is valid.
-pub async fn validate_token(token: &str, config: &AuthConfig) -> bool {
+/// Returns the caller's identity if the token is valid, `None` otherwise.
+pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIdentity> {
     // Fast path: constant-time comparison against static config token
     if constant_time_compare(token, &config.token) {
-        return true;
+        return Some(AuthIdentity::StaticToken);
     }
 
     // Check API tokens (fcp_... prefix) if a store is configured
@@ -48,26 +100,65 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> bool {
         }
     }
 
-    false
+    // Check JWT session tokens (admin UI sends these after login)
+    if let Some(ref jwt_secret) = config.jwt_secret {
+        if let Ok(claims) = crate::v1::auth_session::decode_jwt(token, jwt_secret) {
+            // Verify user is still active (not disabled/locked/deleted)
+            if let Some(ref cred_store) = config.credential_store {
+                match cred_store.get_user(&claims.sub).await {
+                    Ok(Some(user)) => {
+                        if !user.enabled
+                            || user.account_status == AccountStatus::Locked
+                            || user.account_status == AccountStatus::Suspended
+                        {
+                            tracing::debug!(
+                                username = %claims.sub,
+                                status = ?user.account_status,
+                                enabled = user.enabled,
+                                "JWT rejected: user account inactive"
+                            );
+                            return None;
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!(username = %claims.sub, "JWT rejected: user deleted");
+                        return None;
+                    }
+                    Err(e) => {
+                        // Storage error — reject to fail closed
+                        tracing::warn!(error = %e, "JWT user status check failed");
+                        return None;
+                    }
+                }
+            }
+
+            return Some(AuthIdentity::Session {
+                username: claims.sub,
+                role: claims.role,
+            });
+        }
+    }
+
+    None
 }
 
 /// Extract and validate the Bearer token from the Authorization header.
+///
+/// On success, inserts [`AuthIdentity`] into request extensions so downstream
+/// middleware and handlers can check the caller's role/permissions.
 ///
 /// Expected format: "Authorization: Bearer <token>"
 ///
 /// Check order:
 /// 1. No Authorization header → 401
-/// 2. Static token matches → allow (fast path)
+/// 2. Static token matches → allow (full admin access)
 /// 3. Token starts with `fcp_` and an `ApiTokenStore` is configured:
 ///    hash with SHA-256, look up in DB, check expiry, update `last_used_at`
-/// 4. Otherwise → 401
-///
-/// Note: WebSocket endpoints that need auth exemption must be registered
-/// outside the middleware-protected router and handle auth inline (e.g.,
-/// first-message auth protocol in events.rs).
+/// 4. JWT session token — validate signature, expiry, and user status
+/// 5. Otherwise → 401
 pub async fn validate_bearer_token(
     auth_config: AuthConfig,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
     // Get the Authorization header
@@ -79,7 +170,8 @@ pub async fn validate_bearer_token(
     if let Some(auth_value) = auth_header {
         // Check if it's a Bearer token
         if let Some(token) = auth_value.strip_prefix("Bearer ") {
-            if validate_token(token, &auth_config).await {
+            if let Some(identity) = validate_token(token, &auth_config).await {
+                req.extensions_mut().insert(identity);
                 return Ok(next.run(req).await);
             }
         }
@@ -91,11 +183,37 @@ pub async fn validate_bearer_token(
     ))
 }
 
+/// Middleware that requires admin-level access.
+///
+/// Checks the [`AuthIdentity`] inserted by [`validate_bearer_token`] and
+/// rejects requests from end users (JWT `role: "end_user"`). Static tokens
+/// and API tokens are always considered admin-level.
+///
+/// When no `AuthIdentity` is present (e.g. auth is disabled), the request
+/// is allowed through.
+pub async fn require_admin(
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    if let Some(identity) = req.extensions().get::<AuthIdentity>() {
+        if !identity.is_admin() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Admin access required".to_string(),
+            ));
+        }
+    }
+    Ok(next.run(req).await)
+}
+
 /// Validate an `fcp_...` API token against the database.
 ///
-/// Returns `true` if the token is valid (exists, not expired).
+/// Returns the caller's identity if the token is valid (exists, not expired).
 /// On success, spawns a background task to update `last_used_at`.
-async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> bool {
+async fn validate_api_token(
+    token: &str,
+    store: &Arc<dyn ApiTokenStore>,
+) -> Option<AuthIdentity> {
     use sha2::{Digest, Sha256};
 
     // Hash the presented token
@@ -106,19 +224,21 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> bool
     // Look up in DB
     let api_token = match store.get_api_token_by_hash(&token_hash).await {
         Ok(Some(t)) => t,
-        Ok(None) => return false,
+        Ok(None) => return None,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to look up API token");
-            return false;
+            return None;
         }
     };
 
     // Check expiry
     if let Some(expires_at) = api_token.expires_at {
         if std::time::SystemTime::now() > expires_at {
-            return false;
+            return None;
         }
     }
+
+    let permissions = api_token.permissions.clone();
 
     // Update last_used_at in the background (non-blocking)
     let store = Arc::clone(store);
@@ -129,7 +249,7 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> bool
         }
     });
 
-    true
+    Some(AuthIdentity::ApiToken { permissions })
 }
 
 /// Constant-time string comparison to prevent timing attacks.

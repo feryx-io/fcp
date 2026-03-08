@@ -28,11 +28,26 @@ pub mod voicemail;
 
 use crate::state::ApiState;
 use axum::{
+    middleware,
     routing::{delete, get, patch, post, put},
     Router,
 };
 
-/// WebSocket routes that bypass the auth middleware layer.
+/// Pre-auth routes accessible without bearer token.
+///
+/// Login, logout, and change-expired-password must be callable before the
+/// user has a token. They are registered outside the bearer middleware layer.
+pub fn pre_auth_router() -> Router<ApiState> {
+    Router::new()
+        .route("/auth/login", post(auth_session::login))
+        .route("/auth/logout", post(auth_session::logout))
+        .route(
+            "/auth/change-expired-password",
+            post(auth_session::change_expired_password),
+        )
+}
+
+/// WebSocket routes that bypass the bearer middleware layer.
 ///
 /// These are registered outside the auth-protected router because browsers
 /// cannot set `Authorization` headers on WebSocket connections. Each handler
@@ -42,29 +57,72 @@ pub fn ws_router() -> Router<ApiState> {
 }
 
 /// Create the v1 API router.
+///
+/// Routes are split into two groups:
+/// - **User routes**: accessible by any authenticated user (including EndUser)
+/// - **Admin routes**: require admin-level role (not EndUser); protected by
+///   the [`crate::auth::require_admin`] middleware
 pub fn router() -> Router<ApiState> {
-    Router::new()
-        // Auth session endpoints (for admin UI)
-        .route("/auth/login", post(auth_session::login))
-        .route("/auth/logout", post(auth_session::logout))
+    // Routes accessible by any authenticated user (EndUser and above)
+    let user_routes = Router::new()
+        // Auth session endpoints that require a valid JWT
         .route("/auth/me", get(auth_session::me))
         .route("/auth/refresh", post(auth_session::refresh))
-        .route("/auth/change-expired-password", post(auth_session::change_expired_password))
-        // Dashboard endpoints (for admin UI)
-        .route("/dashboard/summary", get(dashboard::summary))
-        // System endpoints
+        // System endpoints (health checks — useful for all users)
         .route("/health", get(system::health))
         .route("/status", get(system::status))
+        // Self-service (end-user portal)
+        .route("/me/profile", get(self_service::get_profile).put(self_service::update_profile))
+        .route(
+            "/me/profile/avatar",
+            get(self_service::get_avatar)
+                .post(self_service::upload_avatar)
+                .delete(self_service::delete_avatar),
+        )
+        .route("/me/password", put(self_service::change_password))
+        .route("/me/voicemail", get(self_service::get_voicemail).put(self_service::update_voicemail))
+        .route("/me/voicemail/stats", get(self_service::get_voicemail_stats))
+        .route("/me/voicemail/messages", get(self_service::list_voicemail_messages))
+        .route(
+            "/me/voicemail/messages/:id",
+            put(self_service::update_voicemail_message).delete(self_service::delete_voicemail_message),
+        )
+        .route("/me/voicemail/messages/:id/audio", get(self_service::get_message_audio))
+        .route(
+            "/me/voicemail/greetings",
+            get(self_service::list_voicemail_greetings).post(self_service::upload_voicemail_greeting),
+        )
+        .route(
+            "/me/voicemail/greetings/synthesize",
+            post(self_service::synthesize_voicemail_greeting),
+        )
+        .route(
+            "/me/voicemail/greetings/:greeting_type",
+            delete(self_service::delete_voicemail_greeting),
+        )
+        .route(
+            "/me/voicemail/greetings/:greeting_type/active",
+            put(self_service::set_voicemail_greeting_active),
+        )
+        .route(
+            "/me/voicemail/greetings/:greeting_type/audio",
+            get(self_service::download_voicemail_greeting_audio),
+        )
+        .route("/me/forwarding", get(self_service::get_forwarding))
+        .route("/me/forwarding/:id", patch(self_service::update_forwarding));
+
+    // Admin-only routes — EndUser JWTs are rejected with 403 by require_admin.
+    let admin_routes = Router::new()
+        // Dashboard
+        .route("/dashboard/summary", get(dashboard::summary))
         // NOTE: /events WebSocket is registered separately via ws_router()
-        // because browsers cannot send Authorization headers on WebSocket
-        // connections. The WS handler does its own first-message auth.
-        // Debug endpoints (for live system inspection)
+        // Debug endpoints
         .route("/debug/summary", get(debug::debug_summary))
         .route("/debug/dialogs", get(debug::list_dialogs))
         .route("/debug/subscriptions", get(debug::list_subscriptions))
         .route("/debug/calls", get(debug::list_calls))
         .route("/debug/rate-limits", get(debug::list_rate_limits))
-        // Tenant management endpoints
+        // Tenant management
         .route(
             "/tenants",
             get(tenants::list_tenants).post(tenants::create_tenant),
@@ -75,7 +133,7 @@ pub fn router() -> Router<ApiState> {
                 .put(tenants::update_tenant)
                 .delete(tenants::delete_tenant),
         )
-        // User management endpoints
+        // User management
         .route("/users", get(users::list_users).post(users::create_user))
         .route(
             "/users/:username",
@@ -89,7 +147,7 @@ pub fn router() -> Router<ApiState> {
             "/users/:username/digest-password",
             put(users::update_digest_password).delete(users::delete_digest_password),
         )
-        // Registration viewing endpoints
+        // Registrations
         .route("/registrations", get(registrations::list_registrations))
         .route(
             "/registrations/:aor",
@@ -99,13 +157,12 @@ pub fn router() -> Router<ApiState> {
             "/registrations/:aor/:contact",
             delete(registrations::delete_registration),
         )
-        // Call management endpoints
+        // Call management
         .route("/calls", get(media::list_calls).post(media::originate_call))
         .route(
             "/calls/:call_id",
             get(media::get_call).delete(media::hangup_call),
         )
-        // Recording endpoints
         .route(
             "/calls/:call_id/recording/start",
             post(media::start_recording),
@@ -114,15 +171,15 @@ pub fn router() -> Router<ApiState> {
             "/calls/:call_id/recording/stop",
             post(media::stop_recording),
         )
-        // SIP trace endpoints (for ladder diagram debugging)
+        // SIP trace
         .route(
             "/calls/:call_id/sip-messages",
             get(sip_trace::get_sip_messages),
         )
-        // CDR (Call Detail Record) endpoints
+        // CDR
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
-        // Flow engine endpoints
+        // Flows
         .route("/flows", get(flows::list_flows).post(flows::create_flow))
         .route(
             "/flows/:id",
@@ -131,7 +188,7 @@ pub fn router() -> Router<ApiState> {
                 .delete(flows::delete_flow),
         )
         .route("/flows/:id/versions", get(flows::list_flow_versions))
-        // Phone number management
+        // Phone numbers
         .route(
             "/phone-numbers",
             get(phone_numbers::list_phone_numbers).post(phone_numbers::create_phone_number),
@@ -227,7 +284,7 @@ pub fn router() -> Router<ApiState> {
             "/presence/:aor/pres-rules",
             get(presence::get_pres_rules).put(presence::set_pres_rules),
         )
-        // Configuration management
+        // Configuration
         .route("/config", get(config::list_configs))
         .route("/config/audit", get(config::get_audit_log))
         .route(
@@ -263,7 +320,7 @@ pub fn router() -> Router<ApiState> {
             "/prompts/:id/synthesize",
             post(prompts::synthesize_prompt),
         )
-        // Voicemail
+        // Voicemail (admin management)
         .route(
             "/voicemail/mailboxes",
             get(voicemail::list_mailboxes).post(voicemail::create_mailbox),
@@ -296,7 +353,7 @@ pub fn router() -> Router<ApiState> {
                 .put(voicemail::update_message)
                 .delete(voicemail::delete_message),
         )
-        // Voicemail Greetings
+        // Voicemail Greetings (admin)
         .route(
             "/voicemail/mailboxes/:id/greetings",
             get(voicemail::list_greetings).post(voicemail::upload_greeting),
@@ -322,43 +379,7 @@ pub fn router() -> Router<ApiState> {
             "/api-tokens/:id",
             delete(api_tokens::delete_api_token),
         )
-        // Self-service (end-user portal)
-        .route("/me/profile", get(self_service::get_profile).put(self_service::update_profile))
-        .route(
-            "/me/profile/avatar",
-            get(self_service::get_avatar)
-                .post(self_service::upload_avatar)
-                .delete(self_service::delete_avatar),
-        )
-        .route("/me/password", put(self_service::change_password))
-        .route("/me/voicemail", get(self_service::get_voicemail).put(self_service::update_voicemail))
-        .route("/me/voicemail/stats", get(self_service::get_voicemail_stats))
-        .route("/me/voicemail/messages", get(self_service::list_voicemail_messages))
-        .route(
-            "/me/voicemail/messages/:id",
-            put(self_service::update_voicemail_message).delete(self_service::delete_voicemail_message),
-        )
-        .route("/me/voicemail/messages/:id/audio", get(self_service::get_message_audio))
-        .route(
-            "/me/voicemail/greetings",
-            get(self_service::list_voicemail_greetings).post(self_service::upload_voicemail_greeting),
-        )
-        .route(
-            "/me/voicemail/greetings/synthesize",
-            post(self_service::synthesize_voicemail_greeting),
-        )
-        .route(
-            "/me/voicemail/greetings/:greeting_type",
-            delete(self_service::delete_voicemail_greeting),
-        )
-        .route(
-            "/me/voicemail/greetings/:greeting_type/active",
-            put(self_service::set_voicemail_greeting_active),
-        )
-        .route(
-            "/me/voicemail/greetings/:greeting_type/audio",
-            get(self_service::download_voicemail_greeting_audio),
-        )
-        .route("/me/forwarding", get(self_service::get_forwarding))
-        .route("/me/forwarding/:id", patch(self_service::update_forwarding))
+        .layer(middleware::from_fn(crate::auth::require_admin));
+
+    user_routes.merge(admin_routes)
 }

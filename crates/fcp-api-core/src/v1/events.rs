@@ -97,7 +97,7 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
                 match serde_json::from_str::<WsAuthMessage>(&text) {
                     Ok(msg) if msg.msg_type == "auth" => {
                         if let Some(ref token) = msg.token {
-                            auth::validate_token(token, auth_config).await
+                            auth::validate_token(token, auth_config).await.is_some()
                         } else {
                             false
                         }
