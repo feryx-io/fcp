@@ -16,8 +16,14 @@ import {
 import { apiTokens } from '@/api/endpoints'
 import type { ApiToken } from '@/types'
 
+const AVAILABLE_PERMISSIONS = [
+  { value: 'admin', label: 'Admin — full access to all admin endpoints' },
+  { value: 'read', label: 'Read — read-only access' },
+] as const
+
 const createTokenSchema = z.object({
   name: z.string().min(1, 'Name is required').max(64),
+  permissions: z.array(z.string()).default([]),
   expires_at: z.string().optional(),
 })
 
@@ -75,7 +81,7 @@ export function ApiTokensPage() {
       cell: ({ row }) => (
         <div className="flex gap-1 flex-wrap">
           {row.original.permissions.length === 0 ? (
-            <Badge variant="secondary">All</Badge>
+            <Badge variant="secondary">None</Badge>
           ) : (
             row.original.permissions.slice(0, 3).map((p) => (
               <Badge key={p} variant="outline" className="text-xs">{p}</Badge>
@@ -140,6 +146,7 @@ export function ApiTokensPage() {
   const onSubmit = (data: CreateTokenForm) => {
     createMutation.mutate({
       name: data.name,
+      permissions: data.permissions,
       expires_at: data.expires_at || undefined,
     })
   }
@@ -181,6 +188,21 @@ export function ApiTokensPage() {
               <Label htmlFor="token-name">Token Name *</Label>
               <Input id="token-name" placeholder="e.g., CI/CD Pipeline" {...register('name')} />
               {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label>Permissions</Label>
+              <p className="text-xs text-muted-foreground">Tokens with no permissions selected cannot access admin endpoints.</p>
+              {AVAILABLE_PERMISSIONS.map((perm) => (
+                <label key={perm.value} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    value={perm.value}
+                    {...register('permissions')}
+                    className="rounded border-input"
+                  />
+                  <span>{perm.label}</span>
+                </label>
+              ))}
             </div>
             <div className="space-y-2">
               <Label htmlFor="token-expires">Expires (optional)</Label>

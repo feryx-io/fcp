@@ -214,8 +214,11 @@ pub async fn validate_bearer_token(
 /// Middleware that requires admin-level access.
 ///
 /// Checks the [`AuthIdentity`] inserted by [`validate_bearer_token`] and
-/// rejects requests from end users (JWT `role: "end_user"`). Static tokens
-/// and API tokens are always considered admin-level.
+/// rejects callers where [`AuthIdentity::is_admin()`] returns false:
+/// - JWT sessions with `role: "end_user"`
+/// - API tokens without `"admin"` or `"*"` in their permissions
+///
+/// Static config tokens are always admin-level.
 ///
 /// When no `AuthIdentity` is present (e.g. auth is disabled), the request
 /// is allowed through.

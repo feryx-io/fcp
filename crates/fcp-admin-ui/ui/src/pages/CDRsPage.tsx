@@ -53,7 +53,13 @@ export function CDRsPage() {
       c.disposition, c.hangup_cause,
       c.call_duration_ms ?? '', c.codec_a_leg ?? '', c.codec_b_leg ?? '',
     ])
-    const csv = [headers.join(','), ...rows.map((r) => r.map((v) => `"${v}"`).join(','))].join('\n')
+    // Escape CSV fields: neutralize formula injection (CWE-1236) and escape quotes
+    const esc = (v: string | number) => {
+      let s = String(v)
+      if (s.length > 0 && '=+-@'.includes(s[0])) s = "'" + s
+      return `"${s.replace(/"/g, '""')}"`
+    }
+    const csv = [headers.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

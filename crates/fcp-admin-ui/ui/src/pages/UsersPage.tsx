@@ -635,6 +635,10 @@ function ChangePasswordDialog({
 const EXPORT_COLUMNS = ['username', 'display_name', 'email', 'role', 'extension', 'department', 'location_id', 'account_status'] as const
 
 function escapeCSVField(value: string): string {
+  // Neutralize spreadsheet formula injection (CWE-1236)
+  if (value.length > 0 && '=+-@'.includes(value[0])) {
+    value = "'" + value
+  }
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
     return `"${value.replace(/"/g, '""')}"`
   }
