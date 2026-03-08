@@ -103,7 +103,9 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
     // Check JWT session tokens (admin UI sends these after login)
     if let Some(ref jwt_secret) = config.jwt_secret {
         if let Ok(claims) = crate::v1::auth_session::decode_jwt(token, jwt_secret) {
-            // Verify user is still active (not disabled/locked/deleted)
+            // Verify user is still active (not disabled/locked/deleted) and
+            // fetch current role from DB so demotions take effect immediately
+            // (not after JWT expiry).
             if let Some(ref cred_store) = config.credential_store {
                 match cred_store.get_user(&claims.sub).await {
                     Ok(Some(user)) => {
@@ -119,6 +121,12 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
                             );
                             return None;
                         }
+                        // Use current DB role, not the (possibly stale) JWT claim
+                        let current_role = crate::v1::auth_session::role_to_string(&user.role);
+                        return Some(AuthIdentity::Session {
+                            username: claims.sub,
+                            role: current_role,
+                        });
                     }
                     Ok(None) => {
                         tracing::debug!(username = %claims.sub, "JWT rejected: user deleted");

@@ -321,7 +321,8 @@ async fn main() -> Result<()> {
         // cluster routes *inside* the /api/v1 nest (routes merged outside the
         // nest would be shadowed by axum's prefix matching).
         let cluster_routes: axum::Router<fcp_api_core::ApiState> =
-            cluster_api::cluster_router(cluster_state);
+            cluster_api::cluster_router(cluster_state)
+                .layer(axum::middleware::from_fn(fcp_api_core::auth::require_admin));
         let v1 = fcp_api_core::v1::router().merge(cluster_routes);
 
         let cors = tower_http::cors::CorsLayer::new()

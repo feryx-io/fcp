@@ -24,7 +24,7 @@ use fcp_core::UserRole;
 const JWT_EXPIRY_HOURS: i64 = 24;
 
 /// Serialize a UserRole to its serde snake_case string (e.g. EndUser -> "end_user").
-fn role_to_string(role: &UserRole) -> String {
+pub fn role_to_string(role: &UserRole) -> String {
     serde_json::to_value(role)
         .ok()
         .and_then(|v| v.as_str().map(String::from))

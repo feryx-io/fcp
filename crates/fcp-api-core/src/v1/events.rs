@@ -19,7 +19,7 @@
 //! This avoids putting the token in the URL (which leaks via access logs,
 //! proxies, and monitoring tools).
 
-use crate::auth;
+use crate::auth::{self, AuthIdentity};
 use crate::state::ApiState;
 use axum::{
     extract::{
@@ -92,28 +92,36 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
     if let Some(ref auth_config) = state.auth_config {
         let auth_result = tokio::time::timeout(Duration::from_secs(5), receiver.next()).await;
 
-        let authenticated = match auth_result {
+        let identity: Option<AuthIdentity> = match auth_result {
             Ok(Some(Ok(Message::Text(text)))) => {
                 match serde_json::from_str::<WsAuthMessage>(&text) {
                     Ok(msg) if msg.msg_type == "auth" => {
                         if let Some(ref token) = msg.token {
-                            auth::validate_token(token, auth_config).await.is_some()
+                            auth::validate_token(token, auth_config).await
                         } else {
-                            false
+                            None
                         }
                     }
-                    _ => false,
+                    _ => None,
                 }
             }
-            _ => false,
+            _ => None,
         };
 
-        if !authenticated {
+        // Events WebSocket is admin-only — end users must not subscribe
+        // to platform-wide event streams.
+        let is_admin = identity.as_ref().map_or(false, |id| id.is_admin());
+        if !is_admin {
+            let msg = if identity.is_none() {
+                "Invalid or missing authentication token"
+            } else {
+                "Admin access required"
+            };
             let _ = sender
                 .send(Message::Text(
                     serde_json::json!({
                         "type": "auth_error",
-                        "message": "Invalid or missing authentication token"
+                        "message": msg
                     })
                     .to_string(),
                 ))
