@@ -56,7 +56,8 @@ export function CDRsPage() {
     // Escape CSV fields: neutralize formula injection (CWE-1236) and escape quotes
     const esc = (v: string | number) => {
       let s = String(v)
-      if (s.length > 0 && '=+-@'.includes(s[0])) s = "'" + s
+      const first = s.match(/[^\s\x00-\x1f]/)?.[0]
+      if (first && '=+-@'.includes(first)) s = "'" + s
       return `"${s.replace(/"/g, '""')}"`
     }
     const csv = [headers.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')

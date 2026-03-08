@@ -409,8 +409,10 @@ export function DevicesPage() {
 const EXPORT_COLUMNS = ['name', 'device_type', 'mac_address', 'model', 'sip_uri', 'location', 'location_id', 'enabled'] as const
 
 function escapeCSVField(value: string): string {
-  // Neutralize spreadsheet formula injection (CWE-1236)
-  if (value.length > 0 && '=+-@'.includes(value[0])) {
+  // Neutralize spreadsheet formula injection (CWE-1236):
+  // check first non-whitespace/control char to catch " =CMD", "\t@SUM", etc.
+  const first = value.match(/[^\s\x00-\x1f]/)?.[0]
+  if (first && '=+-@'.includes(first)) {
     value = "'" + value
   }
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
