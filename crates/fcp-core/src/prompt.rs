@@ -295,6 +295,24 @@ impl PromptService {
         Ok(())
     }
 
+    /// Resolve a prompt by ID to an audio file path.
+    ///
+    /// Used when a flow Play node references a prompt via API URL
+    /// (e.g. `/api/v1/prompts/prompt-<uuid>/audio`).
+    pub async fn resolve_by_id(
+        &self,
+        id: &PromptId,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        if let Some(prompt) = self.store.get_prompt(id).await? {
+            if let Some(ref path) = prompt.audio_path {
+                if path.exists() {
+                    return Ok(Some(path.clone()));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Get the TTS fallback text for a prompt, if available.
     pub async fn get_tts_text(
         &self,

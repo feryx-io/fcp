@@ -167,6 +167,12 @@ impl FlowCallHandler {
         self
     }
 
+    /// Set the TTS service on the flow engine (for Gather Say prompts and Say nodes).
+    pub fn with_tts_service(mut self, tts_service: Arc<fcp_media::TtsService>) -> Self {
+        self.engine = Arc::new(FlowEngine::with_tts(tts_service));
+        self
+    }
+
     /// Get a reference to the flow store.
     pub fn flow_store(&self) -> &Arc<dyn FlowStore> {
         &self.flow_store
@@ -182,6 +188,48 @@ impl FlowCallHandler {
             }
         }
         result
+    }
+
+    /// Resolve a prompt API URL to a local filesystem path.
+    ///
+    /// Handles URLs like `/api/v1/prompts/prompt-<uuid>/audio` by extracting the
+    /// prompt ID and looking up the audio file path via PromptService.
+    async fn resolve_prompt_url(&self, url: &str) -> Option<String> {
+        // Match API prompt URLs: /api/v1/prompts/<prompt-id>/audio
+        if let Some(prompt_id_str) = url
+            .strip_prefix("/api/v1/prompts/")
+            .and_then(|rest| rest.strip_suffix("/audio"))
+        {
+            if let Some(ref ps) = self.prompt_service {
+                if let Ok(prompt_id) = prompt_id_str.parse::<fcp_core::PromptId>() {
+                    match ps.resolve_by_id(&prompt_id).await {
+                        Ok(Some(path)) => {
+                            let path_str = path.to_string_lossy().to_string();
+                            info!(
+                                prompt_id = %prompt_id_str,
+                                resolved_path = %path_str,
+                                "Resolved prompt API URL to filesystem path"
+                            );
+                            return Some(path_str);
+                        }
+                        Ok(None) => {
+                            warn!(
+                                prompt_id = %prompt_id_str,
+                                "Prompt found but no audio file on disk"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                prompt_id = %prompt_id_str,
+                                error = %e,
+                                "Failed to resolve prompt by ID"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Add a flow routing rule.
@@ -259,8 +307,37 @@ impl FlowCallHandler {
         }
 
         // Set callbacks for Answer and Hangup nodes
-        context.set_answer_callback(answer_callback);
+        context.set_answer_callback(answer_callback.clone());
         context.set_hangup_callback(hangup_callback);
+
+        // If the initial node is not an Answer node, auto-answer the call first.
+        // Most IVR flows need the call answered before any media playback can work.
+        let initial_is_answer = flow
+            .nodes
+            .get(&flow.initial_node)
+            .map(|n| matches!(n.node_type, fcp_flow::NodeType::Answer { .. }))
+            .unwrap_or(false);
+
+        if !initial_is_answer {
+            info!(
+                call_id = %call.id,
+                initial_node = %flow.initial_node,
+                "Initial node is not Answer — auto-answering call"
+            );
+            if let Err(e) = answer_callback().await {
+                error!(call_id = %call.id, error = %e, "Auto-answer failed");
+            } else {
+                info!(call_id = %call.id, "Call auto-answered successfully");
+                // Propagate media_session_id that the answer callback created
+                if let Some(ref cm) = self.call_manager {
+                    if let Some(call_entry) = cm.get_call(&call.id) {
+                        if let Some(ref msid) = call_entry.media_session_id {
+                            context.set_media_session_id(msid.clone());
+                        }
+                    }
+                }
+            }
+        }
 
         // Store context
         self.contexts
@@ -488,20 +565,56 @@ impl FlowCallHandler {
         let local_uri = self.local_uri.as_ref().unwrap();
         let contact_uri = self.contact_uri.as_ref().unwrap();
 
-        // Parse destination URI
+        // Parse destination URI. If the destination is a bare extension (no sip: scheme),
+        // construct a SIP URI using the local domain.
         let dest_uri = match sip_core::SipUri::parse(&destination) {
             Ok(uri) => uri,
-            Err(e) => {
-                let error_msg = format!("Failed to parse destination URI: {:?}", e);
-                error!(
-                    a_leg_call_id = %a_leg_call_id,
-                    destination = %destination,
-                    error = %error_msg,
-                    "Invalid destination URI"
-                );
-                return self
-                    .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
-                    .await;
+            Err(_) => {
+                // Try treating it as a bare extension — construct sip:ext@local_host
+                if let Some(ref local) = self.local_uri {
+                    let host = if let Some(port) = local.port() {
+                        format!("{}:{}", local.host(), port)
+                    } else {
+                        local.host().to_string()
+                    };
+                    let full_uri = format!("sip:{}@{}", destination, host);
+                    info!(
+                        a_leg_call_id = %a_leg_call_id,
+                        destination = %destination,
+                        resolved_uri = %full_uri,
+                        "Resolved bare extension to SIP URI"
+                    );
+                    match sip_core::SipUri::parse(&full_uri) {
+                        Ok(uri) => uri,
+                        Err(e2) => {
+                            let error_msg =
+                                format!("Failed to parse destination URI: {:?}", e2);
+                            error!(
+                                a_leg_call_id = %a_leg_call_id,
+                                destination = %destination,
+                                error = %error_msg,
+                                "Invalid destination URI"
+                            );
+                            return self
+                                .transition_to_error(
+                                    a_leg_call_id,
+                                    &error_msg,
+                                    on_error,
+                                    next,
+                                )
+                                .await;
+                        }
+                    }
+                } else {
+                    let error_msg = format!(
+                        "Bare extension '{}' cannot be resolved — no local URI configured",
+                        destination
+                    );
+                    error!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                    return self
+                        .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                        .await;
+                }
             }
         };
 
@@ -1909,6 +2022,12 @@ impl FlowCallHandler {
 
                         let url_value = Self::interpolate(url, &context_guard);
 
+                        // Resolve prompt API URLs to filesystem paths.
+                        // The admin UI stores URLs like "/api/v1/prompts/<prompt-id>/audio"
+                        // but the media manager needs a local filesystem path.
+                        let resolved_path = self.resolve_prompt_url(&url_value).await
+                            .unwrap_or(url_value.clone());
+
                         // Use media session ID from context (not SIP call ID)
                         let session_id = context_guard.media_session_id.ok_or_else(|| {
                             anyhow::anyhow!("No media session ID available for playback")
@@ -1917,7 +2036,7 @@ impl FlowCallHandler {
                         // Start playback to ParticipantA (the caller in IVR mode)
                         // Note: Using ParticipantA instead of Both to avoid echo in IVR scenarios
                         match media_manager
-                            .play_file(&session_id, url_value.clone(), AudioTarget::ParticipantA)
+                            .play_file(&session_id, resolved_path.clone(), AudioTarget::ParticipantA)
                             .await
                         {
                             Ok(playback_id) => {
@@ -2215,16 +2334,20 @@ impl FlowCallHandler {
                 if let (Some(prompt_url), Some(media_manager), Some(session_id)) =
                     (prompt_url, &self.media_manager, media_session_id)
                 {
+                    // Resolve prompt API URLs to filesystem paths
+                    let resolved_url = self.resolve_prompt_url(&prompt_url).await
+                        .unwrap_or(prompt_url.clone());
+
                     info!(
                         call_id = %call_id,
-                        prompt_url = %prompt_url,
+                        prompt_url = %resolved_url,
                         "Playing Gather prompt"
                     );
 
                     match media_manager
                         .play_file(
                             &session_id,
-                            prompt_url.clone(),
+                            resolved_url.clone(),
                             fcp_media::AudioTarget::ParticipantA,
                         )
                         .await

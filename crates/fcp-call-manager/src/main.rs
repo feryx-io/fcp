@@ -17,7 +17,6 @@ use fcp_events::filter::EventType;
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
 use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
-use fcp_flow::InMemoryFlowStore;
 use fcp_sip::flow_handler::FlowCallHandler;
 use fcp_sip::prelude::*;
 use fcp_voicemail::{VoicemailConfig, VoicemailService};
@@ -128,6 +127,7 @@ async fn main() -> Result<()> {
     // 4. Initialize storage
     let storage_result = storage::initialize_storage(&config.storage).await?;
     let config_store = storage_result.config_store;
+    let pg_flow_store = storage_result.flow_store;
     #[allow(unused_mut)]
     let mut dyn_storage = storage_result.dyn_storage;
 
@@ -627,9 +627,9 @@ async fn main() -> Result<()> {
     ));
 
     // 17d. Create FlowCallHandler for IVR flows (*98 voicemail access, future IVR features)
-    let flow_store: Arc<dyn fcp_flow::FlowStore> = Arc::new(InMemoryFlowStore::new());
+    let flow_store: Arc<dyn fcp_flow::FlowStore> = pg_flow_store;
     let contact_uri = local_uri.clone();
-    let flow_handler = FlowCallHandler::new(
+    let mut flow_handler = FlowCallHandler::new(
         Arc::clone(&flow_store),
         Some(Arc::clone(&event_publisher)),
         Some(Arc::clone(&media_manager)),
@@ -644,6 +644,30 @@ async fn main() -> Result<()> {
         config.media.rtp_port_start,
     )
     .with_voicemail_service(Arc::clone(&voicemail_service));
+
+    // Wire TTS service to FlowEngine for Gather Say prompts and Say node pre-synthesis
+    if let Some(ref engine) = config.media.tts_engine {
+        match fcp_media::TtsService::new(fcp_media::TtsConfig {
+            provider: fcp_media::TtsProviderConfig::Local {
+                engine: engine.clone(),
+                executable_path: config.media.tts_python.as_ref().map(PathBuf::from),
+            },
+            cache_dir: PathBuf::from(&config.media.tts_cache_dir),
+            cache_max_size_mb: 500,
+            default_language: "en-US".to_string(),
+            default_voice: config.media.tts_voice.clone(),
+        })
+        .await
+        {
+            Ok(tts) => {
+                info!("TTS service wired to FlowEngine for Gather/Say nodes");
+                flow_handler = flow_handler.with_tts_service(Arc::new(tts));
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to create TTS service for FlowEngine — Gather Say prompts will be silent");
+            }
+        }
+    }
 
     // 17e. Create PromptService for system prompt resolution (WAV file → TTS fallback)
     let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {

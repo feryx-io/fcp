@@ -1309,7 +1309,7 @@ impl LineBindingStore for PostgresStorage {
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
                     forward_unconditional, outbound_caller_id, outbound_cnam,
-                    created_at, updated_at
+                    flow_id, created_at, updated_at
              FROM line_bindings
              WHERE id = $1",
         )
@@ -1336,7 +1336,7 @@ impl LineBindingStore for PostgresStorage {
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
                     forward_unconditional, outbound_caller_id, outbound_cnam,
-                    created_at, updated_at
+                    flow_id, created_at, updated_at
              FROM line_bindings
              WHERE phone_number_id = $1",
         )
@@ -1359,7 +1359,7 @@ impl LineBindingStore for PostgresStorage {
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
                     forward_unconditional, outbound_caller_id, outbound_cnam,
-                    created_at, updated_at
+                    flow_id, created_at, updated_at
              FROM line_bindings
              WHERE tenant_id = $1
              ORDER BY created_at",
@@ -1383,7 +1383,7 @@ impl LineBindingStore for PostgresStorage {
             "SELECT id, phone_number_id, owner_user_id, binding_type, ring_strategy, tenant_id,
                     no_answer_timeout_secs, forward_on_busy, forward_on_no_answer,
                     forward_unconditional, outbound_caller_id, outbound_cnam,
-                    created_at, updated_at
+                    flow_id, created_at, updated_at
              FROM line_bindings
              WHERE owner_user_id = $1
              ORDER BY created_at",
@@ -1407,7 +1407,7 @@ impl LineBindingStore for PostgresStorage {
             "SELECT lb.id, lb.phone_number_id, lb.owner_user_id, lb.binding_type, lb.ring_strategy, lb.tenant_id,
                     lb.no_answer_timeout_secs, lb.forward_on_busy, lb.forward_on_no_answer,
                     lb.forward_unconditional, lb.outbound_caller_id, lb.outbound_cnam,
-                    lb.created_at, lb.updated_at
+                    lb.flow_id, lb.created_at, lb.updated_at
              FROM line_bindings lb
              INNER JOIN device_bindings db ON lb.id = db.line_binding_id
              WHERE db.device_id = $1
