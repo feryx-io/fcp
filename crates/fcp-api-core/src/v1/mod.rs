@@ -9,6 +9,7 @@ pub mod debug;
 pub mod devices;
 pub mod events;
 pub mod extensions;
+pub mod flow_traces;
 pub mod flows;
 pub mod line_bindings;
 pub mod locations;
@@ -179,6 +180,9 @@ pub fn router() -> Router<ApiState> {
         // CDR
         .route("/cdrs", get(cdrs::list_cdrs))
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
+        // Flow execution traces
+        .route("/flow-traces", get(flow_traces::list_flow_traces))
+        .route("/flow-traces/:call_id", get(flow_traces::get_call_flow_traces))
         // Flows
         .route("/flows", get(flows::list_flows).post(flows::create_flow))
         .route(

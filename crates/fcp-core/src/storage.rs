@@ -1954,6 +1954,7 @@ pub struct DynStorage {
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
     prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
+    flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
 }
 
 impl DynStorage {
@@ -1999,6 +2000,7 @@ impl DynStorage {
             sip_trace_store: None,
             api_token_store: None,
             prompt_store: None,
+            flow_trace_store: None,
         }
     }
 
@@ -2049,6 +2051,7 @@ impl DynStorage {
             sip_trace_store: None,
             api_token_store: None,
             prompt_store: None,
+            flow_trace_store: None,
         }
     }
 
@@ -2141,6 +2144,17 @@ impl DynStorage {
     /// Get the prompt store, if one has been set.
     pub fn prompt_store(&self) -> Option<&Arc<dyn crate::prompt::PromptStore>> {
         self.prompt_store.as_ref()
+    }
+
+    /// Replace the flow trace store with a specific implementation.
+    pub fn with_flow_trace_store(mut self, store: Arc<dyn crate::flow_trace::FlowTraceStore>) -> Self {
+        self.flow_trace_store = Some(store);
+        self
+    }
+
+    /// Get the flow trace store, if one has been set.
+    pub fn flow_trace_store(&self) -> Option<&Arc<dyn crate::flow_trace::FlowTraceStore>> {
+        self.flow_trace_store.as_ref()
     }
 
     /// Get the site location store.

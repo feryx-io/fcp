@@ -43,11 +43,16 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         fcp_storage_postgres::prompt::PostgresPromptStore::new(storage.pool().clone()),
     );
 
+    let flow_trace_store = Arc::new(
+        fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(storage.pool().clone()),
+    );
+
     let dyn_st = DynStorage::from_all_in_one(storage.clone())
         .with_sip_trace_store(sip_trace_store as Arc<dyn fcp_core::sip_trace::SipTraceStore>)
-        .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>);
+        .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
+        .with_flow_trace_store(flow_trace_store as Arc<dyn fcp_core::flow_trace::FlowTraceStore>);
 
-    info!("PostgreSQL storage initialized successfully (with SIP trace store + prompt store)");
+    info!("PostgreSQL storage initialized successfully (with SIP trace + prompt + flow trace stores)");
     Ok(StorageResult {
         dyn_storage: Arc::new(dyn_st),
         flow_store: storage.clone() as Arc<dyn fcp_flow::FlowStore>,

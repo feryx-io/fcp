@@ -184,6 +184,54 @@ export const sipTrace = {
     apiClient.get<SipTraceListResponse>(`/calls/${encodeURIComponent(callId)}/sip-messages`),
 }
 
+// Flow Execution Traces
+export interface FlowTraceEntry {
+  id: number
+  call_id: string
+  flow_id: string
+  flow_name: string | null
+  node_id: string | null
+  event_type: string
+  timestamp: number // Unix timestamp in milliseconds
+  detail: string | null
+  flow_version: number | null
+  elapsed_ms: number | null
+}
+
+export interface ListFlowTracesResponse {
+  traces: FlowTraceEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface FlowTraceQueryParams {
+  call_id?: string
+  flow_id?: string
+  event_type?: string
+  time_from?: string
+  time_to?: string
+  limit?: number
+  offset?: number
+}
+
+export const flowTraces = {
+  list: (params?: FlowTraceQueryParams) => {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+          searchParams.set(key, String(value))
+        }
+      })
+    }
+    const query = searchParams.toString()
+    return apiClient.get<ListFlowTracesResponse>(`/flow-traces${query ? `?${query}` : ''}`)
+  },
+  getByCall: (callId: string) =>
+    apiClient.get<FlowTraceEntry[]>(`/flow-traces/${encodeURIComponent(callId)}`),
+}
+
 // Queues (Phase 2 - ACD queues)
 export const queues = {
   list: () => apiClient.get<QueueResponse[]>('/queues'),

@@ -725,6 +725,15 @@ async fn main() -> Result<()> {
         warn!("No prompt store configured — IVR will use TTS fallback only");
         flow_handler
     };
+
+    // Wire flow trace store for persistent execution tracing
+    let flow_handler = if let Some(trace_store) = dyn_storage.flow_trace_store() {
+        info!("Flow execution tracing enabled (PostgreSQL-backed)");
+        flow_handler.with_flow_trace_store(Arc::clone(trace_store))
+    } else {
+        flow_handler
+    };
+
     let flow_handler = Arc::new(flow_handler);
 
     let mut handler = SipMessageHandler::new(

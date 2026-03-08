@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod permissions;
 pub mod phone_number;
 pub mod porting;
+pub mod flow_trace;
 pub mod prompt;
 pub mod routing;
 pub mod routing_engine;

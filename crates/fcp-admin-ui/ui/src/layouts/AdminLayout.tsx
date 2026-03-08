@@ -51,6 +51,7 @@ const navItems: NavItem[] = [
   { label: 'SIP Trunks', href: '/admin/trunks', icon: Server, section: 'Advanced' },
   { label: 'Routing Rules', href: '/admin/routing', icon: Shield, section: 'Advanced' },
   { label: 'IVR Flows', href: '/admin/flows', icon: Workflow, section: 'Advanced' },
+  { label: 'Flow Traces', href: '/admin/flow-traces', icon: Activity, section: 'Advanced' },
   { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'Advanced' },
   { label: 'Number Porting', href: '/admin/porting', icon: Phone, section: 'Advanced' },
   { label: 'Audit Log', href: '/admin/audit', icon: ScrollText, section: 'Advanced' },

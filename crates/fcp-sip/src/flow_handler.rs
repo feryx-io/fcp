@@ -85,6 +85,9 @@ pub struct FlowCallHandler {
 
     /// Prompt service for resolving system prompts to audio files
     prompt_service: Option<Arc<fcp_core::PromptService>>,
+
+    /// Flow trace store for persistent execution tracing
+    flow_trace_store: Option<Arc<dyn fcp_core::flow_trace::FlowTraceStore>>,
 }
 
 impl FlowCallHandler {
@@ -111,6 +114,7 @@ impl FlowCallHandler {
             rtp_port: 8000,
             voicemail_service: None,
             prompt_service: None,
+            flow_trace_store: None,
         }
     }
 
@@ -173,6 +177,15 @@ impl FlowCallHandler {
         self
     }
 
+    /// Set the flow trace store for persistent execution tracing.
+    pub fn with_flow_trace_store(
+        mut self,
+        store: Arc<dyn fcp_core::flow_trace::FlowTraceStore>,
+    ) -> Self {
+        self.flow_trace_store = Some(store);
+        self
+    }
+
     /// Get a reference to the flow store.
     pub fn flow_store(&self) -> &Arc<dyn FlowStore> {
         &self.flow_store
@@ -188,6 +201,40 @@ impl FlowCallHandler {
             }
         }
         result
+    }
+
+    /// Persist a flow trace entry asynchronously (fire-and-forget).
+    fn persist_trace(
+        &self,
+        call_id: &CallId,
+        flow_id: &str,
+        flow_name: Option<&str>,
+        node_id: Option<&str>,
+        event_type: fcp_core::flow_trace::FlowTraceEventType,
+        detail: Option<String>,
+        flow_version: Option<u32>,
+        elapsed_ms: Option<i64>,
+    ) {
+        if let Some(ref store) = self.flow_trace_store {
+            let entry = fcp_core::flow_trace::FlowTraceEntry {
+                id: 0,
+                call_id: call_id.to_string(),
+                flow_id: flow_id.to_string(),
+                flow_name: flow_name.map(|s| s.to_string()),
+                node_id: node_id.map(|s| s.to_string()),
+                event_type,
+                timestamp: std::time::SystemTime::now(),
+                detail,
+                flow_version,
+                elapsed_ms,
+            };
+            let store = Arc::clone(store);
+            tokio::spawn(async move {
+                if let Err(e) = store.insert_flow_trace(&entry).await {
+                    error!(error = %e, "Failed to persist flow trace");
+                }
+            });
+        }
     }
 
     /// Resolve a prompt API URL to a local filesystem path.
@@ -364,6 +411,18 @@ impl FlowCallHandler {
                 }
             });
         }
+
+        // Persist flow trace: Started
+        self.persist_trace(
+            &call.id,
+            &flow_id,
+            Some(&flow.name),
+            Some(&flow.initial_node),
+            fcp_core::flow_trace::FlowTraceEventType::Started,
+            None,
+            Some(flow.version),
+            Some(0),
+        );
 
         // Execute the initial node
         self.execute_next_node(call.id).await?;
@@ -1924,9 +1983,24 @@ impl FlowCallHandler {
                         "Answer node: calling answer callback"
                     );
 
-                    // Clone callback before dropping guard
+                    // Clone callback and flow info before dropping guard
                     let callback = context_guard.answer_callback.clone();
+                    let trace_flow_id = context_guard.flow.id.clone();
+                    let trace_flow_name = context_guard.flow.name.clone();
+                    let trace_flow_version = context_guard.flow.version;
                     drop(context_guard);
+
+                    // Persist flow trace: Answer node
+                    self.persist_trace(
+                        &call_id,
+                        &trace_flow_id,
+                        Some(&trace_flow_name),
+                        Some(&current_node),
+                        fcp_core::flow_trace::FlowTraceEventType::NodeExecuted,
+                        Some("answer".to_string()),
+                        Some(trace_flow_version),
+                        None,
+                    );
 
                     // Execute answer callback if available
                     if let Some(callback) = callback {
@@ -2022,6 +2096,18 @@ impl FlowCallHandler {
 
                         let url_value = Self::interpolate(url, &context_guard);
 
+                        // Persist flow trace: Play node
+                        self.persist_trace(
+                            &call_id,
+                            &context_guard.flow.id,
+                            Some(&context_guard.flow.name),
+                            Some(&current_node),
+                            fcp_core::flow_trace::FlowTraceEventType::NodeExecuted,
+                            Some(format!("play: {}", url)),
+                            Some(context_guard.flow.version),
+                            None,
+                        );
+
                         // Resolve prompt API URLs to filesystem paths.
                         // The admin UI stores URLs like "/api/v1/prompts/<prompt-id>/audio"
                         // but the media manager needs a local filesystem path.
@@ -2115,6 +2201,18 @@ impl FlowCallHandler {
                         let text_value = Self::interpolate(text, &context_guard);
                         let language_value = language.clone();
                         let voice_value = voice.clone();
+
+                        // Persist flow trace: Say node
+                        self.persist_trace(
+                            &call_id,
+                            &context_guard.flow.id,
+                            Some(&context_guard.flow.name),
+                            Some(&current_node),
+                            fcp_core::flow_trace::FlowTraceEventType::NodeExecuted,
+                            Some(format!("say: {}", &text_value[..text_value.len().min(80)])),
+                            Some(context_guard.flow.version),
+                            None,
+                        );
 
                         // Use media session ID from context (not SIP call ID)
                         let session_id = context_guard.media_session_id.ok_or_else(|| {
@@ -2221,6 +2319,18 @@ impl FlowCallHandler {
             });
         }
 
+        // Persist flow trace: NodeExecuted
+        self.persist_trace(
+            &call_id,
+            &context_guard.flow.id,
+            Some(&context_guard.flow.name),
+            Some(&current_node),
+            fcp_core::flow_trace::FlowTraceEventType::NodeExecuted,
+            None,
+            Some(context_guard.flow.version),
+            None,
+        );
+
         match result {
             FlowExecutionResult::Continue(next_node) => {
                 info!(
@@ -2260,6 +2370,18 @@ impl FlowCallHandler {
                         }
                     });
                 }
+
+                // Persist flow trace: Completed (hangup)
+                self.persist_trace(
+                    &call_id,
+                    &context_guard.flow.id,
+                    Some(&context_guard.flow.name),
+                    None,
+                    fcp_core::flow_trace::FlowTraceEventType::Completed,
+                    Some("hangup".to_string()),
+                    Some(context_guard.flow.version),
+                    None,
+                );
 
                 // Invoke hangup callback to send BYE
                 let callback = context_guard.hangup_callback.clone();
@@ -2309,8 +2431,22 @@ impl FlowCallHandler {
 
                 let media_session_id = context_guard.media_session_id;
                 let flow_id = context_guard.flow.id.clone();
+                let flow_name_for_trace = context_guard.flow.name.clone();
+                let flow_version_for_trace = context_guard.flow.version;
 
                 drop(context_guard);
+
+                // Persist flow trace: WaitingForInput
+                self.persist_trace(
+                    &call_id,
+                    &flow_id,
+                    Some(&flow_name_for_trace),
+                    None,
+                    fcp_core::flow_trace::FlowTraceEventType::WaitingForInput,
+                    Some(format!("variable={}, timeout={}s", variable, timeout_secs)),
+                    Some(flow_version_for_trace),
+                    None,
+                );
 
                 // Publish waiting for input event
                 if let Some(events) = &self.events {
@@ -2729,6 +2865,18 @@ impl FlowCallHandler {
 
         if let Some((_, context)) = self.contexts.remove(&call_id) {
             let context_guard = context.read().await;
+
+            // Persist flow trace: Completed (stopped)
+            self.persist_trace(
+                &call_id,
+                &context_guard.flow.id,
+                Some(&context_guard.flow.name),
+                None,
+                fcp_core::flow_trace::FlowTraceEventType::Completed,
+                Some("stopped".to_string()),
+                Some(context_guard.flow.version),
+                None,
+            );
 
             // Publish flow stopped event
             if let Some(events) = &self.events {

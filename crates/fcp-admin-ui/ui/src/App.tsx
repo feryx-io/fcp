@@ -25,6 +25,7 @@ const TrunksPage = lazy(() => import('@/pages/TrunksPage').then((m) => ({ defaul
 const RoutingPage = lazy(() => import('@/pages/RoutingPage').then((m) => ({ default: m.RoutingPage })))
 const FlowsPage = lazy(() => import('@/pages/FlowsPage').then((m) => ({ default: m.FlowsPage })))
 const FlowBuilderPage = lazy(() => import('@/pages/FlowBuilderPage').then((m) => ({ default: m.FlowBuilderPage })))
+const FlowTracesPage = lazy(() => import('@/pages/FlowTracesPage').then((m) => ({ default: m.FlowTracesPage })))
 const RegistrationsPage = lazy(() => import('@/pages/RegistrationsPage').then((m) => ({ default: m.RegistrationsPage })))
 const EventsPage = lazy(() => import('@/pages/EventsPage').then((m) => ({ default: m.EventsPage })))
 const ClusterPage = lazy(() => import('@/pages/ClusterPage').then((m) => ({ default: m.ClusterPage })))
@@ -122,6 +123,7 @@ export function App() {
               <Route path="routing" element={<Suspense fallback={<PageLoader />}><RoutingPage /></Suspense>} />
               <Route path="flows" element={<Suspense fallback={<PageLoader />}><FlowsPage /></Suspense>} />
               <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><FlowBuilderPage /></Suspense>} />
+              <Route path="flow-traces" element={<Suspense fallback={<PageLoader />}><FlowTracesPage /></Suspense>} />
               <Route path="cluster" element={<Suspense fallback={<PageLoader />}><ClusterPage /></Suspense>} />
               <Route path="porting" element={<Suspense fallback={<PageLoader />}><PortingPage /></Suspense>} />
               <Route path="audit" element={<Suspense fallback={<PageLoader />}><AuditLogPage /></Suspense>} />
