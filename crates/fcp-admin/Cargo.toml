@@ -30,6 +30,9 @@ bytes = { workspace = true }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis" }
 
+# Presence (read-only, for admin UI)
+fcp-presence = { path = "../fcp-presence" }
+
 # Cluster monitoring
 fcp-cluster = { path = "../fcp-cluster" }
 

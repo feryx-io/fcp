@@ -200,6 +200,33 @@ async fn main() -> Result<()> {
             .to_string()
     });
 
+    // Create read-only PresenceManager so the admin UI can display presence data.
+    let presence_manager = {
+        let presence_config = fcp_presence::PresenceConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let pm = fcp_presence::PresenceManager::new(
+            presence_config,
+            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
+            Some(Arc::clone(storage.presence_store())),
+        );
+        let tenant = fcp_core::TenantId::nil();
+        match pm.load_presentities(&tenant).await {
+            Ok(n) => info!(count = n, "Loaded presence presentities"),
+            Err(e) => warn!(error = %e, "Failed to load presence presentities"),
+        }
+        match pm.load_subscriptions(&tenant).await {
+            Ok(n) => info!(count = n, "Loaded presence subscriptions"),
+            Err(e) => warn!(error = %e, "Failed to load presence subscriptions"),
+        }
+        match pm.load_auth_policies(&tenant).await {
+            Ok(n) => info!(count = n, "Loaded presence auth policies"),
+            Err(e) => warn!(error = %e, "Failed to load presence auth policies"),
+        }
+        pm
+    };
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -211,7 +238,7 @@ async fn main() -> Result<()> {
         None, // media_manager (admin doesn't need media)
         event_bus,
         None, // queue_manager (admin doesn't use queues)
-        None, // presence_manager (admin doesn't run presence)
+        Some(presence_manager),
         realm,
         fcp_core::TenantId::nil(),
     )
