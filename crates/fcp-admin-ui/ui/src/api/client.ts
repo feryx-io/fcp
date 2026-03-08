@@ -9,17 +9,26 @@ export class ApiClient {
     this.token = token
   }
 
+  /** Get current token (for components that need it — prefer using ApiClient methods instead). */
+  getToken(): string | null {
+    return this.token
+  }
+
+  private authHeaders(): Record<string, string> {
+    if (this.token) {
+      return { Authorization: `Bearer ${this.token}` }
+    }
+    return {}
+  }
+
   private async request<T>(
     path: string,
     options: RequestInit = {},
   ): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...this.authHeaders(),
       ...(options.headers as Record<string, string> || {}),
-    }
-
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`
     }
 
     const response = await fetch(`${API_BASE}${path}`, {
@@ -71,6 +80,49 @@ export class ApiClient {
 
   delete<T>(path: string): Promise<T> {
     return this.request<T>(path, { method: 'DELETE' })
+  }
+
+  /** Upload a FormData body (multipart). No Content-Type header — browser sets boundary. */
+  async uploadForm<T>(path: string, formData: FormData, method: 'POST' | 'PUT' = 'POST'): Promise<T> {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method,
+      body: formData,
+      headers: this.authHeaders(),
+    })
+    if (!response.ok) {
+      let error: ApiError
+      try {
+        error = await response.json()
+      } catch {
+        error = { error: `HTTP ${response.status}`, details: response.statusText }
+      }
+      throw new ApiRequestError(response.status, error)
+    }
+    if (response.status === 204) return undefined as T
+    return response.json()
+  }
+
+  /** Fetch a binary resource and return an object URL. */
+  async fetchBlobUrl(path: string): Promise<string> {
+    const response = await fetch(`${API_BASE}${path}`, {
+      headers: this.authHeaders(),
+    })
+    if (!response.ok) {
+      throw new Error(`Failed to fetch: ${response.status}`)
+    }
+    const blob = await response.blob()
+    return URL.createObjectURL(blob)
+  }
+
+  /** Send a DELETE with auth headers (raw fetch, no JSON parsing). */
+  async deleteRaw(path: string): Promise<void> {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+    })
+    if (!response.ok) {
+      throw new Error(`Delete failed: ${response.status}`)
+    }
   }
 }
 

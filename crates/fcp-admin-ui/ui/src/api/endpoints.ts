@@ -226,12 +226,9 @@ export const voicemail = {
     formData.append('greeting_type', greetingType)
     formData.append('audio', audioFile)
     if (expiresInHours) formData.append('expires_in', String(expiresInHours))
-    const resp = await fetch(`/api/v1/voicemail/mailboxes/${mailboxId}/greetings`, {
-      method: 'POST',
-      body: formData,
-    })
-    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
-    return resp.json() as Promise<import('@/types').GreetingResponse>
+    return apiClient.uploadForm<import('@/types').GreetingResponse>(
+      `/voicemail/mailboxes/${mailboxId}/greetings`, formData,
+    )
   },
   deleteGreeting: (mailboxId: string, greetingType: string) =>
     apiClient.delete<void>(`/voicemail/mailboxes/${mailboxId}/greetings/${greetingType}`),
@@ -295,12 +292,7 @@ export const prompts = {
   uploadAudio: async (id: string, audioFile: File) => {
     const formData = new FormData()
     formData.append('audio', audioFile)
-    const resp = await fetch(`/api/v1/prompts/${id}/audio`, {
-      method: 'POST',
-      body: formData,
-    })
-    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
-    return resp.json() as Promise<PromptResponse>
+    return apiClient.uploadForm<PromptResponse>(`/prompts/${id}/audio`, formData)
   },
   audioUrl: (id: string) => `/api/v1/prompts/${id}/audio`,
   synthesize: (id: string) => apiClient.post<PromptResponse>(`/prompts/${id}/synthesize`, {}),
@@ -495,17 +487,8 @@ export const me = {
   updateMessage: (id: string, data: { status?: string }) =>
     apiClient.put<VoicemailMessage>(`/me/voicemail/messages/${id}`, data),
   deleteMessage: (id: string) => apiClient.delete<void>(`/me/voicemail/messages/${id}`),
-  fetchMessageAudio: async (id: string): Promise<string> => {
-    const token = localStorage.getItem('fcp-auth')
-    const parsed = token ? JSON.parse(token) : null
-    const jwt = parsed?.state?.token
-    const resp = await fetch(`/api/v1/me/voicemail/messages/${id}/audio`, {
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
-    })
-    if (!resp.ok) throw new Error(`Failed to fetch audio: ${resp.status}`)
-    const blob = await resp.blob()
-    return URL.createObjectURL(blob)
-  },
+  fetchMessageAudio: (id: string): Promise<string> =>
+    apiClient.fetchBlobUrl(`/me/voicemail/messages/${id}/audio`),
 
   // Greetings
   listGreetings: () =>
@@ -515,16 +498,9 @@ export const me = {
     formData.append('greeting_type', greetingType)
     formData.append('audio', audioFile)
     if (expiresInHours) formData.append('expires_in', String(expiresInHours))
-    const token = localStorage.getItem('fcp-auth')
-    const parsed = token ? JSON.parse(token) : null
-    const jwt = parsed?.state?.token
-    const resp = await fetch('/api/v1/me/voicemail/greetings', {
-      method: 'POST',
-      body: formData,
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
-    })
-    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
-    return resp.json() as Promise<import('@/types').GreetingResponse>
+    return apiClient.uploadForm<import('@/types').GreetingResponse>(
+      '/me/voicemail/greetings', formData,
+    )
   },
   synthesizeGreeting: (data: {
     greeting_type: string
@@ -537,53 +513,19 @@ export const me = {
     apiClient.delete<void>(`/me/voicemail/greetings/${greetingType}`),
   setGreetingActive: (greetingType: string, active: boolean) =>
     apiClient.put<void>(`/me/voicemail/greetings/${greetingType}/active`, { active }),
-  fetchGreetingAudio: async (greetingType: string): Promise<string> => {
-    const token = localStorage.getItem('fcp-auth')
-    const parsed = token ? JSON.parse(token) : null
-    const jwt = parsed?.state?.token
-    const resp = await fetch(`/api/v1/me/voicemail/greetings/${greetingType}/audio`, {
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
-    })
-    if (!resp.ok) throw new Error(`Failed to fetch audio: ${resp.status}`)
-    const blob = await resp.blob()
-    return URL.createObjectURL(blob)
-  },
+  fetchGreetingAudio: (greetingType: string): Promise<string> =>
+    apiClient.fetchBlobUrl(`/me/voicemail/greetings/${greetingType}/audio`),
 
   // Avatar
   uploadAvatar: async (file: File) => {
     const formData = new FormData()
     formData.append('avatar', file)
-    const token = localStorage.getItem('fcp-auth')
-    const parsed = token ? JSON.parse(token) : null
-    const jwt = parsed?.state?.token
-    const resp = await fetch('/api/v1/me/profile/avatar', {
-      method: 'POST',
-      body: formData,
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
-    })
-    if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`)
+    await apiClient.uploadForm<void>('/me/profile/avatar', formData)
   },
-  fetchAvatar: async (): Promise<string> => {
-    const token = localStorage.getItem('fcp-auth')
-    const parsed = token ? JSON.parse(token) : null
-    const jwt = parsed?.state?.token
-    const resp = await fetch('/api/v1/me/profile/avatar', {
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
-    })
-    if (!resp.ok) throw new Error(`Failed to fetch avatar: ${resp.status}`)
-    const blob = await resp.blob()
-    return URL.createObjectURL(blob)
-  },
-  deleteAvatar: async () => {
-    const token = localStorage.getItem('fcp-auth')
-    const parsed = token ? JSON.parse(token) : null
-    const jwt = parsed?.state?.token
-    const resp = await fetch('/api/v1/me/profile/avatar', {
-      method: 'DELETE',
-      headers: jwt ? { Authorization: `Bearer ${jwt}` } : {},
-    })
-    if (!resp.ok) throw new Error(`Delete failed: ${resp.status}`)
-  },
+  fetchAvatar: (): Promise<string> =>
+    apiClient.fetchBlobUrl('/me/profile/avatar'),
+  deleteAvatar: (): Promise<void> =>
+    apiClient.deleteRaw('/me/profile/avatar'),
 
   // Forwarding
   getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),

@@ -7,7 +7,7 @@ use axum::{
     body::Body,
     extract::Path,
     http::{header, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
@@ -38,6 +38,18 @@ where
         .route("/user/*path", get(serve_spa_fallback))
 }
 
+/// Common security headers applied to all responses.
+fn add_security_headers(builder: axum::http::response::Builder) -> axum::http::response::Builder {
+    builder
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Referrer-Policy", "strict-origin-when-cross-origin")
+        .header("X-Frame-Options", "DENY")
+        .header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+        )
+}
+
 /// Serve a static asset from the embedded dist directory.
 async fn serve_asset(Path(path): Path<String>) -> Response {
     let asset_path = format!("assets/{}", path);
@@ -47,15 +59,13 @@ async fn serve_asset(Path(path): Path<String>) -> Response {
                 .first_or_octet_stream()
                 .to_string();
 
-            let mut response = Response::builder()
+            let builder = Response::builder()
                 .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime);
-
-            // Cache static assets aggressively (they have content hashes in filenames)
-            response = response
+                .header(header::CONTENT_TYPE, mime)
+                // Cache static assets aggressively (they have content hashes in filenames)
                 .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
 
-            response
+            add_security_headers(builder)
                 .body(Body::from(file.contents().to_vec()))
                 .unwrap()
         }
@@ -78,7 +88,16 @@ fn serve_index_html() -> Response {
     match DIST_DIR.get_file("index.html") {
         Some(file) => {
             let content = std::str::from_utf8(file.contents()).unwrap_or("<!-- error -->");
-            Html(content.to_string()).into_response()
+
+            let builder = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                // index.html must not be cached (SPA routing, deploys)
+                .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate");
+
+            add_security_headers(builder)
+                .body(Body::from(content.to_string()))
+                .unwrap()
         }
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
