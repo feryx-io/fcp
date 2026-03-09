@@ -189,9 +189,10 @@ async fn main() -> Result<()> {
 
     info!(node_id = %config.service.node_id, "SIP components initialized (lightweight, no transport)");
 
-    // Clone event_bus for event forwarding and subscribing before moving into api_state
+    // Clone event_bus for event forwarding, subscribing, and presence listener
     let event_bus_for_forward = Arc::clone(&event_bus);
     let event_bus_for_subscribe: Arc<dyn EventBus> = Arc::clone(&event_bus);
+    let event_bus_for_presence: Arc<dyn EventBus> = Arc::clone(&event_bus);
 
     // Derive events server base URL from ingest URL (strip /ingest suffix)
     let events_server_url = config.events.server_url.as_ref().map(|url| {
@@ -226,6 +227,17 @@ async fn main() -> Result<()> {
         }
         pm
     };
+
+    // Spawn presence event listener to keep the admin's PresenceManager in sync
+    // with registration/call events received via the events server WebSocket.
+    {
+        let pm_clone = presence_manager.clone();
+        let tenant_id = fcp_core::TenantId::nil();
+        tokio::spawn(async move {
+            run_presence_listener(event_bus_for_presence, pm_clone, tenant_id).await;
+        });
+        info!("Admin presence event listener started");
+    }
 
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
@@ -531,5 +543,96 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
 
         // Reconnect after delay
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
+/// Subscribe to registration and call events on the local event bus and update
+/// the admin's PresenceManager accordingly.  Events arrive via the events server
+/// WebSocket subscriber that republishes cluster-wide events to the local bus.
+async fn run_presence_listener(
+    event_bus: Arc<dyn EventBus>,
+    presence: fcp_presence::PresenceManager,
+    tenant_id: fcp_core::TenantId,
+) {
+    use fcp_events::filter::EventType;
+    use fcp_events::{EventFilter, PlatformEvent};
+    use fcp_sip::presence::extract_aor;
+
+    let filter = EventFilter::new().types(vec![EventType::Call, EventType::Registration]);
+
+    let mut stream = match event_bus.subscribe(filter.clone()).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(%e, "Failed to subscribe to event bus for presence");
+            return;
+        }
+    };
+
+    tracing::info!("Admin presence event listener running");
+
+    loop {
+        match stream.next().await {
+            Some(event) => match &event {
+                PlatformEvent::Registration(fcp_events::RegistrationEvent::Registered {
+                    aor,
+                    ..
+                }) => {
+                    if let Some(aor) = extract_aor(aor) {
+                        let update = fcp_presence::PresenceUpdate {
+                            aor,
+                            state: fcp_presence::PresenceState::Open,
+                            note: None,
+                        };
+                        let _ = presence.update_presence(update, &tenant_id).await;
+                    }
+                }
+                PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered {
+                    aor,
+                    ..
+                }) => {
+                    if let Some(aor) = extract_aor(aor) {
+                        let update = fcp_presence::PresenceUpdate {
+                            aor,
+                            state: fcp_presence::PresenceState::Closed,
+                            note: None,
+                        };
+                        let _ = presence.update_presence(update, &tenant_id).await;
+                    }
+                }
+                PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, .. }) => {
+                    if let Some(callee_aor) = extract_aor(to) {
+                        let update = fcp_presence::PresenceUpdate {
+                            aor: callee_aor,
+                            state: fcp_presence::PresenceState::Ringing,
+                            note: Some("Ringing".to_string()),
+                        };
+                        let _ = presence.update_presence(update, &tenant_id).await;
+                    }
+                    if let Some(caller_aor) = extract_aor(from) {
+                        presence.set_on_the_phone(&caller_aor, &tenant_id).await;
+                    }
+                }
+                PlatformEvent::Call(fcp_events::CallEvent::Ended { .. }) => {
+                    // Revert all in-call users who have no other active calls to Open.
+                    // The admin doesn't track active calls per-user, so we rely on
+                    // the call-manager persisting final state to the store.
+                }
+                _ => {}
+            },
+            None => {
+                tracing::warn!("Admin presence event stream ended, resubscribing...");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                match event_bus.subscribe(filter.clone()).await {
+                    Ok(new_stream) => {
+                        stream = new_stream;
+                        tracing::info!("Admin presence event listener resubscribed");
+                    }
+                    Err(e) => {
+                        tracing::warn!(%e, "Failed to resubscribe admin presence event listener");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
     }
 }
