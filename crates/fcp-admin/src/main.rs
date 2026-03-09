@@ -558,7 +558,7 @@ async fn run_presence_listener(
     use fcp_events::{EventFilter, PlatformEvent};
     use fcp_sip::presence::extract_aor;
 
-    let filter = EventFilter::new().types(vec![EventType::Call, EventType::Registration]);
+    let filter = EventFilter::new().types(vec![EventType::Call, EventType::Registration, EventType::Presence]);
 
     let mut stream = match event_bus.subscribe(filter.clone()).await {
         Ok(s) => s,
@@ -613,9 +613,18 @@ async fn run_presence_listener(
                     }
                 }
                 PlatformEvent::Call(fcp_events::CallEvent::Ended { .. }) => {
-                    // Revert all in-call users who have no other active calls to Open.
-                    // The admin doesn't track active calls per-user, so we rely on
-                    // the call-manager persisting final state to the store.
+                    // Presence revert is handled via StatusChanged events from the call-manager.
+                }
+                // Presence state changed (published by call-manager's PresenceManager)
+                PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { ref aor, ref new_state, .. }) => {
+                    if let Ok(state) = new_state.parse::<fcp_presence::PresenceState>() {
+                        let update = fcp_presence::PresenceUpdate {
+                            aor: aor.clone(),
+                            state,
+                            note: None,
+                        };
+                        let _ = presence.update_presence(update, &tenant_id).await;
+                    }
                 }
                 _ => {}
             },

@@ -2057,6 +2057,10 @@ async fn run_presence_listener(
                                 "terminated",
                                 &tenant_id,
                             ).await;
+                            // If this AOR has no remaining active calls, revert to Open
+                            if presence.get_active_calls(aor).is_empty() {
+                                presence.clear_on_the_phone(aor, &tenant_id).await;
+                            }
                         }
                         tracing::debug!(%call_id, "Call ended — active call removed from dialog tracking");
                     }

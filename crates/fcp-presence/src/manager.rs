@@ -650,21 +650,21 @@ impl PresenceManager {
         }
     }
 
-    /// Clear OnThePhone state when a call ends, reverting to Open.
+    /// Clear in-call state (OnThePhone or Ringing) when a call ends, reverting to Open.
     pub async fn clear_on_the_phone(&self, aor: &str, tenant_id: &TenantId) {
         let auto = self.config.read().auto_phone_state;
         if !auto {
             return;
         }
 
-        // Only revert if currently OnThePhone
-        let is_on_phone = self
+        // Only revert if currently in a call-related state
+        let is_in_call = self
             .presentities
             .get(aor)
-            .map(|p| p.state == PresenceState::OnThePhone)
+            .map(|p| matches!(p.state, PresenceState::OnThePhone | PresenceState::Ringing))
             .unwrap_or(false);
 
-        if is_on_phone {
+        if is_in_call {
             let update = PresenceUpdate {
                 aor: aor.to_string(),
                 state: PresenceState::Open,
@@ -672,7 +672,7 @@ impl PresenceManager {
             };
 
             if let Err(e) = self.update_presence(update, tenant_id).await {
-                debug!(aor = %aor, error = %e, "Failed to clear on-the-phone state");
+                debug!(aor = %aor, error = %e, "Failed to clear in-call state");
             }
         }
     }
