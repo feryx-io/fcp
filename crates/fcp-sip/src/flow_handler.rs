@@ -1797,6 +1797,7 @@ impl FlowCallHandler {
         format: fcp_flow::schema::RecordingFormat,
         variable: String,
         next: String,
+        on_error: Option<String>,
     ) -> Result<()> {
         let media_manager = match &self.media_manager {
             Some(mm) => Arc::clone(mm),
@@ -1812,7 +1813,8 @@ impl FlowCallHandler {
 
                 let mut context_guard = context.write().await;
                 context_guard.set_variable(variable, "error://no_media_manager".to_string());
-                context_guard.current_node = next;
+                context_guard.set_variable("recording_status".to_string(), "error".to_string());
+                context_guard.current_node = on_error.unwrap_or(next);
                 drop(context_guard);
 
                 return Box::pin(self.execute_next_node(call_id)).await;
@@ -1893,7 +1895,7 @@ impl FlowCallHandler {
                 let mut context_guard = context.write().await;
                 context_guard.set_variable(variable, format!("error://{}", e));
                 context_guard.set_variable("recording_status".to_string(), "error".to_string());
-                context_guard.current_node = next;
+                context_guard.current_node = on_error.unwrap_or(next);
                 drop(context_guard);
             }
         }
@@ -1902,7 +1904,12 @@ impl FlowCallHandler {
     }
 
     /// Handle a StopRecording node by stopping recording via the MediaManager.
-    async fn handle_stop_recording(&self, call_id: CallId, next: String) -> Result<()> {
+    async fn handle_stop_recording(
+        &self,
+        call_id: CallId,
+        next: String,
+        on_error: Option<String>,
+    ) -> Result<()> {
         if let Some(media_manager) = &self.media_manager {
             let session_id = {
                 let context_entry = self
@@ -1926,6 +1933,25 @@ impl FlowCallHandler {
                         error = %e,
                         "Failed to stop recording (may not be active)"
                     );
+
+                    if let Some(ref error_node) = on_error {
+                        let context_entry = self
+                            .contexts
+                            .get(&call_id)
+                            .ok_or_else(|| anyhow::anyhow!("Flow context not found"))?;
+                        let context = Arc::clone(context_entry.value());
+                        drop(context_entry);
+
+                        let mut context_guard = context.write().await;
+                        context_guard.set_variable(
+                            "recording_status".to_string(),
+                            "error".to_string(),
+                        );
+                        context_guard.current_node = error_node.clone();
+                        drop(context_guard);
+
+                        return Box::pin(self.execute_next_node(call_id)).await;
+                    }
                 }
             }
         } else {
@@ -1976,7 +2002,7 @@ impl FlowCallHandler {
             use fcp_flow::NodeType;
 
             match node_type {
-                NodeType::Answer { next } => {
+                NodeType::Answer { next, .. } => {
                     info!(
                         call_id = %call_id,
                         node_id = %current_node,
@@ -2775,6 +2801,7 @@ impl FlowCallHandler {
                 format,
                 variable,
                 next,
+                on_error,
             } => {
                 info!(
                     call_id = %call_id,
@@ -2784,16 +2811,16 @@ impl FlowCallHandler {
 
                 drop(context_guard);
 
-                self.handle_start_recording(call_id, format, variable, next)
+                self.handle_start_recording(call_id, format, variable, next, on_error)
                     .await?;
             }
 
-            FlowExecutionResult::StoppingRecording { next } => {
+            FlowExecutionResult::StoppingRecording { next, on_error } => {
                 info!(call_id = %call_id, "Stopping call recording");
 
                 drop(context_guard);
 
-                self.handle_stop_recording(call_id, next).await?;
+                self.handle_stop_recording(call_id, next, on_error).await?;
             }
         }
 

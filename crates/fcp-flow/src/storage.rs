@@ -415,6 +415,7 @@ mod tests {
                 name: Some("Start".to_string()),
                 node_type: NodeType::Answer {
                     next: "end".to_string(),
+                    on_error: None,
                 },
             },
         );

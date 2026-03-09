@@ -81,6 +81,10 @@ pub enum NodeType {
     Answer {
         /// Next node to execute
         next: String,
+
+        /// Node to execute if answering fails
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Play audio to the caller
@@ -153,6 +157,10 @@ pub enum NodeType {
         /// Node to execute on timeout
         #[serde(skip_serializing_if = "Option::is_none")]
         on_timeout: Option<String>,
+
+        /// Node to execute on error (e.g., prompt synthesis failure)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Dial/bridge to another destination
@@ -243,6 +251,10 @@ pub enum NodeType {
 
         /// Node to execute if condition is false
         if_false: String,
+
+        /// Node to execute on error (e.g., variable not found)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Set a variable value
@@ -255,6 +267,10 @@ pub enum NodeType {
 
         /// Next node to execute
         next: String,
+
+        /// Node to execute on error (e.g., interpolation failure)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Fork execution to multiple destinations
@@ -290,12 +306,20 @@ pub enum NodeType {
 
         /// Next node to execute
         next: String,
+
+        /// Node to execute on error (e.g., media manager unavailable)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Stop call recording
     StopRecording {
         /// Next node to execute
         next: String,
+
+        /// Node to execute on error
+        #[serde(skip_serializing_if = "Option::is_none")]
+        on_error: Option<String>,
     },
 
     /// Pause execution for a duration
@@ -501,6 +525,7 @@ mod tests {
                 name: Some("Answer Call".to_string()),
                 node_type: NodeType::Answer {
                     next: "welcome".to_string(),
+                    on_error: None,
                 },
             },
         );

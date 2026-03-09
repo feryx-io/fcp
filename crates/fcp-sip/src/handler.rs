@@ -8555,6 +8555,7 @@ impl SipMessageHandler {
                     name: Some("Answer call".to_string()),
                     node_type: NodeType::Answer {
                         next: "vm_access".to_string(),
+                        on_error: None,
                     },
                 },
             );

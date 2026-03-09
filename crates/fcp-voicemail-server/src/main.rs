@@ -773,6 +773,7 @@ fn build_voicemail_flow(
             name: Some("Answer call".to_string()),
             node_type: NodeType::Answer {
                 next: "voicemail".to_string(),
+                on_error: None,
             },
         },
     );
@@ -837,6 +838,7 @@ fn build_voicemail_access_flow(flow_id: &str) -> fcp_flow::FlowDefinition {
             name: Some("Answer call".to_string()),
             node_type: NodeType::Answer {
                 next: "vm_access".to_string(),
+                on_error: None,
             },
         },
     );

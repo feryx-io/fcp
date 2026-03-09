@@ -91,8 +91,10 @@ impl FlowEngine {
         context.execution_path.push(node_id.to_string());
 
         let result = match &node.node_type {
-            NodeType::Answer { next } => {
+            NodeType::Answer { next, on_error: _ } => {
                 info!(call_id = %context.call_id, "Answering call");
+                // Answer errors are handled by the flow handler (SIP layer),
+                // not here. The on_error field is passed through to the handler.
                 Ok(FlowExecutionResult::Continue(next.clone()))
             }
 
@@ -186,6 +188,7 @@ impl FlowEngine {
                 transitions,
                 default,
                 on_timeout,
+                on_error: _,
             } => {
                 info!(
                     call_id = %context.call_id,
@@ -384,27 +387,48 @@ impl FlowEngine {
                 value,
                 if_true,
                 if_false,
+                on_error,
             } => {
-                let var_value = context.get_variable(variable)?;
-                let interpolated_compare_value = self.interpolate_variables(value, context)?;
+                match context.get_variable(variable) {
+                    Ok(var_value) => {
+                        let interpolated_compare_value =
+                            self.interpolate_variables(value, context)?;
 
-                let condition_met =
-                    self.evaluate_condition(&var_value, *operator, &interpolated_compare_value);
+                        let condition_met = self.evaluate_condition(
+                            &var_value,
+                            *operator,
+                            &interpolated_compare_value,
+                        );
 
-                debug!(
-                    call_id = %context.call_id,
-                    variable = %variable,
-                    value = %var_value,
-                    operator = ?operator,
-                    compare_value = %interpolated_compare_value,
-                    result = %condition_met,
-                    "Evaluating branch condition"
-                );
+                        debug!(
+                            call_id = %context.call_id,
+                            variable = %variable,
+                            value = %var_value,
+                            operator = ?operator,
+                            compare_value = %interpolated_compare_value,
+                            result = %condition_met,
+                            "Evaluating branch condition"
+                        );
 
-                if condition_met {
-                    Ok(FlowExecutionResult::Continue(if_true.clone()))
-                } else {
-                    Ok(FlowExecutionResult::Continue(if_false.clone()))
+                        if condition_met {
+                            Ok(FlowExecutionResult::Continue(if_true.clone()))
+                        } else {
+                            Ok(FlowExecutionResult::Continue(if_false.clone()))
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            call_id = %context.call_id,
+                            variable = %variable,
+                            error = %e,
+                            "Branch variable lookup failed"
+                        );
+                        if let Some(error_node) = on_error {
+                            Ok(FlowExecutionResult::Continue(error_node.clone()))
+                        } else {
+                            Err(e)
+                        }
+                    }
                 }
             }
 
@@ -412,16 +436,33 @@ impl FlowEngine {
                 variable,
                 value,
                 next,
+                on_error,
             } => {
-                let interpolated_value = self.interpolate_variables(value, context)?;
-                debug!(
-                    call_id = %context.call_id,
-                    variable = %variable,
-                    value = %interpolated_value,
-                    "Setting variable"
-                );
-                context.set_variable(variable.clone(), interpolated_value);
-                Ok(FlowExecutionResult::Continue(next.clone()))
+                match self.interpolate_variables(value, context) {
+                    Ok(interpolated_value) => {
+                        debug!(
+                            call_id = %context.call_id,
+                            variable = %variable,
+                            value = %interpolated_value,
+                            "Setting variable"
+                        );
+                        context.set_variable(variable.clone(), interpolated_value);
+                        Ok(FlowExecutionResult::Continue(next.clone()))
+                    }
+                    Err(e) => {
+                        warn!(
+                            call_id = %context.call_id,
+                            variable = %variable,
+                            error = %e,
+                            "SetVariable interpolation failed"
+                        );
+                        if let Some(error_node) = on_error {
+                            Ok(FlowExecutionResult::Continue(error_node.clone()))
+                        } else {
+                            Err(e)
+                        }
+                    }
+                }
             }
 
             NodeType::Fork {
@@ -460,6 +501,7 @@ impl FlowEngine {
                 format,
                 variable,
                 next,
+                on_error,
             } => {
                 info!(
                     call_id = %context.call_id,
@@ -471,13 +513,15 @@ impl FlowEngine {
                     format: *format,
                     variable: variable.clone(),
                     next: next.clone(),
+                    on_error: on_error.clone(),
                 })
             }
 
-            NodeType::StopRecording { next } => {
+            NodeType::StopRecording { next, on_error } => {
                 info!(call_id = %context.call_id, "Stopping recording");
                 Ok(FlowExecutionResult::StoppingRecording {
                     next: next.clone(),
+                    on_error: on_error.clone(),
                 })
             }
 
@@ -927,11 +971,13 @@ pub enum FlowExecutionResult {
         format: crate::schema::RecordingFormat,
         variable: String,
         next: String,
+        on_error: Option<String>,
     },
 
     /// Recording stop requested
     StoppingRecording {
         next: String,
+        on_error: Option<String>,
     },
 
     /// Waiting for voicemail access IVR to complete
@@ -958,6 +1004,7 @@ mod tests {
                 name: Some("Start".to_string()),
                 node_type: NodeType::Answer {
                     next: "say".to_string(),
+                    on_error: None,
                 },
             },
         );
