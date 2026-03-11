@@ -645,6 +645,11 @@ async fn main() -> Result<()> {
     )
     .with_voicemail_service(Arc::clone(&voicemail_service));
 
+    // Wire registrar for Dial node extension resolution (direct to device, bypassing B2BUA loop)
+    if let Some(ref reg) = registrar {
+        flow_handler = flow_handler.with_registrar(Arc::clone(reg));
+    }
+
     // Wire shared TTS service to FlowEngine for Gather Say prompts and Say node pre-synthesis
     if let Some(tts) = media_manager.tts_service() {
         info!("Shared TTS service wired to FlowEngine for Gather/Say nodes");

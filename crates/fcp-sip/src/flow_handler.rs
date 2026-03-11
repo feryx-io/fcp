@@ -12,11 +12,13 @@ use fcp_voicemail::VoicemailService;
 use fcp_flow::{FlowContext, FlowEngine, FlowExecutionResult, FlowStore};
 use fcp_media::{AudioTarget, MediaManager};
 use sip_core::{Request, Response};
-use sip_dialog::DialogManager;
+use sip_dialog::{Dialog, DialogManager};
 use sip_transaction::{
     ClientTransactionUser, TransactionKey, TransactionManager, TransportContext,
 };
 use sip_uac::UserAgentClient;
+
+use crate::registrar::FcpRegistrar;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
@@ -88,6 +90,9 @@ pub struct FlowCallHandler {
 
     /// Flow trace store for persistent execution tracing
     flow_trace_store: Option<Arc<dyn fcp_core::flow_trace::FlowTraceStore>>,
+
+    /// Registrar for resolving extensions to registered device contacts
+    registrar: Option<Arc<FcpRegistrar>>,
 }
 
 impl FlowCallHandler {
@@ -115,6 +120,7 @@ impl FlowCallHandler {
             voicemail_service: None,
             prompt_service: None,
             flow_trace_store: None,
+            registrar: None,
         }
     }
 
@@ -183,6 +189,12 @@ impl FlowCallHandler {
         store: Arc<dyn fcp_core::flow_trace::FlowTraceStore>,
     ) -> Self {
         self.flow_trace_store = Some(store);
+        self
+    }
+
+    /// Set the registrar for resolving extensions to registered contacts.
+    pub fn with_registrar(mut self, registrar: Arc<FcpRegistrar>) -> Self {
+        self.registrar = Some(registrar);
         self
     }
 
@@ -624,55 +636,75 @@ impl FlowCallHandler {
         let local_uri = self.local_uri.as_ref().unwrap();
         let contact_uri = self.contact_uri.as_ref().unwrap();
 
-        // Parse destination URI. If the destination is a bare extension (no sip: scheme),
-        // construct a SIP URI using the local domain.
+        // Parse destination URI. For bare extensions, resolve via registrar to get the
+        // actual device contact (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the
+        // device directly instead of looping through the local B2BUA.
         let dest_uri = match sip_core::SipUri::parse(&destination) {
             Ok(uri) => uri,
             Err(_) => {
-                // Try treating it as a bare extension — construct sip:ext@local_host
-                if let Some(ref local) = self.local_uri {
-                    let host = if let Some(port) = local.port() {
-                        format!("{}:{}", local.host(), port)
+                // Bare extension — try registrar lookup first
+                let mut resolved = None;
+
+                if let Some(ref registrar) = self.registrar {
+                    let aor = if let Some(ref local) = self.local_uri {
+                        format!("sip:{}@{}", destination, local.host())
                     } else {
-                        local.host().to_string()
+                        format!("sip:{}@localhost", destination)
                     };
-                    let full_uri = format!("sip:{}@{}", destination, host);
-                    info!(
-                        a_leg_call_id = %a_leg_call_id,
-                        destination = %destination,
-                        resolved_uri = %full_uri,
-                        "Resolved bare extension to SIP URI"
-                    );
-                    match sip_core::SipUri::parse(&full_uri) {
-                        Ok(uri) => uri,
-                        Err(e2) => {
-                            let error_msg =
-                                format!("Failed to parse destination URI: {:?}", e2);
-                            error!(
-                                a_leg_call_id = %a_leg_call_id,
-                                destination = %destination,
-                                error = %error_msg,
-                                "Invalid destination URI"
-                            );
-                            return self
-                                .transition_to_error(
-                                    a_leg_call_id,
-                                    &error_msg,
-                                    on_error,
-                                    next,
-                                )
-                                .await;
+                    match registrar.get_registrations(&aor).await {
+                        Ok(bindings) if !bindings.is_empty() => {
+                            // Use highest q-value binding
+                            let contact = bindings[0].contact();
+                            if let Ok(uri) = sip_core::SipUri::parse(contact) {
+                                info!(
+                                    a_leg_call_id = %a_leg_call_id,
+                                    destination = %destination,
+                                    contact = %contact,
+                                    "Resolved extension via registrar to device contact"
+                                );
+                                resolved = Some(uri);
+                            }
+                        }
+                        Ok(_) => {
+                            debug!(a_leg_call_id = %a_leg_call_id, destination = %destination, "No registrations found for extension");
+                        }
+                        Err(e) => {
+                            debug!(a_leg_call_id = %a_leg_call_id, error = %e, "Registrar lookup failed for extension");
                         }
                     }
-                } else {
-                    let error_msg = format!(
-                        "Bare extension '{}' cannot be resolved — no local URI configured",
-                        destination
-                    );
-                    error!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                    return self
-                        .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
-                        .await;
+                }
+
+                match resolved {
+                    Some(uri) => uri,
+                    None => {
+                        // Fallback: construct sip:ext@local_host
+                        if let Some(ref local) = self.local_uri {
+                            let host = if let Some(port) = local.port() {
+                                format!("{}:{}", local.host(), port)
+                            } else {
+                                local.host().to_string()
+                            };
+                            let full_uri = format!("sip:{}@{}", destination, host);
+                            info!(
+                                a_leg_call_id = %a_leg_call_id,
+                                destination = %destination,
+                                resolved_uri = %full_uri,
+                                "Resolved bare extension to local SIP URI (no registrar match)"
+                            );
+                            match sip_core::SipUri::parse(&full_uri) {
+                                Ok(uri) => uri,
+                                Err(e2) => {
+                                    let error_msg = format!("Failed to parse destination URI: {:?}", e2);
+                                    error!(a_leg_call_id = %a_leg_call_id, destination = %destination, error = %error_msg, "Invalid destination URI");
+                                    return self.transition_to_error(a_leg_call_id, &error_msg, on_error, next).await;
+                                }
+                            }
+                        } else {
+                            let error_msg = format!("Bare extension '{}' cannot be resolved — no local URI or registrar", destination);
+                            error!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                            return self.transition_to_error(a_leg_call_id, &error_msg, on_error, next).await;
+                        }
+                    }
                 }
             }
         };
@@ -680,7 +712,7 @@ impl FlowCallHandler {
         info!(
             a_leg_call_id = %a_leg_call_id,
             dest_uri = %dest_uri.as_str(),
-            "Parsed destination URI for B-leg"
+            "Resolved destination URI for B-leg"
         );
 
         // Create UserAgentClient for B-leg
@@ -693,12 +725,24 @@ impl FlowCallHandler {
             }
         }
 
-        // Generate SDP offer for B-leg (uses media profile if configured)
-        let sdp_offer = self.generate_minimal_sdp();
+        // Generate SDP offer for B-leg using the A-leg media session's port.
+        // This sends RTP directly to our existing session — no intermediate hop.
+        let a_leg_call_id_core = fcp_core::CallId::from_uuid(*a_leg_call_id.as_uuid());
+        let sdp_offer = if let Some(ref media_mgr) = self.media_manager {
+            match media_mgr.get_session(&a_leg_call_id_core).await {
+                Ok(session) => {
+                    let (rtp_port, _rtcp_port) = session.ports();
+                    self.generate_sdp_with_port(rtp_port)
+                }
+                Err(_) => self.generate_minimal_sdp(),
+            }
+        } else {
+            self.generate_minimal_sdp()
+        };
 
         info!(
             a_leg_call_id = %a_leg_call_id,
-            "Generated minimal SDP offer for B-leg INVITE"
+            "Generated SDP offer for B-leg INVITE"
         );
 
         // Create INVITE request with SDP
@@ -846,145 +890,64 @@ impl FlowCallHandler {
                             dial_status = String::from("answered");
                             next_node = next;
 
-                            // Phase 3: Extract SDP answer, create B-leg media session, bridge calls
                             info!(
                                 a_leg_call_id = %a_leg_call_id,
                                 code = %code,
-                                "B-leg answered, bridging media"
+                                "B-leg answered, setting up media and BYE propagation"
                             );
 
                             // Extract SDP from response body
                             let sdp_answer = String::from_utf8_lossy(response.body()).to_string();
 
                             if !sdp_answer.is_empty() && sdp_answer.starts_with("v=0") {
-                                info!(
-                                    a_leg_call_id = %a_leg_call_id,
-                                    sdp_len = %sdp_answer.len(),
-                                    "Extracted SDP answer from 200 OK"
-                                );
-
-                                // Extract dialog parameters from 200 OK response headers
-                                let b_call_id = response.headers().get("Call-ID")
-                                    .unwrap_or_default()
-                                    .to_string();
-                                let b_from_tag = response.headers().get("From")
-                                    .and_then(|h| h.split("tag=").nth(1))
-                                    .map(|t| t.split(';').next().unwrap_or(t).to_string())
-                                    .unwrap_or_default();
-                                let b_to_tag = response.headers().get("To")
-                                    .and_then(|h| h.split("tag=").nth(1))
-                                    .map(|t| t.split(';').next().unwrap_or(t).to_string())
-                                    .unwrap_or_default();
-
-                                debug!(
-                                    a_leg_call_id = %a_leg_call_id,
-                                    b_call_id = %b_call_id,
-                                    b_from_tag = %b_from_tag,
-                                    b_to_tag = %b_to_tag,
-                                    "Extracted B-leg dialog parameters from 200 OK"
-                                );
-
-                                // Store B-leg SIP dialog params for later BYE generation
-                                {
-                                    let ctx_entry = self.contexts.get(&a_leg_call_id);
-                                    if let Some(entry) = ctx_entry {
-                                        let ctx = Arc::clone(entry.value());
-                                        drop(entry);
-                                        let ctx_guard = ctx.write().await;
-                                        ctx_guard.set_variable("b_leg_sip_call_id".to_string(), b_call_id.clone());
-                                        ctx_guard.set_variable("b_leg_from_tag".to_string(), b_from_tag.clone());
-                                        ctx_guard.set_variable("b_leg_to_tag".to_string(), b_to_tag.clone());
-                                    }
-                                }
-
-                                // fcp_core::DialogId is UUID-based; use it for media session tracking
-                                let b_leg_dialog_id = fcp_core::DialogId::new();
-
-                                // Create B-leg Call ID (for media session tracking)
-                                // Note: MediaManager expects fcp_core::CallId, not call::CallId
-                                let b_leg_call_id_media = fcp_core::CallId::new();
-
-                                // Bridge media if MediaManager is available
+                                // Set B-leg endpoint on the EXISTING A-leg media session (single-session model).
+                                // Polycom sends RTP to the A-leg port, and the session forwards it to Jerry.
                                 if let Some(ref media_mgr) = self.media_manager {
-                                    // Create B-leg media session
-                                    match media_mgr.create_session_default(b_leg_call_id_media, b_leg_dialog_id).await {
-                                        Ok(_b_leg_session) => {
-                                            info!(
-                                                a_leg_call_id = %a_leg_call_id,
-                                                b_leg_call_id = %b_leg_call_id_media,
-                                                "Created B-leg media session"
-                                            );
-
-                                            // Update B-leg session with SDP answer
-                                            match media_mgr.update_session(&b_leg_call_id_media, sdp_answer).await {
-                                                Ok(_local_sdp) => {
-                                                    info!(
-                                                        a_leg_call_id = %a_leg_call_id,
-                                                        b_leg_call_id = %b_leg_call_id_media,
-                                                        "Updated B-leg session with SDP answer"
-                                                    );
-
-                                                    // Bridge the two call legs
-                                                    // Convert a_leg_call_id from call::CallId to fcp_core::CallId
-                                                    let a_leg_call_id_core = fcp_core::CallId::from_uuid(*a_leg_call_id.as_uuid());
-                                                    match media_mgr.bridge_calls(&a_leg_call_id_core, &b_leg_call_id_media).await {
-                                                        Ok(()) => {
-                                                            info!(
-                                                                a_leg_call_id = %a_leg_call_id,
-                                                                b_leg_call_id = %b_leg_call_id_media,
-                                                                "Media bridge established between A-leg and B-leg"
-                                                            );
-
-                                                            // Store B-leg call ID for later cleanup
-                                                            let context_entry = self.contexts.get(&a_leg_call_id);
-                                                            if let Some(entry) = context_entry {
-                                                                let context = Arc::clone(entry.value());
-                                                                drop(entry);
-                                                                let context_guard = context.write().await;
-                                                                context_guard.set_variable("b_leg_call_id".to_string(), b_leg_call_id_media.to_string());
-                                                                drop(context_guard);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                a_leg_call_id = %a_leg_call_id,
-                                                                b_leg_call_id = %b_leg_call_id_media,
-                                                                error = %e,
-                                                                "Failed to bridge media sessions"
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!(
-                                                        a_leg_call_id = %a_leg_call_id,
-                                                        b_leg_call_id = %b_leg_call_id_media,
-                                                        error = %e,
-                                                        "Failed to update B-leg session with SDP"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                a_leg_call_id = %a_leg_call_id,
-                                                b_leg_call_id = %b_leg_call_id_media,
-                                                error = %e,
-                                                "Failed to create B-leg media session"
-                                            );
-                                        }
+                                    if let Err(e) = media_mgr.update_session_b_leg(&a_leg_call_id_core, sdp_answer).await {
+                                        error!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to set B-leg media endpoint");
+                                    } else {
+                                        info!(a_leg_call_id = %a_leg_call_id, "B-leg media endpoint set on A-leg session — audio bridged");
                                     }
-                                } else {
-                                    warn!(
-                                        a_leg_call_id = %a_leg_call_id,
-                                        "MediaManager not available, skipping media bridging"
-                                    );
                                 }
                             } else {
-                                warn!(
-                                    a_leg_call_id = %a_leg_call_id,
-                                    "200 OK response has no SDP body, cannot bridge media"
+                                warn!(a_leg_call_id = %a_leg_call_id, "200 OK has no SDP body, cannot bridge media");
+                            }
+
+                            // Register B-leg dialog in CallManager so handle_bye() can propagate BYE.
+                            // Construct a Dialog from the INVITE request + 200 OK response.
+                            if let Some(ref call_mgr) = self.call_manager {
+                                let b_leg_dialog = Dialog::new_uac(
+                                    &invite,
+                                    &response,
+                                    local_uri.clone(),
+                                    dest_uri.clone(),
                                 );
+
+                                if let Some(dialog) = b_leg_dialog {
+                                    info!(
+                                        a_leg_call_id = %a_leg_call_id,
+                                        b_dialog_id = ?dialog.id(),
+                                        "Created B-leg dialog from 200 OK, registering in CallManager"
+                                    );
+
+                                    // Register dialog in DialogManager for in-dialog routing
+                                    if let Some(ref dialog_mgr) = self.dialog_manager {
+                                        let _ = dialog_mgr.insert(dialog.clone());
+                                    }
+
+                                    // Add B-leg to the call in CallManager
+                                    let callee_uri = dest_uri.as_str().to_string();
+                                    let _ = call_mgr.update_call(&a_leg_call_id, |call| {
+                                        let mut b_leg = fcp_b2bua_core::CallLeg::new_outbound(
+                                            callee_uri,
+                                            None,
+                                        );
+                                        b_leg.dialog = Some(dialog.clone());
+                                        call.b_leg = Some(b_leg);
+                                    });
+                                } else {
+                                    warn!(a_leg_call_id = %a_leg_call_id, "Failed to construct B-leg dialog from 200 OK");
+                                }
                             }
                         } else if code == 486 || code == 600 {
                             // 486 Busy Here, 600 Busy Everywhere
@@ -1115,6 +1078,34 @@ impl FlowCallHandler {
                  a=rtpmap:0 PCMU/8000\r\n\
                  a=rtpmap:8 PCMA/8000\r\n",
                 timestamp
+            )
+        }
+    }
+
+    /// Generate SDP with a specific RTP port (used to reuse A-leg session port).
+    fn generate_sdp_with_port(&self, port: u16) -> String {
+        if let (Some(profile), Some(local_addr)) = (&self.media_profile, &self.local_addr) {
+            let session_desc = profile.build("fcp", local_addr, port, None);
+            sip_sdp::serialize::serialize_sdp(&session_desc)
+        } else {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let addr = self.local_addr.as_deref().unwrap_or("127.0.0.1");
+            format!(
+                "v=0\r\n\
+                 o=- {} 1 IN IP4 {}\r\n\
+                 s=FCP B2BUA\r\n\
+                 c=IN IP4 {}\r\n\
+                 t=0 0\r\n\
+                 m=audio {} RTP/AVP 0 8 101\r\n\
+                 a=rtpmap:0 PCMU/8000\r\n\
+                 a=rtpmap:8 PCMA/8000\r\n\
+                 a=rtpmap:101 telephone-event/8000\r\n\
+                 a=fmtp:101 0-16\r\n\
+                 a=sendrecv\r\n",
+                timestamp, addr, addr, port
             )
         }
     }

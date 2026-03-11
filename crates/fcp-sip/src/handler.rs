@@ -2278,11 +2278,23 @@ impl SipMessageHandler {
                                                                 let _ = media_mgr.terminate_session(media_session_id).await;
                                                             }
                                                         }
+                                                        // BYE A-leg (caller)
                                                         if let Some(dialog) = call_entry.a_leg.dialog.clone() {
-                                                            if let Some(uac) = uac_opt {
+                                                            if let Some(ref uac) = uac_opt {
                                                                 match uac.bye(&dialog).await {
                                                                     Ok(_) => { dialog_manager.remove(dialog.id()); }
-                                                                    Err(e) => { error!(call_id = %call_id, error = %e, "Failed to send BYE"); }
+                                                                    Err(e) => { error!(call_id = %call_id, error = %e, "Failed to send A-leg BYE"); }
+                                                                }
+                                                            }
+                                                        }
+                                                        // BYE B-leg (callee from Dial node)
+                                                        if let Some(ref b_leg) = call_entry.b_leg {
+                                                            if let Some(dialog) = b_leg.dialog.clone() {
+                                                                if let Some(ref uac) = uac_opt {
+                                                                    match uac.bye(&dialog).await {
+                                                                        Ok(_) => { dialog_manager.remove(dialog.id()); }
+                                                                        Err(e) => { error!(call_id = %call_id, error = %e, "Failed to send B-leg BYE"); }
+                                                                    }
                                                                 }
                                                             }
                                                         }
