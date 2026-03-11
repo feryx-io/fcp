@@ -2442,6 +2442,11 @@ impl FlowCallHandler {
                     .and_then(|s| s.chars().next());
 
                 let on_timeout_node = context_guard.get_variable("__gather_on_timeout").ok();
+                let barge_in = context_guard
+                    .get_variable("__gather_barge_in")
+                    .ok()
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
 
                 // Check for prompt
                 let prompt_url = context_guard.get_variable("__gather_prompt_url").ok();
@@ -2483,70 +2488,74 @@ impl FlowCallHandler {
                     });
                 }
 
-                // Play prompt if available
-                if let (Some(prompt_url), Some(media_manager), Some(session_id)) =
-                    (prompt_url, &self.media_manager, media_session_id)
-                {
-                    // Resolve prompt API URLs to filesystem paths
-                    let resolved_url = self.resolve_prompt_url(&prompt_url).await
-                        .unwrap_or(prompt_url.clone());
-
-                    info!(
-                        call_id = %call_id,
-                        prompt_url = %resolved_url,
-                        "Playing Gather prompt"
-                    );
-
-                    match media_manager
-                        .play_file(
-                            &session_id,
-                            resolved_url.clone(),
-                            fcp_media::AudioTarget::ParticipantA,
-                        )
-                        .await
-                    {
-                        Ok(playback_id) => {
-                            // Wait for prompt playback to complete
-                            if let Err(e) = media_manager
-                                .wait_playback_completion(playback_id.clone())
-                                .await
-                            {
-                                warn!(
-                                    call_id = %call_id,
-                                    error = %e,
-                                    "Gather prompt playback failed"
-                                );
-                            } else {
-                                info!(call_id = %call_id, "Gather prompt playback complete");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(
-                                call_id = %call_id,
-                                error = %e,
-                                "Failed to play Gather prompt"
-                            );
-                        }
-                    }
-                }
-
-                // Create DTMF collector
+                // Create DTMF collector and play prompt
                 if let Some(media_manager) = &self.media_manager {
                     let gather_call_id = media_session_id.unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
+
+                    // Create collector BEFORE playback so digits during prompt are captured
                     let collector = media_manager.create_dtmf_collector(&gather_call_id, num_digits, finish_on_key);
+
+                    // Start prompt playback if available
+                    let playback_id: Option<String> = if let (Some(prompt_url), Some(session_id)) =
+                        (&prompt_url, media_session_id)
+                    {
+                        let resolved_url = self.resolve_prompt_url(prompt_url).await
+                            .unwrap_or(prompt_url.clone());
+                        info!(
+                            call_id = %call_id,
+                            prompt_url = %resolved_url,
+                            barge_in = barge_in,
+                            "Playing Gather prompt"
+                        );
+                        match media_manager
+                            .play_file(
+                                &session_id,
+                                resolved_url.clone(),
+                                fcp_media::AudioTarget::ParticipantA,
+                            )
+                            .await
+                        {
+                            Ok(pid) => {
+                                if !barge_in {
+                                    // No barge-in: wait for prompt to finish before collecting
+                                    if let Err(e) = media_manager
+                                        .wait_playback_completion(pid.clone())
+                                        .await
+                                    {
+                                        warn!(call_id = %call_id, error = %e, "Gather prompt playback failed");
+                                    } else {
+                                        info!(call_id = %call_id, "Gather prompt playback complete");
+                                    }
+                                    None // already finished
+                                } else {
+                                    Some(pid) // barge-in: collect concurrently, stop later
+                                }
+                            }
+                            Err(e) => {
+                                warn!(call_id = %call_id, error = %e, "Failed to play Gather prompt");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
                     info!(
                         call_id = %call_id,
                         num_digits = num_digits,
                         timeout_secs = timeout_secs,
                         finish_on_key = ?finish_on_key,
+                        barge_in = barge_in,
                         "Starting DTMF collection"
                     );
 
-                    // Requires media backend RTP event detection; collector works when events are fed in
+                    // Collect DTMF — when done, stop any still-active playback
                     let result = collector
                         .collect(std::time::Duration::from_secs(timeout_secs as u64))
                         .await;
+                    if let Some(pid) = playback_id {
+                        let _ = media_manager.stop_playback(&gather_call_id, pid).await;
+                    }
 
                     info!(
                         call_id = %call_id,

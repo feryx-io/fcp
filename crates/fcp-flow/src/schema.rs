@@ -161,6 +161,10 @@ pub enum NodeType {
         /// Node to execute on error (e.g., prompt synthesis failure)
         #[serde(skip_serializing_if = "Option::is_none")]
         on_error: Option<String>,
+
+        /// Allow DTMF input during prompt playback (default: true)
+        #[serde(default = "default_barge_in")]
+        barge_in: bool,
     },
 
     /// Dial/bridge to another destination
@@ -469,6 +473,10 @@ fn default_language() -> String {
 
 fn default_timeout() -> u32 {
     5
+}
+
+fn default_barge_in() -> bool {
+    true
 }
 
 fn default_dial_timeout() -> u32 {

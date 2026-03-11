@@ -189,6 +189,7 @@ impl FlowEngine {
                 default,
                 on_timeout,
                 on_error: _,
+                barge_in,
             } => {
                 info!(
                     call_id = %context.call_id,
@@ -268,6 +269,7 @@ impl FlowEngine {
                 if let Some(timeout_node) = on_timeout {
                     context.set_variable("__gather_on_timeout".to_string(), timeout_node.clone());
                 }
+                context.set_variable("__gather_barge_in".to_string(), barge_in.to_string());
 
                 // Return WaitingForInput with transition information
                 Ok(FlowExecutionResult::WaitingForInput {
