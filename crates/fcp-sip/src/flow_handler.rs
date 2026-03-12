@@ -19,6 +19,7 @@ use sip_transaction::{
 use sip_uac::UserAgentClient;
 
 use crate::registrar::FcpRegistrar;
+use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
@@ -93,6 +94,9 @@ pub struct FlowCallHandler {
 
     /// Registrar for resolving extensions to registered device contacts
     registrar: Option<Arc<FcpRegistrar>>,
+
+    /// Storage backend for extension → phone number → device resolution
+    storage: Option<Arc<fcp_core::DynStorage>>,
 }
 
 impl FlowCallHandler {
@@ -121,6 +125,7 @@ impl FlowCallHandler {
             prompt_service: None,
             flow_trace_store: None,
             registrar: None,
+            storage: None,
         }
     }
 
@@ -195,6 +200,12 @@ impl FlowCallHandler {
     /// Set the registrar for resolving extensions to registered contacts.
     pub fn with_registrar(mut self, registrar: Arc<FcpRegistrar>) -> Self {
         self.registrar = Some(registrar);
+        self
+    }
+
+    /// Set the storage backend for extension → device resolution.
+    pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
+        self.storage = Some(storage);
         self
     }
 
@@ -636,9 +647,10 @@ impl FlowCallHandler {
         let local_uri = self.local_uri.as_ref().unwrap();
         let contact_uri = self.contact_uri.as_ref().unwrap();
 
-        // Parse destination URI. For bare extensions, resolve via registrar to get the
-        // actual device contact (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the
-        // device directly instead of looping through the local B2BUA.
+        // Parse destination URI. For bare extensions, resolve via registrar or
+        // extension → phone number → device chain to get the actual device contact
+        // (e.g., "1234" → "polycom@192.168.1.12") so we INVITE the device directly
+        // instead of looping through the local B2BUA.
         let dest_uri = match sip_core::SipUri::parse(&destination) {
             Ok(uri) => uri,
             Err(_) => {
@@ -674,36 +686,100 @@ impl FlowCallHandler {
                     }
                 }
 
-                match resolved {
-                    Some(uri) => uri,
-                    None => {
-                        // Fallback: construct sip:ext@local_host
-                        if let Some(ref local) = self.local_uri {
-                            let host = if let Some(port) = local.port() {
-                                format!("{}:{}", local.host(), port)
-                            } else {
-                                local.host().to_string()
-                            };
-                            let full_uri = format!("sip:{}@{}", destination, host);
+                // If registrar lookup failed, try extension → phone number → device chain
+                if resolved.is_none() {
+                    if let (Some(ref storage), Some(ref registrar)) = (&self.storage, &self.registrar) {
+                        let tenant_id = self
+                            .call_manager
+                            .as_ref()
+                            .and_then(|cm| cm.get_call(&a_leg_call_id).map(|c| c.tenant_id))
+                            .unwrap_or_else(|| fcp_core::TenantId::nil());
+
+                        debug!(
+                            a_leg_call_id = %a_leg_call_id,
+                            destination = %destination,
+                            "Looking up extension via storage (extension → device chain)"
+                        );
+
+                        if let Ok(Some(extension)) = storage.get_extension_by_number(&tenant_id, &destination).await {
                             info!(
                                 a_leg_call_id = %a_leg_call_id,
                                 destination = %destination,
-                                resolved_uri = %full_uri,
-                                "Resolved bare extension to local SIP URI (no registrar match)"
+                                target = %extension.target,
+                                "Found extension in storage"
                             );
-                            match sip_core::SipUri::parse(&full_uri) {
-                                Ok(uri) => uri,
-                                Err(e2) => {
-                                    let error_msg = format!("Failed to parse destination URI: {:?}", e2);
-                                    error!(a_leg_call_id = %a_leg_call_id, destination = %destination, error = %error_msg, "Invalid destination URI");
-                                    return self.transition_to_error(a_leg_call_id, &error_msg, on_error, next).await;
+
+                            match &extension.target {
+                                fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
+                                    if let Ok(Some(phone_number)) = storage.get_phone_number(phone_number_id).await {
+                                        if let Ok(Some(line_binding)) = storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                                            for device_binding in line_binding.enabled_devices() {
+                                                if resolved.is_some() { break; }
+                                                if let Ok(Some(device)) = storage.get_device(&device_binding.device_id).await {
+                                                    if let Some(sip_uri) = &device.sip_uri {
+                                                        if let Ok(bindings) = registrar.get_registrations(sip_uri).await {
+                                                            if let Some(binding) = bindings.first() {
+                                                                if let Ok(uri) = sip_core::SipUri::parse(binding.contact()) {
+                                                                    info!(
+                                                                        a_leg_call_id = %a_leg_call_id,
+                                                                        destination = %destination,
+                                                                        device = %device.name,
+                                                                        contact = %binding.contact(),
+                                                                        "Resolved extension via device registrations"
+                                                                    );
+                                                                    resolved = Some(uri);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                fcp_core::ExtensionTarget::Device(device_id) => {
+                                    if let Ok(Some(device)) = storage.get_device(device_id).await {
+                                        if let Some(sip_uri) = &device.sip_uri {
+                                            if let Ok(bindings) = registrar.get_registrations(sip_uri).await {
+                                                if let Some(binding) = bindings.first() {
+                                                    if let Ok(uri) = sip_core::SipUri::parse(binding.contact()) {
+                                                        info!(
+                                                            a_leg_call_id = %a_leg_call_id,
+                                                            destination = %destination,
+                                                            device = %device.name,
+                                                            contact = %binding.contact(),
+                                                            "Resolved extension via direct device target"
+                                                        );
+                                                        resolved = Some(uri);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                other => {
+                                    debug!(
+                                        a_leg_call_id = %a_leg_call_id,
+                                        target = %other,
+                                        "Extension target type not supported for Dial resolution"
+                                    );
                                 }
                             }
-                        } else {
-                            let error_msg = format!("Bare extension '{}' cannot be resolved — no local URI or registrar", destination);
-                            error!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                            return self.transition_to_error(a_leg_call_id, &error_msg, on_error, next).await;
                         }
+                    }
+                }
+
+                match resolved {
+                    Some(uri) => uri,
+                    None => {
+                        let error_msg = format!(
+                            "Extension '{}' not found — no registrar entry or device mapping",
+                            destination
+                        );
+                        warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                        return self
+                            .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                            .await;
                     }
                 }
             }

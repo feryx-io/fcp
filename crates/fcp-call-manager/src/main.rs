@@ -650,6 +650,9 @@ async fn main() -> Result<()> {
         flow_handler = flow_handler.with_registrar(Arc::clone(reg));
     }
 
+    // Wire storage for extension → phone number → device → registrar resolution chain
+    flow_handler = flow_handler.with_storage(Arc::clone(&dyn_storage));
+
     // Wire shared TTS service to FlowEngine for Gather Say prompts and Say node pre-synthesis
     if let Some(tts) = media_manager.tts_service() {
         info!("Shared TTS service wired to FlowEngine for Gather/Say nodes");
