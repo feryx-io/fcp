@@ -2612,6 +2612,18 @@ impl FlowCallHandler {
                 if let Some(media_manager) = &self.media_manager {
                     let gather_call_id = media_session_id.unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
 
+                    info!(
+                        call_id = %call_id,
+                        gather_call_id = %gather_call_id,
+                        media_session_id = ?media_session_id,
+                        num_digits = num_digits,
+                        finish_on_key = ?finish_on_key,
+                        has_prompt = prompt_url.is_some(),
+                        transitions_count = transitions.len(),
+                        transition_keys = ?transitions.keys().collect::<Vec<_>>(),
+                        "Gather: creating DTMF collector"
+                    );
+
                     // Create collector BEFORE playback so digits during prompt are captured
                     let collector = media_manager.create_dtmf_collector(&gather_call_id, num_digits, finish_on_key);
 

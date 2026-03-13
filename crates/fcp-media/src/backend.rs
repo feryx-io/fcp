@@ -897,9 +897,12 @@ pub mod embedded {
                 .map(|s| s.forge_call_id.clone());
 
             if let Some(forge_call_id) = forge_call_id {
-                debug!(
+                info!(
                     fcp_call_id = %call_id,
                     forge_call_id = %forge_call_id,
+                    max_digits = max_digits,
+                    finish_on_key = ?finish_on_key,
+                    active_sessions = self.sessions.len(),
                     "DTMF collector wired to forge EventBus"
                 );
                 let mut rx = self.event_bus.subscribe();
@@ -935,7 +938,13 @@ pub mod embedded {
                     }
                 });
             } else {
-                warn!(call_id = %call_id, "No forge session found for DTMF collector");
+                let session_keys: Vec<String> = self.sessions.iter().map(|e| e.key().to_string()).collect();
+                warn!(
+                    call_id = %call_id,
+                    active_sessions = self.sessions.len(),
+                    session_keys = ?session_keys,
+                    "No forge session found for DTMF collector — DTMF will not work"
+                );
             }
 
             collector
