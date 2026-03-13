@@ -260,8 +260,28 @@ impl FlowEngine {
                     }
                 }
 
+                // When num_digits is 0 (variable-length) and there is no
+                // finish_on_key, infer from the transition keys so the
+                // collector completes as soon as enough digits are received
+                // instead of always waiting for the full timeout.
+                let effective_num_digits = if *num_digits == 0 && finish_on_key.is_none() && !transitions.is_empty() {
+                    let max_key_len = transitions.keys().map(|k| k.len()).max().unwrap_or(0);
+                    if max_key_len > 0 {
+                        info!(
+                            call_id = %context.call_id,
+                            inferred_num_digits = max_key_len,
+                            "Inferred num_digits from transition keys (num_digits was 0 with no finish_on_key)"
+                        );
+                        max_key_len as u32
+                    } else {
+                        *num_digits
+                    }
+                } else {
+                    *num_digits
+                };
+
                 // Store gather configuration in context
-                context.set_variable("__gather_num_digits".to_string(), num_digits.to_string());
+                context.set_variable("__gather_num_digits".to_string(), effective_num_digits.to_string());
                 context.set_variable("__gather_timeout".to_string(), timeout.to_string());
                 if let Some(key) = finish_on_key {
                     context.set_variable("__gather_finish_on_key".to_string(), key.to_string());
