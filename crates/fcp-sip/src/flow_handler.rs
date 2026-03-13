@@ -772,14 +772,41 @@ impl FlowCallHandler {
                 match resolved {
                     Some(uri) => uri,
                     None => {
-                        let error_msg = format!(
-                            "Extension '{}' not found — no registrar entry or device mapping",
-                            destination
-                        );
-                        warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                        return self
-                            .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
-                            .await;
+                        // Last resort: construct sip:ext@local_host so the request
+                        // routes through the local B2BUA (which has full routing
+                        // tables).  This is less efficient than direct-to-device
+                        // but keeps the call working when the storage lookup fails.
+                        if let Some(ref local) = self.local_uri {
+                            let host = if let Some(port) = local.port() {
+                                format!("{}:{}", local.host(), port)
+                            } else {
+                                local.host().to_string()
+                            };
+                            let full_uri = format!("sip:{}@{}", destination, host);
+                            warn!(
+                                a_leg_call_id = %a_leg_call_id,
+                                destination = %destination,
+                                resolved_uri = %full_uri,
+                                "Extension not found in registrar or storage — falling back to local B2BUA routing"
+                            );
+                            match sip_core::SipUri::parse(&full_uri) {
+                                Ok(uri) => uri,
+                                Err(e2) => {
+                                    let error_msg = format!("Failed to parse fallback URI: {:?}", e2);
+                                    error!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                                    return self.transition_to_error(a_leg_call_id, &error_msg, on_error, next).await;
+                                }
+                            }
+                        } else {
+                            let error_msg = format!(
+                                "Extension '{}' not found — no registrar entry, device mapping, or local URI",
+                                destination
+                            );
+                            warn!(a_leg_call_id = %a_leg_call_id, %error_msg);
+                            return self
+                                .transition_to_error(a_leg_call_id, &error_msg, on_error, next)
+                                .await;
+                        }
                     }
                 }
             }
@@ -2682,8 +2709,31 @@ impl FlowCallHandler {
                                     .set_variable(variable.clone(), partial_digits.clone());
                             }
 
-                            // Go to timeout node if specified, otherwise use default
-                            let next_node = if let Some(timeout_node) = on_timeout_node {
+                            // If digits were collected before timeout, check transitions
+                            // first — the user pressed a valid digit but the timeout
+                            // fired before max_digits was reached.
+                            let next_node = if !partial_digits.is_empty() {
+                                if let Some(next) = transitions.get(&partial_digits) {
+                                    info!(
+                                        call_id = %call_id,
+                                        digits = %partial_digits,
+                                        next_node = %next,
+                                        "Timeout with collected digits — matched transition"
+                                    );
+                                    next.clone()
+                                } else if let Some(timeout_node) = on_timeout_node {
+                                    timeout_node
+                                } else if let Some(ref default_node) = default {
+                                    default_node.clone()
+                                } else {
+                                    warn!(
+                                        call_id = %call_id,
+                                        digits = %partial_digits,
+                                        "Timeout with digits but no matching transition or handler"
+                                    );
+                                    context_guard.current_node.clone()
+                                }
+                            } else if let Some(timeout_node) = on_timeout_node {
                                 timeout_node
                             } else if let Some(default_node) = default {
                                 default_node
@@ -2695,11 +2745,11 @@ impl FlowCallHandler {
                                 context_guard.current_node.clone()
                             };
 
-                            warn!(
+                            info!(
                                 call_id = %call_id,
                                 partial_digits = %partial_digits,
                                 next_node = %next_node,
-                                "DTMF collection timeout, continuing to timeout node"
+                                "DTMF collection timeout, continuing to next node"
                             );
 
                             context_guard.current_node = next_node;
