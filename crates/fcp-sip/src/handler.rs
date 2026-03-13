@@ -1369,6 +1369,35 @@ impl SipMessageHandler {
                             "Starting flow execution for inbound call"
                         );
 
+                        // Flows need media anchored for prompt playback
+                        // and DTMF detection. Ensure a session exists.
+                        if let Some(call_entry) = self.call_manager.get_call(&call_id) {
+                            if call_entry.media_session_id.is_none() {
+                                if let Some(ref media_manager) = self.media_manager {
+                                    let fcp_call_id = fcp_core::CallId::new();
+                                    let fcp_dialog_id = fcp_core::DialogId::new();
+                                    match media_manager.create_session_default(fcp_call_id.clone(), fcp_dialog_id).await {
+                                        Ok(_session) => {
+                                            if !request.body().is_empty() {
+                                                let a_leg_sdp = String::from_utf8_lossy(request.body()).to_string();
+                                                if let Err(e) = media_manager.update_session(&fcp_call_id, a_leg_sdp).await {
+                                                    warn!(call_id = %call_id, error = %e, "Failed to set A-leg media endpoint for flow");
+                                                }
+                                            }
+                                            let _ = self.call_manager.update_call(&call_id, |call| {
+                                                call.media_session_id = Some(fcp_call_id);
+                                                call.media_anchored = true;
+                                            });
+                                            info!(call_id = %call_id, "Created media session for flow (was not anchored)");
+                                        }
+                                        Err(e) => {
+                                            error!(call_id = %call_id, error = %e, "Failed to create media session for flow");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Build initial variables from call context
                         let mut initial_variables = std::collections::HashMap::new();
 
@@ -2176,6 +2205,37 @@ impl SipMessageHandler {
                                                 flow_id = %flow_id,
                                                 "Starting IVR flow execution for inbound call"
                                             );
+
+                                            // IVR flows need media anchored for prompt
+                                            // playback and DTMF detection. If
+                                            // evaluate_media_anchoring chose PassThrough,
+                                            // create a media session now.
+                                            if let Some(call_entry) = self.call_manager.get_call(&call_id) {
+                                                if call_entry.media_session_id.is_none() {
+                                                    if let Some(ref media_manager) = self.media_manager {
+                                                        let fcp_call_id = fcp_core::CallId::new();
+                                                        let fcp_dialog_id = fcp_core::DialogId::new();
+                                                        match media_manager.create_session_default(fcp_call_id.clone(), fcp_dialog_id).await {
+                                                            Ok(_session) => {
+                                                                if !request.body().is_empty() {
+                                                                    let a_leg_sdp = String::from_utf8_lossy(request.body()).to_string();
+                                                                    if let Err(e) = media_manager.update_session(&fcp_call_id, a_leg_sdp).await {
+                                                                        warn!(call_id = %call_id, error = %e, "Failed to set A-leg media endpoint for IVR");
+                                                                    }
+                                                                }
+                                                                let _ = self.call_manager.update_call(&call_id, |call| {
+                                                                    call.media_session_id = Some(fcp_call_id);
+                                                                    call.media_anchored = true;
+                                                                });
+                                                                info!(call_id = %call_id, "Created media session for IVR flow (was not anchored)");
+                                                            }
+                                                            Err(e) => {
+                                                                error!(call_id = %call_id, error = %e, "Failed to create media session for IVR");
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
 
                                             // Build initial variables from call context
                                             let mut initial_variables = std::collections::HashMap::new();
