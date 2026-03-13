@@ -830,9 +830,26 @@ impl FlowCallHandler {
 
         // Generate SDP offer for B-leg using the A-leg media session's port.
         // This sends RTP directly to our existing session — no intermediate hop.
-        let a_leg_call_id_core = fcp_core::CallId::from_uuid(*a_leg_call_id.as_uuid());
+        // Use the media_session_id from the flow context — this is the key under
+        // which evaluate_media_anchoring() created the session, NOT the B2BUA call ID.
+        let media_session_id = if let Some(ctx) = self.contexts.get(&a_leg_call_id) {
+            let guard = ctx.read().await;
+            guard.media_session_id
+        } else {
+            None
+        };
+        let session_key = media_session_id
+            .unwrap_or_else(|| fcp_core::CallId::from_uuid(*a_leg_call_id.as_uuid()));
+
+        debug!(
+            a_leg_call_id = %a_leg_call_id,
+            session_key = %session_key,
+            media_session_id = ?media_session_id,
+            "Using media session key for B-leg SDP generation"
+        );
+
         let sdp_offer = if let Some(ref media_mgr) = self.media_manager {
-            match media_mgr.get_session(&a_leg_call_id_core).await {
+            match media_mgr.get_session(&session_key).await {
                 Ok(session) => {
                     let (rtp_port, _rtcp_port) = session.ports();
                     self.generate_sdp_with_port(rtp_port)
@@ -1006,7 +1023,7 @@ impl FlowCallHandler {
                                 // Set B-leg endpoint on the EXISTING A-leg media session (single-session model).
                                 // Polycom sends RTP to the A-leg port, and the session forwards it to Jerry.
                                 if let Some(ref media_mgr) = self.media_manager {
-                                    if let Err(e) = media_mgr.update_session_b_leg(&a_leg_call_id_core, sdp_answer).await {
+                                    if let Err(e) = media_mgr.update_session_b_leg(&session_key, sdp_answer).await {
                                         error!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to set B-leg media endpoint");
                                     } else {
                                         info!(a_leg_call_id = %a_leg_call_id, "B-leg media endpoint set on A-leg session — audio bridged");
