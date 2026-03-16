@@ -274,21 +274,30 @@ impl CallStateStore {
         stats
     }
 
-    /// Clean up stale calls (ended/failed calls older than max_age).
+    /// Clean up stale calls (ended/failed calls older than max_age, and
+    /// active calls stuck in Initiated/Answered state older than max_active_age).
     /// Returns the number of calls removed.
     pub fn cleanup_stale(&self, max_age: Duration) -> usize {
         let now = SystemTime::now();
         let mut removed = 0;
+        // Active calls stuck for >1 hour are considered orphaned (missed Ended event)
+        let max_active_age = Duration::from_secs(3600);
 
         self.calls.retain(|_, call| {
-            // Keep active calls
-            if !matches!(call.state, CallState::Ended | CallState::Failed) {
-                return true;
-            }
-
-            // Remove ended/failed calls older than max_age
             if let Ok(age) = now.duration_since(call.last_updated) {
-                if age > max_age {
+                // Remove ended/failed calls older than max_age
+                if matches!(call.state, CallState::Ended | CallState::Failed) && age > max_age {
+                    removed += 1;
+                    return false;
+                }
+                // Remove active calls stuck for too long (orphaned — never received Ended event)
+                if !matches!(call.state, CallState::Ended | CallState::Failed) && age > max_active_age {
+                    tracing::warn!(
+                        call_id = %call.call_id,
+                        state = ?call.state,
+                        age_secs = age.as_secs(),
+                        "Removing orphaned active call (no Ended event received)"
+                    );
                     removed += 1;
                     return false;
                 }

@@ -320,6 +320,7 @@ async fn main() -> Result<()> {
     };
 
     // 11. Create UAC for outbound calls (B-leg)
+    let dispatcher_for_flow = dispatcher.clone();
     let uac = create_uac(
         &config,
         Arc::clone(&transaction_manager_ref),
@@ -643,7 +644,8 @@ async fn main() -> Result<()> {
         local_addr.clone(),
         config.media.rtp_port_start,
     )
-    .with_voicemail_service(Arc::clone(&voicemail_service));
+    .with_voicemail_service(Arc::clone(&voicemail_service))
+    .with_dispatcher(dispatcher_for_flow as Arc<dyn sip_transaction::TransportDispatcher>);
 
     // Wire registrar for Dial node extension resolution (direct to device, bypassing B2BUA loop)
     if let Some(ref reg) = registrar {

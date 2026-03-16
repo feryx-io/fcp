@@ -6932,6 +6932,23 @@ impl SipMessageHandler {
                             for key in keys {
                                 subscription_index.remove(&key);
                             }
+
+                            // Check if both legs are now done — terminate the call
+                            // so that CallEvent::Ended fires and presence is cleared.
+                            if let Some(updated_call) = call_manager.get_call(&call_id) {
+                                let a_done = updated_call.a_leg.dialog.is_none();
+                                let b_done = updated_call
+                                    .b_leg
+                                    .as_ref()
+                                    .map(|b| b.dialog.is_none())
+                                    .unwrap_or(true);
+
+                                if a_done && b_done {
+                                    info!(call_id = %call_id, "Both legs terminated after BYE failure, terminating call");
+                                    let _ = call_manager.terminate_call(&call_id, None);
+                                }
+                            }
+
                             break;
                         } else {
                             warn!(call_id = %call_id, error = %e, "BYE send failed, retrying once");

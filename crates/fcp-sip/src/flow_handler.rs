@@ -15,6 +15,7 @@ use sip_core::{Request, Response};
 use sip_dialog::{Dialog, DialogManager};
 use sip_transaction::{
     ClientTransactionUser, TransactionKey, TransactionManager, TransportContext,
+    TransportDispatcher,
 };
 use sip_uac::UserAgentClient;
 
@@ -97,6 +98,9 @@ pub struct FlowCallHandler {
 
     /// Storage backend for extension → phone number → device resolution
     storage: Option<Arc<fcp_core::DynStorage>>,
+
+    /// Transport dispatcher for sending out-of-transaction messages (ACK for 2xx)
+    dispatcher: Option<Arc<dyn TransportDispatcher>>,
 }
 
 impl FlowCallHandler {
@@ -126,6 +130,7 @@ impl FlowCallHandler {
             flow_trace_store: None,
             registrar: None,
             storage: None,
+            dispatcher: None,
         }
     }
 
@@ -206,6 +211,12 @@ impl FlowCallHandler {
     /// Set the storage backend for extension → device resolution.
     pub fn with_storage(mut self, storage: Arc<fcp_core::DynStorage>) -> Self {
         self.storage = Some(storage);
+        self
+    }
+
+    /// Set the transport dispatcher for sending out-of-transaction messages (ACK for 2xx).
+    pub fn with_dispatcher(mut self, dispatcher: Arc<dyn TransportDispatcher>) -> Self {
+        self.dispatcher = Some(dispatcher);
         self
     }
 
@@ -991,6 +1002,7 @@ impl FlowCallHandler {
             uac: tu_uac,
             request: invite.clone(),
             ctx: ctx.clone(),
+            dispatcher: self.dispatcher.clone(),
         });
 
         // Save copies for CANCEL if timeout occurs
@@ -3177,8 +3189,9 @@ struct DialTransactionUser {
     /// Original INVITE request (for creating ACK)
     request: Request,
     /// Transport context for sending ACK/CANCEL
-    #[allow(dead_code)] // Needed for future transport integration (Phase 3)
     ctx: TransportContext,
+    /// Transport dispatcher for sending ACK outside the transaction layer
+    dispatcher: Option<Arc<dyn TransportDispatcher>>,
 }
 
 #[async_trait]
@@ -3224,15 +3237,33 @@ impl ClientTransactionUser for DialTransactionUser {
         );
 
         // Create ACK using UAC helper
-        let _ack = self.uac.create_ack(&self.request, &response, None);
+        let ack = self.uac.create_ack(&self.request, &response, None);
 
-        // ACK is prepared but not dispatched yet. Sending requires dispatcher
-        // access, which will be available when FlowCallHandler is integrated with
-        // the transport layer in Phase 3.
-        debug!(
-            "ACK prepared for B-leg response {} (sending requires transport dispatcher)",
-            response.code()
-        );
+        // Dispatch ACK via transport
+        if let Some(ref dispatcher) = self.dispatcher {
+            let ack_bytes = sip_parse::serialize_request(&ack);
+            match dispatcher.dispatch(&self.ctx, ack_bytes.into()).await {
+                Ok(()) => {
+                    info!(
+                        "ACK dispatched for B-leg {} response to {}",
+                        response.code(),
+                        self.ctx.peer()
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        "Failed to dispatch ACK for B-leg {} response",
+                        response.code()
+                    );
+                }
+            }
+        } else {
+            warn!(
+                "No transport dispatcher available — ACK for B-leg {} not sent",
+                response.code()
+            );
+        }
     }
 
     async fn send_prack(&self, _key: &TransactionKey, response: Response, _ctx: &TransportContext) {
