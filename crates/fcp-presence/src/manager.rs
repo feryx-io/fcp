@@ -229,31 +229,31 @@ impl PresenceManager {
         self.metrics.set_gauge("fcp_presence_presentities", self.presentities.len() as f64, &[]);
         self.metrics.inc_counter("fcp_presence_updates_total", &[("tenant_id", &tenant_id.to_string())]);
 
-        // Persist to store (non-blocking)
-        if let Some(ref store) = self.store {
-            let stored = StoredPresentity {
-                aor: info.aor.clone(),
-                state: info.state.to_string(),
-                note: info.note.clone(),
-                tenant_id: tenant_id.clone(),
-                updated_at_epoch: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            tokio::spawn(async move {
-                if let Err(e) = store.save_presentity(stored).await {
-                    warn!(error = %e, "Failed to persist presentity state");
-                    metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "save_presentity")]);
-                }
-            });
-        }
-
-        // Publish status changed event if state actually changed
+        // Persist to store and publish event only if state actually changed
         let old = old_state.unwrap_or(PresenceState::Closed);
         if old != update.state {
+            // Persist to store (non-blocking)
+            if let Some(ref store) = self.store {
+                let stored = StoredPresentity {
+                    aor: info.aor.clone(),
+                    state: info.state.to_string(),
+                    note: info.note.clone(),
+                    tenant_id: tenant_id.clone(),
+                    updated_at_epoch: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                };
+                let store = Arc::clone(store);
+                let metrics = Arc::clone(&self.metrics);
+                tokio::spawn(async move {
+                    if let Err(e) = store.save_presentity(stored).await {
+                        warn!(error = %e, "Failed to persist presentity state");
+                        metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "save_presentity")]);
+                    }
+                });
+            }
+
             debug!(
                 aor = %update.aor,
                 old_state = %old,
@@ -966,6 +966,18 @@ impl PresenceManager {
                 self.active_calls.remove(aor);
             }
         }
+    }
+
+    /// Return all AORs that have an active call matching the given call_id.
+    ///
+    /// This scans the `active_calls` map directly rather than going through
+    /// `presentities`, so it finds AORs even when no presentity entry exists.
+    pub fn get_aors_with_active_call(&self, call_id: &str) -> Vec<String> {
+        self.active_calls
+            .iter()
+            .filter(|entry| entry.value().iter().any(|c| c.call_id == call_id))
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     /// Remove an active call by call_id across all AORs.

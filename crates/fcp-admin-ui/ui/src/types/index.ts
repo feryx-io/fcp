@@ -534,6 +534,8 @@ export interface PresenceResponse {
   state: string
   note: string | null
   watcher_count: number
+  extension?: string
+  display_name?: string
 }
 
 export interface PresenceStats {

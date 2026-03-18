@@ -1564,7 +1564,7 @@ impl SipMessageHandler {
                             let dialog_manager = Arc::clone(&hangup_dialog_manager);
                             let media_manager = hangup_media_manager.clone();
                             Box::pin(async move {
-                                info!(call_id = %call_id, "Hangup callback executing");
+                                info!(call_id = %call_id, reason = ?reason, "Hangup callback executing");
                                 // Get the dialog for this call
                                 if let Some(call_entry) = call_manager.get_call(&call_id) {
                                     info!(call_id = %call_id, "Found call entry, checking for dialog");
@@ -1619,8 +1619,11 @@ impl SipMessageHandler {
                                     warn!(call_id = %call_id, "Call entry not found in call manager");
                                 }
 
-                                // Terminate the call
-                                let _ = call_manager.terminate_call(&call_id, reason);
+                                // Terminate the call normally (Ended, not Failed).
+                                // Flow-level hangup reasons are application logic,
+                                // not SIP failures — use None so CallEvent::Ended
+                                // fires and presence is cleaned up reliably.
+                                let _ = call_manager.terminate_call(&call_id, None);
                                 Ok(())
                             })
                         });

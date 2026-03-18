@@ -12,6 +12,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore};
 use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
 use fcp_events::filter::EventType;
 use fcp_media::{BackendType, MediaConfig};
@@ -1074,8 +1075,9 @@ async fn main() -> Result<()> {
         let pm_clone = pm.clone();
         let event_bus_clone = Arc::clone(&event_bus);
         let tenant_id = fcp_core::TenantId::nil();
+        let storage_for_presence = Arc::clone(&dyn_storage);
         tokio::spawn(async move {
-            run_presence_listener(event_bus_clone, pm_clone, tenant_id).await;
+            run_presence_listener(event_bus_clone, pm_clone, tenant_id, storage_for_presence).await;
         });
         info!("Presence event listener started");
 
@@ -1941,11 +1943,210 @@ fn resolve_mailbox_aor(
     None
 }
 
+/// Resolve an extension AOR (e.g., "1234@host") to device AOR(s) (e.g., "polycom@host").
+///
+/// Looks up the extension by number, resolves its target to device(s),
+/// and returns the device SIP URIs as AORs. Returns an empty vec if
+/// the AOR is not an extension or resolution fails.
+async fn resolve_extension_to_device_aors(
+    aor: &str,
+    tenant_id: &fcp_core::TenantId,
+    storage: &fcp_core::DynStorage,
+) -> Vec<String> {
+    let (ext_number, _host) = match aor.split_once('@') {
+        Some((user, host)) => (user, host),
+        None => {
+            tracing::debug!(aor = %aor, "resolve_extension_to_device_aors: no '@' in AOR");
+            return Vec::new();
+        }
+    };
+    // Only try if it looks like a numeric extension
+    if !ext_number.chars().all(|c| c.is_ascii_digit()) || ext_number.is_empty() {
+        tracing::debug!(aor = %aor, ext_number = %ext_number, "resolve_extension_to_device_aors: not a numeric extension");
+        return Vec::new();
+    }
+    let extension = match storage.get_extension_by_number(tenant_id, ext_number).await {
+        Ok(Some(ext)) => ext,
+        Ok(None) => {
+            tracing::warn!(aor = %aor, ext_number = %ext_number, "resolve_extension_to_device_aors: extension not found in storage");
+            return Vec::new();
+        }
+        Err(e) => {
+            tracing::warn!(aor = %aor, ext_number = %ext_number, error = %e, "resolve_extension_to_device_aors: storage error");
+            return Vec::new();
+        }
+    };
+    tracing::info!(
+        aor = %aor,
+        ext_number = %ext_number,
+        target = %extension.target,
+        "resolve_extension_to_device_aors: found extension"
+    );
+    let mut device_aors = Vec::new();
+    match &extension.target {
+        fcp_core::ExtensionTarget::Device(device_id) => {
+            match storage.get_device(device_id).await {
+                Ok(Some(device)) => {
+                    match &device.sip_uri {
+                        Some(sip_uri) => {
+                            match fcp_sip::presence::extract_aor(sip_uri) {
+                                Some(dev_aor) => {
+                                    tracing::info!(ext = %ext_number, device_id = %device_id, sip_uri = %sip_uri, dev_aor = %dev_aor, "Resolved Device target to AOR");
+                                    device_aors.push(dev_aor);
+                                }
+                                None => tracing::warn!(ext = %ext_number, device_id = %device_id, sip_uri = %sip_uri, "extract_aor returned None for device sip_uri"),
+                            }
+                        }
+                        None => tracing::warn!(ext = %ext_number, device_id = %device_id, "Device has no sip_uri"),
+                    }
+                }
+                Ok(None) => tracing::warn!(ext = %ext_number, device_id = %device_id, "Device not found in storage"),
+                Err(e) => tracing::warn!(ext = %ext_number, device_id = %device_id, error = %e, "Failed to get device"),
+            }
+        }
+        fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
+            match storage.get_phone_number(phone_number_id).await {
+                Ok(Some(phone_number)) => {
+                    match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                        Ok(Some(line_binding)) => {
+                            let enabled = line_binding.enabled_devices();
+                            tracing::info!(ext = %ext_number, phone_number_id = %phone_number_id, enabled_devices = enabled.len(), "PhoneNumber target: resolving devices");
+                            for device_binding in enabled {
+                                if let Ok(Some(device)) = storage.get_device(&device_binding.device_id).await {
+                                    if let Some(sip_uri) = &device.sip_uri {
+                                        if let Some(dev_aor) = fcp_sip::presence::extract_aor(sip_uri) {
+                                            tracing::info!(ext = %ext_number, device_id = %device_binding.device_id, dev_aor = %dev_aor, "Resolved PhoneNumber device to AOR");
+                                            device_aors.push(dev_aor);
+                                        }
+                                    } else {
+                                        tracing::warn!(ext = %ext_number, device_id = %device_binding.device_id, "PhoneNumber device has no sip_uri");
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, "No line binding for phone number"),
+                        Err(e) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, error = %e, "Failed to get line binding"),
+                    }
+                }
+                Ok(None) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, "Phone number not found"),
+                Err(e) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, error = %e, "Failed to get phone number"),
+            }
+        }
+        fcp_core::ExtensionTarget::User(user_id) => {
+            match storage.list_devices_by_user(user_id).await {
+                Ok(devices) => {
+                    tracing::info!(ext = %ext_number, user_id = %user_id, device_count = devices.len(), "User target: resolving devices");
+                    for device in &devices {
+                        if let Some(sip_uri) = &device.sip_uri {
+                            if let Some(dev_aor) = fcp_sip::presence::extract_aor(sip_uri) {
+                                tracing::info!(ext = %ext_number, device_id = %device.id, dev_aor = %dev_aor, "Resolved User device to AOR");
+                                device_aors.push(dev_aor);
+                            }
+                        } else {
+                            tracing::warn!(ext = %ext_number, device_id = %device.id, "User device has no sip_uri");
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(ext = %ext_number, user_id = %user_id, error = %e, "Failed to list user devices"),
+            }
+        }
+        other => {
+            tracing::debug!(ext = %ext_number, target = %other, "Extension target type not resolvable to device AORs");
+        }
+    }
+    if device_aors.is_empty() {
+        tracing::warn!(aor = %aor, ext_number = %ext_number, "resolve_extension_to_device_aors: resolved 0 device AORs");
+    } else {
+        tracing::info!(aor = %aor, ext_number = %ext_number, ?device_aors, "resolve_extension_to_device_aors: resolved device AORs");
+    }
+    device_aors
+}
+
+/// Resolve a phone-number AOR (e.g. "15185551234@host") to the extension AOR(s)
+/// that target that phone number.  This allows presence to be mirrored from the
+/// phone number identity to the extension identity (and its device AOR(s)).
+async fn resolve_phone_number_to_extension_aors(
+    aor: &str,
+    tenant_id: &fcp_core::TenantId,
+    storage: &fcp_core::DynStorage,
+) -> Vec<String> {
+    let (user_part, host) = match aor.split_once('@') {
+        Some((user, host)) => (user, host),
+        None => return Vec::new(),
+    };
+
+    // Must look like a phone number: all digits, 10+ chars (E.164 without +)
+    if user_part.len() < 10 || !user_part.chars().all(|c| c.is_ascii_digit()) {
+        return Vec::new();
+    }
+
+    // Try to find the phone number in storage by E.164 (with and without leading 1)
+    let e164_candidates: Vec<String> = if user_part.starts_with('1') && user_part.len() == 11 {
+        vec![
+            format!("+{}", user_part),
+            format!("+{}", &user_part[1..]),
+        ]
+    } else {
+        vec![
+            format!("+{}", user_part),
+            format!("+1{}", user_part),
+        ]
+    };
+
+    let mut phone_number_id = None;
+    for candidate in &e164_candidates {
+        if let Ok(Some(pn)) = storage.get_phone_number_by_e164(candidate).await {
+            phone_number_id = Some(pn.id);
+            tracing::debug!(aor = %aor, e164 = %candidate, "Matched phone number in storage");
+            break;
+        }
+    }
+
+    let pn_id = match phone_number_id {
+        Some(id) => id,
+        None => {
+            tracing::debug!(aor = %aor, "No phone number found in storage for AOR");
+            return Vec::new();
+        }
+    };
+
+    // Find extensions that target this phone number
+    let extensions = match storage.list_extensions(tenant_id).await {
+        Ok(exts) => exts,
+        Err(e) => {
+            tracing::warn!(aor = %aor, error = %e, "Failed to list extensions for phone number resolution");
+            return Vec::new();
+        }
+    };
+
+    let mut ext_aors = Vec::new();
+    for ext in &extensions {
+        if !ext.enabled {
+            continue;
+        }
+        if let fcp_core::ExtensionTarget::PhoneNumber(ref target_pn_id) = ext.target {
+            if *target_pn_id == pn_id {
+                let ext_aor = format!("{}@{}", ext.number, host);
+                tracing::info!(
+                    phone_aor = %aor,
+                    ext_number = %ext.number,
+                    ext_aor = %ext_aor,
+                    "Resolved phone number to extension AOR"
+                );
+                ext_aors.push(ext_aor);
+            }
+        }
+    }
+
+    ext_aors
+}
+
 /// Subscribe to call and registration events, update presence accordingly.
 async fn run_presence_listener(
     event_bus: Arc<InMemoryEventBus>,
     presence: fcp_presence::PresenceManager,
     tenant_id: fcp_core::TenantId,
+    storage: Arc<fcp_core::DynStorage>,
 ) {
     use fcp_events::PlatformEvent;
 
@@ -1970,39 +2171,47 @@ async fn run_presence_listener(
         match stream.next().await {
             Some(event) => {
                 match &event {
-                    // Call answered → update dialog state to Confirmed
+                    // Call answered → update dialog state to Confirmed, transition Ringing→OnThePhone
                     PlatformEvent::Call(fcp_events::CallEvent::Answered { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
-                        // Update all tracked dialogs for this call to Confirmed
-                        for entry in presence.get_all_presences() {
-                            let had_call = !presence.get_active_calls(&entry.aor)
-                                .iter()
-                                .filter(|c| c.call_id == call_id_str)
-                                .collect::<Vec<_>>()
-                                .is_empty();
+                        // Find AORs with active calls for this call_id
+                        let affected_aors = presence.get_aors_with_active_call(&call_id_str);
+                        tracing::info!(%call_id, ?affected_aors, "Call answered — updating presence for affected AORs");
+                        for aor in &affected_aors {
                             presence.update_call_state(
-                                &entry.aor,
+                                aor,
                                 &call_id_str,
                                 fcp_presence::DialogState::Confirmed,
                             );
-                            if had_call {
-                                fcp_presence::events::dialog_changed(
-                                    presence.event_publisher(),
-                                    &entry.aor,
-                                    &call_id_str,
-                                    "confirmed",
-                                    &tenant_id,
-                                ).await;
+                            fcp_presence::events::dialog_changed(
+                                presence.event_publisher(),
+                                aor,
+                                &call_id_str,
+                                "confirmed",
+                                &tenant_id,
+                            ).await;
+                            // Transition Ringing → OnThePhone for the callee
+                            if let Some(info) = presence.get_presence(aor) {
+                                if info.state == fcp_presence::PresenceState::Ringing {
+                                    let update = fcp_presence::PresenceUpdate {
+                                        aor: aor.clone(),
+                                        state: fcp_presence::PresenceState::OnThePhone,
+                                        note: Some("On the phone".to_string()),
+                                    };
+                                    let _ = presence.update_presence(update, &tenant_id).await;
+                                    tracing::info!(%call_id, aor = %aor, "Transitioned Ringing → OnThePhone on answer");
+                                }
                             }
                         }
-                        tracing::debug!(%call_id, "Call answered — dialog state updated to Confirmed");
                     }
 
                     // Call initiated (inbound) → set Ringing for callee, track active call
                     PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, call_id, .. }) => {
                         let call_id_str = call_id.to_string();
+                        tracing::info!(%call_id, from = %from, to = %to, "Presence: CallEvent::Initiated received");
 
                         if let Some(callee_aor) = extract_aor(to) {
+                            // Set Ringing for the extension AOR
                             let update = fcp_presence::PresenceUpdate {
                                 aor: callee_aor.clone(),
                                 state: fcp_presence::PresenceState::Ringing,
@@ -2014,7 +2223,7 @@ async fn run_presence_listener(
                             let caller_uri = from.clone();
                             presence.add_active_call(&callee_aor, fcp_presence::ActiveCallInfo {
                                 call_id: call_id_str.clone(),
-                                remote_uri: caller_uri,
+                                remote_uri: caller_uri.clone(),
                                 remote_display_name: None,
                                 direction: fcp_presence::CallDirection::Recipient,
                                 dialog_state: fcp_presence::DialogState::Early,
@@ -2026,6 +2235,85 @@ async fn run_presence_listener(
                                 "early",
                                 &tenant_id,
                             ).await;
+
+                            // Also set Ringing for device AOR(s) that the extension resolves to
+                            let device_aors = resolve_extension_to_device_aors(&callee_aor, &tenant_id, &storage).await;
+                            for dev_aor in &device_aors {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: dev_aor.clone(),
+                                    state: fcp_presence::PresenceState::Ringing,
+                                    note: Some("Ringing".to_string()),
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                                presence.add_active_call(dev_aor, fcp_presence::ActiveCallInfo {
+                                    call_id: call_id_str.clone(),
+                                    remote_uri: caller_uri.clone(),
+                                    remote_display_name: None,
+                                    direction: fcp_presence::CallDirection::Recipient,
+                                    dialog_state: fcp_presence::DialogState::Early,
+                                });
+                                fcp_presence::events::dialog_changed(
+                                    presence.event_publisher(),
+                                    dev_aor,
+                                    &call_id_str,
+                                    "early",
+                                    &tenant_id,
+                                ).await;
+                                tracing::info!(ext_aor = %callee_aor, dev_aor = %dev_aor, "Mirrored Ringing to device AOR");
+                            }
+
+                            // If the callee AOR is a phone number, also mirror presence
+                            // to the extension(s) that target this phone number.
+                            let ext_aors = resolve_phone_number_to_extension_aors(&callee_aor, &tenant_id, &storage).await;
+                            for ext_aor in &ext_aors {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: ext_aor.clone(),
+                                    state: fcp_presence::PresenceState::Ringing,
+                                    note: Some("Ringing".to_string()),
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                                presence.add_active_call(ext_aor, fcp_presence::ActiveCallInfo {
+                                    call_id: call_id_str.clone(),
+                                    remote_uri: caller_uri.clone(),
+                                    remote_display_name: None,
+                                    direction: fcp_presence::CallDirection::Recipient,
+                                    dialog_state: fcp_presence::DialogState::Early,
+                                });
+                                fcp_presence::events::dialog_changed(
+                                    presence.event_publisher(),
+                                    ext_aor,
+                                    &call_id_str,
+                                    "early",
+                                    &tenant_id,
+                                ).await;
+                                tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored Ringing from phone number to extension AOR");
+
+                                // Also mirror to the extension's device AOR(s)
+                                let ext_device_aors = resolve_extension_to_device_aors(ext_aor, &tenant_id, &storage).await;
+                                for ext_dev_aor in &ext_device_aors {
+                                    let update = fcp_presence::PresenceUpdate {
+                                        aor: ext_dev_aor.clone(),
+                                        state: fcp_presence::PresenceState::Ringing,
+                                        note: Some("Ringing".to_string()),
+                                    };
+                                    let _ = presence.update_presence(update, &tenant_id).await;
+                                    presence.add_active_call(ext_dev_aor, fcp_presence::ActiveCallInfo {
+                                        call_id: call_id_str.clone(),
+                                        remote_uri: caller_uri.clone(),
+                                        remote_display_name: None,
+                                        direction: fcp_presence::CallDirection::Recipient,
+                                        dialog_state: fcp_presence::DialogState::Early,
+                                    });
+                                    fcp_presence::events::dialog_changed(
+                                        presence.event_publisher(),
+                                        ext_dev_aor,
+                                        &call_id_str,
+                                        "early",
+                                        &tenant_id,
+                                    ).await;
+                                    tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, dev_aor = %ext_dev_aor, "Mirrored Ringing from phone number to extension device AOR");
+                                }
+                            }
                         }
                         if let Some(caller_aor) = extract_aor(from) {
                             presence.set_on_the_phone(&caller_aor, &tenant_id).await;
@@ -2049,15 +2337,15 @@ async fn run_presence_listener(
                         }
                     }
 
-                    // Call ended → remove active call tracking, revert presence
-                    PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. }) => {
+                    // Call ended or failed → remove active call tracking, revert presence
+                    PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. })
+                    | PlatformEvent::Call(fcp_events::CallEvent::Failed { call_id, .. }) => {
                         let call_id_str = call_id.to_string();
-                        // Collect AORs affected before removing the call
-                        let affected_aors: Vec<String> = presence.get_all_presences()
-                            .iter()
-                            .filter(|p| presence.get_active_calls(&p.aor).iter().any(|c| c.call_id == call_id_str))
-                            .map(|p| p.aor.clone())
-                            .collect();
+                        // Collect AORs affected before removing the call.
+                        // Use active_calls directly (not get_all_presences) so we
+                        // find AORs even when no presentity entry exists.
+                        let affected_aors = presence.get_aors_with_active_call(&call_id_str);
+                        tracing::info!(%call_id, ?affected_aors, "Presence: CallEvent::Ended/Failed — cleaning up");
                         presence.remove_active_call_by_id(&call_id_str);
                         for aor in &affected_aors {
                             fcp_presence::events::dialog_changed(
@@ -2067,12 +2355,27 @@ async fn run_presence_listener(
                                 "terminated",
                                 &tenant_id,
                             ).await;
-                            // If this AOR has no remaining active calls, revert to Open
+                            // If this AOR has no remaining active calls, revert
+                            // presence to Open (only if in a call-related state).
                             if presence.get_active_calls(aor).is_empty() {
-                                presence.clear_on_the_phone(aor, &tenant_id).await;
+                                // Bypass auto_phone_state — the system set the
+                                // state on Initiated, so the system must clear it.
+                                let is_call_state = presence.get_presence(aor)
+                                    .map(|p| matches!(p.state,
+                                        fcp_presence::PresenceState::OnThePhone
+                                        | fcp_presence::PresenceState::Ringing))
+                                    .unwrap_or(false);
+                                if is_call_state {
+                                    let update = fcp_presence::PresenceUpdate {
+                                        aor: aor.clone(),
+                                        state: fcp_presence::PresenceState::Open,
+                                        note: None,
+                                    };
+                                    let _ = presence.update_presence(update, &tenant_id).await;
+                                }
                             }
                         }
-                        tracing::debug!(%call_id, "Call ended — active call removed from dialog tracking");
+                        tracing::debug!(%call_id, "Call ended/failed — active call removed from dialog tracking");
                     }
 
                     // Registration → set Open

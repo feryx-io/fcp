@@ -599,21 +599,77 @@ async fn run_presence_listener(
                         let _ = presence.update_presence(update, &tenant_id).await;
                     }
                 }
-                PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, .. }) => {
+                PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, call_id, .. }) => {
+                    let call_id_str = call_id.to_string();
                     if let Some(callee_aor) = extract_aor(to) {
                         let update = fcp_presence::PresenceUpdate {
-                            aor: callee_aor,
+                            aor: callee_aor.clone(),
                             state: fcp_presence::PresenceState::Ringing,
                             note: Some("Ringing".to_string()),
                         };
                         let _ = presence.update_presence(update, &tenant_id).await;
+                        // Track active call for callee
+                        presence.add_active_call(&callee_aor, fcp_presence::ActiveCallInfo {
+                            call_id: call_id_str.clone(),
+                            remote_uri: from.clone(),
+                            remote_display_name: None,
+                            direction: fcp_presence::CallDirection::Recipient,
+                            dialog_state: fcp_presence::DialogState::Early,
+                        });
                     }
                     if let Some(caller_aor) = extract_aor(from) {
                         presence.set_on_the_phone(&caller_aor, &tenant_id).await;
+                        // Track active call for caller
+                        presence.add_active_call(&caller_aor, fcp_presence::ActiveCallInfo {
+                            call_id: call_id_str.clone(),
+                            remote_uri: to.clone(),
+                            remote_display_name: None,
+                            direction: fcp_presence::CallDirection::Initiator,
+                            dialog_state: fcp_presence::DialogState::Confirmed,
+                        });
                     }
                 }
-                PlatformEvent::Call(fcp_events::CallEvent::Ended { .. }) => {
-                    // Presence revert is handled via StatusChanged events from the call-manager.
+                // Call answered → transition Ringing → OnThePhone
+                PlatformEvent::Call(fcp_events::CallEvent::Answered { call_id, .. }) => {
+                    let call_id_str = call_id.to_string();
+                    let affected_aors = presence.get_aors_with_active_call(&call_id_str);
+                    for aor in &affected_aors {
+                        presence.update_call_state(aor, &call_id_str, fcp_presence::DialogState::Confirmed);
+                        if let Some(info) = presence.get_presence(aor) {
+                            if info.state == fcp_presence::PresenceState::Ringing {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: aor.clone(),
+                                    state: fcp_presence::PresenceState::OnThePhone,
+                                    note: Some("On the phone".to_string()),
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                            }
+                        }
+                    }
+                }
+                // Call ended or failed → clean up presence
+                PlatformEvent::Call(fcp_events::CallEvent::Ended { call_id, .. })
+                | PlatformEvent::Call(fcp_events::CallEvent::Failed { call_id, .. }) => {
+                    let call_id_str = call_id.to_string();
+                    let affected_aors = presence.get_aors_with_active_call(&call_id_str);
+                    presence.remove_active_call_by_id(&call_id_str);
+                    for aor in &affected_aors {
+                        if presence.get_active_calls(aor).is_empty() {
+                            let is_call_state = presence.get_presence(aor)
+                                .map(|p| matches!(p.state,
+                                    fcp_presence::PresenceState::OnThePhone
+                                    | fcp_presence::PresenceState::Ringing))
+                                .unwrap_or(false);
+                            if is_call_state {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: aor.clone(),
+                                    state: fcp_presence::PresenceState::Open,
+                                    note: None,
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                            }
+                        }
+                    }
                 }
                 // Presence state changed (published by call-manager's PresenceManager)
                 PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { ref aor, ref new_state, .. }) => {

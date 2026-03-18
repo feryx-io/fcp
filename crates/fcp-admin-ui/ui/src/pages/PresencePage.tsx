@@ -130,6 +130,7 @@ export function PresencePage() {
 function PresenceCard({ presence: p }: { presence: PresenceResponse }) {
   // Extract user part from AOR (e.g., "alice@example.com" → "alice")
   const userName = p.aor.split('@')[0] || p.aor
+  const label = p.display_name || userName
 
   return (
     <Card className="hover:border-primary/30 transition-colors">
@@ -137,15 +138,20 @@ function PresenceCard({ presence: p }: { presence: PresenceResponse }) {
         <div className="flex items-start gap-3">
           <div className="relative">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-sm font-bold">
-              {userName.charAt(0).toUpperCase()}
+              {p.extension ? `x${p.extension.slice(-2)}` : label.charAt(0).toUpperCase()}
             </div>
             <span
               className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background ${presenceStateColor(p.state)}`}
             />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate">{userName}</p>
-            <p className="text-xs text-muted-foreground truncate">{p.aor}</p>
+            <p className="text-sm font-medium truncate">{label}</p>
+            {p.extension && (
+              <p className="text-xs text-muted-foreground truncate">Ext {p.extension}</p>
+            )}
+            {!p.extension && (
+              <p className="text-xs text-muted-foreground truncate">{p.aor}</p>
+            )}
             <div className="flex items-center gap-2 mt-1">
               <Badge variant={presenceStateBadge(p.state)} className="text-xs">
                 {presenceStateLabel(p.state)}

@@ -36,6 +36,9 @@ server_url = "http://localhost:8081/ingest"
 level = "info"
 format = "pretty"
 
+[presence]
+enabled = true
+
 [cluster]
 enabled = true
 heartbeat_interval_secs = 5
