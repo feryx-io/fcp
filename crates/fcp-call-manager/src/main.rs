@@ -1257,6 +1257,10 @@ async fn main() -> Result<()> {
                                         *guard = b2bua_cfg.voicemail_server_uri;
                                         tracing::debug!("config poll: updated voicemail_server_uri override");
                                     }
+                                    if let Ok(mut guard) = handler_for_poll.conference_server_uri_override().write() {
+                                        *guard = b2bua_cfg.conference_server_uri;
+                                        tracing::debug!("config poll: updated conference_server_uri override");
+                                    }
                                 }
                             }
                             Ok(None) => {}

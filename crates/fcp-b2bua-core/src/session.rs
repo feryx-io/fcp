@@ -153,6 +153,14 @@ pub struct B2buaConfig {
     /// Example: `"sip:vm@192.168.1.50:5060"` or `"sip:vm@voicemail.local"`.
     #[serde(default)]
     pub voicemail_server_uri: Option<String>,
+
+    /// SIP URI of the conference server for routing calls to conference rooms.
+    ///
+    /// When a dialed number matches a conference meeting room_number in the
+    /// database, the B2BUA forwards the INVITE to this server.
+    /// Example: `"sip:conference@192.168.1.225:5074"`.
+    #[serde(default)]
+    pub conference_server_uri: Option<String>,
 }
 
 impl Default for B2buaConfig {
@@ -168,6 +176,7 @@ impl Default for B2buaConfig {
             session_timer: SessionTimerConfig::default(),
             max_extension_digits: default_max_extension_digits(),
             voicemail_server_uri: None,
+            conference_server_uri: None,
         }
     }
 }
@@ -257,6 +266,7 @@ mod tests {
             session_timer: SessionTimerConfig::default(),
             max_extension_digits: 6,
             voicemail_server_uri: None,
+            conference_server_uri: None,
         };
         let session = B2buaSession::with_config(call_id, config.clone());
         assert_eq!(session.call_id, call_id);
@@ -303,6 +313,7 @@ mod tests {
             },
             max_extension_digits: 6,
             voicemail_server_uri: None,
+            conference_server_uri: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let deserialized: B2buaConfig = serde_json::from_str(&json).unwrap();

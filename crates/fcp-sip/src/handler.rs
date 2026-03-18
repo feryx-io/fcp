@@ -319,6 +319,9 @@ pub struct SipMessageHandler {
     /// running process picks up new values without a restart.
     voicemail_server_uri_override: Arc<std::sync::RwLock<Option<String>>>,
 
+    /// Runtime override for conference_server_uri (hot-reloadable via config poll).
+    conference_server_uri_override: Arc<std::sync::RwLock<Option<String>>>,
+
     /// Per-dialog rate limits
     rate_limits: Arc<dashmap::DashMap<sip_dialog::DialogId, RateWindow>>,
 
@@ -668,6 +671,9 @@ impl SipMessageHandler {
             voicemail_server_uri_override: Arc::new(std::sync::RwLock::new(
                 b2bua_config.voicemail_server_uri.clone(),
             )),
+            conference_server_uri_override: Arc::new(std::sync::RwLock::new(
+                b2bua_config.conference_server_uri.clone(),
+            )),
             settings,
             b2bua_config,
             rate_limits: Arc::new(dashmap::DashMap::new()),
@@ -704,6 +710,11 @@ impl SipMessageHandler {
     /// Get a reference to the runtime-reloadable voicemail server URI override.
     pub fn voicemail_server_uri_override(&self) -> &Arc<std::sync::RwLock<Option<String>>> {
         &self.voicemail_server_uri_override
+    }
+
+    /// Get a reference to the runtime-reloadable conference server URI override.
+    pub fn conference_server_uri_override(&self) -> &Arc<std::sync::RwLock<Option<String>>> {
+        &self.conference_server_uri_override
     }
 
     /// Get a reference to the rate limits map for debugging/monitoring.

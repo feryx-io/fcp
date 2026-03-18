@@ -28,6 +28,7 @@ prompts_dir = "/tmp/fcp/audio/prompts"
 
 [b2bua]
 voicemail_server_uri = "sip:voicemail@192.168.1.225:5072"
+conference_server_uri = "sip:conference@192.168.1.225:5074"
 
 [events]
 server_url = "http://localhost:8081/ingest"
