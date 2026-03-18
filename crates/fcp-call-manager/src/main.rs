@@ -2487,11 +2487,23 @@ async fn run_presence_listener(
                     PlatformEvent::Registration(fcp_events::RegistrationEvent::Registered { aor, .. }) => {
                         if let Some(aor) = extract_aor(aor) {
                             let update = fcp_presence::PresenceUpdate {
-                                aor,
+                                aor: aor.clone(),
                                 state: fcp_presence::PresenceState::Open,
                                 note: None,
                             };
                             let _ = presence.update_presence(update, &tenant_id).await;
+
+                            // Also set Open for extension(s) this device belongs to
+                            let ext_aors = resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage).await;
+                            for ext_aor in &ext_aors {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: ext_aor.clone(),
+                                    state: fcp_presence::PresenceState::Open,
+                                    note: None,
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                                tracing::info!(device_aor = %aor, ext_aor = %ext_aor, "Mirrored registration Open to extension");
+                            }
                         }
                     }
 
@@ -2499,11 +2511,23 @@ async fn run_presence_listener(
                     PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered { aor, .. }) => {
                         if let Some(aor) = extract_aor(aor) {
                             let update = fcp_presence::PresenceUpdate {
-                                aor,
+                                aor: aor.clone(),
                                 state: fcp_presence::PresenceState::Closed,
                                 note: None,
                             };
                             let _ = presence.update_presence(update, &tenant_id).await;
+
+                            // Also set Closed for extension(s) this device belongs to
+                            let ext_aors = resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage).await;
+                            for ext_aor in &ext_aors {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: ext_aor.clone(),
+                                    state: fcp_presence::PresenceState::Closed,
+                                    note: None,
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                                tracing::info!(device_aor = %aor, ext_aor = %ext_aor, "Mirrored unregistration Closed to extension");
+                            }
                         }
                     }
 
