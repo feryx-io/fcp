@@ -981,3 +981,49 @@ export interface QualityMetrics {
   total_calls: number
   failed_calls: number
 }
+
+// Conference / Meeting (matches conferences.rs)
+export interface MeetingResponse {
+  id: string
+  tenant_id: string
+  room_number: string
+  name: string
+  guest_pin: string | null
+  host_pin: string | null
+  require_guest_pin: boolean
+  max_participants: number
+  wait_for_moderator: boolean
+  enabled: boolean
+  auto_record: boolean
+  default_locked: boolean
+  permanent: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateMeetingRequest {
+  room_number: string
+  name: string
+  guest_pin?: string | null
+  host_pin?: string | null
+  require_guest_pin?: boolean
+  max_participants?: number
+  wait_for_moderator?: boolean
+  enabled?: boolean
+  auto_record?: boolean
+  default_locked?: boolean
+  permanent?: boolean
+}
+
+export interface UpdateMeetingRequest {
+  name?: string
+  guest_pin?: string | null
+  host_pin?: string | null
+  require_guest_pin?: boolean
+  max_participants?: number
+  wait_for_moderator?: boolean
+  enabled?: boolean
+  auto_record?: boolean
+  default_locked?: boolean
+  permanent?: boolean
+}

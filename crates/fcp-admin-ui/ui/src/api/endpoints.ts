@@ -25,6 +25,7 @@ import type {
   ClusterNodesResponse, ClusterStatsResponse,
   MeProfile, UpdateProfileRequest, ChangePasswordRequest,
   MeMailbox, MeMailboxStats, MeForwarding, UpdateForwardingRequest,
+  MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest,
 } from '@/types'
 
 // Auth
@@ -579,4 +580,16 @@ export const me = {
   getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),
   updateForwarding: (id: string, data: UpdateForwardingRequest) =>
     apiClient.patch<MeForwarding>(`/me/forwarding/${encodeURIComponent(id)}`, data),
+}
+
+// Conference / Meetings
+export const conferences = {
+  listMeetings: () => apiClient.get<MeetingResponse[]>('/conferences/meetings'),
+  getMeeting: (id: string) => apiClient.get<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}`),
+  createMeeting: (data: CreateMeetingRequest) => apiClient.post<MeetingResponse>('/conferences/meetings', data),
+  updateMeeting: (id: string, data: UpdateMeetingRequest) =>
+    apiClient.patch<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}`, data),
+  deleteMeeting: (id: string) => apiClient.delete(`/conferences/meetings/${encodeURIComponent(id)}`),
+  enableMeeting: (id: string) => apiClient.post<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}/enable`),
+  disableMeeting: (id: string) => apiClient.post<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}/disable`),
 }

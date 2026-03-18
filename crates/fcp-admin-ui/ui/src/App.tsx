@@ -21,6 +21,7 @@ const CDRsPage = lazy(() => import('@/pages/CDRsPage').then((m) => ({ default: m
 const QueuesPage = lazy(() => import('@/pages/QueuesPage').then((m) => ({ default: m.QueuesPage })))
 const VoicemailPage = lazy(() => import('@/pages/VoicemailPage').then((m) => ({ default: m.VoicemailPage })))
 const PresencePage = lazy(() => import('@/pages/PresencePage').then((m) => ({ default: m.PresencePage })))
+const ConferencesPage = lazy(() => import('@/pages/ConferencesPage').then((m) => ({ default: m.ConferencesPage })))
 const TrunksPage = lazy(() => import('@/pages/TrunksPage').then((m) => ({ default: m.TrunksPage })))
 const RoutingPage = lazy(() => import('@/pages/RoutingPage').then((m) => ({ default: m.RoutingPage })))
 const FlowsPage = lazy(() => import('@/pages/FlowsPage').then((m) => ({ default: m.FlowsPage })))
@@ -116,6 +117,7 @@ export function App() {
               <Route path="queues" element={<Suspense fallback={<PageLoader />}><QueuesPage /></Suspense>} />
               <Route path="voicemail" element={<Suspense fallback={<PageLoader />}><VoicemailPage /></Suspense>} />
               <Route path="presence" element={<Suspense fallback={<PageLoader />}><PresencePage /></Suspense>} />
+              <Route path="conferences" element={<Suspense fallback={<PageLoader />}><ConferencesPage /></Suspense>} />
               <Route path="prompts" element={<Suspense fallback={<PageLoader />}><PromptsPage /></Suspense>} />
               <Route path="events" element={<Suspense fallback={<PageLoader />}><EventsPage /></Suspense>} />
               {/* Advanced */}

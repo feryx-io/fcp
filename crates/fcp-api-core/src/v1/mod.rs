@@ -3,6 +3,7 @@
 pub mod api_tokens;
 pub mod auth_session;
 pub mod cdrs;
+pub mod conferences;
 pub mod config;
 pub mod dashboard;
 pub mod debug;
@@ -382,6 +383,25 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/api-tokens/:id",
             delete(api_tokens::delete_api_token),
+        )
+        // Conference / Meetings
+        .route(
+            "/conferences/meetings",
+            get(conferences::list_meetings).post(conferences::create_meeting),
+        )
+        .route(
+            "/conferences/meetings/:id",
+            get(conferences::get_meeting)
+                .patch(conferences::update_meeting)
+                .delete(conferences::delete_meeting),
+        )
+        .route(
+            "/conferences/meetings/:id/enable",
+            post(conferences::enable_meeting),
+        )
+        .route(
+            "/conferences/meetings/:id/disable",
+            post(conferences::disable_meeting),
         )
         .layer(middleware::from_fn(crate::auth::require_admin));
 

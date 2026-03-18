@@ -5,7 +5,7 @@ import {
   Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu,
   ChevronLeft, PhoneCall, FileText, Headphones, Voicemail,
   Radio, Activity, Server, Shield, Workflow, Globe, Key,
-  ScrollText, Search, X, FileAudio,
+  ScrollText, Search, X, FileAudio, Video,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -43,6 +43,7 @@ const navItems: NavItem[] = [
   { label: 'Active Calls', href: '/admin/calls', icon: PhoneCall, section: 'Operations' },
   { label: 'Call History', href: '/admin/cdrs', icon: FileText, section: 'Operations' },
   { label: 'Queues', href: '/admin/queues', icon: Headphones, section: 'Operations' },
+  { label: 'Conferences', href: '/admin/conferences', icon: Video, section: 'Operations' },
   { label: 'Voicemail', href: '/admin/voicemail', icon: Voicemail, section: 'Operations' },
   { label: 'Presence', href: '/admin/presence', icon: Radio, section: 'Operations' },
   { label: 'Audio Prompts', href: '/admin/prompts', icon: FileAudio, section: 'Operations' },

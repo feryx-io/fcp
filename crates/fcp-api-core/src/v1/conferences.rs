@@ -1,0 +1,357 @@
+//! Conference/Meeting management API endpoints.
+
+use crate::{error::ApiError, state::ApiState};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use fcp_core::storage::ConferenceStore;
+use fcp_core::{Meeting, MeetingId};
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use std::time::SystemTime;
+use tracing::info;
+
+/// Helper macro to get storage or return error.
+macro_rules! require_storage {
+    ($state:expr) => {
+        $state.storage.as_ref().ok_or_else(|| {
+            ApiError::NotFound("Storage is required but not configured".to_string())
+        })?
+    };
+}
+
+/// Meeting response.
+#[derive(Debug, Serialize)]
+pub struct MeetingResponse {
+    pub id: String,
+    pub tenant_id: String,
+    pub room_number: String,
+    pub name: String,
+    pub guest_pin: Option<String>,
+    pub host_pin: Option<String>,
+    pub require_guest_pin: bool,
+    pub max_participants: usize,
+    pub wait_for_moderator: bool,
+    pub enabled: bool,
+    pub auto_record: bool,
+    pub default_locked: bool,
+    pub permanent: bool,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+}
+
+impl From<Meeting> for MeetingResponse {
+    fn from(m: Meeting) -> Self {
+        MeetingResponse {
+            id: m.id.to_string(),
+            tenant_id: m.tenant_id.to_string(),
+            room_number: m.room_number,
+            name: m.name,
+            guest_pin: m.guest_pin,
+            host_pin: m.host_pin,
+            require_guest_pin: m.require_guest_pin,
+            max_participants: m.max_participants,
+            wait_for_moderator: m.wait_for_moderator,
+            enabled: m.enabled,
+            auto_record: m.auto_record,
+            default_locked: m.default_locked,
+            permanent: m.permanent,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+/// Create meeting request body.
+#[derive(Debug, Deserialize)]
+pub struct CreateMeetingRequest {
+    pub room_number: String,
+    pub name: String,
+    #[serde(default)]
+    pub guest_pin: Option<String>,
+    #[serde(default)]
+    pub host_pin: Option<String>,
+    #[serde(default)]
+    pub require_guest_pin: bool,
+    #[serde(default)]
+    pub max_participants: usize,
+    #[serde(default)]
+    pub wait_for_moderator: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_record: bool,
+    #[serde(default)]
+    pub default_locked: bool,
+    #[serde(default)]
+    pub permanent: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Update meeting request body (all fields optional).
+#[derive(Debug, Deserialize)]
+pub struct UpdateMeetingRequest {
+    pub name: Option<String>,
+    pub guest_pin: Option<Option<String>>,
+    pub host_pin: Option<Option<String>>,
+    pub require_guest_pin: Option<bool>,
+    pub max_participants: Option<usize>,
+    pub wait_for_moderator: Option<bool>,
+    pub enabled: Option<bool>,
+    pub auto_record: Option<bool>,
+    pub default_locked: Option<bool>,
+    pub permanent: Option<bool>,
+}
+
+/// GET /conferences/meetings — List all meetings for the default tenant.
+pub async fn list_meetings(
+    State(state): State<ApiState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let tenant_id = &state.default_tenant_id;
+
+    let meetings = storage
+        .list_meetings(tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let responses: Vec<MeetingResponse> = meetings.into_iter().map(MeetingResponse::from).collect();
+    Ok(Json(responses))
+}
+
+/// POST /conferences/meetings — Create a new meeting.
+pub async fn create_meeting(
+    State(state): State<ApiState>,
+    Json(req): Json<CreateMeetingRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let tenant_id = state.default_tenant_id.clone();
+
+    if req.room_number.is_empty() {
+        return Err(ApiError::BadRequest("room_number is required".to_string()));
+    }
+    if req.name.is_empty() {
+        return Err(ApiError::BadRequest("name is required".to_string()));
+    }
+
+    // Check for duplicate room number
+    if let Ok(Some(_)) = storage
+        .get_meeting_by_room_number(&tenant_id, &req.room_number)
+        .await
+    {
+        return Err(ApiError::Conflict(format!(
+            "A meeting with room number '{}' already exists",
+            req.room_number
+        )));
+    }
+
+    let now = SystemTime::now();
+    let meeting = Meeting {
+        id: MeetingId::new(),
+        tenant_id,
+        room_number: req.room_number,
+        name: req.name,
+        guest_pin: req.guest_pin,
+        host_pin: req.host_pin,
+        require_guest_pin: req.require_guest_pin,
+        max_participants: req.max_participants,
+        wait_for_moderator: req.wait_for_moderator,
+        enabled: req.enabled,
+        auto_record: req.auto_record,
+        default_locked: req.default_locked,
+        permanent: req.permanent,
+        created_at: now,
+        updated_at: now,
+    };
+
+    storage
+        .put_meeting(meeting.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        meeting_id = %meeting.id,
+        room_number = %meeting.room_number,
+        name = %meeting.name,
+        "Meeting created via API"
+    );
+
+    Ok((StatusCode::CREATED, Json(MeetingResponse::from(meeting))))
+}
+
+/// GET /conferences/meetings/:id — Get a meeting by ID.
+pub async fn get_meeting(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let meeting_id = MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Meeting '{}' not found", id)))?;
+
+    Ok(Json(MeetingResponse::from(meeting)))
+}
+
+/// PATCH /conferences/meetings/:id — Update a meeting.
+pub async fn update_meeting(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateMeetingRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let meeting_id = MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let mut meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Meeting '{}' not found", id)))?;
+
+    if let Some(name) = req.name {
+        meeting.name = name;
+    }
+    if let Some(guest_pin) = req.guest_pin {
+        meeting.guest_pin = guest_pin;
+    }
+    if let Some(host_pin) = req.host_pin {
+        meeting.host_pin = host_pin;
+    }
+    if let Some(v) = req.require_guest_pin {
+        meeting.require_guest_pin = v;
+    }
+    if let Some(v) = req.max_participants {
+        meeting.max_participants = v;
+    }
+    if let Some(v) = req.wait_for_moderator {
+        meeting.wait_for_moderator = v;
+    }
+    if let Some(v) = req.enabled {
+        meeting.enabled = v;
+    }
+    if let Some(v) = req.auto_record {
+        meeting.auto_record = v;
+    }
+    if let Some(v) = req.default_locked {
+        meeting.default_locked = v;
+    }
+    if let Some(v) = req.permanent {
+        meeting.permanent = v;
+    }
+    meeting.updated_at = SystemTime::now();
+
+    storage
+        .put_meeting(meeting.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        meeting_id = %meeting.id,
+        room_number = %meeting.room_number,
+        "Meeting updated via API"
+    );
+
+    Ok(Json(MeetingResponse::from(meeting)))
+}
+
+/// DELETE /conferences/meetings/:id — Delete a meeting.
+pub async fn delete_meeting(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let meeting_id = MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    // Verify it exists
+    let meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Meeting '{}' not found", id)))?;
+
+    storage
+        .delete_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(
+        meeting_id = %meeting.id,
+        room_number = %meeting.room_number,
+        "Meeting deleted via API"
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /conferences/meetings/:id/enable — Enable a meeting.
+pub async fn enable_meeting(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let meeting_id = MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let mut meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Meeting '{}' not found", id)))?;
+
+    meeting.enabled = true;
+    meeting.updated_at = SystemTime::now();
+
+    storage
+        .put_meeting(meeting.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(meeting_id = %meeting.id, "Meeting enabled via API");
+
+    Ok(Json(MeetingResponse::from(meeting)))
+}
+
+/// POST /conferences/meetings/:id/disable — Disable a meeting.
+pub async fn disable_meeting(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+
+    let meeting_id = MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let mut meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Meeting '{}' not found", id)))?;
+
+    meeting.enabled = false;
+    meeting.updated_at = SystemTime::now();
+
+    storage
+        .put_meeting(meeting.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    info!(meeting_id = %meeting.id, "Meeting disabled via API");
+
+    Ok(Json(MeetingResponse::from(meeting)))
+}
