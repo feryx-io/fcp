@@ -3074,8 +3074,26 @@ impl SipMessageHandler {
                         // If so, forward the INVITE to the conference server via B2BUA.
                         if let Some(ref storage) = self.storage {
                             use fcp_core::storage::ConferenceStore;
-                            if let Ok(Some(meeting)) = storage.get_meeting_by_room_number(&tenant_id, extension_number).await {
-                                if meeting.enabled {
+
+                            // Look up meeting by room number. Try the call's tenant first,
+                            // then fall back to the default (nil) tenant so rooms created
+                            // via the admin API (which uses nil tenant) are always reachable.
+                            let meeting_result = match storage.get_meeting_by_room_number(&tenant_id, extension_number).await {
+                                Ok(Some(m)) => Ok(Some(m)),
+                                Ok(None) if !tenant_id.is_nil() => {
+                                    debug!(
+                                        call_id = %call_id,
+                                        tenant_id = %tenant_id,
+                                        room = %extension_number,
+                                        "Conference room not found for tenant, trying default tenant"
+                                    );
+                                    storage.get_meeting_by_room_number(&fcp_core::TenantId::nil(), extension_number).await
+                                }
+                                other => other,
+                            };
+
+                            match meeting_result {
+                                Ok(Some(meeting)) if meeting.enabled => {
                                     let conf_uri = {
                                         let guard = self.conference_server_uri_override.read().unwrap();
                                         guard.clone()
@@ -3119,8 +3137,15 @@ impl SipMessageHandler {
                                             "Conference room found but conference_server_uri is not configured"
                                         );
                                     }
-                                } else {
+                                }
+                                Ok(Some(_meeting)) => {
                                     debug!(call_id = %call_id, room = %extension_number, "Conference room disabled");
+                                }
+                                Ok(None) => {
+                                    debug!(call_id = %call_id, room = %extension_number, tenant_id = %tenant_id, "No conference room found");
+                                }
+                                Err(e) => {
+                                    warn!(call_id = %call_id, room = %extension_number, error = %e, "Failed to look up conference room");
                                 }
                             }
                         }

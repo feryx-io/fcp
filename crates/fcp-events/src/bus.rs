@@ -4,6 +4,7 @@ use crate::{EventFilter, PlatformEvent};
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -51,6 +52,8 @@ struct SubscriptionId(u64);
 struct Subscription {
     filter: EventFilter,
     sender: mpsc::Sender<PlatformEvent>,
+    /// Running count of events dropped because the channel was full.
+    drops: AtomicU64,
 }
 
 /// In-memory event bus implementation.
@@ -127,12 +130,27 @@ impl EventPublisher for InMemoryEventBus {
             if subscription.filter.matches(&event) {
                 // Try to send (non-blocking)
                 match subscription.sender.try_send(event.clone()) {
-                    Ok(_) => sent += 1,
+                    Ok(_) => {
+                        // If we previously had drops, log the summary now that we're catching up
+                        let prev_drops = subscription.drops.swap(0, Ordering::Relaxed);
+                        if prev_drops > 0 {
+                            warn!(
+                                subscription_id = ?entry.key(),
+                                dropped_events = prev_drops,
+                                "Subscriber recovered after dropping events (channel was full)"
+                            );
+                        }
+                        sent += 1;
+                    }
                     Err(mpsc::error::TrySendError::Full(_)) => {
-                        warn!(
-                            subscription_id = ?entry.key(),
-                            "Event dropped: subscriber channel full"
-                        );
+                        // Increment drop counter; log only on the first drop in a burst
+                        let prev = subscription.drops.fetch_add(1, Ordering::Relaxed);
+                        if prev == 0 {
+                            warn!(
+                                subscription_id = ?entry.key(),
+                                "Event dropped: subscriber channel full (further drops suppressed until recovery)"
+                            );
+                        }
                         failed += 1;
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -160,11 +178,18 @@ impl EventSubscriber for InMemoryEventBus {
             id
         };
 
-        // Create channel for events (buffer of 1000 events)
-        let (sender, receiver) = mpsc::channel(1000);
+        // Create channel for events (buffer of 10 000 events).
+        // A larger buffer absorbs transient bursts from high-frequency
+        // publishers (presence heartbeats, media stats, etc.) without
+        // dropping events when a subscriber briefly stalls.
+        let (sender, receiver) = mpsc::channel(10_000);
 
         // Store subscription
-        let subscription = Subscription { filter, sender };
+        let subscription = Subscription {
+            filter,
+            sender,
+            drops: AtomicU64::new(0),
+        };
         self.subscriptions.insert(subscription_id, subscription);
 
         debug!(
