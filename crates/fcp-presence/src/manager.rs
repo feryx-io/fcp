@@ -3,14 +3,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use std::collections::HashSet;
-
 use anyhow::{bail, Result};
 use dashmap::DashMap;
 use tracing::{debug, info, warn};
 
 use fcp_core::metrics::{self, MetricsHandle};
-use fcp_core::storage::{PresenceStore, StoredAuthPolicy, StoredPresentity, StoredSubscription};
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 
@@ -36,8 +33,6 @@ pub struct PresenceManager {
     config: Arc<parking_lot::RwLock<PresenceConfig>>,
     /// Optional event publisher
     events: Option<Arc<dyn EventPublisher>>,
-    /// Optional persistence store for watcher subscriptions
-    store: Option<Arc<dyn PresenceStore>>,
     /// Per-presentity authorization policies (AOR → policy)
     auth_policies: Arc<DashMap<String, PresenceAuthPolicy>>,
     /// RFC 3903 PUBLISH ETag → Event State Composition tracking
@@ -76,16 +71,14 @@ impl PresenceManager {
     pub fn new(
         config: PresenceConfig,
         events: Option<Arc<dyn EventPublisher>>,
-        store: Option<Arc<dyn PresenceStore>>,
     ) -> Self {
-        Self::with_metrics(config, events, store, metrics::noop_metrics())
+        Self::with_metrics(config, events, metrics::noop_metrics())
     }
 
     /// Create a new PresenceManager with a custom metrics handle.
     pub fn with_metrics(
         mut config: PresenceConfig,
         events: Option<Arc<dyn EventPublisher>>,
-        store: Option<Arc<dyn PresenceStore>>,
         metrics: MetricsHandle,
     ) -> Self {
         let warnings = config.validate();
@@ -105,7 +98,6 @@ impl PresenceManager {
             watchers: Arc::new(DashMap::new()),
             config: Arc::new(parking_lot::RwLock::new(config)),
             events,
-            store,
             auth_policies: Arc::new(DashMap::new()),
             publish_etags: Arc::new(DashMap::new()),
             dialog_versions: Arc::new(DashMap::new()),
@@ -172,24 +164,9 @@ impl PresenceManager {
         Duration::from_secs(self.config.read().cleanup_interval_secs)
     }
 
-    /// Clean up expired subscriptions from the persistent store.
+    /// Clean up expired subscriptions (no-op, presence is in-memory only).
     pub async fn cleanup_expired_subscriptions_from_store(&self) -> usize {
-        if let Some(ref store) = self.store {
-            match store.cleanup_expired_subscriptions().await {
-                Ok(count) => {
-                    if count > 0 {
-                        debug!(count, "Cleaned expired subscriptions from store");
-                    }
-                    count
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to cleanup expired subscriptions");
-                    0
-                }
-            }
-        } else {
-            0
-        }
+        0
     }
 
     /// Update or create a presentity's presence state.
@@ -232,28 +209,6 @@ impl PresenceManager {
         // Persist to store and publish event only if state actually changed
         let old = old_state.unwrap_or(PresenceState::Closed);
         if old != update.state {
-            // Persist to store (non-blocking)
-            if let Some(ref store) = self.store {
-                let stored = StoredPresentity {
-                    aor: info.aor.clone(),
-                    state: info.state.to_string(),
-                    note: info.note.clone(),
-                    tenant_id: tenant_id.clone(),
-                    updated_at_epoch: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                };
-                let store = Arc::clone(store);
-                let metrics = Arc::clone(&self.metrics);
-                tokio::spawn(async move {
-                    if let Err(e) = store.save_presentity(stored).await {
-                        warn!(error = %e, "Failed to persist presentity state");
-                        metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "save_presentity")]);
-                    }
-                });
-            }
-
             debug!(
                 aor = %update.aor,
                 old_state = %old,
@@ -336,18 +291,6 @@ impl PresenceManager {
             }
         }
 
-        // Remove from persistent store
-        if let Some(ref store) = self.store {
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            let aor = aor.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = store.remove_presentity(&aor).await {
-                    warn!(error = %e, "Failed to remove presentity from store");
-                    metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "remove_presentity")]);
-                }
-            });
-        }
     }
 
     /// Add a watcher subscription for a presentity.
@@ -374,19 +317,6 @@ impl PresenceManager {
             bail!(
                 "Max watchers per presentity reached ({max}) for {presentity_aor}"
             );
-        }
-
-        // Persist to store (non-blocking)
-        if let Some(ref store) = self.store {
-            let stored = watcher_to_stored(&watcher);
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            tokio::spawn(async move {
-                if let Err(e) = store.save_subscription(stored).await {
-                    warn!(error = %e, "Failed to persist watcher subscription");
-                    metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "save_subscription")]);
-                }
-            });
         }
 
         entry.push(watcher);
@@ -421,19 +351,6 @@ impl PresenceManager {
                 removed_aor = Some(removed.watcher_aor);
                 tenant_id = Some(removed.tenant_id);
             }
-        }
-
-        // Remove from persistent store
-        if let Some(ref store) = self.store {
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            let sub_id = subscription_id.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = store.remove_subscription(&sub_id).await {
-                    warn!(error = %e, "Failed to remove subscription from store");
-                    metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "remove_subscription")]);
-                }
-            });
         }
 
         if let (Some(watcher_aor), Some(tid)) = (removed_aor, tenant_id) {
@@ -512,22 +429,6 @@ impl PresenceManager {
 
         if !expired.is_empty() {
             debug!(count = expired.len(), "Cleaned up expired watchers");
-
-            // Remove from persistent store
-            if let Some(ref store) = self.store {
-                let store = Arc::clone(store);
-                let metrics = Arc::clone(&self.metrics);
-                let sub_ids: Vec<String> =
-                    expired.iter().map(|w| w.subscription_id.clone()).collect();
-                tokio::spawn(async move {
-                    for sub_id in sub_ids {
-                        if let Err(e) = store.remove_subscription(&sub_id).await {
-                            warn!(error = %e, "Failed to remove expired subscription from store");
-                            metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "remove_expired_subscription")]);
-                        }
-                    }
-                });
-            }
         }
 
         expired
@@ -567,19 +468,6 @@ impl PresenceManager {
                 .find(|w| w.subscription_id == subscription_id)
             {
                 watcher.expires_at = new_expires;
-
-                // Update persistent store
-                if let Some(ref store) = self.store {
-                    let stored = watcher_to_stored(watcher);
-                    let store = Arc::clone(store);
-                    let metrics = Arc::clone(&self.metrics);
-                    tokio::spawn(async move {
-                        if let Err(e) = store.save_subscription(stored).await {
-                            warn!(error = %e, "Failed to persist refreshed subscription");
-                            metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "save_refreshed_subscription")]);
-                        }
-                    });
-                }
 
                 return Ok(());
             }
@@ -1050,21 +938,6 @@ impl PresenceManager {
         // Remove the presentity itself
         self.remove_presence(aor, tenant_id).await;
 
-        // Clean up from persistent store
-        if let Some(ref store) = self.store {
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            let sub_ids: Vec<String> = watchers.iter().map(|w| w.subscription_id.clone()).collect();
-            tokio::spawn(async move {
-                for sub_id in sub_ids {
-                    if let Err(e) = store.remove_subscription(&sub_id).await {
-                        warn!(error = %e, "Failed to remove subscription from store");
-                        metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "remove_subscription")]);
-                    }
-                }
-            });
-        }
-
         watchers
     }
 
@@ -1163,32 +1036,8 @@ impl PresenceManager {
     }
 
     /// Set authorization policy for a presentity.
-    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, tenant_id: &TenantId) {
-        self.auth_policies.insert(aor.to_string(), policy.clone());
-
-        // Persist to store (non-blocking)
-        if let Some(ref store) = self.store {
-            let stored = StoredAuthPolicy {
-                aor: aor.to_string(),
-                default_allow: policy.default_allow,
-                allow_list_json: serde_json::to_string(&policy.allow_list).unwrap_or_default(),
-                block_list_json: serde_json::to_string(&policy.block_list).unwrap_or_default(),
-                tenant_id: tenant_id.clone(),
-                event_allow_json: serde_json::to_string(&policy.event_allow).unwrap_or_default(),
-                event_block_json: serde_json::to_string(&policy.event_block).unwrap_or_default(),
-                time_windows_json: serde_json::to_string(&policy.time_windows).unwrap_or_default(),
-                allow_patterns_json: serde_json::to_string(&policy.allow_patterns).unwrap_or_default(),
-                block_patterns_json: serde_json::to_string(&policy.block_patterns).unwrap_or_default(),
-            };
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            tokio::spawn(async move {
-                if let Err(e) = store.save_auth_policy(stored).await {
-                    warn!(error = %e, "Failed to persist auth policy");
-                    metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "save_auth_policy")]);
-                }
-            });
-        }
+    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, _tenant_id: &TenantId) {
+        self.auth_policies.insert(aor.to_string(), policy);
     }
 
     /// Get authorization policy for a presentity.
@@ -1199,19 +1048,6 @@ impl PresenceManager {
     /// Remove authorization policy for a presentity (reverts to default-allow).
     pub fn remove_auth_policy(&self, aor: &str) {
         self.auth_policies.remove(aor);
-
-        // Remove from persistent store (non-blocking)
-        if let Some(ref store) = self.store {
-            let store = Arc::clone(store);
-            let metrics = Arc::clone(&self.metrics);
-            let aor = aor.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = store.remove_auth_policy(&aor).await {
-                    warn!(error = %e, "Failed to remove auth policy from store");
-                    metrics.inc_counter("fcp_presence_store_errors_total", &[("op", "remove_auth_policy")]);
-                }
-            });
-        }
     }
 
     /// Check if a watcher is authorized to subscribe to a presentity for a specific event package.
@@ -1230,102 +1066,6 @@ impl PresenceManager {
         }
     }
 
-    /// Load persisted auth policies from the store into memory.
-    /// Returns the number of policies loaded.
-    pub async fn load_auth_policies(&self, tenant_id: &TenantId) -> Result<usize> {
-        let store = match &self.store {
-            Some(s) => s,
-            None => return Ok(0),
-        };
-
-        let stored = store.load_auth_policies(tenant_id).await?;
-        let count = stored.len();
-
-        for s in stored {
-            let allow_list: HashSet<String> =
-                serde_json::from_str(&s.allow_list_json).unwrap_or_default();
-            let block_list: HashSet<String> =
-                serde_json::from_str(&s.block_list_json).unwrap_or_default();
-            let event_allow = serde_json::from_str(&s.event_allow_json).unwrap_or_default();
-            let event_block = serde_json::from_str(&s.event_block_json).unwrap_or_default();
-            let time_windows = serde_json::from_str(&s.time_windows_json).unwrap_or_default();
-            let allow_patterns = serde_json::from_str(&s.allow_patterns_json).unwrap_or_default();
-            let block_patterns = serde_json::from_str(&s.block_patterns_json).unwrap_or_default();
-            let policy = PresenceAuthPolicy {
-                default_allow: s.default_allow,
-                allow_list,
-                block_list,
-                event_allow,
-                event_block,
-                time_windows,
-                allow_patterns,
-                block_patterns,
-            };
-            self.auth_policies.insert(s.aor, policy);
-        }
-
-        if count > 0 {
-            info!(count, "Loaded persisted presence auth policies");
-        }
-
-        Ok(count)
-    }
-
-    /// Load persisted subscriptions from the store into memory.
-    /// Returns the number of subscriptions loaded.
-    pub async fn load_subscriptions(&self, tenant_id: &TenantId) -> Result<usize> {
-        let store = match &self.store {
-            Some(s) => s,
-            None => return Ok(0),
-        };
-
-        let stored = store.load_subscriptions(tenant_id).await?;
-        let count = stored.len();
-
-        for s in stored {
-            let watcher = stored_to_watcher(&s);
-            self.watchers
-                .entry(watcher.presentity_aor.clone())
-                .or_default()
-                .push(watcher);
-        }
-
-        if count > 0 {
-            info!(count, "Loaded persisted presence subscriptions");
-        }
-
-        Ok(count)
-    }
-
-    /// Load persisted presentity state from the store into memory.
-    /// Returns the number of presentities loaded.
-    pub async fn load_presentities(&self, tenant_id: &TenantId) -> Result<usize> {
-        let store = match &self.store {
-            Some(s) => s,
-            None => return Ok(0),
-        };
-
-        let stored = store.load_presentities(tenant_id).await?;
-        let count = stored.len();
-
-        for s in stored {
-            let state: PresenceState = s.state.parse().unwrap_or(PresenceState::Closed);
-            let info = PresenceInfo {
-                aor: s.aor.clone(),
-                state,
-                note: s.note,
-                tenant_id: s.tenant_id,
-                updated_at: Instant::now(),
-            };
-            self.presentities.insert(s.aor, info);
-        }
-
-        if count > 0 {
-            info!(count, "Loaded persisted presentity states");
-        }
-
-        Ok(count)
-    }
 
     // ---- NOTIFY retry queue ----
 
@@ -1393,44 +1133,10 @@ impl PresenceManager {
         self.shutdown_rx.clone()
     }
 
-    /// Signal shutdown, persist final state.
+    /// Signal shutdown.
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
-
-        // Persist all presentities
-        if let Some(ref store) = self.store {
-            let presentities: Vec<_> = self.presentities.iter().map(|e| e.value().clone()).collect();
-            for info in &presentities {
-                let stored = StoredPresentity {
-                    aor: info.aor.clone(),
-                    state: info.state.to_string(),
-                    note: info.note.clone(),
-                    tenant_id: info.tenant_id.clone(),
-                    updated_at_epoch: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                };
-                if let Err(e) = store.save_presentity(stored).await {
-                    warn!(error = %e, aor = %info.aor, "Failed to persist presentity on shutdown");
-                }
-            }
-
-            // Persist all subscriptions
-            let all_watchers = self.get_all_watchers();
-            for w in &all_watchers {
-                let stored = watcher_to_stored(w);
-                if let Err(e) = store.save_subscription(stored).await {
-                    warn!(error = %e, "Failed to persist subscription on shutdown");
-                }
-            }
-
-            info!(
-                presentities = presentities.len(),
-                watchers = all_watchers.len(),
-                "Shutdown: persisted final presence state"
-            );
-        }
+        info!("Presence manager shutdown");
     }
 
     // ========================================================================
@@ -1754,51 +1460,6 @@ impl PresenceManager {
     }
 }
 
-/// Convert a Watcher to a StoredSubscription for persistence.
-fn watcher_to_stored(w: &Watcher) -> StoredSubscription {
-    let remaining = w.expires_at.saturating_duration_since(Instant::now());
-    let expires_at_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        + remaining.as_secs();
-
-    StoredSubscription {
-        subscription_id: w.subscription_id.clone(),
-        watcher_aor: w.watcher_aor.clone(),
-        presentity_aor: w.presentity_aor.clone(),
-        tenant_id: w.tenant_id.clone(),
-        contact_uri: w.contact_uri.clone(),
-        event_package: w.event_package.clone(),
-        expires_at_epoch,
-        sip_call_id: w.sip_call_id.clone(),
-        sip_from_tag: w.sip_from_tag.clone(),
-        sip_to_tag: w.sip_to_tag.clone(),
-    }
-}
-
-/// Convert a StoredSubscription back to a Watcher (runtime type with Instant).
-fn stored_to_watcher(s: &StoredSubscription) -> Watcher {
-    let now_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let remaining_secs = s.expires_at_epoch.saturating_sub(now_epoch);
-
-    Watcher {
-        watcher_aor: s.watcher_aor.clone(),
-        presentity_aor: s.presentity_aor.clone(),
-        subscription_id: s.subscription_id.clone(),
-        expires_at: Instant::now() + Duration::from_secs(remaining_secs),
-        tenant_id: s.tenant_id.clone(),
-        contact_uri: s.contact_uri.clone(),
-        event_package: s.event_package.clone(),
-        sip_call_id: s.sip_call_id.clone(),
-        sip_from_tag: s.sip_from_tag.clone(),
-        sip_to_tag: s.sip_to_tag.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1820,7 +1481,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_and_get_presence() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let update = PresenceUpdate {
@@ -1843,7 +1504,7 @@ mod tests {
         use fcp_events::InMemoryEventBus;
 
         let bus = Arc::new(InMemoryEventBus::new());
-        let mgr = PresenceManager::new(test_config(), Some(bus.clone()), None);
+        let mgr = PresenceManager::new(test_config(), Some(bus.clone()));
         let tenant = test_tenant();
 
         // First update sets state (transitions from Closed → Open)
@@ -1868,7 +1529,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_presence() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let update = PresenceUpdate {
@@ -1885,7 +1546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_and_get_watchers() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let watcher = Watcher {
@@ -1911,7 +1572,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_watcher() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let watcher = Watcher {
@@ -1940,7 +1601,7 @@ mod tests {
             max_watchers_per_presentity: 2,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None, None);
+        let mgr = PresenceManager::new(config, None);
         let tenant = test_tenant();
 
         for i in 0..2 {
@@ -1978,7 +1639,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_expired_watchers() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         // Add an already-expired watcher
@@ -2023,7 +1684,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_watcher() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let original_expires = Instant::now() + Duration::from_secs(100);
@@ -2051,7 +1712,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_on_the_phone_auto_state() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         // Start with Open state
@@ -2075,7 +1736,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_presentity_count() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         assert_eq!(mgr.presentity_count(), 0);
@@ -2095,7 +1756,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_total_watcher_count() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         assert_eq!(mgr.total_watcher_count(), 0);
@@ -2121,7 +1782,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_existing_watcher() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         // No watcher → None
@@ -2156,7 +1817,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_generate_pidf() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         // No presentity → None
@@ -2179,7 +1840,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_publish_returns_etag() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let etag = mgr.store_publish(
@@ -2194,7 +1855,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_publish_returns_new_etag() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
@@ -2207,7 +1868,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_modify_publish_returns_new_etag() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
@@ -2220,7 +1881,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_publish() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let etag = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
@@ -2232,7 +1893,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_412_on_unknown_etag() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         assert!(mgr.refresh_publish("nonexistent", 3600).is_err());
         assert!(mgr.modify_publish("nonexistent", PresenceState::Open, None, 3600).await.is_err());
         assert!(mgr.remove_publish("nonexistent").await.is_err());
@@ -2240,7 +1901,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_expired_publishes() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         // Store a PUBLISH that expires immediately
@@ -2269,7 +1930,7 @@ mod tests {
             composition_enabled: true,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None, None);
+        let mgr = PresenceManager::new(config, None);
         let tenant = test_tenant();
 
         // Create presentity first
@@ -2305,7 +1966,7 @@ mod tests {
             composition_enabled: false,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None, None);
+        let mgr = PresenceManager::new(config, None);
         let tenant = test_tenant();
 
         // Create presentity
@@ -2328,7 +1989,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dialog_info_version_increments() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let update = PresenceUpdate {
@@ -2350,7 +2011,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dialog_info_version_per_aor() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         for aor in &["alice@example.com", "bob@example.com"] {
@@ -2381,7 +2042,7 @@ mod tests {
         use fcp_events::InMemoryEventBus;
 
         let bus = Arc::new(InMemoryEventBus::new());
-        let mgr = PresenceManager::new(test_config(), Some(bus.clone()), None);
+        let mgr = PresenceManager::new(test_config(), Some(bus.clone()));
         let tenant = test_tenant();
 
         let update = PresenceUpdate {
@@ -2402,7 +2063,7 @@ mod tests {
 
     #[test]
     fn test_cap_publish_expiry_default() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         // Default max is 3600
         assert_eq!(mgr.cap_publish_expiry(1800), 1800); // under cap
         assert_eq!(mgr.cap_publish_expiry(3600), 3600); // at cap
@@ -2415,7 +2076,7 @@ mod tests {
             max_publish_expiry_secs: 600,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None, None);
+        let mgr = PresenceManager::new(config, None);
         assert_eq!(mgr.cap_publish_expiry(300), 300);
         assert_eq!(mgr.cap_publish_expiry(600), 600);
         assert_eq!(mgr.cap_publish_expiry(3600), 600);
@@ -2427,7 +2088,7 @@ mod tests {
             notify_delay_ms: 100,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None, None);
+        let mgr = PresenceManager::new(config, None);
         assert_eq!(mgr.notify_delay(), Duration::from_millis(100));
     }
 
@@ -2437,13 +2098,13 @@ mod tests {
             cleanup_interval_secs: 120,
             ..test_config()
         };
-        let mgr = PresenceManager::new(config, None, None);
+        let mgr = PresenceManager::new(config, None);
         assert_eq!(mgr.cleanup_interval(), Duration::from_secs(120));
     }
 
     #[tokio::test]
     async fn test_cross_tenant_watcher_rejected() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant_a = TenantId::new();
         let tenant_b = TenantId::new();
 
@@ -2475,7 +2136,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_presences_by_tenant() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant_a = TenantId::new();
         let tenant_b = TenantId::new();
 
@@ -2505,7 +2166,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_all_watchers() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         // Add watchers to different presentities
@@ -2531,7 +2192,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_winfo_watcher_add_remove_lifecycle() {
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
         let watcher = Watcher {
@@ -2576,7 +2237,7 @@ mod tests {
     #[tokio::test]
     async fn test_auth_policy_persistence_with_none_store() {
         // With no store, set/remove should be no-op (not crash)
-        let mgr = PresenceManager::new(test_config(), None, None);
+        let mgr = PresenceManager::new(test_config(), None);
         let policy = PresenceAuthPolicy {
             default_allow: false,
             allow_list: HashSet::from(["bob@example.com".to_string()]),

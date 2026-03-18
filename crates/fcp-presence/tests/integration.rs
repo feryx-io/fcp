@@ -48,7 +48,6 @@ async fn test_subscribe_notify_lifecycle() {
     let mgr = PresenceManager::new(
         test_config(),
         Some(bus.clone() as Arc<dyn fcp_events::EventPublisher>),
-        None,
     );
     let tenant = TenantId::new();
 
@@ -102,7 +101,7 @@ async fn test_subscribe_notify_lifecycle() {
 /// Test: PUBLISH ETag full lifecycle — store → refresh → modify → remove → 412 on stale.
 #[tokio::test]
 async fn test_publish_etag_full_lifecycle() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Initial PUBLISH
@@ -160,7 +159,7 @@ async fn test_publish_etag_full_lifecycle() {
 /// Test: auth policy enforcement — block a watcher, verify rejection, allow, verify acceptance.
 #[tokio::test]
 async fn test_auth_policy_enforcement() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     // No policy = allow all
     assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
@@ -195,7 +194,7 @@ async fn test_auth_policy_enforcement() {
 /// Test: cross-tenant watcher subscription is rejected.
 #[tokio::test]
 async fn test_tenant_isolation() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant_a = TenantId::new();
     let tenant_b = TenantId::new();
 
@@ -231,7 +230,7 @@ async fn test_tenant_isolation() {
 /// Test: None store doesn't break any operations.
 #[tokio::test]
 async fn test_persistence_roundtrip_with_none_store() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // All persistence-related operations should be no-ops, not panics
@@ -256,12 +255,7 @@ async fn test_persistence_roundtrip_with_none_store() {
         &tenant,
     );
 
-    // Load operations with no store = 0
-    assert_eq!(mgr.load_presentities(&tenant).await.unwrap(), 0);
-    assert_eq!(mgr.load_subscriptions(&tenant).await.unwrap(), 0);
-    assert_eq!(mgr.load_auth_policies(&tenant).await.unwrap(), 0);
-
-    // Cleanup from store = 0
+    // Cleanup (no-op, in-memory only)
     assert_eq!(mgr.cleanup_expired_subscriptions_from_store().await, 0);
 
     // Remove operations work
@@ -281,7 +275,7 @@ async fn test_notify_retry_queue_lifecycle() {
         notify_retry_max_delay_ms: 100,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     let watcher = make_watcher("bob@example.com", "alice@example.com", &tenant, "presence");
@@ -329,7 +323,7 @@ async fn test_notify_retry_max_exceeded() {
         max_notify_retries: 2,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     let watcher = make_watcher("bob@example.com", "alice@example.com", &tenant, "presence");
@@ -356,7 +350,7 @@ async fn test_notify_retry_max_exceeded() {
 /// Test: auth policy persists with correct tenant_id (no nil leak).
 #[tokio::test]
 async fn test_auth_policy_with_tenant_id() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     let policy = PresenceAuthPolicy {
@@ -380,7 +374,7 @@ async fn test_auth_policy_with_tenant_id() {
 /// Test: shutdown receiver signals cleanup task to stop.
 #[tokio::test]
 async fn test_shutdown_receiver_signals() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let mut rx = mgr.shutdown_receiver();
 
     // Not yet shut down
@@ -397,7 +391,7 @@ async fn test_shutdown_receiver_signals() {
 /// Test: get_all_watchers_including_winfo returns both regular and winfo watchers.
 #[tokio::test]
 async fn test_get_all_watchers_including_winfo() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Add a regular watcher
@@ -420,7 +414,7 @@ async fn test_get_all_watchers_including_winfo() {
 /// Test: get_watchers() excludes expired; cleanup_expired_watchers() still removes them.
 #[tokio::test]
 async fn test_expired_watchers_filtered_at_read_time() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Add a valid watcher
@@ -468,7 +462,7 @@ async fn test_expired_watchers_filtered_at_read_time() {
 /// Test: expired winfo watchers are filtered from get_winfo_watchers().
 #[tokio::test]
 async fn test_expired_winfo_watchers_filtered() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Add valid winfo watcher
@@ -505,7 +499,7 @@ async fn test_expired_winfo_watchers_filtered() {
 /// Test: add winfo watcher → verify present → remove → verify removed.
 #[tokio::test]
 async fn test_winfo_subscribe_unsubscribe() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     let watcher = make_watcher("admin@example.com", "alice@example.com", &tenant, "presence.winfo");
@@ -521,7 +515,7 @@ async fn test_winfo_subscribe_unsubscribe() {
 /// Test: generate_watcherinfo() version increments on each call.
 #[tokio::test]
 async fn test_winfo_version_increments() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     let xml0 = mgr.generate_watcherinfo("alice@example.com").unwrap();
     assert!(xml0.contains("version=\"0\""), "Expected version 0: {xml0}");
@@ -536,7 +530,7 @@ async fn test_winfo_version_increments() {
 /// Test: watcherinfo XML contains all active watchers with correct attributes.
 #[tokio::test]
 async fn test_winfo_xml_contains_active_watchers() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     for i in 0..3 {
@@ -564,7 +558,7 @@ async fn test_winfo_xml_contains_active_watchers() {
 /// Test: expired watchers are excluded from watcherinfo XML.
 #[tokio::test]
 async fn test_winfo_xml_excludes_expired_watchers() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Add a valid watcher
@@ -600,7 +594,7 @@ async fn test_winfo_xml_excludes_expired_watchers() {
 /// Test: watcher-info is per-AOR isolated.
 #[tokio::test]
 async fn test_winfo_per_aor_isolation() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     let w1 = make_watcher("bob@example.com", "alice@example.com", &tenant, "presence");
@@ -621,7 +615,7 @@ async fn test_winfo_per_aor_isolation() {
 /// Test: watcher expiration attribute in watcherinfo XML.
 #[tokio::test]
 async fn test_winfo_watcher_expiration_display() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     let watcher = Watcher {
@@ -649,7 +643,7 @@ async fn test_winfo_watcher_expiration_display() {
 /// Test: empty watcher list generates valid XML.
 #[tokio::test]
 async fn test_winfo_empty_watcher_list() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     let xml = mgr.generate_watcherinfo("nobody@example.com").unwrap();
     assert!(
@@ -670,7 +664,7 @@ async fn test_concurrent_publish_from_multiple_devices() {
         composition_enabled: true,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     // Create presentity first
@@ -724,7 +718,7 @@ async fn test_concurrent_publish_from_multiple_devices() {
 /// Test: rapid publish/modify/remove cycle — no panics or inconsistency.
 #[tokio::test]
 async fn test_rapid_publish_modify_remove() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     for _ in 0..50 {
@@ -745,7 +739,7 @@ async fn test_rapid_publish_modify_remove() {
 /// Test: concurrent publish and remove — no deadlocks or panics.
 #[tokio::test]
 async fn test_concurrent_publish_and_remove() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     let mut handles = Vec::new();
@@ -804,7 +798,7 @@ async fn test_composition_priority_consistency() {
         composition_enabled: true,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     // Create presentity
@@ -854,7 +848,7 @@ async fn test_composition_priority_consistency() {
 /// Test: concurrent cleanup and publish — no panics.
 #[tokio::test]
 async fn test_concurrent_cleanup_and_publish() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     let mgr_cleaner = mgr.clone();
@@ -899,7 +893,7 @@ async fn test_scale_10k_watchers() {
         max_presentities: 10000,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     // Create 100 presentities
@@ -958,7 +952,7 @@ async fn test_scale_1k_presentities() {
         max_presentities: 10000,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     let start = Instant::now();
@@ -1002,7 +996,7 @@ async fn test_scale_1k_presentities() {
 #[tokio::test]
 #[ignore]
 async fn test_concurrent_subscribe_unsubscribe() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Create 10 presentities
@@ -1059,7 +1053,7 @@ async fn test_concurrent_presence_updates() {
         max_presentities: 10000,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     // Pre-create presentities
@@ -1113,7 +1107,7 @@ async fn test_concurrent_presence_updates() {
 #[tokio::test]
 #[ignore]
 async fn test_notify_generation_under_load() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
     // Create presentities and watchers
@@ -1184,7 +1178,7 @@ async fn test_cleanup_under_load() {
         max_presentities: 10000,
         ..test_config()
     };
-    let mgr = PresenceManager::new(config, None, None);
+    let mgr = PresenceManager::new(config, None);
     let tenant = TenantId::new();
 
     let update = PresenceUpdate {
@@ -1247,7 +1241,7 @@ use fcp_presence::TimeWindow;
 /// Test: per-event-package allow blocks other packages.
 #[tokio::test]
 async fn test_event_package_allow_blocks_other_packages() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     let mut event_allow = HashMap::new();
     event_allow.insert("presence".to_string(), HashSet::from(["bob@example.com".to_string()]));
@@ -1274,7 +1268,7 @@ async fn test_event_package_allow_blocks_other_packages() {
 /// Test: per-event-package block for specific event.
 #[tokio::test]
 async fn test_event_package_block_specific() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     let mut event_block = HashMap::new();
     event_block.insert("dialog".to_string(), HashSet::from(["bob@example.com".to_string()]));
@@ -1295,7 +1289,7 @@ async fn test_event_package_block_specific() {
 /// Test: domain wildcard allow pattern.
 #[tokio::test]
 async fn test_domain_wildcard_allow() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     let policy = PresenceAuthPolicy {
         default_allow: false,
@@ -1314,7 +1308,7 @@ async fn test_domain_wildcard_allow() {
 /// Test: domain wildcard block pattern.
 #[tokio::test]
 async fn test_domain_wildcard_block() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     let policy = PresenceAuthPolicy {
         default_allow: true,
@@ -1332,7 +1326,7 @@ async fn test_domain_wildcard_block() {
 /// Test: time window within current hour allows access.
 #[tokio::test]
 async fn test_time_window_within() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     // Get current UTC hour to construct a window that covers now
     let now = std::time::SystemTime::now()
@@ -1359,7 +1353,7 @@ async fn test_time_window_within() {
 /// Test: time window outside current hour blocks access.
 #[tokio::test]
 async fn test_time_window_outside() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     // Get current UTC hour and create a window that does NOT cover now
     let now = std::time::SystemTime::now()
@@ -1388,7 +1382,7 @@ async fn test_time_window_outside() {
 /// Test: backward compatibility — old-style simple policy still works identically.
 #[tokio::test]
 async fn test_backward_compat_simple_policy() {
-    let mgr = PresenceManager::new(test_config(), None, None);
+    let mgr = PresenceManager::new(test_config(), None);
 
     // Old-style: no new fields
     let policy = PresenceAuthPolicy {

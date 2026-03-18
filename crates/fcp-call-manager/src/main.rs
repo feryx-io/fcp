@@ -570,25 +570,11 @@ async fn main() -> Result<()> {
 
     // 17b. Create PresenceManager (if enabled)
     let presence_manager: Option<fcp_presence::PresenceManager> = if config.presence.enabled {
-        let presence_store: Option<Arc<dyn fcp_core::PresenceStore>> =
-            Some(Arc::clone(dyn_storage.presence_store()));
         let pm = fcp_presence::PresenceManager::new(
             config.presence.clone(),
             Some(Arc::clone(&event_publisher)),
-            presence_store,
         );
-        // Load persisted state from previous run
-        let pres_tenant = fcp_core::TenantId::nil();
-        if let Err(e) = pm.load_presentities(&pres_tenant).await {
-            warn!(error = %e, "Failed to load persisted presentity states");
-        }
-        if let Err(e) = pm.load_subscriptions(&pres_tenant).await {
-            warn!(error = %e, "Failed to load persisted presence subscriptions");
-        }
-        if let Err(e) = pm.load_auth_policies(&pres_tenant).await {
-            warn!(error = %e, "Failed to load persisted presence auth policies");
-        }
-        info!("Presence service enabled");
+        info!("Presence service enabled (in-memory only)");
 
         // Wire presence into queue distribution so DND/Busy agents are skipped
         if let Some(ref qm) = queue_manager {

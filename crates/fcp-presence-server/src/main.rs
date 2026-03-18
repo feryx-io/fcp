@@ -157,7 +157,6 @@ async fn main() -> Result<()> {
     let mut manager = fcp_presence::PresenceManager::new(
         presence_config,
         Some(event_bus.clone() as Arc<dyn fcp_events::EventPublisher>),
-        Some(Arc::clone(dyn_storage.presence_store())),
     );
 
     // Set up resource list store

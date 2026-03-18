@@ -210,21 +210,7 @@ async fn main() -> Result<()> {
         let pm = fcp_presence::PresenceManager::new(
             presence_config,
             Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
-            Some(Arc::clone(storage.presence_store())),
         );
-        let tenant = fcp_core::TenantId::nil();
-        match pm.load_presentities(&tenant).await {
-            Ok(n) => info!(count = n, "Loaded presence presentities"),
-            Err(e) => warn!(error = %e, "Failed to load presence presentities"),
-        }
-        match pm.load_subscriptions(&tenant).await {
-            Ok(n) => info!(count = n, "Loaded presence subscriptions"),
-            Err(e) => warn!(error = %e, "Failed to load presence subscriptions"),
-        }
-        match pm.load_auth_policies(&tenant).await {
-            Ok(n) => info!(count = n, "Loaded presence auth policies"),
-            Err(e) => warn!(error = %e, "Failed to load presence auth policies"),
-        }
         pm
     };
 
