@@ -2127,6 +2127,98 @@ async fn resolve_phone_number_to_extension_aors(
     ext_aors
 }
 
+/// Resolve a device AOR (e.g. "polycom@192.168.1.225") to the extension AOR(s)
+/// that target this device.  This allows presence to be mirrored when a device
+/// is called directly by its SIP username rather than by extension or phone number.
+async fn resolve_device_aor_to_extension_aors(
+    aor: &str,
+    tenant_id: &fcp_core::TenantId,
+    storage: &fcp_core::DynStorage,
+) -> Vec<String> {
+    let (user_part, host) = match aor.split_once('@') {
+        Some((user, host)) => (user, host),
+        None => return Vec::new(),
+    };
+
+    // Skip if it looks like an extension (all digits, short) or a phone number (all digits, 10+)
+    if user_part.chars().all(|c| c.is_ascii_digit()) {
+        return Vec::new();
+    }
+
+    // Reconstruct the SIP URI and look up the device
+    let sip_uri = format!("sip:{}@{}", user_part, host);
+    let device = match storage.get_device_by_sip_uri(&sip_uri).await {
+        Ok(Some(dev)) => dev,
+        Ok(None) => {
+            tracing::debug!(aor = %aor, sip_uri = %sip_uri, "No device found for SIP URI");
+            return Vec::new();
+        }
+        Err(e) => {
+            tracing::warn!(aor = %aor, error = %e, "Failed to look up device by SIP URI");
+            return Vec::new();
+        }
+    };
+
+    // Find extensions that target this device
+    let extensions = match storage.list_extensions(tenant_id).await {
+        Ok(exts) => exts,
+        Err(e) => {
+            tracing::warn!(aor = %aor, error = %e, "Failed to list extensions for device resolution");
+            return Vec::new();
+        }
+    };
+
+    let mut ext_aors = Vec::new();
+    for ext in &extensions {
+        if !ext.enabled {
+            continue;
+        }
+        match &ext.target {
+            fcp_core::ExtensionTarget::Device(ref dev_id) if *dev_id == device.id => {
+                let ext_aor = format!("{}@{}", ext.number, host);
+                tracing::info!(
+                    device_aor = %aor,
+                    ext_number = %ext.number,
+                    ext_aor = %ext_aor,
+                    "Resolved device AOR to extension"
+                );
+                ext_aors.push(ext_aor);
+            }
+            fcp_core::ExtensionTarget::User(ref user_id) => {
+                // Check if this device belongs to the user
+                if device.owner_user_id.as_ref() == Some(user_id) {
+                    let ext_aor = format!("{}@{}", ext.number, host);
+                    tracing::info!(
+                        device_aor = %aor,
+                        ext_number = %ext.number,
+                        ext_aor = %ext_aor,
+                        "Resolved device AOR to extension (via user)"
+                    );
+                    ext_aors.push(ext_aor);
+                }
+            }
+            fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) => {
+                // Check if the device is bound to this phone number via line binding
+                if let Ok(Some(lb)) = storage.get_line_binding_by_phone_number(pn_id).await {
+                    if lb.enabled_devices().iter().any(|db| db.device_id == device.id) {
+                        let ext_aor = format!("{}@{}", ext.number, host);
+                        tracing::info!(
+                            device_aor = %aor,
+                            ext_number = %ext.number,
+                            ext_aor = %ext_aor,
+                            "Resolved device AOR to extension (via phone number line binding)"
+                        );
+                        ext_aors.push(ext_aor);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    ext_aors
+}
+
 /// Subscribe to call and registration events, update presence accordingly.
 async fn run_presence_listener(
     event_bus: Arc<InMemoryEventBus>,
@@ -2299,6 +2391,33 @@ async fn run_presence_listener(
                                     ).await;
                                     tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, dev_aor = %ext_dev_aor, "Mirrored Ringing from phone number to extension device AOR");
                                 }
+                            }
+
+                            // If the callee AOR is a device (non-numeric user part), resolve
+                            // it to the extension(s) that target this device.
+                            let dev_ext_aors = resolve_device_aor_to_extension_aors(&callee_aor, &tenant_id, &storage).await;
+                            for ext_aor in &dev_ext_aors {
+                                let update = fcp_presence::PresenceUpdate {
+                                    aor: ext_aor.clone(),
+                                    state: fcp_presence::PresenceState::Ringing,
+                                    note: Some("Ringing".to_string()),
+                                };
+                                let _ = presence.update_presence(update, &tenant_id).await;
+                                presence.add_active_call(ext_aor, fcp_presence::ActiveCallInfo {
+                                    call_id: call_id_str.clone(),
+                                    remote_uri: caller_uri.clone(),
+                                    remote_display_name: None,
+                                    direction: fcp_presence::CallDirection::Recipient,
+                                    dialog_state: fcp_presence::DialogState::Early,
+                                });
+                                fcp_presence::events::dialog_changed(
+                                    presence.event_publisher(),
+                                    ext_aor,
+                                    &call_id_str,
+                                    "early",
+                                    &tenant_id,
+                                ).await;
+                                tracing::info!(device_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored Ringing from device AOR to extension");
                             }
                         }
                         if let Some(caller_aor) = extract_aor(from) {
