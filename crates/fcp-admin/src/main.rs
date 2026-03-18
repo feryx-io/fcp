@@ -207,10 +207,33 @@ async fn main() -> Result<()> {
             enabled: true,
             ..Default::default()
         };
-        let pm = fcp_presence::PresenceManager::new(
+        let mut pm = fcp_presence::PresenceManager::new(
             presence_config,
             Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
         );
+
+        // Wire up Redis Pub/Sub for cross-node presence sync
+        #[cfg(feature = "redis")]
+        if let Some(ref redis_url) = config.cluster.redis_url {
+            match fcp_presence::redis_pubsub::RedisPresencePubSub::new(
+                redis_url,
+                Some(config.service.node_id.clone()),
+            ) {
+                Ok(pubsub) => {
+                    info!(
+                        node_id = %pubsub.node_id(),
+                        "Admin presence Redis Pub/Sub initialized"
+                    );
+                    pm.set_pubsub(std::sync::Arc::new(pubsub));
+                    match pm.run_pubsub_listener().await {
+                        Ok(_handle) => info!("Admin presence Redis Pub/Sub listener started"),
+                        Err(e) => warn!(error = %e, "Failed to start admin presence Pub/Sub listener"),
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to initialize admin presence Redis Pub/Sub"),
+            }
+        }
+
         pm
     };
 

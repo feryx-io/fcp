@@ -20,6 +20,12 @@ pub struct PresenceChangeEvent {
     pub tenant_id: TenantId,
     /// Node ID of the node that originated the change (for self-filtering).
     pub node_id: String,
+    /// The new presence state (e.g. "open", "on_the_phone", "ringing", "closed").
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Optional note/reason.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 const CHANNEL: &str = "presence:changes";
@@ -50,11 +56,19 @@ impl RedisPresencePubSub {
     /// Publish a presence change event to Redis.
     ///
     /// Called after a local presence state update to inform other nodes.
-    pub async fn publish_change(&self, aor: &str, tenant_id: &TenantId) -> Result<()> {
+    pub async fn publish_change(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+        state: &str,
+        note: Option<&str>,
+    ) -> Result<()> {
         let event = PresenceChangeEvent {
             aor: aor.to_string(),
             tenant_id: tenant_id.clone(),
             node_id: self.node_id.clone(),
+            state: Some(state.to_string()),
+            note: note.map(|s| s.to_string()),
         };
 
         let payload = serde_json::to_string(&event)
@@ -68,7 +82,7 @@ impl RedisPresencePubSub {
         redis::cmd("PUBLISH")
             .arg(CHANNEL)
             .arg(&payload)
-            .exec_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to publish presence change")?;
 

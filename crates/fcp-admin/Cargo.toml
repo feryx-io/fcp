@@ -7,6 +7,10 @@ authors.workspace = true
 repository.workspace = true
 description = "FCP Admin API binary - management and administration endpoints"
 
+[features]
+default = []
+redis = ["fcp-presence/redis"]
+
 [[bin]]
 name = "fcp-admin"
 path = "src/main.rs"

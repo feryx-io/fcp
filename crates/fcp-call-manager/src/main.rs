@@ -570,11 +570,35 @@ async fn main() -> Result<()> {
 
     // 17b. Create PresenceManager (if enabled)
     let presence_manager: Option<fcp_presence::PresenceManager> = if config.presence.enabled {
-        let pm = fcp_presence::PresenceManager::new(
+        let mut pm = fcp_presence::PresenceManager::new(
             config.presence.clone(),
             Some(Arc::clone(&event_publisher)),
         );
-        info!("Presence service enabled (in-memory only)");
+        info!("Presence service enabled (in-memory)");
+
+        // Wire up Redis Pub/Sub for cross-node presence propagation
+        #[cfg(feature = "storage-redis")]
+        if let Some(ref _redis) = redis_storage {
+            if let Some(ref redis_url) = config.storage.redis_url {
+                match fcp_presence::redis_pubsub::RedisPresencePubSub::new(
+                    redis_url,
+                    Some(config.service.node_id.clone()),
+                ) {
+                    Ok(pubsub) => {
+                        info!(
+                            node_id = %pubsub.node_id(),
+                            "Presence Redis Pub/Sub initialized"
+                        );
+                        pm.set_pubsub(std::sync::Arc::new(pubsub));
+                        match pm.run_pubsub_listener().await {
+                            Ok(_handle) => info!("Presence Redis Pub/Sub listener started"),
+                            Err(e) => warn!(error = %e, "Failed to start presence Pub/Sub listener"),
+                        }
+                    }
+                    Err(e) => warn!(error = %e, "Failed to initialize presence Redis Pub/Sub"),
+                }
+            }
+        }
 
         // Wire presence into queue distribution so DND/Busy agents are skipped
         if let Some(ref qm) = queue_manager {

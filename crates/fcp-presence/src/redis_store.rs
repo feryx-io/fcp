@@ -106,7 +106,7 @@ impl PresenceStore for RedisPresenceStore {
             .cmd("SADD").arg(Self::subs_by_watcher_key(&sub.watcher_aor)).arg(&sub.subscription_id).ignore()
             .cmd("SADD").arg(Self::subs_by_tenant_key(&sub.tenant_id)).arg(&sub.subscription_id).ignore()
             .cmd("ZADD").arg(Self::EXPIRY_KEY).arg(sub.expires_at_epoch as f64).arg(&sub.subscription_id).ignore()
-            .exec_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to save subscription to Redis")?;
 
@@ -179,7 +179,7 @@ impl PresenceStore for RedisPresenceStore {
             .cmd("SREM").arg(Self::subs_by_watcher_key(&watcher_aor)).arg(subscription_id).ignore()
             .cmd("SREM").arg(Self::subs_by_tenant_key(&tenant_id)).arg(subscription_id).ignore()
             .cmd("ZREM").arg(Self::EXPIRY_KEY).arg(subscription_id).ignore()
-            .exec_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to remove subscription from Redis")?;
 
@@ -248,7 +248,7 @@ impl PresenceStore for RedisPresenceStore {
             .atomic()
             .cmd("HSET").arg(&key).arg(fields).ignore()
             .cmd("SADD").arg(Self::presentities_by_tenant_key(&presentity.tenant_id)).arg(&presentity.aor).ignore()
-            .exec_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to save presentity to Redis")?;
 
@@ -296,7 +296,7 @@ impl PresenceStore for RedisPresenceStore {
             }
         }
 
-        pipe.exec_async(&mut conn)
+        pipe.query_async::<()>(&mut conn)
             .await
             .context("Failed to remove presentity from Redis")?;
 
@@ -324,7 +324,7 @@ impl PresenceStore for RedisPresenceStore {
             .atomic()
             .cmd("HSET").arg(&key).arg(fields).ignore()
             .cmd("SADD").arg(Self::auth_by_tenant_key(&policy.tenant_id)).arg(&policy.aor).ignore()
-            .exec_async(&mut conn)
+            .query_async::<()>(&mut conn)
             .await
             .context("Failed to save auth policy to Redis")?;
 
@@ -372,7 +372,7 @@ impl PresenceStore for RedisPresenceStore {
             }
         }
 
-        pipe.exec_async(&mut conn)
+        pipe.query_async::<()>(&mut conn)
             .await
             .context("Failed to remove auth policy from Redis")?;
 

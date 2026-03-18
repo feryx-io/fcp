@@ -10,7 +10,7 @@ description = "Combined SIP registrar and B2BUA call handler for the Ferrous Com
 [features]
 default = ["tls"]
 tls = ["fcp-sip/tls"]
-storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster", "fcp-presence/redis"]
 
 [[bin]]
 name = "fcp-call-manager"

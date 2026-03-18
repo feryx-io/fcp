@@ -192,35 +192,44 @@ impl PresenceManager {
             .get(&update.aor)
             .map(|p| p.state);
 
+        let update_aor = update.aor.clone();
+        let update_state = update.state;
+        let update_note = update.note;
+
         let info = PresenceInfo {
-            aor: update.aor.clone(),
-            state: update.state,
-            note: update.note,
+            aor: update_aor.clone(),
+            state: update_state,
+            note: update_note.clone(),
             tenant_id: tenant_id.clone(),
             updated_at: Instant::now(),
         };
 
-        self.presentities.insert(update.aor.clone(), info.clone());
+        self.presentities.insert(update_aor.clone(), info.clone());
 
         // Emit metrics
         self.metrics.set_gauge("fcp_presence_presentities", self.presentities.len() as f64, &[]);
         self.metrics.inc_counter("fcp_presence_updates_total", &[("tenant_id", &tenant_id.to_string())]);
 
-        // Persist to store and publish event only if state actually changed
+        // Publish event only if state actually changed
         let old = old_state.unwrap_or(PresenceState::Closed);
-        if old != update.state {
+        if old != update_state {
             debug!(
-                aor = %update.aor,
+                aor = %update_aor,
                 old_state = %old,
-                new_state = %update.state,
+                new_state = %update_state,
                 "Presence state changed"
             );
-            events::status_changed(&self.events, &update.aor, old, update.state, tenant_id)
+            events::status_changed(&self.events, &update_aor, old, update_state, tenant_id)
                 .await;
 
             // Publish to Redis for cross-node propagation
             #[cfg(feature = "redis")]
-            self.publish_change_to_cluster(&update.aor, tenant_id).await;
+            self.publish_change_to_cluster(
+                &update_aor,
+                tenant_id,
+                &update_state.to_string(),
+                update_note.as_deref(),
+            ).await;
         }
 
         Ok(info)
@@ -1153,16 +1162,22 @@ impl PresenceManager {
     ///
     /// Called internally after a local presence state update.
     #[cfg(feature = "redis")]
-    async fn publish_change_to_cluster(&self, aor: &str, tenant_id: &TenantId) {
+    async fn publish_change_to_cluster(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+        state: &str,
+        note: Option<&str>,
+    ) {
         if let Some(ref pubsub) = self.pubsub {
-            if let Err(e) = pubsub.publish_change(aor, tenant_id).await {
+            if let Err(e) = pubsub.publish_change(aor, tenant_id, state, note).await {
                 warn!(error = %e, aor = %aor, "Failed to publish presence change to Redis");
             }
         }
     }
 
-    /// Start the background Pub/Sub listener that consumes remote presence changes
-    /// and triggers local NOTIFY delivery for affected watchers.
+    /// Start the background Pub/Sub listener that consumes remote presence changes,
+    /// updates local in-memory state, and triggers NOTIFY delivery for local watchers.
     ///
     /// Returns a `JoinHandle` for the background task.
     #[cfg(feature = "redis")]
@@ -1190,9 +1205,51 @@ impl PresenceManager {
                                 debug!(
                                     aor = %change.aor,
                                     source_node = %change.node_id,
+                                    state = ?change.state,
                                     "Processing remote presence change"
                                 );
-                                // Re-read the presentity state and notify local watchers
+
+                                // Apply the remote state to local in-memory presence.
+                                // This keeps all nodes' presence views consistent.
+                                if let Some(ref state_str) = change.state {
+                                    if let Ok(state) = state_str.parse::<PresenceState>() {
+                                        // Update local state directly (without re-publishing
+                                        // to Redis, which would cause a loop). We insert
+                                        // into presentities directly and fire local events.
+                                        let old_state = manager
+                                            .presentities
+                                            .get(&change.aor)
+                                            .map(|p| p.state);
+                                        let info = PresenceInfo {
+                                            aor: change.aor.clone(),
+                                            state,
+                                            note: change.note.clone(),
+                                            tenant_id: change.tenant_id.clone(),
+                                            updated_at: std::time::Instant::now(),
+                                        };
+                                        manager.presentities.insert(change.aor.clone(), info);
+
+                                        let old = old_state.unwrap_or(PresenceState::Closed);
+                                        if old != state {
+                                            events::status_changed(
+                                                &manager.events,
+                                                &change.aor,
+                                                old,
+                                                state,
+                                                &change.tenant_id,
+                                            ).await;
+                                            info!(
+                                                aor = %change.aor,
+                                                old_state = %old,
+                                                new_state = %state,
+                                                source_node = %change.node_id,
+                                                "Applied remote presence change"
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Notify local watchers
                                 let watchers = manager.get_watchers(&change.aor);
                                 if !watchers.is_empty() {
                                     debug!(
@@ -1203,7 +1260,7 @@ impl PresenceManager {
                                 }
                             }
                             None => {
-                                warn!("Pubsub stream ended");
+                                warn!("Pubsub stream ended, will reconnect");
                                 break;
                             }
                         }
