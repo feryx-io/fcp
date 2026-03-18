@@ -21,6 +21,7 @@ This document provides implementation details for all major features in the Ferr
 13. [Storage Backends](#13-storage-backends)
 14. [Standalone Binaries](#14-standalone-binaries)
 15. [Webhooks](#15-webhooks)
+16. [Presence System](#16-presence-system)
 
 ---
 
@@ -843,3 +844,200 @@ All components use `tracing` for structured logging with span context:
 - Library crates use explicit error types via `thiserror`
 - Binary crates use `anyhow` for application-level errors
 - API endpoints return structured `ApiError` responses with appropriate HTTP status codes
+
+---
+
+## 16. Presence System
+
+**Crates:** `fcp-presence`, `fcp-presence-server`, presence integration in `fcp-call-manager` and `fcp-admin`
+**Paths:** `crates/fcp-presence/src/`, `crates/fcp-presence-server/src/`, `crates/fcp-call-manager/src/main.rs`, `crates/fcp-admin/src/main.rs`
+
+### Overview
+
+The presence system tracks real-time user availability (Open, Closed, Ringing, OnThePhone, Away, Busy, DND) across the platform. It integrates with SIP SUBSCRIBE/NOTIFY/PUBLISH (RFC 3856/3903/4235) for BLF and client presence, and provides a REST API for the admin UI.
+
+### Architecture
+
+```
+                    ┌─────────────────┐
+                    │   Redis Pub/Sub │
+                    │ "presence:changes" │
+                    └───┬─────────┬───┘
+                   publish    subscribe
+                        │         │
+    ┌───────────────────┴─┐   ┌───┴───────────────────┐
+    │   call-manager (A)  │   │   call-manager (B)     │
+    │  ┌───────────────┐  │   │  ┌───────────────┐    │
+    │  │PresenceManager│  │   │  │PresenceManager│    │
+    │  │  (DashMap)     │  │   │  │  (DashMap)     │    │
+    │  └───────────────┘  │   │  └───────────────┘    │
+    │  SIP registrations  │   │  SIP registrations    │
+    │  Call events         │   │  Call events           │
+    └─────────────────────┘   └────────────────────────┘
+              │                          │
+         events-server WebSocket
+              │
+    ┌─────────┴─────────┐
+    │   fcp-admin        │
+    │  ┌───────────────┐ │
+    │  │PresenceManager│ │
+    │  │  (read replica)│ │
+    │  └───────────────┘ │
+    │  Admin UI REST API  │
+    └────────────────────┘
+```
+
+### In-Memory Only Design
+
+Presence state is **not persisted to the database**. All state lives in in-memory `DashMap`s within each `PresenceManager` instance. This was a deliberate decision to avoid overwhelming the database with frequent state changes (every registration, call, and state transition would trigger DB writes).
+
+State rebuilds naturally on restart:
+- SIP registrations re-trigger `Open` state
+- Active calls re-trigger `Ringing`/`OnThePhone` state
+- No stale data from previous runs
+
+### Key Components
+
+| File | Purpose |
+|------|---------|
+| `fcp-presence/src/manager.rs` | `PresenceManager` — core runtime state with `DashMap<String, PresenceInfo>` for presentities, watchers, auth policies, active calls, dialog versions |
+| `fcp-presence/src/redis_pubsub.rs` | `RedisPresencePubSub` — cross-node presence propagation via Redis Pub/Sub channel `presence:changes` |
+| `fcp-presence/src/config.rs` | `PresenceConfig` — rate limits, expiry bounds, composition, federation settings |
+| `fcp-presence/src/pidf.rs` | PIDF XML generation/parsing for SIP NOTIFY bodies (RFC 3863) |
+| `fcp-presence/src/xcap.rs` | Pres-rules XCAP support (RFC 5025) for authorization policies |
+| `fcp-presence/src/events.rs` | Event publishing helpers (StatusChanged, WatcherAdded, etc.) |
+| `fcp-presence/src/federation.rs` | Inter-domain presence federation config |
+| `fcp-presence/src/rls.rs` | Resource List Subscriptions (RFC 4826) |
+| `fcp-presence/src/analytics.rs` | Presence history/analytics consumer |
+| `fcp-call-manager/src/main.rs` | `run_presence_listener()` — maps call/registration events to presence state |
+| `fcp-api-core/src/v1/presence.rs` | REST API: list, get, update, delete presentities; watcher management; auth policies |
+| `fcp-admin-ui/ui/src/pages/PresencePage.tsx` | Admin UI presence cards with real-time refresh |
+
+### Presence State Flow
+
+#### Registration → Open/Closed
+When a SIP device registers, the `run_presence_listener` in `fcp-call-manager` handles `RegistrationEvent::Registered` → sets the device AOR and its extension AOR(s) to `Open`. On unregistration → `Closed`.
+
+#### Call Events → Ringing/OnThePhone
+- `CallEvent::Initiated` → callee AOR set to `Ringing`, caller AOR set to `OnThePhone`
+- `CallEvent::Answered` → callee transitions `Ringing` → `OnThePhone`
+- `CallEvent::Ended`/`Failed` → all affected AORs revert to `Open` (if no other active calls)
+
+#### AOR Resolution Chain
+
+When a call or registration event fires for a given AOR, the presence system resolves it to all related identities:
+
+```
+Device AOR (e.g. "polycom@host")
+  └─→ resolve_device_aor_to_extension_aors()
+       └─→ Extension AOR (e.g. "1234@host")
+
+Extension AOR (e.g. "1234@host")
+  └─→ resolve_extension_to_device_aors()
+       └─→ Device AOR(s) for BLF/NOTIFY
+
+Phone Number AOR (e.g. "15185551234@host")
+  └─→ resolve_phone_number_to_extension_aors()
+       └─→ Extension AOR(s)
+            └─→ resolve_extension_to_device_aors()
+                 └─→ Device AOR(s)
+```
+
+This ensures that calling a phone number, extension, or device directly all result in consistent presence across the extension and its bound devices.
+
+#### Resolution Functions (fcp-call-manager/src/main.rs)
+
+| Function | Input | Output |
+|----------|-------|--------|
+| `resolve_extension_to_device_aors()` | Extension AOR (numeric user part) | Device AOR(s) via ExtensionTarget → Device/User/PhoneNumber |
+| `resolve_phone_number_to_extension_aors()` | Phone number AOR (10+ digits) | Extension AOR(s) where target is PhoneNumber matching this E.164 |
+| `resolve_device_aor_to_extension_aors()` | Device AOR (non-numeric user part) | Extension AOR(s) via `get_device_by_sip_uri` → find extensions targeting this device |
+
+### Multi-Node Clustering via Redis Pub/Sub
+
+**Feature flag:** `fcp-presence/redis` (enabled via `storage-redis` in call-manager, `redis` in admin)
+
+#### How It Works
+
+1. **Local state change:** `PresenceManager::update_presence()` updates the local `DashMap` and fires a local `StatusChanged` event.
+
+2. **Publish to Redis:** If the `redis` feature is enabled and `set_pubsub()` was called, `publish_change_to_cluster()` sends a `PresenceChangeEvent` (JSON) to Redis channel `presence:changes`:
+   ```json
+   {
+     "aor": "1234@192.168.1.225",
+     "tenant_id": "tenant-00000000-...",
+     "node_id": "cm-local-01",
+     "state": "on_the_phone",
+     "note": "On the phone"
+   }
+   ```
+
+3. **Remote nodes subscribe:** `run_pubsub_listener()` spawns a background task that:
+   - Subscribes to `presence:changes`
+   - Filters out self-published messages (via `node_id`)
+   - Applies the remote state to the local `DashMap`
+   - Fires local `StatusChanged` events (for admin UI and SIP NOTIFY)
+   - Does **not** re-publish to Redis (prevents infinite loops)
+
+4. **Self-filtering:** Every node has a unique `node_id` (from config). Messages originating from the same node are skipped.
+
+#### Configuration
+
+**call-manager** (`fcp-call-manager-local.toml`):
+```toml
+[storage]
+redis_url = "redis://localhost:6379"    # enables Redis Pub/Sub for presence
+
+[service]
+node_id = "cm-local-01"                # unique per node, used for self-filtering
+
+[presence]
+enabled = true
+```
+
+Build with `--features storage-redis` to enable Redis presence sync.
+
+**admin** (`fcp-admin-local.toml`):
+```toml
+[cluster]
+redis_url = "redis://localhost:6379"    # enables Redis Pub/Sub for presence
+
+[service]
+node_id = "admin-local"
+```
+
+Build with `--features redis` to enable Redis presence sync.
+
+#### Key Types
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `PresenceChangeEvent` | `fcp-presence/src/redis_pubsub.rs` | JSON-serialized event for Redis Pub/Sub (aor, tenant_id, node_id, state, note) |
+| `RedisPresencePubSub` | `fcp-presence/src/redis_pubsub.rs` | Handles publish + subscribe on Redis channel `presence:changes` |
+
+### Admin UI Merging
+
+The `list_presences` API endpoint (`fcp-api-core/src/v1/presence.rs`) merges related AORs so each extension appears as a single card:
+
+- **Device AORs** belonging to an extension are hidden when the extension has its own presence entry
+- **Phone number AORs** targeting an extension are hidden similarly
+- **Watcher counts** from merged AORs are aggregated into the extension entry
+- **Standalone AORs** (no extension association) appear as-is
+
+### Presence States
+
+| State | Description | Triggered By |
+|-------|-------------|-------------|
+| `Open` | Available | SIP registration, call ended |
+| `Closed` | Offline | SIP unregistration, device removed |
+| `Ringing` | Incoming call ringing | `CallEvent::Initiated` (callee) |
+| `OnThePhone` | Active call | `CallEvent::Initiated` (caller), `CallEvent::Answered` (callee) |
+| `Away` | User away | API/PUBLISH |
+| `Busy` | User busy (DND) | API/PUBLISH, conference joined |
+| `DND` | Do not disturb | API |
+
+### Dependencies
+
+- **Redis** (optional): For multi-node Pub/Sub sync. Not required for single-node.
+- **Event Bus** (`fcp-events`): For local event propagation between components.
+- **Storage** (`fcp-core::DynStorage`): For resolving extensions, devices, phone numbers, and line bindings during AOR resolution.
