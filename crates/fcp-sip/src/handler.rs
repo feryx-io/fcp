@@ -3070,7 +3070,63 @@ impl SipMessageHandler {
                         }
                     }
                     Ok(None) => {
-                        debug!(call_id = %call_id, extension = %extension_number, "Extension not found, falling back to direct registrar lookup");
+                        // Extension not found — check if this is a conference room number.
+                        // If so, forward the INVITE to the conference server via B2BUA.
+                        if let Some(ref storage) = self.storage {
+                            use fcp_core::storage::ConferenceStore;
+                            if let Ok(Some(meeting)) = storage.get_meeting_by_room_number(&tenant_id, extension_number).await {
+                                if meeting.enabled {
+                                    let conf_uri = {
+                                        let guard = self.conference_server_uri_override.read().unwrap();
+                                        guard.clone()
+                                            .or_else(|| self.b2bua_config.conference_server_uri.clone())
+                                    };
+                                    if let Some(ref server_uri) = conf_uri {
+                                        // Build target URI: sip:{room_number}@{conference_host}
+                                        let host = server_uri
+                                            .strip_prefix("sip:")
+                                            .or_else(|| server_uri.strip_prefix("sips:"))
+                                            .unwrap_or(server_uri)
+                                            .split('@')
+                                            .last()
+                                            .unwrap_or(server_uri);
+                                        let target_uri = format!("sip:{}@{}", extension_number, host);
+                                        info!(
+                                            call_id = %call_id,
+                                            room_number = %extension_number,
+                                            meeting_name = %meeting.name,
+                                            target_uri = %target_uri,
+                                            "Routing to conference server"
+                                        );
+
+                                        // Create a binding to the conference server
+                                        match sip_registrar::Binding::new(
+                                            SmolStr::new(destination_aor),
+                                            SmolStr::new(&target_uri),
+                                            std::time::Duration::from_secs(3600),
+                                        ) {
+                                            Ok(binding) => {
+                                                extension_contacts = vec![binding];
+                                            }
+                                            Err(e) => {
+                                                warn!(call_id = %call_id, error = %e, "Failed to create conference binding");
+                                            }
+                                        }
+                                    } else {
+                                        warn!(
+                                            call_id = %call_id,
+                                            room_number = %extension_number,
+                                            "Conference room found but conference_server_uri is not configured"
+                                        );
+                                    }
+                                } else {
+                                    debug!(call_id = %call_id, room = %extension_number, "Conference room disabled");
+                                }
+                            }
+                        }
+                        if extension_contacts.is_empty() {
+                            debug!(call_id = %call_id, extension = %extension_number, "Extension not found, falling back to direct registrar lookup");
+                        }
                     }
                     Err(e) => {
                         warn!(call_id = %call_id, extension = %extension_number, error = %e, "Failed to lookup extension, falling back to direct registrar lookup");
