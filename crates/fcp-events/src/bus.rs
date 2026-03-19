@@ -168,6 +168,7 @@ impl EventPublisher for InMemoryEventBus {
                         if prev_drops > 0 {
                             warn!(
                                 subscription_id = ?entry.key(),
+                                filter = ?subscription.filter,
                                 dropped_events = prev_drops,
                                 recovery_event = event.event_type_name(),
                                 "Subscriber recovered after dropping events (channel was full)"
@@ -181,6 +182,7 @@ impl EventPublisher for InMemoryEventBus {
                         if prev == 0 {
                             warn!(
                                 subscription_id = ?entry.key(),
+                                filter = ?subscription.filter,
                                 event_type = event.event_type_name(),
                                 "Event dropped: subscriber channel full (further drops suppressed until recovery)"
                             );
@@ -217,6 +219,7 @@ impl EventSubscriber for InMemoryEventBus {
         // publishers (presence heartbeats, media stats, etc.) without
         // dropping events when a subscriber briefly stalls.
         let (sender, receiver) = mpsc::channel(10_000);
+        let debug_filter = filter.clone();
 
         // Store subscription
         let subscription = Subscription {
@@ -228,6 +231,7 @@ impl EventSubscriber for InMemoryEventBus {
 
         debug!(
             ?subscription_id,
+            filter = ?debug_filter,
             total_subscriptions = self.subscriptions.len(),
             "New event subscription created"
         );

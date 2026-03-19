@@ -42,7 +42,75 @@ pub struct ConferenceServerConfig {
     pub ai: AiSection,
 
     #[serde(default)]
+    pub tts: TtsSection,
+
+    #[serde(default)]
     pub cluster: ClusterSection,
+}
+
+/// Text-to-Speech configuration for synthesizing conference audio prompts.
+///
+/// When enabled, meetings with `pin_prompt_tts` or `invalid_pin_tts` fields
+/// will have their text synthesized to audio at room creation time.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TtsSection {
+    /// Enable TTS prompt synthesis (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// TTS provider: "openai", "google_cloud", "local", etc.
+    #[serde(default = "default_tts_provider")]
+    pub provider: String,
+
+    /// API key for cloud TTS providers (OpenAI, Google Cloud, etc.)
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Default language code (BCP 47). Default: "en-US".
+    #[serde(default = "default_tts_language")]
+    pub language: String,
+
+    /// Default voice name (provider-specific). None = provider default.
+    #[serde(default)]
+    pub voice: Option<String>,
+
+    /// Directory for cached TTS audio files. Default: /var/fcp/conference/tts_cache
+    #[serde(default = "default_tts_cache_dir")]
+    pub cache_dir: String,
+
+    /// Maximum TTS cache size in megabytes. Default: 100 MB.
+    #[serde(default = "default_tts_cache_max_size_mb")]
+    pub cache_max_size_mb: usize,
+}
+
+fn default_tts_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_tts_language() -> String {
+    "en-US".to_string()
+}
+
+fn default_tts_cache_dir() -> String {
+    "/var/fcp/conference/tts_cache".to_string()
+}
+
+fn default_tts_cache_max_size_mb() -> usize {
+    100
+}
+
+impl Default for TtsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_tts_provider(),
+            api_key: None,
+            language: default_tts_language(),
+            voice: None,
+            cache_dir: default_tts_cache_dir(),
+            cache_max_size_mb: default_tts_cache_max_size_mb(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -455,6 +523,19 @@ pub struct ConferenceSection {
     /// Interval in seconds between recording size limit checks (default: 30).
     #[serde(default = "default_recording_size_check_interval_secs")]
     pub recording_size_check_interval_secs: u64,
+
+    /// Path to WAV file played to prompt callers for PIN entry.
+    /// Relative paths are resolved against `announcements_dir`.
+    #[serde(default)]
+    pub pin_prompt_sound: Option<String>,
+
+    /// Path to WAV file played after an incorrect PIN entry.
+    #[serde(default)]
+    pub invalid_pin_sound: Option<String>,
+
+    /// Path to WAV file played as music-on-hold while waiting for a moderator.
+    #[serde(default)]
+    pub moh_sound: Option<String>,
 }
 
 fn default_announcements_dir() -> String {
@@ -561,6 +642,9 @@ impl Default for ConferenceSection {
             meeting_cache_max_size: default_meeting_cache_max_size(),
             recording_cleanup_interval_secs: default_recording_cleanup_interval_secs(),
             recording_size_check_interval_secs: default_recording_size_check_interval_secs(),
+            pin_prompt_sound: None,
+            invalid_pin_sound: None,
+            moh_sound: None,
         }
     }
 }

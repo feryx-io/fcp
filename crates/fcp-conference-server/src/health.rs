@@ -384,6 +384,16 @@ struct CreateMeetingRequest {
     default_locked: bool,
     #[serde(default)]
     permanent: bool,
+    #[serde(default)]
+    pin_prompt_sound: Option<String>,
+    #[serde(default)]
+    invalid_pin_sound: Option<String>,
+    #[serde(default)]
+    moh_sound: Option<String>,
+    #[serde(default)]
+    pin_prompt_tts: Option<String>,
+    #[serde(default)]
+    invalid_pin_tts: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -492,6 +502,11 @@ async fn create_meeting_handler(
         auto_record: payload.auto_record,
         default_locked: payload.default_locked,
         permanent: payload.permanent,
+        pin_prompt_sound: payload.pin_prompt_sound,
+        invalid_pin_sound: payload.invalid_pin_sound,
+        moh_sound: payload.moh_sound,
+        pin_prompt_tts: payload.pin_prompt_tts,
+        invalid_pin_tts: payload.invalid_pin_tts,
         created_at: now,
         updated_at: now,
     };
@@ -563,6 +578,11 @@ struct UpdateMeetingRequest {
     auto_record: Option<bool>,
     default_locked: Option<bool>,
     permanent: Option<bool>,
+    pin_prompt_sound: Option<Option<String>>,
+    invalid_pin_sound: Option<Option<String>>,
+    moh_sound: Option<Option<String>>,
+    pin_prompt_tts: Option<Option<String>>,
+    invalid_pin_tts: Option<Option<String>>,
 }
 
 async fn update_meeting_handler(
@@ -641,6 +661,26 @@ async fn update_meeting_handler(
     if let Some(v) = payload.permanent {
         meeting.permanent = v;
         changed_fields.push("permanent".to_string());
+    }
+    if let Some(v) = payload.pin_prompt_sound {
+        meeting.pin_prompt_sound = v;
+        changed_fields.push("pin_prompt_sound".to_string());
+    }
+    if let Some(v) = payload.invalid_pin_sound {
+        meeting.invalid_pin_sound = v;
+        changed_fields.push("invalid_pin_sound".to_string());
+    }
+    if let Some(v) = payload.moh_sound {
+        meeting.moh_sound = v;
+        changed_fields.push("moh_sound".to_string());
+    }
+    if let Some(v) = payload.pin_prompt_tts {
+        meeting.pin_prompt_tts = v;
+        changed_fields.push("pin_prompt_tts".to_string());
+    }
+    if let Some(v) = payload.invalid_pin_tts {
+        meeting.invalid_pin_tts = v;
+        changed_fields.push("invalid_pin_tts".to_string());
     }
     meeting.updated_at = SystemTime::now();
 
@@ -1641,6 +1681,11 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
         "auto_record": meeting.auto_record,
         "default_locked": meeting.default_locked,
         "permanent": meeting.permanent,
+        "pin_prompt_sound": meeting.pin_prompt_sound,
+        "invalid_pin_sound": meeting.invalid_pin_sound,
+        "moh_sound": meeting.moh_sound,
+        "pin_prompt_tts": meeting.pin_prompt_tts,
+        "invalid_pin_tts": meeting.invalid_pin_tts,
         "created_at": meeting.created_at
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

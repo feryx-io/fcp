@@ -49,6 +49,26 @@ pub struct Meeting {
     /// Room persists in memory even when all participants leave
     pub permanent: bool,
 
+    /// Per-meeting override: path to PIN prompt WAV file (None = use global config)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_prompt_sound: Option<String>,
+
+    /// Per-meeting override: path to invalid PIN WAV file (None = use global config)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid_pin_sound: Option<String>,
+
+    /// Per-meeting override: path to MOH WAV file (None = use global config)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moh_sound: Option<String>,
+
+    /// TTS text to synthesize for the PIN prompt (used when no sound file is configured)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_prompt_tts: Option<String>,
+
+    /// TTS text to synthesize for invalid PIN message
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid_pin_tts: Option<String>,
+
     /// Creation timestamp
     pub created_at: SystemTime,
 
@@ -77,6 +97,11 @@ mod tests {
             auto_record: false,
             default_locked: false,
             permanent: false,
+            pin_prompt_sound: None,
+            invalid_pin_sound: None,
+            moh_sound: None,
+            pin_prompt_tts: None,
+            invalid_pin_tts: None,
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
         };

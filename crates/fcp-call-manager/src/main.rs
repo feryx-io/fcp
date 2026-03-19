@@ -2541,11 +2541,14 @@ async fn run_presence_listener(
                             if presence.get_active_calls(aor).is_empty() {
                                 // Bypass auto_phone_state — the system set the
                                 // state on Initiated, so the system must clear it.
+                                // Also revert if no presentity exists yet (conference
+                                // calls may set OnThePhone without creating a record
+                                // in every path).
                                 let is_call_state = presence.get_presence(aor)
                                     .map(|p| matches!(p.state,
                                         fcp_presence::PresenceState::OnThePhone
                                         | fcp_presence::PresenceState::Ringing))
-                                    .unwrap_or(false);
+                                    .unwrap_or(true);
                                 if is_call_state {
                                     let update = fcp_presence::PresenceUpdate {
                                         aor: aor.clone(),

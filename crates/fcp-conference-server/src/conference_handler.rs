@@ -144,6 +144,8 @@ pub struct ConferenceCallHandler {
     room_sessions: DashMap<String, Vec<String>>,
     /// Latency telemetry for trait methods (INVITE, re-INVITE, BYE, etc.)
     pub handler_latency: HandlerLatency,
+    /// Optional TTS service for synthesizing prompts from text
+    tts_service: Option<Arc<fcp_media::TtsService>>,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -198,7 +200,13 @@ impl ConferenceCallHandler {
             draining: std::sync::atomic::AtomicBool::new(false),
             room_sessions: DashMap::new(),
             handler_latency: HandlerLatency::new(),
+            tts_service: None,
         }
+    }
+
+    /// Set the TTS service for synthesizing prompts from meeting text fields.
+    pub fn set_tts_service(&mut self, tts: Arc<fcp_media::TtsService>) {
+        self.tts_service = Some(tts);
     }
 
     /// Signal that this handler should reject new INVITEs (graceful shutdown draining).
@@ -1196,7 +1204,8 @@ impl ConferenceCallHandler {
     /// Validates max_channels against the node-level participant limit to prevent
     /// individual rooms from being configured beyond what the node can support.
     fn meeting_to_room_config(&self, meeting: &Meeting) -> RoomConfig {
-        let max_per_node = self.conference_config.read().max_participants_per_node;
+        let conf = self.conference_config.read();
+        let max_per_node = conf.max_participants_per_node;
         let mut max_channels = if meeting.max_participants > 0 {
             Some(meeting.max_participants)
         } else {
@@ -1216,6 +1225,20 @@ impl ConferenceCallHandler {
             }
         }
 
+        // Resolve sound file path: per-meeting override takes priority over global config.
+        // Relative paths are resolved against announcements_dir.
+        let resolve_sound = |meeting_val: &Option<String>, global_val: &Option<String>| -> Option<Option<String>> {
+            let chosen = meeting_val.as_ref().or(global_val.as_ref());
+            chosen.map(|p| {
+                let path = std::path::Path::new(p);
+                if path.is_absolute() {
+                    Some(p.clone())
+                } else {
+                    Some(format!("{}/{}", conf.announcements_dir, p))
+                }
+            })
+        };
+
         RoomConfig {
             guest_pin: meeting.guest_pin.clone(),
             host_pin: meeting.host_pin.clone(),
@@ -1231,13 +1254,13 @@ impl ConferenceCallHandler {
             join_sound: None,
             exit_sound: None,
             alone_sound: None,
-            invalid_pin_sound: None,
+            invalid_pin_sound: resolve_sound(&meeting.invalid_pin_sound, &conf.invalid_pin_sound),
             locked_sound: None,
             unlocked_sound: None,
             kicked_sound: None,
             max_members_sound: None,
-            moh_sound: None,
-            pin_prompt_sound: None,
+            moh_sound: resolve_sound(&meeting.moh_sound, &conf.moh_sound),
+            pin_prompt_sound: resolve_sound(&meeting.pin_prompt_sound, &conf.pin_prompt_sound),
             recording_started_sound: None,
             recording_stopped_sound: None,
         }
@@ -1345,6 +1368,107 @@ impl ConferenceCallHandler {
                 }
             }
         }
+    }
+}
+
+/// Play pre-loaded PCM samples directly to a participant's RTP socket.
+///
+/// Used for PIN prompts, invalid PIN sounds, and MOH — situations where the
+/// participant is NOT yet in the mixer so we can't use `play_sound_to_all()`.
+///
+/// The samples are expected at the mixer sample rate. If the codec operates at
+/// a different rate, the audio is resampled before encoding.
+async fn play_prompt_to_rtp(
+    rtp_socket: &RtpSocketPair,
+    samples: &[i16],
+    encoder: &mut dyn AudioCodec,
+    payload_type: u8,
+    frame_size: usize,
+    srtp_context: &Option<Arc<tokio::sync::RwLock<SrtpContext>>>,
+    mixer_sample_rate: u32,
+) {
+    let codec_rate = encoder.native_format().sample_rate;
+    let need_resample = codec_rate != mixer_sample_rate;
+
+    // Resample from mixer rate to codec rate if needed
+    let codec_samples = if need_resample {
+        match forge_resampler::Resampler::new(mixer_sample_rate, codec_rate, 1) {
+            Ok(mut rs) => match rs.resample(samples) {
+                Ok(resampled) => resampled,
+                Err(e) => {
+                    warn!(error = %e, "Resample failed for prompt playback");
+                    return;
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "Failed to create resampler for prompt");
+                return;
+            }
+        }
+    } else {
+        samples.to_vec()
+    };
+
+    let mut seq: u16 = rand::random();
+    let ssrc: u32 = rand::random();
+    let mut timestamp: u32 = rand::random();
+    let mut interval = tokio::time::interval(Duration::from_millis(20));
+    // Consume the first immediate tick
+    interval.tick().await;
+
+    for chunk in codec_samples.chunks(frame_size) {
+        // Pad final short chunk with silence
+        let frame = if chunk.len() < frame_size {
+            let mut padded = chunk.to_vec();
+            padded.resize(frame_size, 0);
+            padded
+        } else {
+            chunk.to_vec()
+        };
+
+        match encoder.encode(&frame) {
+            Ok(encoded) => {
+                let packet = forge_rtp::RtpPacket::build(
+                    payload_type,
+                    seq,
+                    timestamp,
+                    ssrc,
+                    bytes::Bytes::from(encoded),
+                    false,
+                );
+
+                let send_result = if let Some(ref ctx) = srtp_context {
+                    let packet_bytes = packet.to_bytes();
+                    let protect_result = {
+                        let mut guard = ctx.write().await;
+                        guard.protect_rtp(&packet_bytes)
+                    };
+                    match protect_result {
+                        Ok(protected) => rtp_socket.send_rtp_raw(&protected).await,
+                        Err(e) => {
+                            debug!(error = %e, "SRTP protect error during prompt playback");
+                            Ok(0)
+                        }
+                    }
+                } else {
+                    rtp_socket.send_rtp(&packet).await
+                };
+
+                if let Err(e) = send_result {
+                    debug!(error = %e, "RTP send error during prompt playback");
+                    return;
+                }
+
+                seq = seq.wrapping_add(1);
+                timestamp = timestamp.wrapping_add(frame_size as u32);
+            }
+            Err(e) => {
+                debug!(error = %e, "Encode error during prompt playback");
+            }
+        }
+
+        // Pace at 20ms intervals for real-time playback
+        interval.tick().await;
     }
 }
 
@@ -1606,11 +1730,80 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let is_host = if Self::meeting_requires_pin(&meeting) {
             let max_attempts = conf.max_pin_attempts;
             let pin_timeout = Duration::from_secs(conf.pin_timeout_secs);
+            let mixer_sample_rate = conf.sample_rate;
+
+            // Load pre-loaded sounds from the room for prompt playback.
+            // If a sound file isn't configured but the meeting has TTS text, synthesize it.
+            let sounds = room.get_sounds();
+            let mut pin_prompt_samples = sounds.as_ref().and_then(|s| s.pin_prompt_sound.clone());
+            let mut invalid_pin_samples = sounds.as_ref().and_then(|s| s.invalid_pin_sound.clone());
+
+            // TTS fallback: synthesize prompts from meeting text if no sound file loaded
+            if let Some(ref tts) = self.tts_service {
+                if pin_prompt_samples.is_none() {
+                    if let Some(ref text) = meeting.pin_prompt_tts {
+                        match tts.synthesize(text, None, None).await {
+                            Ok(path) => {
+                                let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
+                                if let Some(pcm) = player.load_audio_file(&path) {
+                                    debug!(room = %room_number, "TTS: synthesized pin_prompt");
+                                    pin_prompt_samples = Some(Arc::new(pcm));
+                                }
+                            }
+                            Err(e) => warn!(room = %room_number, error = %e, "TTS pin_prompt synthesis failed"),
+                        }
+                    }
+                }
+                if invalid_pin_samples.is_none() {
+                    if let Some(ref text) = meeting.invalid_pin_tts {
+                        match tts.synthesize(text, None, None).await {
+                            Ok(path) => {
+                                let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
+                                if let Some(pcm) = player.load_audio_file(&path) {
+                                    debug!(room = %room_number, "TTS: synthesized invalid_pin");
+                                    invalid_pin_samples = Some(Arc::new(pcm));
+                                }
+                            }
+                            Err(e) => warn!(room = %room_number, error = %e, "TTS invalid_pin synthesis failed"),
+                        }
+                    }
+                }
+            }
+
+            // Create a temporary encoder for prompt playback (same codec as participant)
+            let mut prompt_encoder = create_codec_instance(&codec_name)?;
 
             let mut authenticated = false;
             let mut is_host_auth = false;
 
             for attempt in 1..=max_attempts {
+                // Brief pause between retry attempts to drain leftover DTMF retransmissions
+                if attempt > 1 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+
+                // Play PIN prompt sound before collecting DTMF
+                if let Some(ref samples) = pin_prompt_samples {
+                    debug!(room = %room_number, participant = %participant_id, "Playing PIN prompt");
+                    play_prompt_to_rtp(
+                        &rtp_socket,
+                        samples,
+                        prompt_encoder.as_mut(),
+                        payload_type,
+                        frame_size,
+                        &srtp_context,
+                        mixer_sample_rate,
+                    )
+                    .await;
+                } else if attempt == 1 {
+                    warn!(
+                        room = %room_number,
+                        "No PIN prompt audio configured — caller hears silence. \
+                         Set conference.pin_prompt_sound in config, or set \
+                         pin_prompt_tts on the meeting with TTS enabled."
+                    );
+                }
+
                 debug!(
                     room = %room_number,
                     participant = %participant_id,
@@ -1622,6 +1815,18 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     Some(ref pin) if pin.is_empty() => {
                         // Empty PIN (user pressed # immediately) — treat as incorrect
                         warn!(room = %room_number, participant = %participant_id, attempt, "Empty PIN submitted");
+                        if let Some(ref samples) = invalid_pin_samples {
+                            play_prompt_to_rtp(
+                                &rtp_socket,
+                                samples,
+                                prompt_encoder.as_mut(),
+                                payload_type,
+                                frame_size,
+                                &srtp_context,
+                                mixer_sample_rate,
+                            )
+                            .await;
+                        }
                         continue;
                     }
                     Some(pin) => {
@@ -1646,6 +1851,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     attempts_remaining = attempts_remaining,
                                     "Incorrect PIN"
                                 );
+                                // Play invalid PIN sound
+                                if let Some(ref samples) = invalid_pin_samples {
+                                    play_prompt_to_rtp(
+                                        &rtp_socket,
+                                        samples,
+                                        prompt_encoder.as_mut(),
+                                        payload_type,
+                                        frame_size,
+                                        &srtp_context,
+                                        mixer_sample_rate,
+                                    )
+                                    .await;
+                                }
                             }
                             PinAuthResult::LockedOut { .. } => {
                                 warn!(room = %room_number, participant = %participant_id, "PIN locked out");
@@ -1754,7 +1972,57 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let wait_uac = Arc::clone(&self.uac);
                 let wait_dialog = dialog.clone();
 
+                // Load MOH sound for wait-for-moderator playback
+                let moh_samples = room.get_sounds().and_then(|s| s.moh_sound.clone());
+                let moh_codec_name = codec_name.clone();
+                let moh_payload_type = payload_type;
+                let moh_frame_size = frame_size;
+                let moh_rtp_socket = Arc::clone(&rtp_socket);
+                let moh_srtp = srtp_context.clone();
+
                 let wait_handle = tokio::spawn(async move {
+                    // If MOH is configured, spawn a background task that loops the
+                    // sound until we signal it to stop via a cancellation token.
+                    let moh_cancel = tokio_util::sync::CancellationToken::new();
+                    let moh_handle = if let Some(ref samples) = moh_samples {
+                        let cancel = moh_cancel.clone();
+                        let samples = Arc::clone(samples);
+                        let rtp_sock = Arc::clone(&moh_rtp_socket);
+                        let srtp = moh_srtp.clone();
+                        let codec_name = moh_codec_name.clone();
+                        let ms_rate = mixer_sample_rate;
+                        Some(tokio::spawn(async move {
+                            // Create a dedicated encoder for MOH playback
+                            let mut moh_encoder = match create_codec_instance(&codec_name) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to create MOH encoder");
+                                    return;
+                                }
+                            };
+                            loop {
+                                // Play the entire MOH file
+                                play_prompt_to_rtp(
+                                    &rtp_sock,
+                                    &samples,
+                                    moh_encoder.as_mut(),
+                                    moh_payload_type,
+                                    moh_frame_size,
+                                    &srtp,
+                                    ms_rate,
+                                )
+                                .await;
+
+                                // Check if we should stop before looping
+                                if cancel.is_cancelled() {
+                                    break;
+                                }
+                            }
+                        }))
+                    } else {
+                        None
+                    };
+
                     // Poll every 500ms waiting to be released into the mixer
                     let wait_start = Instant::now();
                     let max_wait = if max_wait_secs > 0 {
@@ -1775,6 +2043,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     waited_secs = wait_start.elapsed().as_secs(),
                                     "Wait-for-moderator timeout, disconnecting participant"
                                 );
+                                // Stop MOH
+                                moh_cancel.cancel();
+                                if let Some(h) = &moh_handle {
+                                    h.abort();
+                                }
+
                                 // Remove from room (handles waiting list cleanup)
                                 let _ = bridge_room.remove_participant(&pid);
 
@@ -1803,6 +2077,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             .contains(&bridge_participant);
 
                         if !still_waiting {
+                            // Stop MOH playback — moderator arrived or we were removed
+                            moh_cancel.cancel();
+                            if let Some(h) = &moh_handle {
+                                h.abort();
+                            }
+
                             // We were either released into mixer or removed entirely.
                             // Check if we're now in the mixer.
                             if bridge_room.participants().contains(&bridge_participant) {

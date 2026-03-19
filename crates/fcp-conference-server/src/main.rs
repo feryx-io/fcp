@@ -301,8 +301,9 @@ async fn main() -> Result<()> {
             None
         };
 
-    // 14. Create media manager
-    let media_manager = create_media_manager(&config).await?;
+    // 14. Create media manager (kept for potential future use, but not wired
+    //     into the SIP handler — the conference room handles RTP directly)
+    let _media_manager = create_media_manager(&config).await?;
 
     // 15. Create CallManager for B2BUA call tracking
     let call_manager = Arc::new(fcp_sip::CallManager::with_storage_and_events(
@@ -355,7 +356,7 @@ async fn main() -> Result<()> {
         info!(path = %config.conference.announcements_dir, "Announcements directory ready");
     }
 
-    let conference_handler = Arc::new(ConferenceCallHandler::new(
+    let mut conference_handler = ConferenceCallHandler::new(
         Arc::clone(&bridge),
         Arc::clone(&dyn_storage),
         config.conference.clone(),
@@ -365,7 +366,49 @@ async fn main() -> Result<()> {
         Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
         Arc::clone(&uac),
         config.ai.clone(),
-    ));
+    );
+
+    // Initialize TTS service if configured
+    if config.tts.enabled {
+        if let Some(ref api_key) = config.tts.api_key {
+            let tts_provider_config = match config.tts.provider.as_str() {
+                "openai" => fcp_media::TtsProviderConfig::OpenAi {
+                    api_key: api_key.clone(),
+                    model: "tts-1".to_string(),
+                },
+                "google_cloud" => fcp_media::TtsProviderConfig::GoogleCloud {
+                    api_key: api_key.clone(),
+                },
+                other => {
+                    warn!(provider = %other, "Unknown TTS provider, disabling TTS");
+                    fcp_media::TtsProviderConfig::OpenAi {
+                        api_key: api_key.clone(),
+                        model: "tts-1".to_string(),
+                    }
+                }
+            };
+            let tts_config = fcp_media::TtsConfig {
+                provider: tts_provider_config,
+                cache_dir: std::path::PathBuf::from(&config.tts.cache_dir),
+                cache_max_size_mb: config.tts.cache_max_size_mb,
+                default_language: config.tts.language.clone(),
+                default_voice: config.tts.voice.clone(),
+            };
+            match fcp_media::TtsService::new(tts_config).await {
+                Ok(tts) => {
+                    info!(provider = %config.tts.provider, "TTS service initialized for conference prompts");
+                    conference_handler.set_tts_service(Arc::new(tts));
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize TTS service, TTS prompts disabled");
+                }
+            }
+        } else {
+            warn!("TTS enabled but no api_key configured, TTS prompts disabled");
+        }
+    }
+
+    let conference_handler = Arc::new(conference_handler);
 
     if config.ai.enabled {
         info!(model = %config.ai.model, "AI participant support enabled");
@@ -384,7 +427,7 @@ async fn main() -> Result<()> {
         Arc::clone(&transaction_manager_ref),
         Arc::clone(&dialog_manager_ref),
         local_uri,
-        Some(MediaProfileBuilder::audio_only()),
+        None, // No media profile — conference server handles RTP directly, no B2BUA anchoring
         local_addr,
         config.media.rtp_port_start,
         None, // registrar = None
@@ -392,14 +435,8 @@ async fn main() -> Result<()> {
         Arc::clone(&call_manager),
         Some(Arc::clone(&uac)),
         Some(Arc::clone(&dyn_storage)),
-        Some(Arc::clone(&media_manager)),
-        Some(fcp_core::config::MediaConfig {
-            enabled: true,
-            rtp_port_start: config.media.rtp_port_start,
-            rtp_port_end: config.media.rtp_port_end,
-            public_ip: config.media.public_ip.clone(),
-            ..Default::default()
-        }),
+        None, // No media manager — prevents evaluate_media_anchoring from anchoring
+        None, // No media config — conference handles its own RTP
         None, // flow_handler = None
         config.b2bua.clone(),
         outbound_route_provider,

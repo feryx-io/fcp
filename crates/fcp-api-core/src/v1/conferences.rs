@@ -39,6 +39,16 @@ pub struct MeetingResponse {
     pub auto_record: bool,
     pub default_locked: bool,
     pub permanent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_prompt_sound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_pin_sound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moh_sound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin_prompt_tts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_pin_tts: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -59,6 +69,11 @@ impl From<Meeting> for MeetingResponse {
             auto_record: m.auto_record,
             default_locked: m.default_locked,
             permanent: m.permanent,
+            pin_prompt_sound: m.pin_prompt_sound,
+            invalid_pin_sound: m.invalid_pin_sound,
+            moh_sound: m.moh_sound,
+            pin_prompt_tts: m.pin_prompt_tts,
+            invalid_pin_tts: m.invalid_pin_tts,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -88,6 +103,16 @@ pub struct CreateMeetingRequest {
     pub default_locked: bool,
     #[serde(default)]
     pub permanent: bool,
+    #[serde(default)]
+    pub pin_prompt_sound: Option<String>,
+    #[serde(default)]
+    pub invalid_pin_sound: Option<String>,
+    #[serde(default)]
+    pub moh_sound: Option<String>,
+    #[serde(default)]
+    pub pin_prompt_tts: Option<String>,
+    #[serde(default)]
+    pub invalid_pin_tts: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -107,6 +132,11 @@ pub struct UpdateMeetingRequest {
     pub auto_record: Option<bool>,
     pub default_locked: Option<bool>,
     pub permanent: Option<bool>,
+    pub pin_prompt_sound: Option<Option<String>>,
+    pub invalid_pin_sound: Option<Option<String>>,
+    pub moh_sound: Option<Option<String>>,
+    pub pin_prompt_tts: Option<Option<String>>,
+    pub invalid_pin_tts: Option<Option<String>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -166,6 +196,11 @@ pub async fn create_meeting(
         auto_record: req.auto_record,
         default_locked: req.default_locked,
         permanent: req.permanent,
+        pin_prompt_sound: req.pin_prompt_sound,
+        invalid_pin_sound: req.invalid_pin_sound,
+        moh_sound: req.moh_sound,
+        pin_prompt_tts: req.pin_prompt_tts,
+        invalid_pin_tts: req.invalid_pin_tts,
         created_at: now,
         updated_at: now,
     };
@@ -250,6 +285,21 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.permanent {
         meeting.permanent = v;
+    }
+    if let Some(v) = req.pin_prompt_sound {
+        meeting.pin_prompt_sound = v;
+    }
+    if let Some(v) = req.invalid_pin_sound {
+        meeting.invalid_pin_sound = v;
+    }
+    if let Some(v) = req.moh_sound {
+        meeting.moh_sound = v;
+    }
+    if let Some(v) = req.pin_prompt_tts {
+        meeting.pin_prompt_tts = v;
+    }
+    if let Some(v) = req.invalid_pin_tts {
+        meeting.invalid_pin_tts = v;
     }
     meeting.updated_at = SystemTime::now();
 
