@@ -202,15 +202,14 @@ async fn main() -> Result<()> {
     });
 
     // Create read-only PresenceManager so the admin UI can display presence data.
+    // Keep event publishing disabled here: the admin only mirrors presence from
+    // cluster events and must not emit those updates back onto its local bus.
     let presence_manager = {
         let presence_config = fcp_presence::PresenceConfig {
             enabled: true,
             ..Default::default()
         };
-        let mut pm = fcp_presence::PresenceManager::new(
-            presence_config,
-            Some(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>),
-        );
+        let pm = fcp_presence::PresenceManager::new(presence_config, None);
 
         // Wire up Redis Pub/Sub for cross-node presence sync
         #[cfg(feature = "redis")]
@@ -567,7 +566,12 @@ async fn run_presence_listener(
     use fcp_events::{EventFilter, PlatformEvent};
     use fcp_sip::presence::extract_aor;
 
-    let filter = EventFilter::new().types(vec![EventType::Call, EventType::Registration, EventType::Presence]);
+    // NOTE: Do NOT subscribe to EventType::Presence here. StatusChanged events
+    // are published by update_presence(), so subscribing to them creates an
+    // infinite feedback loop (receive StatusChanged → update_presence → publish
+    // StatusChanged → receive …). Cross-node presence sync is handled by the
+    // Redis Pub/Sub listener in the PresenceManager itself.
+    let filter = EventFilter::new().types(vec![EventType::Call, EventType::Registration]);
 
     let mut stream = match event_bus.subscribe(filter.clone()).await {
         Ok(s) => s,
@@ -678,17 +682,6 @@ async fn run_presence_listener(
                                 let _ = presence.update_presence(update, &tenant_id).await;
                             }
                         }
-                    }
-                }
-                // Presence state changed (published by call-manager's PresenceManager)
-                PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { ref aor, ref new_state, .. }) => {
-                    if let Ok(state) = new_state.parse::<fcp_presence::PresenceState>() {
-                        let update = fcp_presence::PresenceUpdate {
-                            aor: aor.clone(),
-                            state,
-                            note: None,
-                        };
-                        let _ = presence.update_presence(update, &tenant_id).await;
                     }
                 }
                 _ => {}
