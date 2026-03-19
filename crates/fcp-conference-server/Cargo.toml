@@ -39,6 +39,7 @@ forge-core = { path = "../../external/forge-media/crates/forge-core" }
 forge-rtp = { path = "../../external/forge-media/crates/forge-rtp" }
 forge-codecs = { path = "../../external/forge-media/crates/forge-codecs" }
 forge-dtmf = { path = "../../external/forge-media/crates/forge-dtmf" }
+forge-resampler = { path = "../../external/forge-media/crates/forge-resampler" }
 
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }

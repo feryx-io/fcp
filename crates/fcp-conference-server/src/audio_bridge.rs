@@ -5,6 +5,7 @@ use forge_conference::{
 };
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfDigit, DtmfEventType};
+use forge_resampler::Resampler;
 use forge_rtp::{JitterBuffer, RtpPacket, RtpSocketPair, SrtpContext};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -102,6 +103,7 @@ pub async fn run_audio_bridge(
     is_host: bool,
     stats: Arc<AudioStats>,
     srtp_context: Option<Arc<RwLock<SrtpContext>>>,
+    mixer_sample_rate: u32,
 ) {
     let span = info_span!(
         "audio_bridge",
@@ -116,6 +118,21 @@ pub async fn run_audio_bridge(
     let mut timestamp: u32 = 0;
     let mut interval = tokio::time::interval(Duration::from_millis(20));
     let mut jitter_buffer = JitterBuffer::new(Duration::from_millis(jitter_buffer_ms));
+
+    // Resamplers for codec ↔ mixer rate conversion (e.g. G.722@16kHz ↔ mixer@8kHz)
+    let codec_rate = decoder.native_format().sample_rate;
+    let need_resample = codec_rate != mixer_sample_rate;
+    let mut inbound_resampler = if need_resample {
+        info!(codec_rate, mixer_sample_rate, "Resampling enabled: codec→mixer (inbound) and mixer→codec (outbound)");
+        Some(Resampler::new(codec_rate, mixer_sample_rate, 1).expect("valid resampler"))
+    } else {
+        None
+    };
+    let mut outbound_resampler = if need_resample {
+        Some(Resampler::new(mixer_sample_rate, codec_rate, 1).expect("valid resampler"))
+    } else {
+        None
+    };
 
     // DTMF detector for telephone-event packets
     let mut dtmf_detector = if te_pt.is_some() {
@@ -226,19 +243,33 @@ pub async fn run_audio_bridge(
                                 Ok(pcm_samples) => {
                                     stats.packets_decoded.fetch_add(1, Ordering::Relaxed);
 
+                                    // Resample from codec rate to mixer rate if needed
+                                    // (e.g. G.722@16kHz → mixer@8kHz)
+                                    let mixer_samples = if let Some(ref mut rs) = inbound_resampler {
+                                        match rs.resample(&pcm_samples) {
+                                            Ok(s) => s,
+                                            Err(e) => {
+                                                trace!(participant = %participant_id, error = %e, "Inbound resample error");
+                                                pcm_samples
+                                            }
+                                        }
+                                    } else {
+                                        pcm_samples
+                                    };
+
                                     // VAD-based presence: check if audio is silence
                                     // Threshold: RMS below ~100 (~-40 dBFS) is silence
-                                    let rms_sq: i64 = pcm_samples.iter()
+                                    let rms_sq: i64 = mixer_samples.iter()
                                         .map(|&s| (s as i64) * (s as i64))
                                         .sum::<i64>()
-                                        / pcm_samples.len().max(1) as i64;
+                                        / mixer_samples.len().max(1) as i64;
                                     if rms_sq < VAD_SILENCE_THRESHOLD {
                                         stats.silence_frames.fetch_add(1, Ordering::Relaxed);
                                     } else {
                                         stats.silence_frames.store(0, Ordering::Relaxed);
                                     }
 
-                                    if let Err(e) = room.write_audio(&participant_id, &pcm_samples) {
+                                    if let Err(e) = room.write_audio(&participant_id, &mixer_samples) {
                                         warn!(participant = %participant_id, error = %e, "write_audio failed");
                                     }
                                 }
@@ -276,7 +307,20 @@ pub async fn run_audio_bridge(
                 }
                 match mix_result {
                     Ok(Some(mixed_pcm)) => {
-                        match encoder.encode(&mixed_pcm) {
+                        // Resample from mixer rate to codec rate if needed
+                        // (e.g. mixer@8kHz → G.722@16kHz)
+                        let codec_pcm = if let Some(ref mut rs) = outbound_resampler {
+                            match rs.resample(&mixed_pcm) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    trace!(participant = %participant_id, error = %e, "Outbound resample error");
+                                    mixed_pcm
+                                }
+                            }
+                        } else {
+                            mixed_pcm
+                        };
+                        match encoder.encode(&codec_pcm) {
                             Ok(encoded) => {
                                 let packet = RtpPacket::build(
                                     payload_type,

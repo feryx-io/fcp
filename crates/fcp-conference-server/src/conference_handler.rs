@@ -1740,6 +1740,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let encoder = create_codec_instance(&codec_name)?;
                 let decoder = create_codec_instance(&codec_name)?;
                 let jitter_buffer_ms = conf.jitter_buffer_ms;
+                let mixer_sample_rate = conf.sample_rate;
                 let recordings_dir = conf.recordings_dir.clone();
                 let dtmf_handler = if conf.dtmf_enabled {
                     Some(self.get_or_create_dtmf_handler(&room_number))
@@ -1885,6 +1886,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     false, // waiting participants are not hosts
                                     wait_stats_clone,
                                     wait_srtp.clone(),
+                                    mixer_sample_rate,
                                 )
                                 .await;
                             }
@@ -2038,6 +2040,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             is_host,
             stats_clone,
             bridge_srtp,
+            conf.sample_rate,
         ));
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
@@ -2164,6 +2167,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let bridge_participant = session.participant_id.clone();
                 let bridge_socket = Arc::clone(&session.rtp_socket);
                 let jitter_buffer_ms = conf.jitter_buffer_ms;
+                let reinvite_mixer_rate = conf.sample_rate;
                 let reinvite_dtmf = if conf.dtmf_enabled {
                     Some(self.get_or_create_dtmf_handler(&session.room_number))
                 } else {
@@ -2196,6 +2200,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_is_host,
                         reinvite_stats,
                         reinvite_srtp,
+                        reinvite_mixer_rate,
                     ).await;
                 });
 
