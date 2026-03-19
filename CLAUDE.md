@@ -474,6 +474,8 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - ✅ `fcp-routing`: Policy-based routing with LCR
 - ⏳ STIR/SHAKEN caller ID verification
 - ⏳ Audio transcoding pipeline
+- `fcp-policy`: Dedicated policy engine — currently policies are inline in routing/SBC code; extract into a standalone crate with a rule DSL for call admission, number manipulation, time-of-day routing, and tenant-level feature toggles
+- `fcp-billing`: Billing gateway — CDR-driven usage metering, rate plans, balance enforcement, and integration hooks for external billing systems
 - `fcp-provisioning`: Device provisioning server (Polycom, Yealink, Cisco, Grandstream) — HTTP-based config file serving with per-vendor templates, auto-populated from device/user records
 - Encryption at rest (KMS integration)
 
