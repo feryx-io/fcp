@@ -3125,6 +3125,25 @@ impl SipMessageHandler {
                                         ) {
                                             Ok(binding) => {
                                                 extension_contacts = vec![binding];
+
+                                                // Disable media anchoring for conference calls.
+                                                // RTP must flow directly between the phone and
+                                                // the conference server so that the conference
+                                                // server's audio bridge handles mixing, DTMF
+                                                // detection (PIN entry), and recording.
+                                                let old_session = self.call_manager.get_call(&call_id)
+                                                    .and_then(|c| if c.media_anchored { c.media_session_id.clone() } else { None });
+                                                let _ = self.call_manager.update_call(&call_id, |call| {
+                                                    call.media_anchored = false;
+                                                    call.media_session_id = None;
+                                                });
+                                                // Tear down the pre-allocated media session
+                                                if let (Some(session_id), Some(mm)) = (old_session, &self.media_manager) {
+                                                    if let Err(e) = mm.terminate_session(&session_id).await {
+                                                        debug!(call_id = %call_id, error = %e, "Failed to terminate pre-allocated media session (may already be gone)");
+                                                    }
+                                                }
+                                                info!(call_id = %call_id, "Media anchoring disabled for conference call — RTP flows directly to conference server");
                                             }
                                             Err(e) => {
                                                 warn!(call_id = %call_id, error = %e, "Failed to create conference binding");
