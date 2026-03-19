@@ -366,7 +366,11 @@ pub async fn run_audio_bridge(
                         }
                     }
                     Ok(None) => {
-                        // Silence — no audio to mix yet, still advance timestamp
+                        // No mix available (solo participant or nobody has enough
+                        // samples). Drain our own buffered audio so it doesn't
+                        // accumulate and hit the buffer limit while we wait for
+                        // another participant to join.
+                        let _ = room.get_all_participant_audio(frame_size, None);
                         timestamp = timestamp.wrapping_add(frame_size as u32);
                     }
                     Err(e) => {
