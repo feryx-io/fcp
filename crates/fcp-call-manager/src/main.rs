@@ -1863,9 +1863,27 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
         .build()
         .context("Failed to create HTTP client for event forwarding")?;
 
-    // Subscribe to all events
+    // Subscribe to business-level events only. SIP trace events are excluded
+    // because they are extremely high-volume (one per SIP message) and already
+    // persisted via the dedicated SIP trace batch pipeline. Presence events are
+    // also excluded — they are high-frequency internal signals consumed only by
+    // the local presence NOTIFY dispatcher and don't need forwarding.
+    use fcp_events::filter::EventType;
+    let filter = EventFilter::new().types(vec![
+        EventType::Call,
+        EventType::Media,
+        EventType::Ivr,
+        EventType::Recording,
+        EventType::Flow,
+        EventType::System,
+        EventType::User,
+        EventType::Registration,
+        EventType::Voicemail,
+        EventType::Conference,
+        EventType::Queue,
+    ]);
     let mut stream = event_bus
-        .subscribe(EventFilter::new())
+        .subscribe(filter.clone())
         .await
         .context("Failed to subscribe to event bus")?;
 
@@ -1900,7 +1918,7 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 warn!("Event stream ended unexpectedly, resubscribing...");
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 // Try to resubscribe
-                match event_bus.subscribe(EventFilter::new()).await {
+                match event_bus.subscribe(filter.clone()).await {
                     Ok(new_stream) => {
                         stream = new_stream;
                         info!("Resubscribed to event bus");
