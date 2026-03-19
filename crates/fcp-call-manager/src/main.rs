@@ -221,6 +221,8 @@ async fn main() -> Result<()> {
 
     // 4e. Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, sip, storage, http, logging, cluster) stay TOML-only.
+    // Save TOML b2bua values before DB overrides them (needed for URI merge below).
+    let toml_b2bua = config.b2bua.clone();
     {
         let cs = config_store.as_ref();
         let svc = "call-manager";
@@ -269,6 +271,34 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        // Fix stale B2BUA config: DB may have been seeded before conference_server_uri /
+        // voicemail_server_uri were added to the TOML.  Merge the TOML values back if the
+        // DB version has them as None, then re-persist so future loads are correct.
+        {
+            let toml_b2bua = &toml_b2bua;
+            let mut patched = false;
+            if config.b2bua.conference_server_uri.is_none() && toml_b2bua.conference_server_uri.is_some() {
+                config.b2bua.conference_server_uri = toml_b2bua.conference_server_uri.clone();
+                patched = true;
+            }
+            if config.b2bua.voicemail_server_uri.is_none() && toml_b2bua.voicemail_server_uri.is_some() {
+                config.b2bua.voicemail_server_uri = toml_b2bua.voicemail_server_uri.clone();
+                patched = true;
+            }
+            if patched {
+                let _ = cs
+                    .set_config(
+                        svc,
+                        "b2bua",
+                        tid,
+                        serde_json::to_value(&config.b2bua).unwrap_or_default(),
+                        Some("merge-toml-uris"),
+                    )
+                    .await;
+                info!("B2BUA config merged TOML URI fields into database");
+            }
+        }
+
         // Fix stale PBX config: if DB had pbx.enabled=false from pre-v0.23.0 seed,
         // correct it so feature codes (*98 etc.) work.
         if !config.pbx.enabled {
