@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -64,6 +65,10 @@ struct Subscription {
 pub struct InMemoryEventBus {
     subscriptions: Arc<DashMap<SubscriptionId, Subscription>>,
     next_subscription_id: Arc<parking_lot::Mutex<u64>>,
+    /// Publish-rate tracking: events published in the current 1-second window.
+    publish_count: Arc<AtomicU64>,
+    /// Start of the current 1-second window.
+    window_start: Arc<parking_lot::Mutex<Instant>>,
 }
 
 impl InMemoryEventBus {
@@ -72,6 +77,8 @@ impl InMemoryEventBus {
         Self {
             subscriptions: Arc::new(DashMap::new()),
             next_subscription_id: Arc::new(parking_lot::Mutex::new(0)),
+            publish_count: Arc::new(AtomicU64::new(0)),
+            window_start: Arc::new(parking_lot::Mutex::new(Instant::now())),
         }
     }
 
@@ -110,6 +117,31 @@ impl Default for InMemoryEventBus {
 #[async_trait]
 impl EventPublisher for InMemoryEventBus {
     async fn publish(&self, event: PlatformEvent) -> Result<()> {
+        // ── Rate tracking ──────────────────────────────────────────────
+        // Count events per 1-second window. If the rate exceeds 10 000
+        // events/sec, log a warning (once per window) with the event type
+        // so we can pinpoint runaway publishers.
+        const RATE_WARN_THRESHOLD: u64 = 10_000;
+
+        let count = self.publish_count.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let mut ws = self.window_start.lock();
+            let elapsed = ws.elapsed();
+            if elapsed >= std::time::Duration::from_secs(1) {
+                if count > RATE_WARN_THRESHOLD {
+                    warn!(
+                        events_in_window = count,
+                        window_ms = elapsed.as_millis() as u64,
+                        latest_event = event.event_type_name(),
+                        "Event bus publish rate exceeded {} events/sec",
+                        RATE_WARN_THRESHOLD,
+                    );
+                }
+                self.publish_count.store(0, Ordering::Relaxed);
+                *ws = Instant::now();
+            }
+        }
+
         let call_id = event.call_id().map(|id| id.to_string());
 
         debug!(
@@ -137,6 +169,7 @@ impl EventPublisher for InMemoryEventBus {
                             warn!(
                                 subscription_id = ?entry.key(),
                                 dropped_events = prev_drops,
+                                recovery_event = event.event_type_name(),
                                 "Subscriber recovered after dropping events (channel was full)"
                             );
                         }
@@ -148,6 +181,7 @@ impl EventPublisher for InMemoryEventBus {
                         if prev == 0 {
                             warn!(
                                 subscription_id = ?entry.key(),
+                                event_type = event.event_type_name(),
                                 "Event dropped: subscriber channel full (further drops suppressed until recovery)"
                             );
                         }
