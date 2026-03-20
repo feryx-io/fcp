@@ -88,9 +88,11 @@ pub fn extract_telephone_event_pt(sdp_body: &str) -> Option<u8> {
                 }
             }
         }
-        return None;
+        // sip_sdp parsed OK but didn't find telephone-event in rtpmaps —
+        // fall through to manual scan (sip_sdp may not populate rtpmaps
+        // for high dynamic PTs like 127 on some SDP layouts).
     }
-    // Fallback: manual scan
+    // Fallback: manual scan of a=rtpmap lines
     for line in sdp_body.lines() {
         let line = line.trim();
         if line.starts_with("a=rtpmap:") {
@@ -1237,3 +1239,24 @@ a=rtpmap:0 PCMU/8000
         assert!(answer.contains("a=rtpmap:0 PCMU/8000"));
     }
 }
+
+    #[test]
+    fn test_polycom_filter_preserves_telephone_event() {
+        let polycom_sdp = "v=0\r\no=- 1774033578 1774033578 IN IP4 192.168.1.12\r\ns=Polycom IP Phone\r\nc=IN IP4 192.168.1.12\r\nt=0 0\r\na=sendrecv\r\nm=audio 2236 RTP/AVP 0 9 102 8 18 127\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:102 G7221/16000\r\na=fmtp:102 bitrate=32000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\na=rtpmap:127 telephone-event/8000\r\n";
+
+        // Step 1: Filter as call manager does
+        let filtered = filter_sdp_codecs(polycom_sdp, &["PCMU", "PCMA"]);
+        eprintln!("Filtered SDP:\n{}", filtered);
+
+        // Verify telephone-event survived filtering
+        let te_after_filter = extract_telephone_event_pt(&filtered);
+        assert_eq!(te_after_filter, Some(127), "telephone-event lost during filtering");
+
+        // Step 2: Construct answer as conference server does
+        let answer = construct_answer_for_a_leg(&filtered, "192.168.1.225", 26708, None);
+        eprintln!("Answer SDP:\n{}", answer);
+
+        // Verify answer includes telephone-event
+        assert!(answer.contains("127"), "answer m= line missing PT 127");
+        assert!(answer.contains("telephone-event"), "answer missing telephone-event rtpmap");
+    }
