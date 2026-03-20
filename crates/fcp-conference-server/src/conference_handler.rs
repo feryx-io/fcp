@@ -13,7 +13,9 @@ use forge_conference::{
     ConferenceDtmfConfig, ConferenceError, DtmfCommandHandler, PinAuthResult, RoomConfig,
 };
 use forge_dtmf::rfc2833::Rfc2833Detector;
-use forge_dtmf::{DtmfDeduplicator, DtmfDigit, DtmfEvent, DtmfEventType, DtmfMethod};
+use forge_dtmf::{
+    DtmfDeduplicator, DtmfDigit, DtmfEvent, DtmfEventType, DtmfMethod, GoertzelDetector,
+};
 use forge_engine::{AISessionConfig, AISessionManager};
 use forge_rtp::{
     PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair, SrtpContext,
@@ -176,17 +178,27 @@ struct PinDtmfCollector {
     detector: Rfc2833Detector,
     dedup: DtmfDeduplicator,
     info_digits_rx: tokio::sync::mpsc::UnboundedReceiver<char>,
+    decoder: Box<dyn AudioCodec>,
+    inband_detector: GoertzelDetector,
+    audio_payload_type: u8,
 }
 
 impl PinDtmfCollector {
     fn new(
         dtmf_clock_rate: u32,
         info_digits_rx: tokio::sync::mpsc::UnboundedReceiver<char>,
+        decoder: Box<dyn AudioCodec>,
+        audio_payload_type: u8,
+        audio_frame_size: usize,
     ) -> Self {
+        let codec_rate = decoder.native_format().sample_rate;
         Self {
             detector: Rfc2833Detector::new(dtmf_clock_rate),
             dedup: DtmfDeduplicator::new(),
             info_digits_rx,
+            inband_detector: GoertzelDetector::new(codec_rate, audio_frame_size),
+            decoder,
+            audio_payload_type,
         }
     }
 
@@ -285,30 +297,65 @@ impl PinDtmfCollector {
                 recv = rtp_socket.recv_rtp() => {
                     match recv {
                         Ok((packet, _addr)) => {
-                            if packet.header.payload_type() != te_payload_type {
-                                continue;
-                            }
+                            let packet_pt = packet.header.payload_type();
 
-                            if let Ok(events) = self.detector.process_with_timestamp(&packet.payload[..], packet.header.timestamp) {
-                                for event in events {
-                                    if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
-                                        continue;
-                                    }
+                            if packet_pt == te_payload_type {
+                                if let Ok(events) = self.detector.process_with_timestamp(&packet.payload[..], packet.header.timestamp) {
+                                    for event in events {
+                                        if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
+                                            continue;
+                                        }
 
-                                    if event.digit == DtmfDigit::Hash {
-                                        debug!(digits = %digits, "PIN entry completed with RTP #");
-                                        self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
-                                        return Some(digits);
-                                    }
-
-                                    if let Some(ch) = dtmf_digit_to_char(&event.digit) {
-                                        digits.push(ch);
-                                        debug!(digit = %ch, collected = %digits, "DTMF digit received");
-                                        if digits.len() >= max_digits {
+                                        if event.digit == DtmfDigit::Hash {
+                                            debug!(digits = %digits, "PIN entry completed with RTP #");
                                             self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                                             return Some(digits);
                                         }
+
+                                        if let Some(ch) = dtmf_digit_to_char(&event.digit) {
+                                            digits.push(ch);
+                                            debug!(digit = %ch, collected = %digits, "DTMF digit received");
+                                            if digits.len() >= max_digits {
+                                                self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                                                return Some(digits);
+                                            }
+                                        }
                                     }
+                                }
+                                continue;
+                            }
+
+                            if packet_pt != self.audio_payload_type {
+                                continue;
+                            }
+
+                            match self.decoder.decode(&packet.payload[..]) {
+                                Ok(pcm_samples) => {
+                                    if let Ok(events) = self.inband_detector.process_samples(&pcm_samples) {
+                                        for event in events {
+                                            if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
+                                                continue;
+                                            }
+
+                                            if event.digit == DtmfDigit::Hash {
+                                                debug!(digits = %digits, "PIN entry completed with inband #");
+                                                self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                                                return Some(digits);
+                                            }
+
+                                            if let Some(ch) = dtmf_digit_to_char(&event.digit) {
+                                                digits.push(ch);
+                                                debug!(digit = %ch, collected = %digits, "Inband DTMF digit received");
+                                                if digits.len() >= max_digits {
+                                                    self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                                                    return Some(digits);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!(error = %e, pt = packet_pt, "Decode error during PIN collection");
                                 }
                             }
                         }
@@ -1868,7 +1915,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let pin_timeout = Duration::from_secs(conf.pin_timeout_secs);
             let mixer_sample_rate = conf.sample_rate;
             let (info_digits_tx, info_digits_rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut pin_collector = PinDtmfCollector::new(dtmf_clock_rate, info_digits_rx);
+            let pin_decoder = create_codec_instance(&codec_name)?;
+            let mut pin_collector = PinDtmfCollector::new(
+                dtmf_clock_rate,
+                info_digits_rx,
+                pin_decoder,
+                payload_type,
+                frame_size,
+            );
 
             // Load pre-loaded sounds from the room for prompt playback.
             // If a sound file isn't configured but the meeting has TTS text, synthesize it.
