@@ -17,6 +17,7 @@ use forge_dtmf::{
     DtmfDeduplicator, DtmfDigit, DtmfEvent, DtmfEventType, DtmfMethod, GoertzelDetector,
 };
 use forge_engine::{AISessionConfig, AISessionManager};
+use forge_resampler::Resampler;
 use forge_rtp::{
     PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair, SrtpContext,
     SrtpKeyMaterial,
@@ -25,6 +26,7 @@ use parking_lot::RwLock;
 use sip_core::{SipUri, Uri};
 use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -180,6 +182,7 @@ struct PinDtmfCollector {
     info_digits_rx: tokio::sync::mpsc::UnboundedReceiver<char>,
     decoder: Box<dyn AudioCodec>,
     inband_detector: GoertzelDetector,
+    inband_resampler: Option<Resampler>,
     audio_payload_type: u8,
 }
 
@@ -189,14 +192,18 @@ impl PinDtmfCollector {
         info_digits_rx: tokio::sync::mpsc::UnboundedReceiver<char>,
         decoder: Box<dyn AudioCodec>,
         audio_payload_type: u8,
-        audio_frame_size: usize,
     ) -> Self {
         let codec_rate = decoder.native_format().sample_rate;
         Self {
             detector: Rfc2833Detector::new(dtmf_clock_rate),
             dedup: DtmfDeduplicator::new(),
             info_digits_rx,
-            inband_detector: GoertzelDetector::new(codec_rate, audio_frame_size),
+            inband_detector: GoertzelDetector::new(8000, 160),
+            inband_resampler: if codec_rate != 8000 {
+                Some(Resampler::new(codec_rate, 8000, 1).expect("valid 8kHz inband resampler"))
+            } else {
+                None
+            },
             decoder,
             audio_payload_type,
         }
@@ -266,11 +273,29 @@ impl PinDtmfCollector {
         let deadline = tokio::time::Instant::now() + timeout;
         let sleep = tokio::time::sleep_until(deadline);
         tokio::pin!(sleep);
+        let mut rtp_packets_seen = 0u64;
+        let mut te_packets_seen = 0u64;
+        let mut audio_packets_seen = 0u64;
+        let mut decode_errors = 0u64;
+        let mut info_digits_seen = 0u64;
+        let mut unexpected_payload_types = BTreeSet::new();
 
         loop {
             tokio::select! {
                 _ = &mut sleep => {
                     debug!("PIN collection timed out after {} digits", digits.len());
+                    log_pin_collector_summary(
+                        "timeout",
+                        &digits,
+                        rtp_packets_seen,
+                        te_packets_seen,
+                        audio_packets_seen,
+                        info_digits_seen,
+                        decode_errors,
+                        &unexpected_payload_types,
+                        self.audio_payload_type,
+                        te_payload_type,
+                    );
                     return if digits.is_empty() { None } else { Some(digits) };
                 }
                 maybe_digit = self.info_digits_rx.recv() => {
@@ -280,9 +305,22 @@ impl PinDtmfCollector {
                     if !self.accept_info_digit(ch) {
                         continue;
                     }
+                    info_digits_seen += 1;
 
                     if ch == '#' {
                         debug!(digits = %digits, "PIN entry completed with INFO #");
+                        log_pin_collector_summary(
+                            "info_submit",
+                            &digits,
+                            rtp_packets_seen,
+                            te_packets_seen,
+                            audio_packets_seen,
+                            info_digits_seen,
+                            decode_errors,
+                            &unexpected_payload_types,
+                            self.audio_payload_type,
+                            te_payload_type,
+                        );
                         self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                         return Some(digits);
                     }
@@ -297,9 +335,11 @@ impl PinDtmfCollector {
                 recv = rtp_socket.recv_rtp() => {
                     match recv {
                         Ok((packet, _addr)) => {
+                            rtp_packets_seen += 1;
                             let packet_pt = packet.header.payload_type();
 
                             if packet_pt == te_payload_type {
+                                te_packets_seen += 1;
                                 if let Ok(events) = self.detector.process_with_timestamp(&packet.payload[..], packet.header.timestamp) {
                                     for event in events {
                                         if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
@@ -308,6 +348,18 @@ impl PinDtmfCollector {
 
                                         if event.digit == DtmfDigit::Hash {
                                             debug!(digits = %digits, "PIN entry completed with RTP #");
+                                            log_pin_collector_summary(
+                                                "rtp_submit",
+                                                &digits,
+                                                rtp_packets_seen,
+                                                te_packets_seen,
+                                                audio_packets_seen,
+                                                info_digits_seen,
+                                                decode_errors,
+                                                &unexpected_payload_types,
+                                                self.audio_payload_type,
+                                                te_payload_type,
+                                            );
                                             self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                                             return Some(digits);
                                         }
@@ -326,12 +378,26 @@ impl PinDtmfCollector {
                             }
 
                             if packet_pt != self.audio_payload_type {
+                                unexpected_payload_types.insert(packet_pt);
                                 continue;
                             }
+                            audio_packets_seen += 1;
 
                             match self.decoder.decode(&packet.payload[..]) {
                                 Ok(pcm_samples) => {
-                                    if let Ok(events) = self.inband_detector.process_samples(&pcm_samples) {
+                                    let detector_samples = if let Some(ref mut rs) = self.inband_resampler {
+                                        match rs.resample(&pcm_samples) {
+                                            Ok(samples) => samples,
+                                            Err(e) => {
+                                                debug!(error = %e, "Inband resample error during PIN collection");
+                                                pcm_samples
+                                            }
+                                        }
+                                    } else {
+                                        pcm_samples
+                                    };
+
+                                    if let Ok(events) = self.inband_detector.process_samples(&detector_samples) {
                                         for event in events {
                                             if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
                                                 continue;
@@ -339,6 +405,18 @@ impl PinDtmfCollector {
 
                                             if event.digit == DtmfDigit::Hash {
                                                 debug!(digits = %digits, "PIN entry completed with inband #");
+                                                log_pin_collector_summary(
+                                                    "inband_submit",
+                                                    &digits,
+                                                    rtp_packets_seen,
+                                                    te_packets_seen,
+                                                    audio_packets_seen,
+                                                    info_digits_seen,
+                                                    decode_errors,
+                                                    &unexpected_payload_types,
+                                                    self.audio_payload_type,
+                                                    te_payload_type,
+                                                );
                                                 self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                                                 return Some(digits);
                                             }
@@ -355,12 +433,25 @@ impl PinDtmfCollector {
                                     }
                                 }
                                 Err(e) => {
+                                    decode_errors += 1;
                                     debug!(error = %e, pt = packet_pt, "Decode error during PIN collection");
                                 }
                             }
                         }
                         Err(e) => {
                             debug!(error = %e, "RTP recv error during PIN collection");
+                            log_pin_collector_summary(
+                                "rtp_error",
+                                &digits,
+                                rtp_packets_seen,
+                                te_packets_seen,
+                                audio_packets_seen,
+                                info_digits_seen,
+                                decode_errors,
+                                &unexpected_payload_types,
+                                self.audio_payload_type,
+                                te_payload_type,
+                            );
                             return None;
                         }
                     }
@@ -368,6 +459,33 @@ impl PinDtmfCollector {
             }
         }
     }
+}
+
+fn log_pin_collector_summary(
+    result: &str,
+    digits: &str,
+    rtp_packets_seen: u64,
+    te_packets_seen: u64,
+    audio_packets_seen: u64,
+    info_digits_seen: u64,
+    decode_errors: u64,
+    unexpected_payload_types: &BTreeSet<u8>,
+    audio_payload_type: u8,
+    te_payload_type: u8,
+) {
+    info!(
+        result,
+        digits = %digits,
+        rtp_packets_seen,
+        te_packets_seen,
+        audio_packets_seen,
+        info_digits_seen,
+        decode_errors,
+        unexpected_payload_types = ?unexpected_payload_types,
+        audio_payload_type,
+        te_payload_type,
+        "PIN collector summary"
+    );
 }
 
 impl ConferenceCallHandler {
@@ -1916,13 +2034,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let mixer_sample_rate = conf.sample_rate;
             let (info_digits_tx, info_digits_rx) = tokio::sync::mpsc::unbounded_channel();
             let pin_decoder = create_codec_instance(&codec_name)?;
-            let mut pin_collector = PinDtmfCollector::new(
-                dtmf_clock_rate,
-                info_digits_rx,
-                pin_decoder,
-                payload_type,
-                frame_size,
-            );
+            let mut pin_collector =
+                PinDtmfCollector::new(dtmf_clock_rate, info_digits_rx, pin_decoder, payload_type);
 
             // Load pre-loaded sounds from the room for prompt playback.
             // If a sound file isn't configured but the meeting has TTS text, synthesize it.
