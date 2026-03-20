@@ -279,6 +279,8 @@ impl PinDtmfCollector {
         let mut decode_errors = 0u64;
         let mut info_digits_seen = 0u64;
         let mut unexpected_payload_types = BTreeSet::new();
+        let mut peak_sample: i16 = 0;
+        let mut inband_events_seen = 0u64;
 
         loop {
             tokio::select! {
@@ -295,6 +297,8 @@ impl PinDtmfCollector {
                         &unexpected_payload_types,
                         self.audio_payload_type,
                         te_payload_type,
+                        peak_sample,
+                        inband_events_seen,
                     );
                     return if digits.is_empty() { None } else { Some(digits) };
                 }
@@ -320,6 +324,8 @@ impl PinDtmfCollector {
                             &unexpected_payload_types,
                             self.audio_payload_type,
                             te_payload_type,
+                            peak_sample,
+                            inband_events_seen,
                         );
                         self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                         return Some(digits);
@@ -359,6 +365,8 @@ impl PinDtmfCollector {
                                                 &unexpected_payload_types,
                                                 self.audio_payload_type,
                                                 te_payload_type,
+                                                peak_sample,
+                                                inband_events_seen,
                                             );
                                             self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                                             return Some(digits);
@@ -397,7 +405,16 @@ impl PinDtmfCollector {
                                         pcm_samples
                                     };
 
+                                    // Track peak sample for diagnostics
+                                    if let Some(&max) = detector_samples.iter().max() {
+                                        if max > peak_sample { peak_sample = max; }
+                                    }
+                                    if let Some(&min) = detector_samples.iter().min() {
+                                        if (-min) > peak_sample { peak_sample = -min; }
+                                    }
+
                                     if let Ok(events) = self.inband_detector.process_samples(&detector_samples) {
+                                        inband_events_seen += events.len() as u64;
                                         for event in events {
                                             if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
                                                 continue;
@@ -416,6 +433,8 @@ impl PinDtmfCollector {
                                                     &unexpected_payload_types,
                                                     self.audio_payload_type,
                                                     te_payload_type,
+                                                    peak_sample,
+                                                    inband_events_seen,
                                                 );
                                                 self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
                                                 return Some(digits);
@@ -451,6 +470,8 @@ impl PinDtmfCollector {
                                 &unexpected_payload_types,
                                 self.audio_payload_type,
                                 te_payload_type,
+                                peak_sample,
+                                inband_events_seen,
                             );
                             return None;
                         }
@@ -472,6 +493,8 @@ fn log_pin_collector_summary(
     unexpected_payload_types: &BTreeSet<u8>,
     audio_payload_type: u8,
     te_payload_type: u8,
+    peak_sample: i16,
+    inband_events_seen: u64,
 ) {
     info!(
         result,
@@ -481,6 +504,8 @@ fn log_pin_collector_summary(
         audio_packets_seen,
         info_digits_seen,
         decode_errors,
+        inband_events_seen,
+        peak_sample,
         unexpected_payload_types = ?unexpected_payload_types,
         audio_payload_type,
         te_payload_type,
