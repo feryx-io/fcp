@@ -10,7 +10,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use fcp_api_core::auth::{AuthConfig, validate_bearer_token};
+use fcp_api_core::auth::{validate_bearer_token, AuthConfig};
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::ConferenceStore;
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
@@ -66,7 +66,10 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
         .route("/meetings/{id}", delete(delete_meeting_handler))
         // Runtime conference operations (active rooms on THIS instance)
         .route("/conferences", get(list_conferences_handler))
-        .route("/conferences/{room_number}", get(get_conference_handler).delete(destroy_conference_handler))
+        .route(
+            "/conferences/{room_number}",
+            get(get_conference_handler).delete(destroy_conference_handler),
+        )
         .route(
             "/conferences/{room_number}/kick/{pid}",
             post(kick_participant_handler),
@@ -79,10 +82,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/{room_number}/unmute/{pid}",
             post(unmute_participant_handler),
         )
-        .route(
-            "/conferences/{room_number}/lock",
-            post(lock_room_handler),
-        )
+        .route("/conferences/{room_number}/lock", post(lock_room_handler))
         .route(
             "/conferences/{room_number}/unlock",
             post(unlock_room_handler),
@@ -120,10 +120,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/{room_number}/promote/{pid}",
             post(promote_participant_handler),
         )
-        .route(
-            "/conferences/{room_number}/stats",
-            get(room_stats_handler),
-        )
+        .route("/conferences/{room_number}/stats", get(room_stats_handler))
         .route(
             "/conferences/{room_number}/announce",
             post(announce_handler),
@@ -138,14 +135,8 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             post(admit_all_handler),
         )
         // AI participant
-        .route(
-            "/conferences/{room_number}/ai",
-            post(attach_ai_handler),
-        )
-        .route(
-            "/conferences/{room_number}/ai",
-            delete(detach_ai_handler),
-        )
+        .route("/conferences/{room_number}/ai", post(attach_ai_handler))
+        .route("/conferences/{room_number}/ai", delete(detach_ai_handler))
         .route(
             "/conferences/{room_number}/ai/status",
             get(ai_status_handler),
@@ -169,10 +160,9 @@ pub async fn run_http_server(
         if let Some(ref token) = state.auth_token {
             let auth_config = AuthConfig::new(token.clone());
             info!("HTTP API authentication enabled");
-            protected_router()
-                .layer(middleware::from_fn(move |req, next| {
-                    validate_bearer_token(auth_config.clone(), req, next)
-                }))
+            protected_router().layer(middleware::from_fn(move |req, next| {
+                validate_bearer_token(auth_config.clone(), req, next)
+            }))
         } else {
             warn!("auth_enabled=true but no auth_token configured, running without auth");
             protected_router()
@@ -219,11 +209,19 @@ async fn health_handler(
     let mut healthy = true;
 
     // Snapshot config values before any awaits
-    let rec_dir = state.conference_handler.conference_config.read().recordings_dir.clone();
+    let rec_dir = state
+        .conference_handler
+        .conference_config
+        .read()
+        .recordings_dir
+        .clone();
 
     // Check database connectivity (use nil tenant for a lightweight probe)
     let db_ok = state.storage.list_meetings(&TenantId::nil()).await.is_ok();
-    checks.insert("database".into(), serde_json::json!(if db_ok { "ok" } else { "error" }));
+    checks.insert(
+        "database".into(),
+        serde_json::json!(if db_ok { "ok" } else { "error" }),
+    );
     if !db_ok {
         healthy = false;
     }
@@ -236,16 +234,26 @@ async fn health_handler(
 
     // Check recordings directory is accessible
     let disk_ok = tokio::fs::metadata(&rec_dir).await.is_ok();
-    checks.insert("recordings_dir".into(), serde_json::json!(if disk_ok { "ok" } else { "missing" }));
+    checks.insert(
+        "recordings_dir".into(),
+        serde_json::json!(if disk_ok { "ok" } else { "missing" }),
+    );
 
     let status = if healthy { "healthy" } else { "degraded" };
-    let code = if healthy { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let code = if healthy {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
-    (code, Json(serde_json::json!({
-        "status": status,
-        "service": "fcp-conference",
-        "checks": checks,
-    })))
+    (
+        code,
+        Json(serde_json::json!({
+            "status": status,
+            "service": "fcp-conference",
+            "checks": checks,
+        })),
+    )
 }
 
 async fn status_handler(State(state): State<Arc<ConferenceState>>) -> Json<serde_json::Value> {
@@ -357,7 +365,11 @@ async fn metrics_handler(State(state): State<Arc<ConferenceState>>) -> impl Into
         state.conference_handler.subscription_count(),
     );
 
-    (StatusCode::OK, [("content-type", "text/plain; version=0.0.4; charset=utf-8")], body)
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
 }
 
 // =========================================================================
@@ -816,7 +828,11 @@ async fn destroy_conference_handler(
     State(state): State<Arc<ConferenceState>>,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match state.conference_handler.destroy_conference(&room_number).await {
+    match state
+        .conference_handler
+        .destroy_conference(&room_number)
+        .await
+    {
         Ok(kicked) => {
             info!(action = "destroy", room = %room_number, removed = kicked, "AUDIT: conference destroyed via API");
             (
@@ -840,7 +856,10 @@ async fn kick_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
     // Verify room exists
     if state.bridge.get_room(&room_number).is_err() {
@@ -871,24 +890,25 @@ async fn mute_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
     match state.bridge.get_room(&room_number) {
-        Ok(room) => {
-            match room.set_participant_state(&pid, forge_mixer::ParticipantState::Muted) {
-                Ok(()) => {
-                    info!(action = "mute", room = %room_number, participant = %pid, "AUDIT: participant muted via API");
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({ "status": "muted", "participant": pid })),
-                    )
-                }
-                Err(e) => (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({ "error": format!("{}", e) })),
-                ),
+        Ok(room) => match room.set_participant_state(&pid, forge_mixer::ParticipantState::Muted) {
+            Ok(()) => {
+                info!(action = "mute", room = %room_number, participant = %pid, "AUDIT: participant muted via API");
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "muted", "participant": pid })),
+                )
             }
-        }
+            Err(e) => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            ),
+        },
         Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Conference room not active" })),
@@ -901,24 +921,25 @@ async fn unmute_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
     match state.bridge.get_room(&room_number) {
-        Ok(room) => {
-            match room.set_participant_state(&pid, forge_mixer::ParticipantState::Active) {
-                Ok(()) => {
-                    info!(action = "unmute", room = %room_number, participant = %pid, "AUDIT: participant unmuted via API");
-                    (
-                        StatusCode::OK,
-                        Json(serde_json::json!({ "status": "unmuted", "participant": pid })),
-                    )
-                }
-                Err(e) => (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({ "error": format!("{}", e) })),
-                ),
+        Ok(room) => match room.set_participant_state(&pid, forge_mixer::ParticipantState::Active) {
+            Ok(()) => {
+                info!(action = "unmute", room = %room_number, participant = %pid, "AUDIT: participant unmuted via API");
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "unmuted", "participant": pid })),
+                )
             }
-        }
+            Err(e) => (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": format!("{}", e) })),
+            ),
+        },
         Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Conference room not active" })),
@@ -1077,9 +1098,15 @@ async fn get_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
-    match state.conference_handler.get_participant_details(&room_number, &pid) {
+    match state
+        .conference_handler
+        .get_participant_details(&room_number, &pid)
+    {
         Ok(details) => (StatusCode::OK, Json(details)),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -1099,20 +1126,33 @@ async fn set_gain_handler(
     Json(payload): Json<SetGainRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
-    }
-    if !payload.gain.is_finite() || payload.gain < 0.0 || payload.gain > crate::audio_bridge::MAX_GAIN {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": format!("gain must be finite and in range [0.0, {}]", crate::audio_bridge::MAX_GAIN) })),
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
         );
     }
-    match state.conference_handler.set_gain(&room_number, &pid, payload.gain) {
+    if !payload.gain.is_finite()
+        || payload.gain < 0.0
+        || payload.gain > crate::audio_bridge::MAX_GAIN
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({ "error": format!("gain must be finite and in range [0.0, {}]", crate::audio_bridge::MAX_GAIN) }),
+            ),
+        );
+    }
+    match state
+        .conference_handler
+        .set_gain(&room_number, &pid, payload.gain)
+    {
         Ok(()) => {
             info!(action = "set_gain", room = %room_number, participant = %pid, gain = payload.gain, "AUDIT: participant gain set via API");
             (
                 StatusCode::OK,
-                Json(serde_json::json!({ "status": "gain_set", "participant": pid, "gain": payload.gain })),
+                Json(
+                    serde_json::json!({ "status": "gain_set", "participant": pid, "gain": payload.gain }),
+                ),
             )
         }
         Err(e) => (
@@ -1143,9 +1183,15 @@ async fn promote_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
-    match state.conference_handler.promote_participant(&room_number, &pid) {
+    match state
+        .conference_handler
+        .promote_participant(&room_number, &pid)
+    {
         Ok(()) => {
             info!(action = "promote", room = %room_number, participant = %pid, "AUDIT: participant promoted via API");
             (
@@ -1178,12 +1224,21 @@ async fn start_participant_recording_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
-    match state.conference_handler.start_participant_recording(&room_number, &pid).await {
+    match state
+        .conference_handler
+        .start_participant_recording(&room_number, &pid)
+        .await
+    {
         Ok(path) => (
             StatusCode::OK,
-            Json(serde_json::json!({ "status": "recording_started", "participant": pid, "path": path })),
+            Json(
+                serde_json::json!({ "status": "recording_started", "participant": pid, "path": path }),
+            ),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1197,9 +1252,15 @@ async fn stop_participant_recording_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
-    match state.conference_handler.stop_participant_recording(&room_number, &pid) {
+    match state
+        .conference_handler
+        .stop_participant_recording(&room_number, &pid)
+    {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({ "status": "recording_stopped", "participant": pid })),
@@ -1244,10 +1305,16 @@ async fn announce_handler(
         format!("{}/{}", conf.announcements_dir, payload.audio_path)
     };
 
-    match state.conference_handler.play_announcement(&room_number, &audio_path).await {
+    match state
+        .conference_handler
+        .play_announcement(&room_number, &audio_path)
+        .await
+    {
         Ok(()) => (
             StatusCode::OK,
-            Json(serde_json::json!({ "status": "announced", "room": room_number, "audio_path": audio_path })),
+            Json(
+                serde_json::json!({ "status": "announced", "room": room_number, "audio_path": audio_path }),
+            ),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1265,7 +1332,10 @@ async fn admit_participant_handler(
     Path((room_number, pid)): Path<(String, String)>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     if !is_valid_identifier(&room_number) || !is_valid_identifier(&pid) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid identifier" })));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid identifier" })),
+        );
     }
     match state.conference_handler.admit_waiting(&room_number, &pid) {
         Ok(()) => {
@@ -1593,7 +1663,9 @@ impl PerIpRateLimiter {
 
         // Periodic eviction: if map > 1000 entries, prune stale ones
         if self.buckets.len() > 1000 {
-            self.buckets.retain(|_, (_, window)| now.duration_since(*window) < std::time::Duration::from_secs(60));
+            self.buckets.retain(|_, (_, window)| {
+                now.duration_since(*window) < std::time::Duration::from_secs(60)
+            });
         }
 
         let mut entry = self.buckets.entry(ip).or_insert((0, now));

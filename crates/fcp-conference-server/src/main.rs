@@ -23,8 +23,8 @@ use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use forge_conference::ConferenceBridge;
 use forge_core::{AudioCodec as ForgeAudioCodec, AudioFormat};
-use forge_rtp::{PortPool, PortPoolConfig};
 use forge_mixer::MixerOptions;
+use forge_rtp::{PortPool, PortPoolConfig};
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,9 +37,9 @@ mod health;
 mod storage;
 
 use cli::Cli;
-use fcp_conference_server::config;
-use config::ConferenceServerConfig;
 use conference_handler::ConferenceCallHandler;
+use config::ConferenceServerConfig;
+use fcp_conference_server::config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -128,32 +128,84 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
-            ("events", serde_json::to_value(&config.events).unwrap_or_default()),
-            ("conference", serde_json::to_value(&config.conference).unwrap_or_default()),
+            (
+                "media",
+                serde_json::to_value(&config.media).unwrap_or_default(),
+            ),
+            (
+                "events",
+                serde_json::to_value(&config.events).unwrap_or_default(),
+            ),
+            (
+                "conference",
+                serde_json::to_value(&config.conference).unwrap_or_default(),
+            ),
             ("ai", serde_json::to_value(&config.ai).unwrap_or_default()),
-            ("b2bua", serde_json::to_value(&config.b2bua).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+            (
+                "b2bua",
+                serde_json::to_value(&config.b2bua).unwrap_or_default(),
+            ),
+            (
+                "cluster",
+                serde_json::to_value(&config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
-                        "events" => if let Ok(v) = serde_json::from_value(entry.value) { config.events = v; },
-                        "conference" => if let Ok(v) = serde_json::from_value(entry.value) { config.conference = v; },
-                        "ai" => if let Ok(v) = serde_json::from_value(entry.value) { config.ai = v; },
-                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { config.b2bua = v; },
-                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        "media" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.media = v;
+                            }
+                        }
+                        "events" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.events = v;
+                            }
+                        }
+                        "conference" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.conference = v;
+                            }
+                        }
+                        "ai" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.ai = v;
+                            }
+                        }
+                        "b2bua" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.b2bua = v;
+                            }
+                        }
+                        "cluster" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.cluster = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -236,7 +288,11 @@ async fn main() -> Result<()> {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
                 http_address: config.http.bind_address,
-                sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_address: config
+                    .sip
+                    .udp_bind
+                    .parse()
+                    .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                 capabilities: vec!["conference".to_string(), "audio_mixing".to_string()],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
@@ -245,9 +301,15 @@ async fn main() -> Result<()> {
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             };
-            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
-                .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
-                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+            let cm =
+                fcp_cluster::ClusterManager::new(redis.clone(), member)
+                    .with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    )
+                    .with_event_publisher(
+                        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
+                    );
             let _handle = cm.start();
             info!("Cluster membership started");
             Some(cm)
@@ -442,9 +504,9 @@ async fn main() -> Result<()> {
         outbound_route_provider,
         None, // No PBX handler
         Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
-        None, // No queue handler
-        None, // presence_handler
-        None, // cluster_parking
+        None,          // No queue handler
+        None,          // presence_handler
+        None,          // cluster_parking
         String::new(), // node_id
     )?);
 
@@ -540,10 +602,7 @@ async fn main() -> Result<()> {
             tokio::spawn(supervise_task("recording-cleanup", async move {
                 run_recording_cleanup(recordings_dir, retention_days, cleanup_interval_secs).await;
             }));
-            info!(
-                retention_days = days,
-                "Recording cleanup task started"
-            );
+            info!(retention_days = days, "Recording cleanup task started");
         }
     }
 
@@ -576,7 +635,10 @@ async fn main() -> Result<()> {
                 reaper_handler.reap_expired_sessions().await;
             }
         }));
-        info!(session_expires_secs = config.conference.session_expires_secs, "Session timer reaper started");
+        info!(
+            session_expires_secs = config.conference.session_expires_secs,
+            "Session timer reaper started"
+        );
     }
 
     // 24b. Spawn recording size monitor
@@ -585,7 +647,8 @@ async fn main() -> Result<()> {
         let max_bytes = config.conference.max_recording_size_mb * 1024 * 1024;
         let recordings_dir = config.conference.recordings_dir.clone();
         let monitor_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>;
-        let size_check_interval = Duration::from_secs(config.conference.recording_size_check_interval_secs);
+        let size_check_interval =
+            Duration::from_secs(config.conference.recording_size_check_interval_secs);
         tokio::spawn(supervise_task("recording-size-monitor", async move {
             loop {
                 tokio::time::sleep(size_check_interval).await;
@@ -645,7 +708,10 @@ async fn main() -> Result<()> {
                 }
             }
         }));
-        info!(max_mb = config.conference.max_recording_size_mb, "Recording size monitor started");
+        info!(
+            max_mb = config.conference.max_recording_size_mb,
+            "Recording size monitor started"
+        );
     }
 
     // 24c. Spawn event forwarding task (if configured)
@@ -655,7 +721,14 @@ async fn main() -> Result<()> {
         let event_bus_clone = Arc::clone(&event_bus);
         let dropped_counter = Arc::clone(&events_dropped);
         tokio::spawn(supervise_task("event-forwarder", async move {
-            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url, &events_config, dropped_counter).await {
+            if let Err(e) = run_event_forwarder(
+                event_bus_clone,
+                &events_url,
+                &events_config,
+                dropped_counter,
+            )
+            .await
+            {
                 tracing::error!(%e, "Event forwarder task failed");
             }
         }));
@@ -687,7 +760,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("conference", "_system").await {
                     Ok(v) if v > last_version => {
-                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        tracing::info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}
@@ -717,7 +794,10 @@ async fn main() -> Result<()> {
     conference_handler.start_draining();
 
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
-    info!(timeout_secs = config.service.shutdown_timeout_secs, "Shutting down conference sessions...");
+    info!(
+        timeout_secs = config.service.shutdown_timeout_secs,
+        "Shutting down conference sessions..."
+    );
     if shutdown_timeout.is_zero() {
         conference_handler.shutdown().await;
     } else {
@@ -807,8 +887,7 @@ async fn create_uac(
         format!("{}:{}", bind_addr.ip(), port)
     };
 
-    let resolver =
-        Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
+    let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
 
     let mut builder = IntegratedUAC::builder();
     builder = builder
@@ -950,7 +1029,11 @@ fn init_tracing(config: &ConferenceServerConfig) {
 
 /// Periodically delete recordings older than the retention period.
 /// Uses exponential backoff on directory read failure (1min → 2min → 4min → ... → 1hr cap).
-async fn run_recording_cleanup(recordings_dir: String, retention_days: u32, cleanup_interval_secs: u64) {
+async fn run_recording_cleanup(
+    recordings_dir: String,
+    retention_days: u32,
+    cleanup_interval_secs: u64,
+) {
     let retention = Duration::from_secs(retention_days as u64 * 86400);
     let normal_interval = Duration::from_secs(cleanup_interval_secs);
     let mut backoff = Duration::from_secs(60);
@@ -1015,7 +1098,7 @@ async fn run_event_forwarder(
     events_config: &config::EventsSection,
     dropped_metric: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<()> {
-    use std::sync::atomic::{AtomicU64, AtomicBool};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(events_config.timeout_secs))
@@ -1050,7 +1133,8 @@ async fn run_event_forwarder(
                     let opened = *circuit_opened_at.lock().await;
                     if opened.elapsed() < cooldown {
                         // Circuit open — increment shared dropped metric (visible via /metrics)
-                        let total_dropped = dropped_metric.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let total_dropped =
+                            dropped_metric.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         if total_dropped % 100 == 1 {
                             warn!(
                                 dropped = total_dropped,
@@ -1143,7 +1227,8 @@ async fn forward_event_with_retry(
     };
 
     for attempt in 1..=max_retries {
-        match client.post(url)
+        match client
+            .post(url)
             .header("content-type", "application/json")
             .body(json_body.clone())
             .send()
@@ -1183,7 +1268,10 @@ async fn forward_event_with_retry(
 ///
 /// If the inner future panics, catches the panic, logs it, and does NOT restart
 /// (the task is considered dead). This prevents silent task disappearance.
-async fn supervise_task(name: &'static str, task: impl std::future::Future<Output = ()> + Send + 'static) {
+async fn supervise_task(
+    name: &'static str,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
     match tokio::task::spawn(task).await {
         Ok(()) => {
             warn!(task = name, "Background task exited normally");

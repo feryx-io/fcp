@@ -1,8 +1,6 @@
 use bytes::Bytes;
 use forge_codecs::AudioCodec;
-use forge_conference::{
-    ConferenceRoom, DtmfCommand, DtmfCommandHandler, ParticipantState,
-};
+use forge_conference::{ConferenceRoom, DtmfCommand, DtmfCommandHandler, ParticipantState};
 use forge_dtmf::rfc2833::Rfc2833Detector;
 use forge_dtmf::{DtmfDigit, DtmfEventType};
 use forge_resampler::Resampler;

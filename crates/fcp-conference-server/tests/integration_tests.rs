@@ -36,7 +36,10 @@ fn test_minimal_config_defaults() {
     assert!(config.conference.recording_retention_days.is_none());
     assert!(config.conference.allowed_codecs.is_none());
     assert!(!config.conference.enable_srtp);
-    assert_eq!(config.conference.announcements_dir, "/var/fcp/conference/announcements");
+    assert_eq!(
+        config.conference.announcements_dir,
+        "/var/fcp/conference/announcements"
+    );
     assert_eq!(config.conference.max_wait_for_moderator_secs, 300);
     assert_eq!(config.conference.session_expires_secs, 1800);
     assert_eq!(config.conference.max_recording_size_mb, 500);
@@ -113,17 +116,17 @@ format = "compact"
         config.sip.local_uri.as_deref(),
         Some("sip:conference@10.0.0.1:5080")
     );
-    assert_eq!(config.storage.database_url, "postgres://user:pass@db:5432/fcp");
+    assert_eq!(
+        config.storage.database_url,
+        "postgres://user:pass@db:5432/fcp"
+    );
     assert_eq!(config.storage.max_connections, 20);
     assert_eq!(config.http.bind_address.port(), 9090);
     assert!(config.http.auth_enabled);
     assert_eq!(config.http.auth_token.as_deref(), Some("secret-token-123"));
     assert_eq!(config.media.rtp_port_start, 30000);
     assert_eq!(config.media.rtp_port_end, 40000);
-    assert_eq!(
-        config.media.public_ip.as_deref(),
-        Some("203.0.113.10")
-    );
+    assert_eq!(config.media.public_ip.as_deref(), Some("203.0.113.10"));
     assert_eq!(config.conference.sample_rate, 16000);
     assert_eq!(config.conference.frame_size, 320);
     assert!(!config.conference.enable_vad);
@@ -185,9 +188,18 @@ fn test_config_roundtrip_serialization() {
     let serialized = toml::to_string(&config).expect("Failed to serialize config");
     let deserialized: fcp_conference_server::ConferenceServerConfig =
         toml::from_str(&serialized).expect("Failed to deserialize config");
-    assert_eq!(config.conference.sample_rate, deserialized.conference.sample_rate);
-    assert_eq!(config.conference.frame_size, deserialized.conference.frame_size);
-    assert_eq!(config.conference.max_pin_attempts, deserialized.conference.max_pin_attempts);
+    assert_eq!(
+        config.conference.sample_rate,
+        deserialized.conference.sample_rate
+    );
+    assert_eq!(
+        config.conference.frame_size,
+        deserialized.conference.frame_size
+    );
+    assert_eq!(
+        config.conference.max_pin_attempts,
+        deserialized.conference.max_pin_attempts
+    );
     assert_eq!(config.ai.model, deserialized.ai.model);
 }
 
@@ -269,7 +281,10 @@ database_url = "postgresql://user:pass@db:5432/mydb"
 max_connections = 100
 "#,
     );
-    assert_eq!(config.storage.database_url, "postgresql://user:pass@db:5432/mydb");
+    assert_eq!(
+        config.storage.database_url,
+        "postgresql://user:pass@db:5432/mydb"
+    );
     assert_eq!(config.storage.max_connections, 100);
 }
 
@@ -401,7 +416,10 @@ enable_srtp = true
 #[test]
 fn test_announcements_dir_default() {
     let config = parse_config("");
-    assert_eq!(config.conference.announcements_dir, "/var/fcp/conference/announcements");
+    assert_eq!(
+        config.conference.announcements_dir,
+        "/var/fcp/conference/announcements"
+    );
 }
 
 #[test]

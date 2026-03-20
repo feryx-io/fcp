@@ -348,11 +348,21 @@ pub struct EventsSection {
     pub max_concurrent: usize,
 }
 
-fn default_events_timeout_secs() -> u64 { 5 }
-fn default_events_max_retries() -> u32 { 3 }
-fn default_events_cb_threshold() -> u64 { 5 }
-fn default_events_cb_cooldown_secs() -> u64 { 30 }
-fn default_events_max_concurrent() -> usize { 50 }
+fn default_events_timeout_secs() -> u64 {
+    5
+}
+fn default_events_max_retries() -> u32 {
+    3
+}
+fn default_events_cb_threshold() -> u64 {
+    5
+}
+fn default_events_cb_cooldown_secs() -> u64 {
+    30
+}
+fn default_events_max_concurrent() -> usize {
+    50
+}
 
 impl Default for EventsSection {
     fn default() -> Self {
@@ -665,8 +675,12 @@ pub struct ClusterSection {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5 }
-fn default_heartbeat_ttl() -> u64 { 15 }
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {

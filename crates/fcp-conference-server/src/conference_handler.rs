@@ -12,17 +12,20 @@ use forge_conference::{
     ConferenceAIConfig, ConferenceAIManager, ConferenceBridge, ConferenceConfig,
     ConferenceDtmfConfig, ConferenceError, DtmfCommandHandler, PinAuthResult, RoomConfig,
 };
-use forge_engine::{AISessionConfig, AISessionManager};
 use forge_dtmf::rfc2833::Rfc2833Detector;
-use forge_dtmf::{DtmfDigit, DtmfEventType};
-use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair, SrtpContext, SrtpKeyMaterial};
+use forge_dtmf::{DtmfDeduplicator, DtmfDigit, DtmfEvent, DtmfEventType, DtmfMethod};
+use forge_engine::{AISessionConfig, AISessionManager};
+use forge_rtp::{
+    PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair, SrtpContext,
+    SrtpKeyMaterial,
+};
+use parking_lot::RwLock;
 use sip_core::{SipUri, Uri};
 use sip_dialog::Dialog;
 use sip_uas::UserAgentServer;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -31,7 +34,8 @@ use crate::audio_bridge::{self, AudioStats};
 use crate::config::{AiSection, ConferenceSection};
 
 /// Fallback remote address used when SDP parsing fails to extract the caller's RTP endpoint.
-const UNKNOWN_REMOTE: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
+const UNKNOWN_REMOTE: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
 
 /// Aggregated audio quality metrics across all active sessions.
 #[derive(Default)]
@@ -146,6 +150,8 @@ pub struct ConferenceCallHandler {
     pub handler_latency: HandlerLatency,
     /// Optional TTS service for synthesizing prompts from text
     tts_service: Option<Arc<fcp_media::TtsService>>,
+    /// Calls that have been answered and are waiting for PIN input.
+    pending_pin_auth: DashMap<String, PendingPinAuth>,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -156,6 +162,165 @@ struct ConferenceSubscription {
     contact_uri: SipUri,
     /// When the subscription expires
     expires_at: Instant,
+}
+
+/// Tracks an answered conference call that is still collecting a room PIN.
+struct PendingPinAuth {
+    room_number: String,
+    participant_id: String,
+    info_digits_tx: tokio::sync::mpsc::UnboundedSender<char>,
+}
+
+/// Collects PIN digits from both RFC 2833 RTP and SIP INFO.
+struct PinDtmfCollector {
+    detector: Rfc2833Detector,
+    dedup: DtmfDeduplicator,
+    info_digits_rx: tokio::sync::mpsc::UnboundedReceiver<char>,
+}
+
+impl PinDtmfCollector {
+    fn new(
+        dtmf_clock_rate: u32,
+        info_digits_rx: tokio::sync::mpsc::UnboundedReceiver<char>,
+    ) -> Self {
+        Self {
+            detector: Rfc2833Detector::new(dtmf_clock_rate),
+            dedup: DtmfDeduplicator::new(),
+            info_digits_rx,
+        }
+    }
+
+    fn accept_info_digit(&mut self, ch: char) -> bool {
+        let Ok(digit) = DtmfDigit::from_char(ch) else {
+            return false;
+        };
+        let event = DtmfEvent::new(digit, DtmfEventType::End, DtmfMethod::SipInfo);
+        self.dedup.should_publish(&event)
+    }
+
+    async fn drain_post_submit_dtmf(&mut self, rtp_socket: &RtpSocketPair, te_payload_type: u8) {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            tokio::select! {
+                maybe_digit = self.info_digits_rx.recv() => {
+                    let Some(ch) = maybe_digit else {
+                        continue;
+                    };
+                    if self.accept_info_digit(ch) {
+                        debug!(digit = %ch, "Draining INFO DTMF after PIN submit");
+                    }
+                }
+                recv = tokio::time::timeout(remaining.min(Duration::from_millis(25)), rtp_socket.recv_rtp()) => {
+                    match recv {
+                        Ok(Ok((packet, _addr))) => {
+                            if packet.header.payload_type() != te_payload_type {
+                                continue;
+                            }
+
+                            if let Ok(events) = self.detector.process_with_timestamp(&packet.payload[..], packet.header.timestamp) {
+                                for event in events {
+                                    if event.event_type == DtmfEventType::End && self.dedup.should_publish(&event) {
+                                        debug!(digit = %event.digit, "Draining RTP DTMF after PIN submit");
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            debug!(error = %e, "RTP recv error while draining post-submit DTMF");
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+    }
+
+    async fn collect_pin_dtmf(
+        &mut self,
+        rtp_socket: &RtpSocketPair,
+        te_pt: Option<u8>,
+        timeout: Duration,
+    ) -> Option<String> {
+        let te_payload_type = te_pt.unwrap_or(audio_bridge::DEFAULT_TE_PAYLOAD_TYPE);
+        let mut digits = String::new();
+        let max_digits = 20;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let sleep = tokio::time::sleep_until(deadline);
+        tokio::pin!(sleep);
+
+        loop {
+            tokio::select! {
+                _ = &mut sleep => {
+                    debug!("PIN collection timed out after {} digits", digits.len());
+                    return if digits.is_empty() { None } else { Some(digits) };
+                }
+                maybe_digit = self.info_digits_rx.recv() => {
+                    let Some(ch) = maybe_digit else {
+                        continue;
+                    };
+                    if !self.accept_info_digit(ch) {
+                        continue;
+                    }
+
+                    if ch == '#' {
+                        debug!(digits = %digits, "PIN entry completed with INFO #");
+                        self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                        return Some(digits);
+                    }
+
+                    digits.push(ch);
+                    debug!(digit = %ch, collected = %digits, "INFO DTMF digit received");
+                    if digits.len() >= max_digits {
+                        self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                        return Some(digits);
+                    }
+                }
+                recv = rtp_socket.recv_rtp() => {
+                    match recv {
+                        Ok((packet, _addr)) => {
+                            if packet.header.payload_type() != te_payload_type {
+                                continue;
+                            }
+
+                            if let Ok(events) = self.detector.process_with_timestamp(&packet.payload[..], packet.header.timestamp) {
+                                for event in events {
+                                    if event.event_type != DtmfEventType::End || !self.dedup.should_publish(&event) {
+                                        continue;
+                                    }
+
+                                    if event.digit == DtmfDigit::Hash {
+                                        debug!(digits = %digits, "PIN entry completed with RTP #");
+                                        self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                                        return Some(digits);
+                                    }
+
+                                    if let Some(ch) = dtmf_digit_to_char(&event.digit) {
+                                        digits.push(ch);
+                                        debug!(digit = %ch, collected = %digits, "DTMF digit received");
+                                        if digits.len() >= max_digits {
+                                            self.drain_post_submit_dtmf(rtp_socket, te_payload_type).await;
+                                            return Some(digits);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!(error = %e, "RTP recv error during PIN collection");
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl ConferenceCallHandler {
@@ -201,6 +366,7 @@ impl ConferenceCallHandler {
             room_sessions: DashMap::new(),
             handler_latency: HandlerLatency::new(),
             tts_service: None,
+            pending_pin_auth: DashMap::new(),
         }
     }
 
@@ -257,9 +423,8 @@ impl ConferenceCallHandler {
                 if ttl > Duration::ZERO {
                     // Evict expired entries if cache is at capacity
                     if self.meeting_cache.len() >= self.max_meeting_cache_size() {
-                        self.meeting_cache.retain(|_, (_, cached_at)| {
-                            cached_at.elapsed() < ttl
-                        });
+                        self.meeting_cache
+                            .retain(|_, (_, cached_at)| cached_at.elapsed() < ttl);
                         // If still over limit after TTL eviction, drop oldest half
                         if self.meeting_cache.len() >= self.max_meeting_cache_size() {
                             let mut count = 0;
@@ -463,7 +628,11 @@ impl ConferenceCallHandler {
     /// Gain must be a finite value between 0.0 and 10.0 (inclusive).
     pub fn set_gain(&self, room_number: &str, participant_id: &str, gain: f32) -> Result<()> {
         if !gain.is_finite() || gain < 0.0 || gain > audio_bridge::MAX_GAIN {
-            anyhow::bail!("gain must be finite and in range [0.0, {}], got {}", audio_bridge::MAX_GAIN, gain);
+            anyhow::bail!(
+                "gain must be finite and in range [0.0, {}], got {}",
+                audio_bridge::MAX_GAIN,
+                gain
+            );
         }
         let room = self
             .bridge
@@ -494,7 +663,11 @@ impl ConferenceCallHandler {
                 });
 
                 // Enrich with session data
-                if let Some(entry) = self.sessions.iter().find(|e| e.value().participant_id == meta.id) {
+                if let Some(entry) = self
+                    .sessions
+                    .iter()
+                    .find(|e| e.value().participant_id == meta.id)
+                {
                     let session = entry.value();
                     if let Some(ref dn) = session.display_name {
                         p["display_name"] = serde_json::json!(dn);
@@ -551,7 +724,10 @@ impl ConferenceCallHandler {
         let safe_pid = truncate_for_filename(participant_id, 40);
         let path = format!(
             "{}/{}-{}-{}.wav",
-            self.conference_config.read().recordings_dir, safe_room, safe_pid, timestamp
+            self.conference_config.read().recordings_dir,
+            safe_room,
+            safe_pid,
+            timestamp
         );
 
         room.start_participant_recording(participant_id, &path)
@@ -659,8 +835,7 @@ impl ConferenceCallHandler {
 
         // Create ConferenceAIManager
         let call_id = forge_core::CallId::generate();
-        let conference_ai_config =
-            ConferenceAIConfig::new(forge_core::AudioFormat::pcm_mono());
+        let conference_ai_config = ConferenceAIConfig::new(forge_core::AudioFormat::pcm_mono());
         let ai_manager = ConferenceAIManager::new(
             room_number.to_string(),
             call_id.clone(),
@@ -728,8 +903,9 @@ impl ConferenceCallHandler {
             .find(|entry| entry.value().participant_id == participant_id)
             .map(|entry| entry.key().clone());
 
-        let call_id = call_id
-            .ok_or_else(|| anyhow::anyhow!("No session found for participant: {}", participant_id))?;
+        let call_id = call_id.ok_or_else(|| {
+            anyhow::anyhow!("No session found for participant: {}", participant_id)
+        })?;
 
         // Send BYE before cleaning up
         if let Some(session) = self.sessions.get(&call_id) {
@@ -796,7 +972,10 @@ impl ConferenceCallHandler {
     /// Graceful shutdown: drain all participant sessions and clean up resources.
     pub async fn shutdown(&self) {
         let session_count = self.sessions.len();
-        info!(sessions = session_count, "Shutting down conference sessions");
+        info!(
+            sessions = session_count,
+            "Shutting down conference sessions"
+        );
 
         // Collect all call IDs
         let call_ids: Vec<String> = self
@@ -850,16 +1029,36 @@ impl ConferenceCallHandler {
         let old_ai = self.ai_config.read().clone();
 
         let mut changes = Vec::new();
-        if old_conf.cache_ttl_secs != conference.cache_ttl_secs { changes.push("cache_ttl"); }
-        if old_conf.dtmf_enabled != conference.dtmf_enabled { changes.push("dtmf_enabled"); }
-        if old_conf.max_invite_rate_per_ip != conference.max_invite_rate_per_ip { changes.push("max_invite_rate"); }
-        if old_conf.session_expires_secs != conference.session_expires_secs { changes.push("session_expires"); }
-        if old_conf.max_participants_per_node != conference.max_participants_per_node { changes.push("max_participants_per_node"); }
-        if old_conf.enable_srtp != conference.enable_srtp { changes.push("enable_srtp"); }
-        if old_conf.jitter_buffer_ms != conference.jitter_buffer_ms { changes.push("jitter_buffer_ms"); }
-        if old_conf.max_announcement_size_mb != conference.max_announcement_size_mb { changes.push("max_announcement_size_mb"); }
-        if old_ai.enabled != ai.enabled { changes.push("ai.enabled"); }
-        if old_ai.model != ai.model { changes.push("ai.model"); }
+        if old_conf.cache_ttl_secs != conference.cache_ttl_secs {
+            changes.push("cache_ttl");
+        }
+        if old_conf.dtmf_enabled != conference.dtmf_enabled {
+            changes.push("dtmf_enabled");
+        }
+        if old_conf.max_invite_rate_per_ip != conference.max_invite_rate_per_ip {
+            changes.push("max_invite_rate");
+        }
+        if old_conf.session_expires_secs != conference.session_expires_secs {
+            changes.push("session_expires");
+        }
+        if old_conf.max_participants_per_node != conference.max_participants_per_node {
+            changes.push("max_participants_per_node");
+        }
+        if old_conf.enable_srtp != conference.enable_srtp {
+            changes.push("enable_srtp");
+        }
+        if old_conf.jitter_buffer_ms != conference.jitter_buffer_ms {
+            changes.push("jitter_buffer_ms");
+        }
+        if old_conf.max_announcement_size_mb != conference.max_announcement_size_mb {
+            changes.push("max_announcement_size_mb");
+        }
+        if old_ai.enabled != ai.enabled {
+            changes.push("ai.enabled");
+        }
+        if old_ai.model != ai.model {
+            changes.push("ai.model");
+        }
 
         info!(
             cache_ttl = conference.cache_ttl_secs,
@@ -951,7 +1150,10 @@ impl ConferenceCallHandler {
         // Periodic cleanup: evict entries older than 60s (every ~100 INVITEs)
         // Also cap map size at 10,000 entries to bound memory
         let should_evict = self.invite_rate.len() > 100
-            && self.invite_rate.iter().next()
+            && self
+                .invite_rate
+                .iter()
+                .next()
                 .and_then(|e| now.checked_duration_since(e.value().1))
                 .map_or(false, |elapsed| elapsed > Duration::from_secs(10));
         if should_evict {
@@ -1000,9 +1202,7 @@ impl ConferenceCallHandler {
             | ConferenceEvent::PinFailed { room_number, .. }
             | ConferenceEvent::MeetingCreated { room_number, .. }
             | ConferenceEvent::MeetingUpdated { room_number, .. }
-            | ConferenceEvent::MeetingDeleted { room_number, .. } => {
-                Some(room_number.clone())
-            }
+            | ConferenceEvent::MeetingDeleted { room_number, .. } => Some(room_number.clone()),
         };
 
         // Notify RFC 4575 subscribers for this room
@@ -1063,12 +1263,14 @@ impl ConferenceCallHandler {
         let uac = Arc::clone(&self.uac);
         tokio::spawn(async move {
             for target_uri in targets {
-                let _ = uac.send_unsolicited_notify(
-                    &target_uri,
-                    "conference",
-                    "application/conference-info+xml",
-                    &state_xml,
-                ).await;
+                let _ = uac
+                    .send_unsolicited_notify(
+                        &target_uri,
+                        "conference",
+                        "application/conference-info+xml",
+                        &state_xml,
+                    )
+                    .await;
             }
         });
     }
@@ -1102,7 +1304,7 @@ impl ConferenceCallHandler {
             tokio::spawn(async move {
                 // Wait up to 5s for the audio bridge to actually stop
                 match tokio::time::timeout(Duration::from_secs(5), abort_handle).await {
-                    Ok(Ok(())) => {} // Normal exit
+                    Ok(Ok(())) => {}                     // Normal exit
                     Ok(Err(e)) if e.is_cancelled() => {} // Aborted successfully
                     Ok(Err(e)) => {
                         warn!(
@@ -1149,7 +1351,9 @@ impl ConferenceCallHandler {
                 }
 
                 // Auto-destroy empty rooms if configured
-                if room.participant_count() == 0 && self.conference_config.read().auto_destroy_empty_rooms {
+                if room.participant_count() == 0
+                    && self.conference_config.read().auto_destroy_empty_rooms
+                {
                     let room_number = session.room_number.clone();
                     let bridge = Arc::clone(&self.bridge);
                     let storage = Arc::clone(&self.storage);
@@ -1183,12 +1387,11 @@ impl ConferenceCallHandler {
                             debug!(room = %room_number, "Destroying empty conference room");
                             let _ = bridge.delete_room(&room_number);
 
-                            let event =
-                                PlatformEvent::Conference(ConferenceEvent::RoomDestroyed {
-                                    room_number,
-                                    tenant_id,
-                                    timestamp: SystemTime::now(),
-                                });
+                            let event = PlatformEvent::Conference(ConferenceEvent::RoomDestroyed {
+                                room_number,
+                                tenant_id,
+                                timestamp: SystemTime::now(),
+                            });
                             let _ = event_bus.publish(event).await;
                         }
                     });
@@ -1227,17 +1430,18 @@ impl ConferenceCallHandler {
 
         // Resolve sound file path: per-meeting override takes priority over global config.
         // Relative paths are resolved against announcements_dir.
-        let resolve_sound = |meeting_val: &Option<String>, global_val: &Option<String>| -> Option<Option<String>> {
-            let chosen = meeting_val.as_ref().or(global_val.as_ref());
-            chosen.map(|p| {
-                let path = std::path::Path::new(p);
-                if path.is_absolute() {
-                    Some(p.clone())
-                } else {
-                    Some(format!("{}/{}", conf.announcements_dir, p))
-                }
-            })
-        };
+        let resolve_sound =
+            |meeting_val: &Option<String>, global_val: &Option<String>| -> Option<Option<String>> {
+                let chosen = meeting_val.as_ref().or(global_val.as_ref());
+                chosen.map(|p| {
+                    let path = std::path::Path::new(p);
+                    if path.is_absolute() {
+                        Some(p.clone())
+                    } else {
+                        Some(format!("{}/{}", conf.announcements_dir, p))
+                    }
+                })
+            };
 
         RoomConfig {
             guest_pin: meeting.guest_pin.clone(),
@@ -1273,8 +1477,7 @@ impl ConferenceCallHandler {
 
     /// Check whether PIN authentication is required for a meeting.
     fn meeting_requires_pin(meeting: &Meeting) -> bool {
-        meeting.require_guest_pin
-            && (meeting.guest_pin.is_some() || meeting.host_pin.is_some())
+        meeting.require_guest_pin && (meeting.guest_pin.is_some() || meeting.host_pin.is_some())
     }
 
     /// Negotiate SDES-SRTP from a parsed crypto line.
@@ -1282,9 +1485,7 @@ impl ConferenceCallHandler {
     /// Decodes the remote key material, generates a local key, and returns both
     /// the `SrtpContext` (for the audio bridge) and the `SrtpSdpContext` (for
     /// the SDP answer).
-    fn negotiate_srtp(
-        crypto: &fcp_media::SdesCryptoLine,
-    ) -> Result<(SrtpContext, SrtpSdpContext)> {
+    fn negotiate_srtp(crypto: &fcp_media::SdesCryptoLine) -> Result<(SrtpContext, SrtpSdpContext)> {
         let (key, salt, profile) = decode_sdes_key_params(&crypto.key_params, &crypto.suite)?;
         let remote_key = SrtpKeyMaterial::new(key, salt, profile)
             .map_err(|e| anyhow::anyhow!("Invalid SRTP key material: {}", e))?;
@@ -1303,71 +1504,6 @@ impl ConferenceCallHandler {
 
         debug!(suite = %crypto.suite, tag = crypto.tag, "SRTP negotiated");
         Ok((ctx, sdp_ctx))
-    }
-
-    /// Collect a PIN via RFC 2833 DTMF from inbound RTP.
-    ///
-    /// Listens for telephone-event packets with the given `te_pt` payload type.
-    /// Returns the collected digits when `#` is pressed or max length reached.
-    /// Returns `None` on timeout.
-    async fn collect_pin_dtmf(
-        rtp_socket: &RtpSocketPair,
-        te_pt: Option<u8>,
-        dtmf_clock_rate: u32,
-        timeout: Duration,
-    ) -> Option<String> {
-        let te_payload_type = te_pt.unwrap_or(audio_bridge::DEFAULT_TE_PAYLOAD_TYPE);
-        let mut detector = Rfc2833Detector::new(dtmf_clock_rate);
-        let mut digits = String::new();
-        let max_digits = 20;
-        let deadline = tokio::time::Instant::now() + timeout;
-
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                debug!("PIN collection timed out after {} digits", digits.len());
-                return if digits.is_empty() { None } else { Some(digits) };
-            }
-
-            match tokio::time::timeout(remaining, rtp_socket.recv_rtp()).await {
-                Ok(Ok((packet, _addr))) => {
-                    // Only process telephone-event payload type
-                    if packet.header.payload_type() != te_payload_type {
-                        continue;
-                    }
-
-                    if let Ok(events) =
-                        detector.process_with_timestamp(&packet.payload[..], packet.header.timestamp)
-                    {
-                        for event in events {
-                            if event.event_type == DtmfEventType::End {
-                                if event.digit == DtmfDigit::Hash {
-                                    // '#' terminates PIN entry
-                                    debug!(digits = %digits, "PIN entry completed with #");
-                                    return Some(digits);
-                                }
-                                if let Some(ch) = dtmf_digit_to_char(&event.digit) {
-                                    digits.push(ch);
-                                    debug!(digit = %ch, collected = %digits, "DTMF digit received");
-                                    if digits.len() >= max_digits {
-                                        return Some(digits);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(Err(e)) => {
-                    debug!(error = %e, "RTP recv error during PIN collection");
-                    return None;
-                }
-                Err(_) => {
-                    // Timeout
-                    debug!("PIN collection timed out");
-                    return if digits.is_empty() { None } else { Some(digits) };
-                }
-            }
-        }
     }
 }
 
@@ -1552,8 +1688,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             handle.send_final(reject).await;
             return Ok(());
         }
-        let sdp_offer = std::str::from_utf8(&body[..])
-            .context("SDP body is not valid UTF-8")?;
+        let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
 
         // 4. Parse codecs and pick first supported one (filtered by allowed_codecs config)
         let offered_codecs = parse_sdp_codecs(sdp_offer);
@@ -1562,8 +1697,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let (codec_name, payload_type, frame_size) = match codec_result {
             Some(c) => c,
             None => {
-                let reject =
-                    UserAgentServer::create_response(request, 488, "Not Acceptable Here");
+                let reject = UserAgentServer::create_response(request, 488, "Not Acceptable Here");
                 handle.send_final(reject).await;
                 return Ok(());
             }
@@ -1599,7 +1733,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let crypto_lines = parse_sdes_crypto(sdp_offer);
             if let Some(crypto) = crypto_lines.first() {
                 match Self::negotiate_srtp(crypto) {
-                    Ok((ctx, sdp_ctx)) => (Some(Arc::new(tokio::sync::RwLock::new(ctx))), Some(sdp_ctx)),
+                    Ok((ctx, sdp_ctx)) => {
+                        (Some(Arc::new(tokio::sync::RwLock::new(ctx))), Some(sdp_ctx))
+                    }
                     Err(e) => {
                         warn!(error = %e, "SRTP negotiation failed, falling back to plain RTP");
                         (None, None)
@@ -1645,8 +1781,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // 8b. RFC 4028: Add Session-Expires and Min-SE headers if session timers are enabled
         if conf.session_expires_secs > 0 {
             // Check if client requested a Session-Expires (from their INVITE)
-            let client_se = sip_parse::header(request.headers(), "Session-Expires")
-                .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
+            let client_se = sip_parse::header(request.headers(), "Session-Expires").and_then(|v| {
+                v.as_str()
+                    .split(';')
+                    .next()
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            });
             let min_se: u64 = conf.min_session_expires_secs;
 
             let negotiated_se = match client_se {
@@ -1707,11 +1847,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let call_id = extract_call_id(request);
         let (display_name, caller_id) = extract_caller_info(request);
         let short_uuid = uuid::Uuid::new_v4().to_string();
-        let participant_id = format!(
-            "{}-{}",
-            &call_id[..call_id.len().min(8)],
-            &short_uuid[..8]
-        );
+        let participant_id = format!("{}-{}", &call_id[..call_id.len().min(8)], &short_uuid[..8]);
 
         // 13. Get or create conference room, configure with meeting settings
         let room = self
@@ -1731,6 +1867,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             let max_attempts = conf.max_pin_attempts;
             let pin_timeout = Duration::from_secs(conf.pin_timeout_secs);
             let mixer_sample_rate = conf.sample_rate;
+            let (info_digits_tx, info_digits_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut pin_collector = PinDtmfCollector::new(dtmf_clock_rate, info_digits_rx);
 
             // Load pre-loaded sounds from the room for prompt playback.
             // If a sound file isn't configured but the meeting has TTS text, synthesize it.
@@ -1744,13 +1882,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     if let Some(ref text) = meeting.pin_prompt_tts {
                         match tts.synthesize(text, None, None).await {
                             Ok(path) => {
-                                let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
+                                let player =
+                                    forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
                                 if let Some(pcm) = player.load_audio_file(&path) {
                                     debug!(room = %room_number, "TTS: synthesized pin_prompt");
                                     pin_prompt_samples = Some(Arc::new(pcm));
                                 }
                             }
-                            Err(e) => warn!(room = %room_number, error = %e, "TTS pin_prompt synthesis failed"),
+                            Err(e) => {
+                                warn!(room = %room_number, error = %e, "TTS pin_prompt synthesis failed")
+                            }
                         }
                     }
                 }
@@ -1758,13 +1899,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     if let Some(ref text) = meeting.invalid_pin_tts {
                         match tts.synthesize(text, None, None).await {
                             Ok(path) => {
-                                let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
+                                let player =
+                                    forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
                                 if let Some(pcm) = player.load_audio_file(&path) {
                                     debug!(room = %room_number, "TTS: synthesized invalid_pin");
                                     invalid_pin_samples = Some(Arc::new(pcm));
                                 }
                             }
-                            Err(e) => warn!(room = %room_number, error = %e, "TTS invalid_pin synthesis failed"),
+                            Err(e) => {
+                                warn!(room = %room_number, error = %e, "TTS invalid_pin synthesis failed")
+                            }
                         }
                     }
                 }
@@ -1772,6 +1916,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
             // Create a temporary encoder for prompt playback (same codec as participant)
             let mut prompt_encoder = create_codec_instance(&codec_name)?;
+
+            self.pending_pin_auth.insert(
+                call_id.clone(),
+                PendingPinAuth {
+                    room_number: room_number.clone(),
+                    participant_id: participant_id.clone(),
+                    info_digits_tx,
+                },
+            );
 
             let mut authenticated = false;
             let mut is_host_auth = false;
@@ -1811,7 +1964,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     "Waiting for PIN entry via DTMF"
                 );
 
-                match Self::collect_pin_dtmf(&rtp_socket, te_pt, dtmf_clock_rate, pin_timeout).await {
+                match pin_collector
+                    .collect_pin_dtmf(&rtp_socket, te_pt, pin_timeout)
+                    .await
+                {
                     Some(ref pin) if pin.is_empty() => {
                         // Empty PIN (user pressed # immediately) — treat as incorrect
                         warn!(room = %room_number, participant = %participant_id, attempt, "Empty PIN submitted");
@@ -1867,6 +2023,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             }
                             PinAuthResult::LockedOut { .. } => {
                                 warn!(room = %room_number, participant = %participant_id, "PIN locked out");
+                                self.pending_pin_auth.remove(&call_id);
                                 self.publish_event(ConferenceEvent::PinFailed {
                                     room_number: room_number.clone(),
                                     participant_id: participant_id.clone(),
@@ -1896,6 +2053,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
 
             if !authenticated {
+                self.pending_pin_auth.remove(&call_id);
                 info!(room = %room_number, participant = %participant_id, "PIN authentication failed, rejecting");
                 self.publish_event(ConferenceEvent::PinFailed {
                     room_number: room_number.clone(),
@@ -1912,6 +2070,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 return Ok(());
             }
 
+            self.pending_pin_auth.remove(&call_id);
             is_host_auth
         } else {
             false
@@ -2058,14 +2217,13 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 }
 
                                 // Publish leave event so downstream systems know about the timeout
-                                let timeout_event = PlatformEvent::Conference(
-                                    ConferenceEvent::ParticipantLeft {
+                                let timeout_event =
+                                    PlatformEvent::Conference(ConferenceEvent::ParticipantLeft {
                                         room_number: rn.clone(),
                                         participant_id: pid.clone(),
                                         tenant_id,
                                         timestamp: SystemTime::now(),
-                                    },
-                                );
+                                    });
                                 let _ = event_bus.publish(timeout_event).await;
                                 break;
                             }
@@ -2093,15 +2251,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 );
 
                                 // Publish join event
-                                let event = PlatformEvent::Conference(
-                                    ConferenceEvent::ParticipantJoined {
+                                let event =
+                                    PlatformEvent::Conference(ConferenceEvent::ParticipantJoined {
                                         room_number: rn.clone(),
                                         participant_id: pid.clone(),
                                         is_host: false,
                                         tenant_id,
                                         timestamp: SystemTime::now(),
-                                    },
-                                );
+                                    });
                                 let _ = event_bus.publish(event).await;
 
                                 // Auto-record check after moderator releases waiting participants
@@ -2117,11 +2274,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                                 .as_secs();
                                             let rec_path = format!(
                                                 "{}/{}-{}-{}.wav",
-                                                recordings_dir, rn, ts, uuid::Uuid::new_v4().as_simple()
+                                                recordings_dir,
+                                                rn,
+                                                ts,
+                                                uuid::Uuid::new_v4().as_simple()
                                             );
-                                            match bridge_room
-                                                .start_recording(&rec_path, None)
-                                                .await
+                                            match bridge_room.start_recording(&rec_path, None).await
                                             {
                                                 Ok(()) => {
                                                     tracing::info!(
@@ -2176,9 +2334,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 });
 
                 // Store session with the wait handle
-                let remote_addr = parse_remote_rtp_addr(sdp_offer)
-                    .unwrap_or(UNKNOWN_REMOTE);
-                self.room_sessions.entry(room_number.clone()).or_default().push(call_id.clone());
+                let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
+                self.room_sessions
+                    .entry(room_number.clone())
+                    .or_default()
+                    .push(call_id.clone());
                 self.sessions.insert(
                     call_id.clone(),
                     ParticipantSession {
@@ -2268,7 +2428,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         .as_secs();
                     let path = format!(
                         "{}/{}-{}-{}.wav",
-                        conf.recordings_dir, room_number, timestamp, uuid::Uuid::new_v4().as_simple()
+                        conf.recordings_dir,
+                        room_number,
+                        timestamp,
+                        uuid::Uuid::new_v4().as_simple()
                     );
                     match room.start_recording(&path, None).await {
                         Ok(()) => {
@@ -2324,8 +2487,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         ));
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
-        let remote_addr = parse_remote_rtp_addr(sdp_offer)
-            .unwrap_or(UNKNOWN_REMOTE);
+        let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
         self.sessions.insert(
             call_id.clone(),
             ParticipantSession {
@@ -2377,8 +2539,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Parse new SDP body
         let body = request.body();
-        let sdp_offer = std::str::from_utf8(&body[..])
-            .context("re-INVITE SDP body is not valid UTF-8")?;
+        let sdp_offer =
+            std::str::from_utf8(&body[..]).context("re-INVITE SDP body is not valid UTF-8")?;
 
         // Check for remote address change
         if let Some(new_remote) = parse_remote_rtp_addr(sdp_offer) {
@@ -2413,7 +2575,11 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 offered = ?offered_codecs.iter().map(|c| &c.encoding_name).collect::<Vec<_>>(),
                 "re-INVITE: no supported codec in offer, rejecting with 488"
             );
-            return Ok(UserAgentServer::create_response(request, 488, "Not Acceptable Here"));
+            return Ok(UserAgentServer::create_response(
+                request,
+                488,
+                "Not Acceptable Here",
+            ));
         }
         if let Some((new_codec, new_pt, new_frame_size)) = codec_pick {
             if new_codec != session.codec_name {
@@ -2456,7 +2622,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_stats = Arc::clone(&session.stats);
                 let reinvite_is_host = session.is_host;
                 let reinvite_te_pt = session.te_pt;
-                let reinvite_dtmf_clock_rate = find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
+                let reinvite_dtmf_clock_rate =
+                    find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
                 let reinvite_srtp = session.srtp_context.clone();
                 let new_handle = tokio::spawn(async move {
                     // Wait for old bridge to actually stop (with timeout) before starting new one
@@ -2481,7 +2648,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_stats,
                         reinvite_srtp,
                         reinvite_mixer_rate,
-                    ).await;
+                    )
+                    .await;
                 });
 
                 session.audio_bridge_handle = new_handle;
@@ -2503,7 +2671,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             });
                         } else {
                             // Upgrading from plain RTP to SRTP
-                            session.srtp_context = Some(Arc::new(tokio::sync::RwLock::new(new_ctx)));
+                            session.srtp_context =
+                                Some(Arc::new(tokio::sync::RwLock::new(new_ctx)));
                         }
                         Some(sdp_ctx)
                     }
@@ -2539,15 +2708,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // RFC 4028: Add Session-Expires and Min-SE headers on re-INVITE 200 OK
         if conf.session_expires_secs > 0 {
-            let client_se = sip_parse::header(request.headers(), "Session-Expires")
-                .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
+            let client_se = sip_parse::header(request.headers(), "Session-Expires").and_then(|v| {
+                v.as_str()
+                    .split(';')
+                    .next()
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            });
             let min_se: u64 = conf.min_session_expires_secs;
             let negotiated_se = match client_se {
                 Some(requested) if requested < min_se => conf.session_expires_secs,
                 Some(requested) => requested.min(conf.session_expires_secs),
                 None => conf.session_expires_secs,
             };
-            let _ = response.headers_mut().push("Session-Expires", format!("{};refresher=uac", negotiated_se));
+            let _ = response.headers_mut().push(
+                "Session-Expires",
+                format!("{};refresher=uac", negotiated_se),
+            );
             let _ = response.headers_mut().push("Min-SE", min_se.to_string());
             let _ = response.headers_mut().push("Require", "timer");
         }
@@ -2565,6 +2741,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let result = if self.sessions.contains_key(call_id) {
             self.remove_session(call_id);
             Ok(())
+        } else if self.pending_pin_auth.remove(call_id).is_some() {
+            info!(call_id = %call_id, "BYE received during conference PIN collection");
+            Ok(())
         } else {
             anyhow::bail!("No conference session for call_id: {}", call_id)
         };
@@ -2580,6 +2759,9 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         if self.sessions.contains_key(call_id) {
             info!(call_id = %call_id, "CANCEL received for conference participant");
             self.remove_session(call_id);
+            Ok(true)
+        } else if self.pending_pin_auth.remove(call_id).is_some() {
+            info!(call_id = %call_id, "CANCEL received during conference PIN collection");
             Ok(true)
         } else {
             Ok(false) // Not a conference call — let B2BUA handle it
@@ -2598,8 +2780,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Parse SDP if present (UPDATE may have no body for session refresh)
         let body = request.body();
         if !body.is_empty() {
-            let sdp_offer = std::str::from_utf8(&body[..])
-                .context("UPDATE SDP body is not valid UTF-8")?;
+            let sdp_offer =
+                std::str::from_utf8(&body[..]).context("UPDATE SDP body is not valid UTF-8")?;
 
             // Check for remote address change (e.g., hold/resume or IP migration)
             if let Some(new_remote) = parse_remote_rtp_addr(sdp_offer) {
@@ -2650,15 +2832,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // RFC 4028: Add Session-Expires and Min-SE headers on UPDATE 200 OK
         if conf.session_expires_secs > 0 {
-            let client_se = sip_parse::header(request.headers(), "Session-Expires")
-                .and_then(|v| v.as_str().split(';').next().and_then(|n| n.trim().parse::<u64>().ok()));
+            let client_se = sip_parse::header(request.headers(), "Session-Expires").and_then(|v| {
+                v.as_str()
+                    .split(';')
+                    .next()
+                    .and_then(|n| n.trim().parse::<u64>().ok())
+            });
             let min_se: u64 = conf.min_session_expires_secs;
             let negotiated_se = match client_se {
                 Some(requested) if requested < min_se => conf.session_expires_secs,
                 Some(requested) => requested.min(conf.session_expires_secs),
                 None => conf.session_expires_secs,
             };
-            let _ = response.headers_mut().push("Session-Expires", format!("{};refresher=uac", negotiated_se));
+            let _ = response.headers_mut().push(
+                "Session-Expires",
+                format!("{};refresher=uac", negotiated_se),
+            );
             let _ = response.headers_mut().push("Min-SE", min_se.to_string());
             let _ = response.headers_mut().push("Require", "timer");
         }
@@ -2668,6 +2857,40 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
     fn handle_info(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         let call_id = extract_call_id(request);
+        let body = request.body();
+
+        if let Some(pending) = self.pending_pin_auth.get(&call_id) {
+            if !body.is_empty() {
+                let body_str = String::from_utf8_lossy(&body);
+                for line in body_str.lines() {
+                    let line = line.trim();
+                    if let Some(signal) = line
+                        .strip_prefix("Signal=")
+                        .or_else(|| line.strip_prefix("signal="))
+                    {
+                        let digit_str = signal.trim();
+                        if let Some(ch) = digit_str.chars().next() {
+                            if DtmfDigit::from_char(ch).is_ok() {
+                                debug!(
+                                    call_id = %call_id,
+                                    room = %pending.room_number,
+                                    participant = %pending.participant_id,
+                                    digit = %digit_str,
+                                    "INFO DTMF received during PIN collection"
+                                );
+                                let _ = pending.info_digits_tx.send(ch);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let local_sip_uri = self.parse_local_sip_uri();
+            let uas = UserAgentServer::new(local_sip_uri.clone(), local_sip_uri);
+            return uas
+                .create_ok(request, None)
+                .map_err(|e| anyhow::anyhow!("Failed to create 200 OK for INFO: {}", e));
+        }
 
         // Look up session — if not found, return Err so caller falls through to B2BUA
         let session = self
@@ -2676,13 +2899,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .ok_or_else(|| anyhow::anyhow!("No conference session for call_id: {}", call_id))?;
 
         // Parse DTMF from application/dtmf-relay body
-        let body = request.body();
         if !body.is_empty() {
             let body_str = String::from_utf8_lossy(&body);
             // Format: "Signal=5\r\nDuration=160\r\n"
             for line in body_str.lines() {
                 let line = line.trim();
-                if let Some(signal) = line.strip_prefix("Signal=").or_else(|| line.strip_prefix("signal=")) {
+                if let Some(signal) = line
+                    .strip_prefix("Signal=")
+                    .or_else(|| line.strip_prefix("signal="))
+                {
                     let digit_str = signal.trim();
                     if let Some(ch) = digit_str.chars().next() {
                         if let Ok(_digit) = DtmfDigit::from_char(ch) {
@@ -2695,10 +2920,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             // Route to DTMF handler if enabled
                             if self.conference_config.read().dtmf_enabled {
                                 let handler = self.get_or_create_dtmf_handler(&session.room_number);
-                                let _ = handler.process_digit(
-                                    &session.participant_id,
-                                    ch,
-                                );
+                                let _ = handler.process_digit(&session.participant_id, ch);
                             }
                         }
                     }
@@ -2747,7 +2969,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Verify room exists (either active or configured)
         let room_active = self.bridge.get_room(&room_number).is_ok();
         let tenant_id = extract_tenant(request);
-        let meeting_exists = self.lookup_meeting(&tenant_id, &room_number).await?.is_some();
+        let meeting_exists = self
+            .lookup_meeting(&tenant_id, &room_number)
+            .await?
+            .is_some();
         if !room_active && !meeting_exists {
             let response = UserAgentServer::create_response(request, 404, "Conference Not Found");
             handle.send_final(response).await;
@@ -2757,9 +2982,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Authorization: subscriber must be an active participant in this room.
         // This prevents arbitrary SIP endpoints from subscribing to conference state.
         let call_id_sub = extract_call_id(request);
-        let is_participant = self.sessions.iter().any(|entry| {
-            entry.value().room_number == room_number
-        });
+        let is_participant = self
+            .sessions
+            .iter()
+            .any(|entry| entry.value().room_number == room_number);
         // Also allow if the subscriber's Call-ID matches an existing session
         let is_session = self.sessions.contains_key(&call_id_sub);
         if !is_participant && !is_session {
@@ -2808,24 +3034,29 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         const MAX_SUBSCRIPTIONS: usize = 10_000;
         if self.conference_subscriptions.len() >= MAX_SUBSCRIPTIONS {
             let now = Instant::now();
-            self.conference_subscriptions.retain(|_, sub| sub.expires_at > now);
+            self.conference_subscriptions
+                .retain(|_, sub| sub.expires_at > now);
             if self.conference_subscriptions.len() >= MAX_SUBSCRIPTIONS {
                 warn!(
                     count = self.conference_subscriptions.len(),
                     "Subscription limit reached, rejecting new subscription"
                 );
-                let response = UserAgentServer::create_response(request, 503, "Service Unavailable");
+                let response =
+                    UserAgentServer::create_response(request, 503, "Service Unavailable");
                 handle.send_final(response).await;
                 return Ok(());
             }
         }
 
         // Create/refresh subscription
-        self.conference_subscriptions.insert(call_id.clone(), ConferenceSubscription {
-            room_number: room_number.clone(),
-            contact_uri: contact_uri.clone(),
-            expires_at: Instant::now() + Duration::from_secs(expires_secs),
-        });
+        self.conference_subscriptions.insert(
+            call_id.clone(),
+            ConferenceSubscription {
+                room_number: room_number.clone(),
+                contact_uri: contact_uri.clone(),
+                expires_at: Instant::now() + Duration::from_secs(expires_secs),
+            },
+        );
 
         info!(
             call_id = %call_id,
@@ -2836,19 +3067,24 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Send 200 OK with Expires
         let mut response = UserAgentServer::create_response(request, 200, "OK");
-        let _ = response.headers_mut().push("Expires", expires_secs.to_string());
+        let _ = response
+            .headers_mut()
+            .push("Expires", expires_secs.to_string());
         handle.send_final(response).await;
 
         // Send initial NOTIFY with current conference state
         if room_active {
             if let Ok(room) = self.bridge.get_room(&room_number) {
                 let state_xml = build_conference_state_xml(&room_number, &room);
-                let _ = self.uac.send_unsolicited_notify(
-                    &contact_uri,
-                    "conference",
-                    "application/conference-info+xml",
-                    &state_xml,
-                ).await;
+                let _ = self
+                    .uac
+                    .send_unsolicited_notify(
+                        &contact_uri,
+                        "conference",
+                        "application/conference-info+xml",
+                        &state_xml,
+                    )
+                    .await;
             }
         }
 
@@ -2878,9 +3114,15 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // Parse the Refer-To URI to extract room number
         let refer_to_str = refer_to.as_str();
         let room_number = if let Some(rest) = refer_to_str.strip_prefix("sip:") {
-            rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+            rest.split('@')
+                .next()
+                .filter(|u| !u.is_empty())
+                .map(String::from)
         } else if let Some(rest) = refer_to_str.strip_prefix("<sip:") {
-            rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+            rest.split('@')
+                .next()
+                .filter(|u| !u.is_empty())
+                .map(String::from)
         } else {
             None
         };
@@ -2896,12 +3138,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Detect attended transfer: Refer-To URI contains a Replaces parameter
         // e.g. <sip:conf@host?Replaces=callid%3Bto-tag%3D...%3Bfrom-tag%3D...>
-        let is_attended = refer_to_str.contains("Replaces=")
-            || refer_to_str.contains("replaces=");
+        let is_attended = refer_to_str.contains("Replaces=") || refer_to_str.contains("replaces=");
         let replaces_call_id = if is_attended {
             // Extract the Replaces call-id from the Refer-To URI query
             refer_to_str
-                .split("Replaces=").nth(1)
+                .split("Replaces=")
+                .nth(1)
                 .or_else(|| refer_to_str.split("replaces=").nth(1))
                 .and_then(|r| {
                     // URL-decode %3B → ; to parse call-id;to-tag=...;from-tag=...
@@ -2969,7 +3211,10 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// Build a minimal RFC 4575 conference-info XML document for a room.
-fn build_conference_state_xml(room_number: &str, room: &forge_conference::ConferenceRoom) -> String {
+fn build_conference_state_xml(
+    room_number: &str,
+    room: &forge_conference::ConferenceRoom,
+) -> String {
     let participants = room.participants();
     let safe_room = xml_escape(room_number);
     let mut users_xml = String::new();
@@ -2995,7 +3240,10 @@ fn build_conference_state_xml(room_number: &str, room: &forge_conference::Confer
            <users count=\"{}\">\n{}\
            </users>\n\
          </conference-info>\n",
-        safe_room, safe_room, participants.len(), users_xml,
+        safe_room,
+        safe_room,
+        participants.len(),
+        users_xml,
     )
 }
 
@@ -3011,7 +3259,10 @@ pub fn extract_room_number(request: &sip_core::Request) -> Option<String> {
 
     let candidate = if let Some(rest) = uri_str.strip_prefix("sip:") {
         // SIP URI: extract user part from sip:user@host
-        rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+        rest.split('@')
+            .next()
+            .filter(|u| !u.is_empty())
+            .map(String::from)
     } else if let Some(rest) = uri_str.strip_prefix("tel:") {
         // tel URI: extract phone number from tel:+number or tel:number
         // Strip parameters (e.g. tel:+1234;phone-context=example.com)
@@ -3058,18 +3309,17 @@ fn extract_tenant(request: &sip_core::Request) -> TenantId {
 ///
 /// Used for rate-limiting methods that don't receive the peer SocketAddr directly.
 fn extract_via_ip(request: &sip_core::Request) -> Option<std::net::IpAddr> {
-    sip_parse::header(request.headers(), "Via")
-        .and_then(|v| {
-            // Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK...
-            let after_proto = v.as_str().split_whitespace().nth(1)?;
-            let host_port = after_proto.split(';').next()?;
-            // Try parsing as ip:port first, then just ip
-            if let Ok(addr) = host_port.parse::<std::net::SocketAddr>() {
-                Some(addr.ip())
-            } else {
-                host_port.split(':').next()?.parse().ok()
-            }
-        })
+    sip_parse::header(request.headers(), "Via").and_then(|v| {
+        // Via: SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK...
+        let after_proto = v.as_str().split_whitespace().nth(1)?;
+        let host_port = after_proto.split(';').next()?;
+        // Try parsing as ip:port first, then just ip
+        if let Ok(addr) = host_port.parse::<std::net::SocketAddr>() {
+            Some(addr.ip())
+        } else {
+            host_port.split(':').next()?.parse().ok()
+        }
+    })
 }
 
 /// Extract Call-ID from a SIP request.
@@ -3090,7 +3340,10 @@ fn extract_caller_info(request: &sip_core::Request) -> (Option<String>, Option<S
     if let Ok(Some(pai)) = sip_core::parse_p_asserted_identity(request.headers()) {
         if let Some(identity) = pai.identities().next() {
             let display = identity.display_name().map(|s| s.to_string());
-            let caller = identity.uri().as_sip().and_then(|u| u.user().map(|s| s.to_string()));
+            let caller = identity
+                .uri()
+                .as_sip()
+                .and_then(|u| u.user().map(|s| s.to_string()));
             if display.is_some() || caller.is_some() {
                 return (display, caller);
             }
@@ -3102,7 +3355,9 @@ fn extract_caller_info(request: &sip_core::Request) -> (Option<String>, Option<S
         if let Some(from) = sip_parse::parse_from_header(from_val) {
             let name_addr = from.inner();
             let display = name_addr.display_name().map(|s| s.to_string());
-            let caller = name_addr.sip_uri().and_then(|u| u.user().map(|s| s.to_string()));
+            let caller = name_addr
+                .sip_uri()
+                .and_then(|u| u.user().map(|s| s.to_string()));
             return (display, caller);
         }
     }
@@ -3151,7 +3406,10 @@ fn pick_codec(
         let name_upper = codec.encoding_name.to_uppercase();
         // Check against allowed list if configured
         if let Some(allowed_list) = allowed {
-            if !allowed_list.iter().any(|a| a.eq_ignore_ascii_case(&name_upper)) {
+            if !allowed_list
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(&name_upper))
+            {
                 continue;
             }
         }
