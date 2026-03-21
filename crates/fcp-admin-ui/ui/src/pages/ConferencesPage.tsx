@@ -30,6 +30,11 @@ const createSchema = z.object({
   auto_record: z.boolean().optional(),
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
+  pin_prompt_sound: z.string().optional(),
+  invalid_pin_sound: z.string().optional(),
+  moh_sound: z.string().optional(),
+  pin_prompt_tts: z.string().optional(),
+  invalid_pin_tts: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -42,6 +47,11 @@ const editSchema = z.object({
   auto_record: z.boolean().optional(),
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
+  pin_prompt_sound: z.string().optional(),
+  invalid_pin_sound: z.string().optional(),
+  moh_sound: z.string().optional(),
+  pin_prompt_tts: z.string().optional(),
+  invalid_pin_tts: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -229,6 +239,11 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
       auto_record: data.auto_record,
       default_locked: data.default_locked,
       permanent: data.permanent,
+      pin_prompt_sound: data.pin_prompt_sound || undefined,
+      invalid_pin_sound: data.invalid_pin_sound || undefined,
+      moh_sound: data.moh_sound || undefined,
+      pin_prompt_tts: data.pin_prompt_tts || undefined,
+      invalid_pin_tts: data.invalid_pin_tts || undefined,
     })
     reset()
   }
@@ -297,6 +312,33 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
             </div>
           </div>
 
+          <details className="border rounded-md p-3">
+            <summary className="text-sm font-medium cursor-pointer">Audio Prompts (optional overrides)</summary>
+            <p className="text-xs text-muted-foreground mt-1 mb-3">Leave blank to use server defaults. WAV path overrides take priority over TTS text.</p>
+            <div className="space-y-3 mt-2">
+              <div>
+                <Label className="text-xs">PIN Prompt WAV Path</Label>
+                <Input {...register('pin_prompt_sound')} placeholder="e.g. custom_prompt.wav" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">Invalid PIN WAV Path</Label>
+                <Input {...register('invalid_pin_sound')} placeholder="e.g. custom_invalid.wav" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">MOH WAV Path</Label>
+                <Input {...register('moh_sound')} placeholder="e.g. custom_moh.wav" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">PIN Prompt TTS Text</Label>
+                <Input {...register('pin_prompt_tts')} placeholder="e.g. Please enter your PIN" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">Invalid PIN TTS Text</Label>
+                <Input {...register('invalid_pin_tts')} placeholder="e.g. Incorrect PIN, try again" className="text-sm" />
+              </div>
+            </div>
+          </details>
+
           <Button type="submit" className="w-full" disabled={isPending}>
             {isPending ? 'Creating...' : 'Create Bridge'}
           </Button>
@@ -330,6 +372,11 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
       auto_record: item.auto_record,
       default_locked: item.default_locked,
       permanent: item.permanent,
+      pin_prompt_sound: item.pin_prompt_sound || '',
+      invalid_pin_sound: item.invalid_pin_sound || '',
+      moh_sound: item.moh_sound || '',
+      pin_prompt_tts: item.pin_prompt_tts || '',
+      invalid_pin_tts: item.invalid_pin_tts || '',
     })
   }
 
@@ -344,6 +391,11 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
     if (data.auto_record !== undefined) update.auto_record = data.auto_record
     if (data.default_locked !== undefined) update.default_locked = data.default_locked
     if (data.permanent !== undefined) update.permanent = data.permanent
+    if (data.pin_prompt_sound !== undefined) update.pin_prompt_sound = data.pin_prompt_sound || null
+    if (data.invalid_pin_sound !== undefined) update.invalid_pin_sound = data.invalid_pin_sound || null
+    if (data.moh_sound !== undefined) update.moh_sound = data.moh_sound || null
+    if (data.pin_prompt_tts !== undefined) update.pin_prompt_tts = data.pin_prompt_tts || null
+    if (data.invalid_pin_tts !== undefined) update.invalid_pin_tts = data.invalid_pin_tts || null
     onSubmit(update)
   }
 
@@ -400,6 +452,33 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
               <Switch checked={watch('permanent')} onCheckedChange={(v) => setValue('permanent', v)} />
             </div>
           </div>
+
+          <details className="border rounded-md p-3">
+            <summary className="text-sm font-medium cursor-pointer">Audio Prompts (optional overrides)</summary>
+            <p className="text-xs text-muted-foreground mt-1 mb-3">Leave blank to use server defaults. WAV path overrides take priority over TTS text.</p>
+            <div className="space-y-3 mt-2">
+              <div>
+                <Label className="text-xs">PIN Prompt WAV Path</Label>
+                <Input {...register('pin_prompt_sound')} placeholder="Default" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">Invalid PIN WAV Path</Label>
+                <Input {...register('invalid_pin_sound')} placeholder="Default" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">MOH WAV Path</Label>
+                <Input {...register('moh_sound')} placeholder="Default" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">PIN Prompt TTS Text</Label>
+                <Input {...register('pin_prompt_tts')} placeholder="e.g. Please enter your PIN" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">Invalid PIN TTS Text</Label>
+                <Input {...register('invalid_pin_tts')} placeholder="e.g. Incorrect PIN, try again" className="text-sm" />
+              </div>
+            </div>
+          </details>
 
           <Button type="submit" className="w-full" disabled={isPending}>
             {isPending ? 'Saving...' : 'Save Changes'}
