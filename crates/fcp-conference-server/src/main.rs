@@ -216,6 +216,52 @@ async fn main() -> Result<()> {
         info!("Operational config loading complete (DB primary, TOML seed)");
     }
 
+    // 4c. Seed default conference prompts into the Prompt store.
+    //     These are TTS-backed prompts that users can see and re-synthesize
+    //     in the Audio Prompts page. The actual WAV files are generated
+    //     when the admin calls POST /prompts/{id}/synthesize (Kokoro TTS).
+    if let Some(prompt_store) = dyn_storage.prompt_store() {
+        let tenant_id = fcp_core::TenantId::nil();
+        let default_prompts = vec![
+            ("conf_pin_prompt", "Conference PIN Prompt",
+             "Please enter your conference PIN, followed by the pound key.",
+             fcp_core::prompt::PromptCategory::System),
+            ("conf_invalid_pin", "Conference Invalid PIN",
+             "Invalid PIN. Please try again.",
+             fcp_core::prompt::PromptCategory::System),
+            ("conf_moh", "Conference Music on Hold",
+             "Please wait. The conference will begin when the moderator joins.",
+             fcp_core::prompt::PromptCategory::Moh),
+        ];
+        for (name, description, tts_text, category) in default_prompts {
+            match prompt_store.get_prompt_by_name(&tenant_id, name).await {
+                Ok(Some(_)) => {
+                    // Already exists, don't overwrite user edits
+                }
+                Ok(None) => {
+                    let mut prompt = fcp_core::prompt::Prompt::new_tts(
+                        tenant_id,
+                        name,
+                        category,
+                        "en-US",
+                        tts_text,
+                    );
+                    prompt.description = Some(description.to_string());
+                    prompt.tts_voice = Some("af_heart".to_string());
+                    prompt.is_system = true;
+                    if let Err(e) = prompt_store.put_prompt(prompt).await {
+                        warn!(name, error = %e, "Failed to seed conference prompt");
+                    } else {
+                        info!(name, "Seeded default conference prompt");
+                    }
+                }
+                Err(e) => {
+                    warn!(name, error = %e, "Failed to check for existing prompt");
+                }
+            }
+        }
+    }
+
     // 5. Create SIP components
     let dialog_manager = DialogManager::new();
     let subscription_manager = SubscriptionManager::new();

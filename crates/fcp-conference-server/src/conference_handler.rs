@@ -2106,6 +2106,36 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 }
             }
 
+            // Prompt store fallback: load pre-synthesized audio from the Prompt system.
+            // These are seeded at startup and can be (re-)synthesized via the admin UI
+            // Audio Prompts page using Kokoro TTS.
+            if pin_prompt_samples.is_none() || invalid_pin_samples.is_none() {
+                if let Some(prompt_store) = self.storage.prompt_store() {
+                    let tenant_id = fcp_core::TenantId::nil();
+                    let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
+                    if pin_prompt_samples.is_none() {
+                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_pin_prompt").await {
+                            if let Some(ref path) = prompt.audio_path {
+                                if let Some(pcm) = player.load_audio_file(path) {
+                                    debug!(room = %room_number, "Loaded pin_prompt from Prompt store");
+                                    pin_prompt_samples = Some(Arc::new(pcm));
+                                }
+                            }
+                        }
+                    }
+                    if invalid_pin_samples.is_none() {
+                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_invalid_pin").await {
+                            if let Some(ref path) = prompt.audio_path {
+                                if let Some(pcm) = player.load_audio_file(path) {
+                                    debug!(room = %room_number, "Loaded invalid_pin from Prompt store");
+                                    invalid_pin_samples = Some(Arc::new(pcm));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Create a temporary encoder for prompt playback (same codec as participant)
             let mut prompt_encoder = create_codec_instance(&codec_name)?;
 
@@ -2324,7 +2354,22 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let wait_dialog = dialog.clone();
 
                 // Load MOH sound for wait-for-moderator playback
-                let moh_samples = room.get_sounds().and_then(|s| s.moh_sound.clone());
+                let mut moh_samples = room.get_sounds().and_then(|s| s.moh_sound.clone());
+                // Prompt store fallback for MOH
+                if moh_samples.is_none() {
+                    if let Some(prompt_store) = self.storage.prompt_store() {
+                        let tenant_id = fcp_core::TenantId::nil();
+                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_moh").await {
+                            if let Some(ref path) = prompt.audio_path {
+                                let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
+                                if let Some(pcm) = player.load_audio_file(path) {
+                                    debug!(room = %room_number, "Loaded MOH from Prompt store");
+                                    moh_samples = Some(Arc::new(pcm));
+                                }
+                            }
+                        }
+                    }
+                }
                 let moh_codec_name = codec_name.clone();
                 let moh_payload_type = payload_type;
                 let moh_frame_size = frame_size;
