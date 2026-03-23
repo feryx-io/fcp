@@ -36,9 +36,11 @@ jitter_buffer_ms = 60
 dtmf_enabled = true
 max_pin_attempts = 3
 pin_timeout_secs = 15
-pin_prompt_sound = "pin_prompt.wav"
-invalid_pin_sound = "invalid_pin.wav"
-moh_sound = "moh.wav"
+# Sound files are resolved from the Prompt store (Audio Prompts page).
+# Uncomment below to use static WAV files instead:
+# pin_prompt_sound = "pin_prompt.wav"
+# invalid_pin_sound = "invalid_pin.wav"
+# moh_sound = "moh.wav"
 
 [logging]
 level = "info"

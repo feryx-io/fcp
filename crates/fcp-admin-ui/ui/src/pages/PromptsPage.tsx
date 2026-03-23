@@ -15,6 +15,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { prompts, type PromptResponse, type CreatePromptRequest, type UpdatePromptRequest } from '@/api/endpoints'
+import { apiClient } from '@/api/client'
 
 const CATEGORIES = ['system', 'ivr', 'voicemail', 'queue', 'greeting', 'moh', 'custom'] as const
 
@@ -245,20 +246,31 @@ export function PromptsPage() {
     uploadMutation.mutate({ id: uploadTarget.id, file })
   }
 
-  function togglePlay(prompt: PromptResponse) {
+  async function togglePlay(prompt: PromptResponse) {
     if (playingId === prompt.id) {
       audioRef.current?.pause()
       setPlayingId(null)
-    } else {
-      if (audioRef.current) {
-        audioRef.current.pause()
-      }
-      const audio = new Audio(prompts.audioUrl(prompt.id))
-      audio.onended = () => setPlayingId(null)
-      audio.onerror = () => setPlayingId(null)
+      return
+    }
+    if (audioRef.current) {
+      audioRef.current.pause()
+    }
+    try {
+      // Fetch audio with auth headers (browser Audio() can't add headers)
+      const resp = await fetch(`/api/v1/prompts/${encodeURIComponent(prompt.id)}/audio`, {
+        headers: { Authorization: `Bearer ${apiClient.getToken() || ''}` },
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audio.onended = () => { setPlayingId(null); URL.revokeObjectURL(url) }
+      audio.onerror = () => { setPlayingId(null); URL.revokeObjectURL(url) }
       audio.play()
       audioRef.current = audio
       setPlayingId(prompt.id)
+    } catch {
+      setPlayingId(null)
     }
   }
 
