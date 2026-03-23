@@ -1002,6 +1002,7 @@ export interface MeetingResponse {
   moh_sound?: string | null
   pin_prompt_tts?: string | null
   invalid_pin_tts?: string | null
+  welcome_tts?: string | null
   created_at: string
   updated_at: string
 }
@@ -1023,6 +1024,7 @@ export interface CreateMeetingRequest {
   moh_sound?: string | null
   pin_prompt_tts?: string | null
   invalid_pin_tts?: string | null
+  welcome_tts?: string | null
 }
 
 export interface UpdateMeetingRequest {
@@ -1041,4 +1043,5 @@ export interface UpdateMeetingRequest {
   moh_sound?: string | null
   pin_prompt_tts?: string | null
   invalid_pin_tts?: string | null
+  welcome_tts?: string | null
 }

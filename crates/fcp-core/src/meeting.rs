@@ -69,6 +69,12 @@ pub struct Meeting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalid_pin_tts: Option<String>,
 
+    /// TTS text for the welcome message when joining the conference.
+    /// Supports {count} placeholder for current participant count.
+    /// None = use default ("You have joined the conference. There are N participants.")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub welcome_tts: Option<String>,
+
     /// Creation timestamp
     pub created_at: SystemTime,
 
@@ -102,6 +108,7 @@ mod tests {
             moh_sound: None,
             pin_prompt_tts: None,
             invalid_pin_tts: None,
+            welcome_tts: None,
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
             updated_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
         };

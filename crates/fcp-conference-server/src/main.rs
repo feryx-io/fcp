@@ -232,6 +232,9 @@ async fn main() -> Result<()> {
             ("conf_moh", "Conference Music on Hold",
              "Please wait. The conference will begin when the moderator joins.",
              fcp_core::prompt::PromptCategory::Moh),
+            ("conf_welcome", "Conference Welcome",
+             "You have joined the conference.",
+             fcp_core::prompt::PromptCategory::System),
         ];
         for (name, description, tts_text, category) in default_prompts {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {

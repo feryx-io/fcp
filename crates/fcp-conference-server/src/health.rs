@@ -406,6 +406,8 @@ struct CreateMeetingRequest {
     pin_prompt_tts: Option<String>,
     #[serde(default)]
     invalid_pin_tts: Option<String>,
+    #[serde(default)]
+    welcome_tts: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -519,6 +521,7 @@ async fn create_meeting_handler(
         moh_sound: payload.moh_sound,
         pin_prompt_tts: payload.pin_prompt_tts,
         invalid_pin_tts: payload.invalid_pin_tts,
+        welcome_tts: payload.welcome_tts,
         created_at: now,
         updated_at: now,
     };
@@ -595,6 +598,7 @@ struct UpdateMeetingRequest {
     moh_sound: Option<Option<String>>,
     pin_prompt_tts: Option<Option<String>>,
     invalid_pin_tts: Option<Option<String>>,
+    welcome_tts: Option<Option<String>>,
 }
 
 async fn update_meeting_handler(
@@ -693,6 +697,10 @@ async fn update_meeting_handler(
     if let Some(v) = payload.invalid_pin_tts {
         meeting.invalid_pin_tts = v;
         changed_fields.push("invalid_pin_tts".to_string());
+    }
+    if let Some(v) = payload.welcome_tts {
+        meeting.welcome_tts = v;
+        changed_fields.push("welcome_tts".to_string());
     }
     meeting.updated_at = SystemTime::now();
 
@@ -1758,6 +1766,7 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
         "moh_sound": meeting.moh_sound,
         "pin_prompt_tts": meeting.pin_prompt_tts,
         "invalid_pin_tts": meeting.invalid_pin_tts,
+        "welcome_tts": meeting.welcome_tts,
         "created_at": meeting.created_at
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

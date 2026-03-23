@@ -49,6 +49,8 @@ pub struct MeetingResponse {
     pub pin_prompt_tts: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invalid_pin_tts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub welcome_tts: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -74,6 +76,7 @@ impl From<Meeting> for MeetingResponse {
             moh_sound: m.moh_sound,
             pin_prompt_tts: m.pin_prompt_tts,
             invalid_pin_tts: m.invalid_pin_tts,
+            welcome_tts: m.welcome_tts,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -113,6 +116,8 @@ pub struct CreateMeetingRequest {
     pub pin_prompt_tts: Option<String>,
     #[serde(default)]
     pub invalid_pin_tts: Option<String>,
+    #[serde(default)]
+    pub welcome_tts: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -137,6 +142,7 @@ pub struct UpdateMeetingRequest {
     pub moh_sound: Option<Option<String>>,
     pub pin_prompt_tts: Option<Option<String>>,
     pub invalid_pin_tts: Option<Option<String>>,
+    pub welcome_tts: Option<Option<String>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -201,6 +207,7 @@ pub async fn create_meeting(
         moh_sound: req.moh_sound,
         pin_prompt_tts: req.pin_prompt_tts,
         invalid_pin_tts: req.invalid_pin_tts,
+        welcome_tts: req.welcome_tts,
         created_at: now,
         updated_at: now,
     };
@@ -300,6 +307,9 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.invalid_pin_tts {
         meeting.invalid_pin_tts = v;
+    }
+    if let Some(v) = req.welcome_tts {
+        meeting.welcome_tts = v;
     }
     meeting.updated_at = SystemTime::now();
 

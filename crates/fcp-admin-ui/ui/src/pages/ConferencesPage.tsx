@@ -35,6 +35,7 @@ const createSchema = z.object({
   moh_sound: z.string().optional(),
   pin_prompt_tts: z.string().optional(),
   invalid_pin_tts: z.string().optional(),
+  welcome_tts: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -52,6 +53,7 @@ const editSchema = z.object({
   moh_sound: z.string().optional(),
   pin_prompt_tts: z.string().optional(),
   invalid_pin_tts: z.string().optional(),
+  welcome_tts: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -244,6 +246,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
       moh_sound: data.moh_sound || undefined,
       pin_prompt_tts: data.pin_prompt_tts || undefined,
       invalid_pin_tts: data.invalid_pin_tts || undefined,
+      welcome_tts: data.welcome_tts || undefined,
     })
     reset()
   }
@@ -336,6 +339,10 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
                 <Label className="text-xs">Invalid PIN TTS Text</Label>
                 <Input {...register('invalid_pin_tts')} placeholder="e.g. Incorrect PIN, try again" className="text-sm" />
               </div>
+              <div>
+                <Label className="text-xs">Welcome TTS Text</Label>
+                <Input {...register('welcome_tts')} placeholder="e.g. Welcome to the meeting. Use {count} for participant count." className="text-sm" />
+              </div>
             </div>
           </details>
 
@@ -377,6 +384,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
       moh_sound: item.moh_sound || '',
       pin_prompt_tts: item.pin_prompt_tts || '',
       invalid_pin_tts: item.invalid_pin_tts || '',
+      welcome_tts: item.welcome_tts || '',
     })
   }
 
@@ -396,6 +404,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
     if (data.moh_sound !== undefined) update.moh_sound = data.moh_sound || null
     if (data.pin_prompt_tts !== undefined) update.pin_prompt_tts = data.pin_prompt_tts || null
     if (data.invalid_pin_tts !== undefined) update.invalid_pin_tts = data.invalid_pin_tts || null
+    if (data.welcome_tts !== undefined) update.welcome_tts = data.welcome_tts || null
     onSubmit(update)
   }
 
@@ -476,6 +485,10 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
               <div>
                 <Label className="text-xs">Invalid PIN TTS Text</Label>
                 <Input {...register('invalid_pin_tts')} placeholder="e.g. Incorrect PIN, try again" className="text-sm" />
+              </div>
+              <div>
+                <Label className="text-xs">Welcome TTS Text</Label>
+                <Input {...register('welcome_tts')} placeholder="e.g. Welcome to the meeting. Use {count} for participant count." className="text-sm" />
               </div>
             </div>
           </details>
