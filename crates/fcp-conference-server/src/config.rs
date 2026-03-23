@@ -74,6 +74,15 @@ pub struct TtsSection {
     #[serde(default)]
     pub voice: Option<String>,
 
+    /// Path to Python executable for Kokoro local TTS (e.g. ".venv/bin/python3").
+    /// Required when provider = "local".
+    #[serde(default)]
+    pub python_path: Option<String>,
+
+    /// Local TTS engine name (default: "kokoro"). Only used with provider = "local".
+    #[serde(default = "default_tts_engine")]
+    pub engine: String,
+
     /// Directory for cached TTS audio files. Default: /var/fcp/conference/tts_cache
     #[serde(default = "default_tts_cache_dir")]
     pub cache_dir: String,
@@ -84,7 +93,11 @@ pub struct TtsSection {
 }
 
 fn default_tts_provider() -> String {
-    "openai".to_string()
+    "local".to_string()
+}
+
+fn default_tts_engine() -> String {
+    "kokoro".to_string()
 }
 
 fn default_tts_language() -> String {
@@ -105,6 +118,8 @@ impl Default for TtsSection {
             enabled: false,
             provider: default_tts_provider(),
             api_key: None,
+            python_path: None,
+            engine: default_tts_engine(),
             language: default_tts_language(),
             voice: None,
             cache_dir: default_tts_cache_dir(),

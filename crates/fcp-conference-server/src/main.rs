@@ -479,27 +479,24 @@ async fn main() -> Result<()> {
         config.ai.clone(),
     );
 
-    // Initialize TTS service if configured
-    if config.tts.enabled {
-        if let Some(ref api_key) = config.tts.api_key {
-            let tts_provider_config = match config.tts.provider.as_str() {
-                "openai" => fcp_media::TtsProviderConfig::OpenAi {
-                    api_key: api_key.clone(),
-                    model: "tts-1".to_string(),
-                },
-                "google_cloud" => fcp_media::TtsProviderConfig::GoogleCloud {
-                    api_key: api_key.clone(),
-                },
-                other => {
-                    warn!(provider = %other, "Unknown TTS provider, disabling TTS");
-                    fcp_media::TtsProviderConfig::OpenAi {
-                        api_key: api_key.clone(),
-                        model: "tts-1".to_string(),
-                    }
-                }
-            };
+    // Initialize TTS service if configured (supports local/Kokoro + cloud providers)
+    let tts_service: Option<Arc<fcp_media::TtsService>> = if config.tts.enabled {
+        let provider = match config.tts.provider.as_str() {
+            "local" | "kokoro" => Some(fcp_media::TtsProviderConfig::Local {
+                engine: config.tts.engine.clone(),
+                executable_path: config.tts.python_path.as_ref().map(std::path::PathBuf::from),
+            }),
+            "openai" => config.tts.api_key.as_ref().map(|key| {
+                fcp_media::TtsProviderConfig::OpenAi { api_key: key.clone(), model: "tts-1".to_string() }
+            }).or_else(|| { warn!("OpenAI TTS requires api_key"); None }),
+            "google_cloud" => config.tts.api_key.as_ref().map(|key| {
+                fcp_media::TtsProviderConfig::GoogleCloud { api_key: key.clone() }
+            }).or_else(|| { warn!("Google Cloud TTS requires api_key"); None }),
+            other => { warn!(provider = %other, "Unknown TTS provider"); None }
+        };
+        if let Some(provider) = provider {
             let tts_config = fcp_media::TtsConfig {
-                provider: tts_provider_config,
+                provider,
                 cache_dir: std::path::PathBuf::from(&config.tts.cache_dir),
                 cache_max_size_mb: config.tts.cache_max_size_mb,
                 default_language: config.tts.language.clone(),
@@ -507,15 +504,50 @@ async fn main() -> Result<()> {
             };
             match fcp_media::TtsService::new(tts_config).await {
                 Ok(tts) => {
-                    info!(provider = %config.tts.provider, "TTS service initialized for conference prompts");
-                    conference_handler.set_tts_service(Arc::new(tts));
+                    info!(provider = %config.tts.provider, "TTS service initialized");
+                    let tts = Arc::new(tts);
+                    conference_handler.set_tts_service(Arc::clone(&tts));
+                    Some(tts)
                 }
-                Err(e) => {
-                    warn!(error = %e, "Failed to initialize TTS service, TTS prompts disabled");
-                }
+                Err(e) => { warn!(error = %e, "TTS init failed"); None }
             }
-        } else {
-            warn!("TTS enabled but no api_key configured, TTS prompts disabled");
+        } else { None }
+    } else { None };
+
+    // Auto-synthesize any conference prompts that are missing audio files.
+    // This runs once at startup so callers hear prompts on the first call.
+    if let (Some(ref tts), Some(prompt_store)) = (&tts_service, dyn_storage.prompt_store()) {
+        let tenant_id = fcp_core::TenantId::nil();
+        let prompts_dir = std::path::PathBuf::from(
+            &config.tts.cache_dir,
+        );
+        let _ = tokio::fs::create_dir_all(&prompts_dir).await;
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_moh", "conf_welcome"] {
+            match prompt_store.get_prompt_by_name(&tenant_id, name).await {
+                Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
+                    if let Some(ref text) = prompt.tts_text {
+                        let voice = prompt.tts_voice.as_deref();
+                        match tts.synthesize(text, Some(&prompt.language), voice).await {
+                            Ok(cached_path) => {
+                                // Copy to permanent location
+                                let dest = prompts_dir.join(format!("{}.wav", prompt.id));
+                                if let Ok(()) = tokio::fs::copy(&cached_path, &dest).await.map(|_| ()) {
+                                    let size = tokio::fs::metadata(&dest).await.map(|m| m.len()).unwrap_or(0);
+                                    prompt.audio_path = Some(dest);
+                                    prompt.audio_format = Some("wav".to_string());
+                                    prompt.file_size = Some(size);
+                                    prompt.updated_at = std::time::SystemTime::now();
+                                    let _ = prompt_store.put_prompt(prompt).await;
+                                    info!(name, "Auto-synthesized conference prompt");
+                                }
+                            }
+                            Err(e) => warn!(name, error = %e, "Auto-synthesis failed for prompt"),
+                        }
+                    }
+                }
+                Ok(Some(_)) => {} // Already has audio
+                _ => {}
+            }
         }
     }
 

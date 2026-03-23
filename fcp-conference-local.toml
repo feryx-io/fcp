@@ -42,6 +42,14 @@ pin_timeout_secs = 15
 # invalid_pin_sound = "invalid_pin.wav"
 # moh_sound = "moh.wav"
 
+[tts]
+enabled = true
+provider = "local"
+engine = "kokoro"
+python_path = ".venv/bin/python3"
+cache_dir = "/tmp/fcp/tts_cache"
+voice = "af_heart"
+
 [logging]
 level = "info"
 format = "pretty"
