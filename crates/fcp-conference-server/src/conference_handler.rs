@@ -2687,66 +2687,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             }
         }
 
-        // 15b. Play welcome message before starting the audio bridge.
-        //      Uses TTS for a dynamic message with participant count if available,
-        //      otherwise falls back to the static conf_welcome prompt from the store.
-        {
-            let participant_count = room.participant_count();
-            let mixer_rate = conf.sample_rate;
-            let mut welcome_encoder = create_codec_instance(&codec_name)?;
-            let mut welcome_played = false;
-
-            // Try TTS first: dynamic message with participant count.
-            // Per-meeting welcome_tts overrides the default. Supports {count} placeholder.
-            if let Some(ref tts) = self.tts_service {
-                let welcome_text = if let Some(ref custom) = meeting.welcome_tts {
-                    custom.replace("{count}", &participant_count.to_string())
-                } else {
-                    let others = if participant_count <= 1 {
-                        "You are the first participant.".to_string()
-                    } else {
-                        let n = participant_count - 1;
-                        if n == 1 {
-                            "There is 1 other participant in the conference.".to_string()
-                        } else {
-                            format!("There are {} other participants in the conference.", n)
-                        }
-                    };
-                    format!("You have joined the conference. {}", others)
-                };
-                match tts.synthesize(&welcome_text, None, None).await {
-                    Ok(path) => {
-                        let player = forge_conference::AudioFeedbackPlayer::new(mixer_rate);
-                        if let Some(pcm) = player.load_audio_file(&path) {
-                            play_prompt_to_rtp(
-                                &rtp_socket, &pcm, welcome_encoder.as_mut(),
-                                payload_type, frame_size, &srtp_context, mixer_rate,
-                            ).await;
-                            welcome_played = true;
-                        }
-                    }
-                    Err(e) => debug!(error = %e, "TTS welcome synthesis failed, trying prompt store"),
-                }
-            }
-
-            // Fallback: static prompt from the Prompt store
-            if !welcome_played {
-                if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = fcp_core::TenantId::nil();
-                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, "conf_welcome").await {
-                        if let Some(ref path) = prompt.audio_path {
-                            let player = forge_conference::AudioFeedbackPlayer::new(mixer_rate);
-                            if let Some(pcm) = player.load_audio_file(path) {
-                                play_prompt_to_rtp(
-                                    &rtp_socket, &pcm, welcome_encoder.as_mut(),
-                                    payload_type, frame_size, &srtp_context, mixer_rate,
-                                ).await;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // 15b. Prepare welcome message — played asynchronously after the audio bridge
+        //      starts so TTS synthesis doesn't block the join path.
+        let participant_count = room.participant_count();
+        let welcome_tts_service = self.tts_service.clone();
+        let welcome_custom_text = meeting.welcome_tts.clone();
+        let welcome_prompt_store = self.storage.prompt_store().cloned();
+        let welcome_rtp_socket = Arc::clone(&rtp_socket);
+        let welcome_srtp = srtp_context.clone();
+        let welcome_codec_name = codec_name.clone();
+        let welcome_payload_type = payload_type;
+        let welcome_frame_size = frame_size;
+        let welcome_mixer_rate = conf.sample_rate;
+        let welcome_room = room_number.clone();
 
         // 16. Create codec instances for the audio bridge
         let encoder = create_codec_instance(&codec_name)?;
@@ -2783,6 +2736,67 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             bridge_srtp,
             conf.sample_rate,
         ));
+
+        // 18b. Spawn async welcome message — runs in background so it doesn't
+        //      block the audio bridge. TTS synthesis can take 1-5s with Kokoro.
+        tokio::spawn(async move {
+            // Small delay to let the audio bridge establish before we play
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            let mut encoder = match create_codec_instance(&welcome_codec_name) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let player = forge_conference::AudioFeedbackPlayer::new(welcome_mixer_rate);
+
+            // Try TTS first: dynamic message with participant count
+            if let Some(ref tts) = welcome_tts_service {
+                let welcome_text = if let Some(ref custom) = welcome_custom_text {
+                    custom.replace("{count}", &participant_count.to_string())
+                } else {
+                    let others = if participant_count <= 1 {
+                        "You are the first participant.".to_string()
+                    } else {
+                        let n = participant_count - 1;
+                        if n == 1 {
+                            "There is 1 other participant in the conference.".to_string()
+                        } else {
+                            format!("There are {} other participants in the conference.", n)
+                        }
+                    };
+                    format!("You have joined the conference. {}", others)
+                };
+                match tts.synthesize(&welcome_text, None, None).await {
+                    Ok(path) => {
+                        if let Some(pcm) = player.load_audio_file(&path) {
+                            play_prompt_to_rtp(
+                                &welcome_rtp_socket, &pcm, encoder.as_mut(),
+                                welcome_payload_type, welcome_frame_size,
+                                &welcome_srtp, welcome_mixer_rate,
+                            ).await;
+                            return;
+                        }
+                    }
+                    Err(e) => debug!(room = %welcome_room, error = %e, "TTS welcome failed, trying prompt store"),
+                }
+            }
+
+            // Fallback: static prompt from the Prompt store
+            if let Some(ref prompt_store) = welcome_prompt_store {
+                let tid = fcp_core::TenantId::nil();
+                if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, "conf_welcome").await {
+                    if let Some(ref path) = prompt.audio_path {
+                        if let Some(pcm) = player.load_audio_file(path) {
+                            play_prompt_to_rtp(
+                                &welcome_rtp_socket, &pcm, encoder.as_mut(),
+                                welcome_payload_type, welcome_frame_size,
+                                &welcome_srtp, welcome_mixer_rate,
+                            ).await;
+                        }
+                    }
+                }
+            }
+        });
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
         let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
