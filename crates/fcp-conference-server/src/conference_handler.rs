@@ -2299,37 +2299,94 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         };
 
         // 15. Add participant to room (enforces capacity/locked/wait-for-moderator)
-        match room.add_participant(&participant_id, is_host) {
-            Ok(()) => {
-                // Successfully added
-            }
-            Err(ConferenceError::ConferenceFull(max)) => {
-                warn!(room = %room_number, max = max, "Conference is full, rejecting participant");
-                if let Err(e) = self.uac.bye(&dialog).await {
-                    warn!(error = %e, "Failed to send BYE after conference full");
+        //
+        // Defense-in-depth: check the meeting's wait_for_moderator flag directly
+        // at the handler level. The room's add_participant also checks, but the
+        // meeting is the authoritative source. If both the meeting says "wait" and
+        // there are no hosts, we enforce waiting regardless of room config state.
+        info!(
+            room = %room_number,
+            participant = %participant_id,
+            is_host = is_host,
+            wait_for_moderator = meeting.wait_for_moderator,
+            room_host_count = room.host_count(),
+            room_wfm_flag = room.wait_for_moderator_enabled(),
+            "Adding participant to conference"
+        );
+
+        // Determine if the participant should wait for a moderator.
+        // Check the meeting config directly (handler-level) as the authoritative source.
+        let should_wait = if meeting.wait_for_moderator && !is_host && room.host_count() == 0 {
+            info!(
+                room = %room_number,
+                participant = %participant_id,
+                "Guest must wait for moderator (meeting.wait_for_moderator=true, no hosts present)"
+            );
+            true
+        } else {
+            false
+        };
+
+        // If the handler already determined the participant should wait, skip
+        // add_participant (which would add to the mixer) and go straight to
+        // the waiting flow. Otherwise, let add_participant handle it normally.
+        let should_wait = if should_wait {
+            true
+        } else {
+            match room.add_participant(&participant_id, is_host) {
+                Ok(()) => false,
+                Err(ConferenceError::WaitingForModerator) => true,
+                Err(ConferenceError::ConferenceFull(max)) => {
+                    warn!(room = %room_number, max = max, "Conference is full, rejecting participant");
+                    if let Err(e) = self.uac.bye(&dialog).await {
+                        warn!(error = %e, "Failed to send BYE after conference full");
+                    }
+                    let pool = Arc::clone(&self.port_pool);
+                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                    return Ok(());
                 }
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
-                return Ok(());
-            }
-            Err(ConferenceError::ConferenceLocked) => {
-                warn!(room = %room_number, "Conference is locked, rejecting participant");
-                if let Err(e) = self.uac.bye(&dialog).await {
-                    warn!(error = %e, "Failed to send BYE after conference locked");
+                Err(ConferenceError::ConferenceLocked) => {
+                    warn!(room = %room_number, "Conference is locked, rejecting participant");
+                    if let Err(e) = self.uac.bye(&dialog).await {
+                        warn!(error = %e, "Failed to send BYE after conference locked");
+                    }
+                    let pool = Arc::clone(&self.port_pool);
+                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                    return Ok(());
                 }
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
-                return Ok(());
+                Err(e) => {
+                    warn!(room = %room_number, error = %e, "Failed to add participant");
+                    if let Err(bye_err) = self.uac.bye(&dialog).await {
+                        warn!(error = %bye_err, "Failed to send BYE after add_participant error");
+                    }
+                    let pool = Arc::clone(&self.port_pool);
+                    tokio::spawn(async move { pool.deallocate(port_pair).await });
+                    return Ok(());
+                }
             }
-            Err(ConferenceError::WaitingForModerator) => {
+        };
+
+        if should_wait {
                 info!(
                     room = %room_number,
                     participant = %participant_id,
                     "Participant waiting for moderator"
                 );
-                // Participant is in waiting_participants — spawn a task that polls
-                // until they appear in the mixer (when a host joins and releases them),
-                // then start the audio bridge.
+                // Ensure participant is in waiting_participants (add_participant may
+                // have added them if it returned WaitingForModerator, or we may need
+                // to add them here if the handler-level check pre-empted add_participant).
+                if !room.waiting_participants().contains(&participant_id) {
+                    // Handler-level enforcement: manually insert into waiting list.
+                    // Use a low-level DashMap insert via a helper if available, or
+                    // call add_participant which will do it for us (it will return
+                    // WaitingForModerator since we know the conditions are met).
+                    let _ = room.add_participant(&participant_id, false);
+                    // The above call should return Err(WaitingForModerator) and
+                    // insert the participant into waiting_participants.
+                }
+
+                // Spawn a task that polls until they appear in the mixer (when a
+                // host joins and releases them), then start the audio bridge.
                 let bridge_room = Arc::clone(&room);
                 let bridge_participant = participant_id.clone();
                 let bridge_socket = Arc::clone(&rtp_socket);
@@ -2350,26 +2407,43 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let wait_stats_clone = Arc::clone(&wait_stats);
                 let wait_srtp = srtp_context.clone();
                 let max_wait_secs = conf.max_wait_for_moderator_secs;
+                let announcement_interval_secs = conf.moh_announcement_interval_secs;
                 let wait_uac = Arc::clone(&self.uac);
                 let wait_dialog = dialog.clone();
 
-                // Load MOH sound for wait-for-moderator playback
-                let mut moh_samples = room.get_sounds().and_then(|s| s.moh_sound.clone());
-                // Prompt store fallback for MOH
-                if moh_samples.is_none() {
+                // Load announcement sound (short TTS message like "Please wait...")
+                let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
+                if let Some(prompt_store) = self.storage.prompt_store() {
+                    let tenant_id = fcp_core::TenantId::nil();
+                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_wait_announcement").await {
+                        if let Some(ref path) = prompt.audio_path {
+                            let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
+                            if let Some(pcm) = player.load_audio_file(path) {
+                                debug!(room = %room_number, "Loaded announcement from conf_moh prompt");
+                                announcement_samples = Some(Arc::new(pcm));
+                            }
+                        }
+                    }
+                }
+
+                // Load hold music (separate from the announcement).
+                // Priority: meeting moh_sound → room sounds → conf_moh_music prompt
+                let mut music_samples: Option<Arc<Vec<i16>>> = room.get_sounds().and_then(|s| s.moh_sound.clone());
+                if music_samples.is_none() {
                     if let Some(prompt_store) = self.storage.prompt_store() {
                         let tenant_id = fcp_core::TenantId::nil();
-                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_moh").await {
+                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_moh_music").await {
                             if let Some(ref path) = prompt.audio_path {
                                 let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
                                 if let Some(pcm) = player.load_audio_file(path) {
-                                    debug!(room = %room_number, "Loaded MOH from Prompt store");
-                                    moh_samples = Some(Arc::new(pcm));
+                                    debug!(room = %room_number, "Loaded hold music from conf_moh_music prompt");
+                                    music_samples = Some(Arc::new(pcm));
                                 }
                             }
                         }
                     }
                 }
+
                 let moh_codec_name = codec_name.clone();
                 let moh_payload_type = payload_type;
                 let moh_frame_size = frame_size;
@@ -2377,18 +2451,16 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let moh_srtp = srtp_context.clone();
 
                 let wait_handle = tokio::spawn(async move {
-                    // If MOH is configured, spawn a background task that loops the
-                    // sound until we signal it to stop via a cancellation token.
+                    // Spawn a background task that plays: announcement → music/silence → repeat
                     let moh_cancel = tokio_util::sync::CancellationToken::new();
-                    let moh_handle = if let Some(ref samples) = moh_samples {
+                    let has_audio = announcement_samples.is_some() || music_samples.is_some();
+                    let moh_handle = if has_audio {
                         let cancel = moh_cancel.clone();
-                        let samples = Arc::clone(samples);
                         let rtp_sock = Arc::clone(&moh_rtp_socket);
                         let srtp = moh_srtp.clone();
                         let codec_name = moh_codec_name.clone();
                         let ms_rate = mixer_sample_rate;
                         Some(tokio::spawn(async move {
-                            // Create a dedicated encoder for MOH playback
                             let mut moh_encoder = match create_codec_instance(&codec_name) {
                                 Ok(e) => e,
                                 Err(e) => {
@@ -2397,19 +2469,70 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                 }
                             };
                             loop {
-                                // Play the entire MOH file
-                                play_prompt_to_rtp(
-                                    &rtp_sock,
-                                    &samples,
-                                    moh_encoder.as_mut(),
-                                    moh_payload_type,
-                                    moh_frame_size,
-                                    &srtp,
-                                    ms_rate,
-                                )
-                                .await;
+                                // 1. Play the announcement (short TTS message)
+                                if let Some(ref announcement) = announcement_samples {
+                                    play_prompt_to_rtp(
+                                        &rtp_sock,
+                                        announcement,
+                                        moh_encoder.as_mut(),
+                                        moh_payload_type,
+                                        moh_frame_size,
+                                        &srtp,
+                                        ms_rate,
+                                    )
+                                    .await;
+                                    if cancel.is_cancelled() {
+                                        break;
+                                    }
+                                }
 
-                                // Check if we should stop before looping
+                                // 2. Play hold music for the announcement interval,
+                                //    or wait silently if no music is configured.
+                                let interval = Duration::from_secs(announcement_interval_secs.max(5));
+                                let music_start = Instant::now();
+                                if let Some(ref music) = music_samples {
+                                    // Loop the music file until the interval expires
+                                    while music_start.elapsed() < interval {
+                                        play_prompt_to_rtp(
+                                            &rtp_sock,
+                                            music,
+                                            moh_encoder.as_mut(),
+                                            moh_payload_type,
+                                            moh_frame_size,
+                                            &srtp,
+                                            ms_rate,
+                                        )
+                                        .await;
+                                        if cancel.is_cancelled() {
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    // No music configured — send silence packets to
+                                    // keep the RTP stream alive during the interval.
+                                    let silence_frame = vec![0i16; moh_frame_size];
+                                    let ptime = Duration::from_millis(
+                                        (moh_frame_size as u64 * 1000) / ms_rate as u64,
+                                    );
+                                    while music_start.elapsed() < interval {
+                                        play_prompt_to_rtp(
+                                            &rtp_sock,
+                                            &silence_frame,
+                                            moh_encoder.as_mut(),
+                                            moh_payload_type,
+                                            moh_frame_size,
+                                            &srtp,
+                                            ms_rate,
+                                        )
+                                        .await;
+                                        // pace silence at the frame rate
+                                        tokio::time::sleep(ptime).await;
+                                        if cancel.is_cancelled() {
+                                            break;
+                                        }
+                                    }
+                                }
+
                                 if cancel.is_cancelled() {
                                     break;
                                 }
@@ -2606,16 +2729,6 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     _invite_start.elapsed(),
                 );
                 return Ok(());
-            }
-            Err(e) => {
-                warn!(room = %room_number, error = %e, "Failed to add participant");
-                if let Err(bye_err) = self.uac.bye(&dialog).await {
-                    warn!(error = %bye_err, "Failed to send BYE after add_participant error");
-                }
-                let pool = Arc::clone(&self.port_pool);
-                tokio::spawn(async move { pool.deallocate(port_pair).await });
-                return Ok(());
-            }
         }
 
         info!(

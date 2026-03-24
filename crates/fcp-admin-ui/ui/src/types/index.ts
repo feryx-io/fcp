@@ -997,6 +997,7 @@ export interface MeetingResponse {
   auto_record: boolean
   default_locked: boolean
   permanent: boolean
+  owner_id: string | null
   pin_prompt_sound?: string | null
   invalid_pin_sound?: string | null
   moh_sound?: string | null
@@ -1019,6 +1020,7 @@ export interface CreateMeetingRequest {
   auto_record?: boolean
   default_locked?: boolean
   permanent?: boolean
+  owner_id?: string | null
   pin_prompt_sound?: string | null
   invalid_pin_sound?: string | null
   moh_sound?: string | null
@@ -1038,6 +1040,7 @@ export interface UpdateMeetingRequest {
   auto_record?: boolean
   default_locked?: boolean
   permanent?: boolean
+  owner_id?: string | null
   pin_prompt_sound?: string | null
   invalid_pin_sound?: string | null
   moh_sound?: string | null

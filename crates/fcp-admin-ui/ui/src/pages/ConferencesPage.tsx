@@ -15,8 +15,11 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
-import { conferences } from '@/api/endpoints'
-import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest } from '@/types'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
+import { conferences, prompts, users, type PromptResponse } from '@/api/endpoints'
+import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, User } from '@/types'
 
 const createSchema = z.object({
   room_number: z.string().min(1, 'Room number is required').regex(/^\d+$/, 'Must be numeric'),
@@ -30,6 +33,7 @@ const createSchema = z.object({
   auto_record: z.boolean().optional(),
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
+  owner_id: z.string().optional(),
   pin_prompt_sound: z.string().optional(),
   invalid_pin_sound: z.string().optional(),
   moh_sound: z.string().optional(),
@@ -48,6 +52,7 @@ const editSchema = z.object({
   auto_record: z.boolean().optional(),
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
+  owner_id: z.string().optional(),
   pin_prompt_sound: z.string().optional(),
   invalid_pin_sound: z.string().optional(),
   moh_sound: z.string().optional(),
@@ -59,6 +64,35 @@ const editSchema = z.object({
 type CreateForm = z.infer<typeof createSchema>
 type EditForm = z.infer<typeof editSchema>
 
+/** Dropdown that lists audio prompts with audio files, plus a "Default (none)" option. */
+function AudioPromptSelect({ value, onChange, promptList, label }: {
+  value: string | undefined
+  onChange: (val: string) => void
+  promptList: PromptResponse[]
+  label: string
+}) {
+  // Only show prompts that actually have audio
+  const available = promptList.filter(p => p.has_audio)
+  return (
+    <div>
+      <Label className="text-xs">{label}</Label>
+      <Select value={value || '__none__'} onValueChange={(v) => onChange(v === '__none__' ? '' : v)}>
+        <SelectTrigger className="text-sm">
+          <SelectValue placeholder="Default" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__none__">Default (server TTS)</SelectItem>
+          {available.map(p => (
+            <SelectItem key={p.id} value={p.audio_path || p.name}>
+              {p.name}{p.description ? ` — ${p.description}` : ''}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
 export function ConferencesPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editItem, setEditItem] = useState<MeetingResponse | null>(null)
@@ -67,6 +101,16 @@ export function ConferencesPage() {
   const { data: items = [], isLoading } = useQuery({
     queryKey: ['meetings'],
     queryFn: conferences.listMeetings,
+  })
+
+  const { data: promptList = [] } = useQuery({
+    queryKey: ['prompts'],
+    queryFn: () => prompts.list(),
+  })
+
+  const { data: userList = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: users.list,
   })
 
   const createMutation = useMutation({
@@ -160,6 +204,15 @@ export function ConferencesPage() {
       ),
     },
     {
+      accessorKey: 'owner_id',
+      header: 'Owner',
+      cell: ({ row }) => (
+        <span className="text-sm text-muted-foreground">
+          {row.original.owner_id || '—'}
+        </span>
+      ),
+    },
+    {
       id: 'actions',
       cell: ({ row }) => (
         <DropdownMenu>
@@ -211,17 +264,19 @@ export function ConferencesPage() {
         <DataTable columns={columns} data={items} searchKey="name" searchPlaceholder="Search conferences..." />
       )}
 
-      <CreateDialog open={createOpen} onOpenChange={setCreateOpen} onSubmit={(data) => createMutation.mutate(data)} isPending={createMutation.isPending} />
-      <EditDialog item={editItem} onOpenChange={(open) => { if (!open) setEditItem(null) }} onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }} isPending={updateMutation.isPending} />
+      <CreateDialog open={createOpen} onOpenChange={setCreateOpen} onSubmit={(data) => createMutation.mutate(data)} isPending={createMutation.isPending} promptList={promptList} userList={userList} />
+      <EditDialog item={editItem} onOpenChange={(open) => { if (!open) setEditItem(null) }} onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }} isPending={updateMutation.isPending} promptList={promptList} userList={userList} />
     </div>
   )
 }
 
-function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
+function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, userList }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (data: CreateMeetingRequest) => void
   isPending: boolean
+  promptList: PromptResponse[]
+  userList: User[]
 }) {
   const { register, handleSubmit, formState: { errors }, reset, setValue, watch } = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
@@ -241,6 +296,7 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
       auto_record: data.auto_record,
       default_locked: data.default_locked,
       permanent: data.permanent,
+      owner_id: data.owner_id || undefined,
       pin_prompt_sound: data.pin_prompt_sound || undefined,
       invalid_pin_sound: data.invalid_pin_sound || undefined,
       moh_sound: data.moh_sound || undefined,
@@ -288,6 +344,21 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
             <Input {...register('max_participants')} type="number" min="0" placeholder="0 = unlimited" />
           </div>
 
+          <div>
+            <Label>Owner</Label>
+            <Select value={watch('owner_id') || '__none__'} onValueChange={(v) => setValue('owner_id', v === '__none__' ? '' : v)}>
+              <SelectTrigger><SelectValue placeholder="No owner" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">No owner (admin only)</SelectItem>
+                {userList.map(u => (
+                  <SelectItem key={u.username} value={u.username}>
+                    {u.display_name || u.username} ({u.username})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label>Enabled</Label>
@@ -319,18 +390,9 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
             <summary className="text-sm font-medium cursor-pointer">Audio Prompts (optional overrides)</summary>
             <p className="text-xs text-muted-foreground mt-1 mb-3">Leave blank to use server defaults. WAV path overrides take priority over TTS text.</p>
             <div className="space-y-3 mt-2">
-              <div>
-                <Label className="text-xs">PIN Prompt WAV Path</Label>
-                <Input {...register('pin_prompt_sound')} placeholder="e.g. custom_prompt.wav" className="text-sm" />
-              </div>
-              <div>
-                <Label className="text-xs">Invalid PIN WAV Path</Label>
-                <Input {...register('invalid_pin_sound')} placeholder="e.g. custom_invalid.wav" className="text-sm" />
-              </div>
-              <div>
-                <Label className="text-xs">MOH WAV Path</Label>
-                <Input {...register('moh_sound')} placeholder="e.g. custom_moh.wav" className="text-sm" />
-              </div>
+              <AudioPromptSelect label="PIN Prompt Audio" value={watch('pin_prompt_sound')} onChange={(v) => setValue('pin_prompt_sound', v)} promptList={promptList} />
+              <AudioPromptSelect label="Invalid PIN Audio" value={watch('invalid_pin_sound')} onChange={(v) => setValue('invalid_pin_sound', v)} promptList={promptList} />
+              <AudioPromptSelect label="MOH / Hold Music" value={watch('moh_sound')} onChange={(v) => setValue('moh_sound', v)} promptList={promptList} />
               <div>
                 <Label className="text-xs">PIN Prompt TTS Text</Label>
                 <Input {...register('pin_prompt_tts')} placeholder="e.g. Please enter your PIN" className="text-sm" />
@@ -355,11 +417,13 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending }: {
   )
 }
 
-function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
+function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userList }: {
   item: MeetingResponse | null
   onOpenChange: (open: boolean) => void
   onSubmit: (data: UpdateMeetingRequest) => void
   isPending: boolean
+  promptList: PromptResponse[]
+  userList: User[]
 }) {
   const { register, handleSubmit, reset, setValue, watch } = useForm<EditForm>({
     resolver: zodResolver(editSchema),
@@ -379,6 +443,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
       auto_record: item.auto_record,
       default_locked: item.default_locked,
       permanent: item.permanent,
+      owner_id: item.owner_id || '',
       pin_prompt_sound: item.pin_prompt_sound || '',
       invalid_pin_sound: item.invalid_pin_sound || '',
       moh_sound: item.moh_sound || '',
@@ -399,6 +464,7 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
     if (data.auto_record !== undefined) update.auto_record = data.auto_record
     if (data.default_locked !== undefined) update.default_locked = data.default_locked
     if (data.permanent !== undefined) update.permanent = data.permanent
+    if (data.owner_id !== undefined) update.owner_id = data.owner_id || null
     if (data.pin_prompt_sound !== undefined) update.pin_prompt_sound = data.pin_prompt_sound || null
     if (data.invalid_pin_sound !== undefined) update.invalid_pin_sound = data.invalid_pin_sound || null
     if (data.moh_sound !== undefined) update.moh_sound = data.moh_sound || null
@@ -439,6 +505,21 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
             <Input {...register('max_participants')} type="number" min="0" />
           </div>
 
+          <div>
+            <Label>Owner</Label>
+            <Select value={watch('owner_id') || '__none__'} onValueChange={(v) => setValue('owner_id', v === '__none__' ? '' : v)}>
+              <SelectTrigger><SelectValue placeholder="No owner" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">No owner (admin only)</SelectItem>
+                {userList.map(u => (
+                  <SelectItem key={u.username} value={u.username}>
+                    {u.display_name || u.username} ({u.username})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label>Require Guest PIN</Label>
@@ -466,18 +547,9 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending }: {
             <summary className="text-sm font-medium cursor-pointer">Audio Prompts (optional overrides)</summary>
             <p className="text-xs text-muted-foreground mt-1 mb-3">Leave blank to use server defaults. WAV path overrides take priority over TTS text.</p>
             <div className="space-y-3 mt-2">
-              <div>
-                <Label className="text-xs">PIN Prompt WAV Path</Label>
-                <Input {...register('pin_prompt_sound')} placeholder="Default" className="text-sm" />
-              </div>
-              <div>
-                <Label className="text-xs">Invalid PIN WAV Path</Label>
-                <Input {...register('invalid_pin_sound')} placeholder="Default" className="text-sm" />
-              </div>
-              <div>
-                <Label className="text-xs">MOH WAV Path</Label>
-                <Input {...register('moh_sound')} placeholder="Default" className="text-sm" />
-              </div>
+              <AudioPromptSelect label="PIN Prompt Audio" value={watch('pin_prompt_sound')} onChange={(v) => setValue('pin_prompt_sound', v)} promptList={promptList} />
+              <AudioPromptSelect label="Invalid PIN Audio" value={watch('invalid_pin_sound')} onChange={(v) => setValue('invalid_pin_sound', v)} promptList={promptList} />
+              <AudioPromptSelect label="MOH / Hold Music" value={watch('moh_sound')} onChange={(v) => setValue('moh_sound', v)} promptList={promptList} />
               <div>
                 <Label className="text-xs">PIN Prompt TTS Text</Label>
                 <Input {...register('pin_prompt_tts')} placeholder="e.g. Please enter your PIN" className="text-sm" />

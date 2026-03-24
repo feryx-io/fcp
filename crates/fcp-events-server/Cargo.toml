@@ -12,7 +12,7 @@ name = "fcp-events-server"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["storage-redis", "redis-events"]
 redis-events = ["dep:fcp-storage-redis"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 

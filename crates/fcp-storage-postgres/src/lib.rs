@@ -1815,7 +1815,7 @@ impl ConferenceStore for PostgresStorage {
         let row = sqlx::query(
             "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
                     require_guest_pin, max_participants, wait_for_moderator,
-                    enabled, auto_record, default_locked, permanent,
+                    enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     created_at, updated_at
@@ -1839,7 +1839,7 @@ impl ConferenceStore for PostgresStorage {
         let row = sqlx::query(
             "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
                     require_guest_pin, max_participants, wait_for_moderator,
-                    enabled, auto_record, default_locked, permanent,
+                    enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     created_at, updated_at
@@ -1860,7 +1860,7 @@ impl ConferenceStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
                     require_guest_pin, max_participants, wait_for_moderator,
-                    enabled, auto_record, default_locked, permanent,
+                    enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
                     created_at, updated_at
@@ -1878,6 +1878,34 @@ impl ConferenceStore for PostgresStorage {
         Ok(meetings)
     }
 
+    async fn list_meetings_by_owner(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        owner_id: &str,
+    ) -> Result<Vec<fcp_core::Meeting>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
+                    require_guest_pin, max_participants, wait_for_moderator,
+                    enabled, auto_record, default_locked, permanent, owner_id,
+                    pin_prompt_sound, invalid_pin_sound, moh_sound,
+                    pin_prompt_tts, invalid_pin_tts, welcome_tts,
+                    created_at, updated_at
+             FROM conference_meetings
+             WHERE tenant_id = $1 AND owner_id = $2
+             ORDER BY room_number",
+        )
+        .bind(tenant_id.to_string())
+        .bind(owner_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let meetings = rows
+            .into_iter()
+            .filter_map(|row| map_meeting_row_pg(row).ok())
+            .collect();
+        Ok(meetings)
+    }
+
     async fn put_meeting(&self, meeting: fcp_core::Meeting) -> Result<()> {
         let created_at = system_time_to_datetime(meeting.created_at);
         let updated_at = system_time_to_datetime(SystemTime::now());
@@ -1886,11 +1914,11 @@ impl ConferenceStore for PostgresStorage {
             "INSERT INTO conference_meetings
              (id, tenant_id, room_number, name, guest_pin, host_pin,
               require_guest_pin, max_participants, wait_for_moderator,
-              enabled, auto_record, default_locked, permanent,
+              enabled, auto_record, default_locked, permanent, owner_id,
               pin_prompt_sound, invalid_pin_sound, moh_sound,
               pin_prompt_tts, invalid_pin_tts, welcome_tts,
               created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
              ON CONFLICT (id) DO UPDATE SET
               tenant_id = EXCLUDED.tenant_id,
               room_number = EXCLUDED.room_number,
@@ -1904,6 +1932,7 @@ impl ConferenceStore for PostgresStorage {
               auto_record = EXCLUDED.auto_record,
               default_locked = EXCLUDED.default_locked,
               permanent = EXCLUDED.permanent,
+              owner_id = EXCLUDED.owner_id,
               pin_prompt_sound = EXCLUDED.pin_prompt_sound,
               invalid_pin_sound = EXCLUDED.invalid_pin_sound,
               moh_sound = EXCLUDED.moh_sound,
@@ -1925,6 +1954,7 @@ impl ConferenceStore for PostgresStorage {
         .bind(meeting.auto_record)
         .bind(meeting.default_locked)
         .bind(meeting.permanent)
+        .bind(meeting.owner_id.as_deref())
         .bind(meeting.pin_prompt_sound.as_deref())
         .bind(meeting.invalid_pin_sound.as_deref())
         .bind(meeting.moh_sound.as_deref())
@@ -1973,6 +2003,7 @@ fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
         auto_record: row.get("auto_record"),
         default_locked: row.get("default_locked"),
         permanent: row.get("permanent"),
+        owner_id: row.get("owner_id"),
         pin_prompt_sound: row.get("pin_prompt_sound"),
         invalid_pin_sound: row.get("invalid_pin_sound"),
         moh_sound: row.get("moh_sound"),

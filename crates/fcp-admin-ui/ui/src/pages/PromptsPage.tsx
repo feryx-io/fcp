@@ -121,6 +121,7 @@ export function PromptsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<PromptResponse | null>(null)
   const [uploadTarget, setUploadTarget] = useState<PromptResponse | null>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const [playingId, setPlayingId] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -185,6 +186,7 @@ export function PromptsPage() {
     mutationFn: ({ id, file }: { id: string; file: File }) => prompts.uploadAudio(id, file),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['prompts'] })
+      setSelectedFile(null)
       setUploadTarget(null)
     },
   })
@@ -611,7 +613,7 @@ export function PromptsPage() {
       </Dialog>
 
       {/* Upload Audio Dialog */}
-      <Dialog open={!!uploadTarget} onOpenChange={() => setUploadTarget(null)}>
+      <Dialog open={!!uploadTarget} onOpenChange={(open) => { if (!open) { setUploadTarget(null); setSelectedFile(null) } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Upload Audio</DialogTitle>
@@ -627,7 +629,7 @@ export function PromptsPage() {
               className="hidden"
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                 const file = e.target.files?.[0]
-                if (file) handleUpload(file)
+                if (file) setSelectedFile(file)
               }}
             />
             <div
@@ -635,11 +637,26 @@ export function PromptsPage() {
               onClick={() => fileInputRef.current?.click()}
             >
               <Upload className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">Click to select a WAV file</p>
-              {uploadMutation.isPending && <p className="text-sm text-primary">Uploading...</p>}
+              {selectedFile ? (
+                <p className="text-sm font-medium">{selectedFile.name} ({(selectedFile.size / 1024).toFixed(0)} KB)</p>
+              ) : (
+                <p className="text-sm text-muted-foreground">Click to select a WAV file</p>
+              )}
             </div>
-            <div className="flex justify-end">
-              <Button variant="outline" onClick={() => setUploadTarget(null)}>Cancel</Button>
+            {uploadMutation.isPending && <p className="text-sm text-primary">Uploading...</p>}
+            {uploadMutation.isError && (
+              <p className="text-sm text-destructive">
+                Upload failed: {(uploadMutation.error as Error)?.message || 'Unknown error'}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => { setUploadTarget(null); setSelectedFile(null) }}>Cancel</Button>
+              <Button
+                disabled={!selectedFile || uploadMutation.isPending}
+                onClick={() => { if (selectedFile && uploadTarget) handleUpload(selectedFile) }}
+              >
+                {uploadMutation.isPending ? 'Uploading...' : 'Upload'}
+              </Button>
             </div>
           </div>
         </DialogContent>

@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    storage::{password, LineBindingStore, PhoneNumberStore, VoicemailStore},
+    storage::{password, ConferenceStore, LineBindingStore, PhoneNumberStore, VoicemailStore},
     CredentialStore, GreetingType, MessageStatus, UserId, VoicemailGreeting,
 };
 use serde::{Deserialize, Serialize};
@@ -1174,6 +1174,146 @@ pub async fn delete_avatar(
     info!(username = %claims.sub, "User deleted profile picture");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- Conference Self-Service Endpoints ----
+
+/// GET /me/conferences -- List conferences owned by the current user
+pub async fn list_my_conferences(
+    State(state): State<ApiState>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let tenant_id = resolve_tenant_from_claims(&claims, &state);
+
+    let meetings = storage
+        .list_meetings_by_owner(&tenant_id, &claims.sub)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let responses: Vec<super::conferences::MeetingResponse> = meetings
+        .into_iter()
+        .map(super::conferences::MeetingResponse::from)
+        .collect();
+
+    Ok(Json(responses))
+}
+
+/// GET /me/conferences/:id -- Get a specific conference owned by the current user
+pub async fn get_my_conference(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    req: axum::extract::Request,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims(&req, &state)?;
+    let storage = require_storage!(state);
+    let tenant_id = resolve_tenant_from_claims(&claims, &state);
+
+    let meeting_id = fcp_core::MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("Conference not found".to_string()))?;
+
+    // Verify ownership
+    if meeting.tenant_id != tenant_id || meeting.owner_id.as_deref() != Some(&claims.sub) {
+        return Err(ApiError::NotFound("Conference not found".to_string()));
+    }
+
+    Ok(Json(super::conferences::MeetingResponse::from(meeting)))
+}
+
+/// PATCH /me/conferences/:id -- Update a conference owned by the current user
+pub async fn update_my_conference(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateMyConferenceRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let claims = extract_claims_from_headers(&headers, &state)?;
+    let storage = require_storage!(state);
+    let tenant_id = resolve_tenant_from_claims(&claims, &state);
+
+    let meeting_id = fcp_core::MeetingId::from_str(&id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid meeting ID: {}", e)))?;
+
+    let mut meeting = storage
+        .get_meeting(&meeting_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("Conference not found".to_string()))?;
+
+    // Verify ownership
+    if meeting.tenant_id != tenant_id || meeting.owner_id.as_deref() != Some(&claims.sub) {
+        return Err(ApiError::NotFound("Conference not found".to_string()));
+    }
+
+    // Apply allowed updates
+    if let Some(name) = req.name {
+        meeting.name = name;
+    }
+    if let Some(v) = req.guest_pin {
+        meeting.guest_pin = v;
+    }
+    if let Some(v) = req.host_pin {
+        meeting.host_pin = v;
+    }
+    if let Some(v) = req.require_guest_pin {
+        meeting.require_guest_pin = v;
+    }
+    if let Some(v) = req.max_participants {
+        meeting.max_participants = v;
+    }
+    if let Some(v) = req.wait_for_moderator {
+        meeting.wait_for_moderator = v;
+    }
+    if let Some(v) = req.auto_record {
+        meeting.auto_record = v;
+    }
+    if let Some(v) = req.default_locked {
+        meeting.default_locked = v;
+    }
+    if let Some(v) = req.welcome_tts {
+        meeting.welcome_tts = v;
+    }
+    meeting.updated_at = SystemTime::now();
+
+    storage
+        .put_meeting(meeting.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(super::conferences::MeetingResponse::from(meeting)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMyConferenceRequest {
+    pub name: Option<String>,
+    pub guest_pin: Option<Option<String>>,
+    pub host_pin: Option<Option<String>>,
+    pub require_guest_pin: Option<bool>,
+    pub max_participants: Option<usize>,
+    pub wait_for_moderator: Option<bool>,
+    pub auto_record: Option<bool>,
+    pub default_locked: Option<bool>,
+    pub welcome_tts: Option<Option<String>>,
+}
+
+/// Resolve the tenant ID from JWT claims, falling back to the default tenant.
+fn resolve_tenant_from_claims(
+    claims: &crate::v1::auth_session::Claims,
+    state: &ApiState,
+) -> fcp_core::TenantId {
+    if !claims.tenant_id.is_empty() {
+        if let Ok(tid) = claims.tenant_id.parse::<fcp_core::TenantId>() {
+            return tid;
+        }
+    }
+    state.default_tenant_id.clone()
 }
 
 /// Get the greetings directory or return an error.

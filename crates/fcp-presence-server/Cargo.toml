@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Standalone SIP presence server for the Ferrous Communications Platform"
 
 [features]
-default = []
+default = ["storage-redis"]
 redis = ["fcp-presence/redis"]
 webhook = ["fcp-presence/webhook"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]

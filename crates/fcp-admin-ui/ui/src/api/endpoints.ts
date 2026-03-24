@@ -580,6 +580,12 @@ export const me = {
   getForwarding: () => apiClient.get<MeForwarding[]>('/me/forwarding'),
   updateForwarding: (id: string, data: UpdateForwardingRequest) =>
     apiClient.patch<MeForwarding>(`/me/forwarding/${encodeURIComponent(id)}`, data),
+
+  // Conferences
+  listConferences: () => apiClient.get<MeetingResponse[]>('/me/conferences'),
+  getConference: (id: string) => apiClient.get<MeetingResponse>(`/me/conferences/${encodeURIComponent(id)}`),
+  updateConference: (id: string, data: UpdateMeetingRequest) =>
+    apiClient.patch<MeetingResponse>(`/me/conferences/${encodeURIComponent(id)}`, data),
 }
 
 // Conference / Meetings

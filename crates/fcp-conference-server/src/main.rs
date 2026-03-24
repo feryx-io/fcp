@@ -229,9 +229,9 @@ async fn main() -> Result<()> {
             ("conf_invalid_pin", "Conference Invalid PIN",
              "Invalid PIN. Please try again.",
              fcp_core::prompt::PromptCategory::System),
-            ("conf_moh", "Conference Music on Hold",
+            ("conf_wait_announcement", "Conference Wait for Moderator Announcement",
              "Please wait. The conference will begin when the moderator joins.",
-             fcp_core::prompt::PromptCategory::Moh),
+             fcp_core::prompt::PromptCategory::System),
             ("conf_welcome", "Conference Welcome",
              "You have joined the conference.",
              fcp_core::prompt::PromptCategory::System),
@@ -522,7 +522,7 @@ async fn main() -> Result<()> {
             &config.tts.cache_dir,
         );
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_moh", "conf_welcome"] {
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome"] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {

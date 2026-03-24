@@ -49,6 +49,10 @@ pub struct Meeting {
     /// Room persists in memory even when all participants leave
     pub permanent: bool,
 
+    /// Optional owner username — user who can manage this meeting via self-service
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+
     /// Per-meeting override: path to PIN prompt WAV file (None = use global config)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_prompt_sound: Option<String>,
@@ -103,6 +107,7 @@ mod tests {
             auto_record: false,
             default_locked: false,
             permanent: false,
+            owner_id: Some("alice".to_string()),
             pin_prompt_sound: None,
             invalid_pin_sound: None,
             moh_sound: None,

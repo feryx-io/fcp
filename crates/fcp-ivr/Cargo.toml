@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Standalone IVR server for the Ferrous Communications Platform"
 
 [features]
-default = ["tls"]
+default = ["tls", "storage-redis"]
 tls = ["fcp-sip/tls"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 

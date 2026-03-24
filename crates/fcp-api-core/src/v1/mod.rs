@@ -30,6 +30,7 @@ pub mod voicemail;
 
 use crate::state::ApiState;
 use axum::{
+    extract::DefaultBodyLimit,
     middleware,
     routing::{delete, get, patch, post, put},
     Router,
@@ -111,7 +112,13 @@ pub fn router() -> Router<ApiState> {
             get(self_service::download_voicemail_greeting_audio),
         )
         .route("/me/forwarding", get(self_service::get_forwarding))
-        .route("/me/forwarding/:id", patch(self_service::update_forwarding));
+        .route("/me/forwarding/:id", patch(self_service::update_forwarding))
+        .route("/me/conferences", get(self_service::list_my_conferences))
+        .route(
+            "/me/conferences/:id",
+            get(self_service::get_my_conference)
+                .patch(self_service::update_my_conference),
+        );
 
     // Admin-only routes — EndUser JWTs are rejected with 403 by require_admin.
     let admin_routes = Router::new()
@@ -319,7 +326,9 @@ pub fn router() -> Router<ApiState> {
         )
         .route(
             "/prompts/:id/audio",
-            get(prompts::download_audio).post(prompts::upload_audio),
+            get(prompts::download_audio)
+                .post(prompts::upload_audio)
+                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)), // 50 MB for audio uploads
         )
         .route(
             "/prompts/:id/synthesize",

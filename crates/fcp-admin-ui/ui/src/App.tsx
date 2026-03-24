@@ -43,6 +43,7 @@ const UserDashboardPage = lazy(() => import('@/pages/user/UserDashboardPage').th
 const UserVoicemailPage = lazy(() => import('@/pages/user/UserVoicemailPage').then((m) => ({ default: m.UserVoicemailPage })))
 const UserForwardingPage = lazy(() => import('@/pages/user/UserForwardingPage').then((m) => ({ default: m.UserForwardingPage })))
 const UserSettingsPage = lazy(() => import('@/pages/user/UserSettingsPage').then((m) => ({ default: m.UserSettingsPage })))
+const UserConferencesPage = lazy(() => import('@/pages/user/UserConferencesPage').then((m) => ({ default: m.UserConferencesPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -146,6 +147,7 @@ export function App() {
               <Route index element={<Suspense fallback={<PageLoader />}><UserDashboardPage /></Suspense>} />
               <Route path="voicemail" element={<Suspense fallback={<PageLoader />}><UserVoicemailPage /></Suspense>} />
               <Route path="forwarding" element={<Suspense fallback={<PageLoader />}><UserForwardingPage /></Suspense>} />
+              <Route path="conferences" element={<Suspense fallback={<PageLoader />}><UserConferencesPage /></Suspense>} />
               <Route path="settings" element={<Suspense fallback={<PageLoader />}><UserSettingsPage /></Suspense>} />
             </Route>
             <Route path="*" element={<DefaultRedirect />} />

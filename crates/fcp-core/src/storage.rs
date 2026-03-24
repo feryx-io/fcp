@@ -1233,6 +1233,13 @@ pub trait ConferenceStore: Send + Sync {
     /// List all meetings for a tenant
     async fn list_meetings(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Meeting>>;
 
+    /// List meetings owned by a specific user within a tenant
+    async fn list_meetings_by_owner(
+        &self,
+        tenant_id: &crate::TenantId,
+        owner_id: &str,
+    ) -> Result<Vec<crate::Meeting>>;
+
     /// Create or update a meeting
     async fn put_meeting(&self, meeting: crate::Meeting) -> Result<()>;
 
@@ -2607,6 +2614,14 @@ impl ConferenceStore for DynStorage {
 
     async fn list_meetings(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Meeting>> {
         self.conference_store.list_meetings(tenant_id).await
+    }
+
+    async fn list_meetings_by_owner(
+        &self,
+        tenant_id: &crate::TenantId,
+        owner_id: &str,
+    ) -> Result<Vec<crate::Meeting>> {
+        self.conference_store.list_meetings_by_owner(tenant_id, owner_id).await
     }
 
     async fn put_meeting(&self, meeting: crate::Meeting) -> Result<()> {

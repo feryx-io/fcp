@@ -12,7 +12,7 @@ name = "fcp-sbc"
 path = "src/main.rs"
 
 [features]
-default = ["tls"]
+default = ["tls", "storage-redis"]
 tls = ["fcp-sip/tls"]
 storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
 

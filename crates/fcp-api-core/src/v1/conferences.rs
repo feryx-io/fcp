@@ -40,6 +40,8 @@ pub struct MeetingResponse {
     pub default_locked: bool,
     pub permanent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pin_prompt_sound: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invalid_pin_sound: Option<String>,
@@ -71,6 +73,7 @@ impl From<Meeting> for MeetingResponse {
             auto_record: m.auto_record,
             default_locked: m.default_locked,
             permanent: m.permanent,
+            owner_id: m.owner_id,
             pin_prompt_sound: m.pin_prompt_sound,
             invalid_pin_sound: m.invalid_pin_sound,
             moh_sound: m.moh_sound,
@@ -107,6 +110,8 @@ pub struct CreateMeetingRequest {
     #[serde(default)]
     pub permanent: bool,
     #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
     pub pin_prompt_sound: Option<String>,
     #[serde(default)]
     pub invalid_pin_sound: Option<String>,
@@ -137,6 +142,7 @@ pub struct UpdateMeetingRequest {
     pub auto_record: Option<bool>,
     pub default_locked: Option<bool>,
     pub permanent: Option<bool>,
+    pub owner_id: Option<Option<String>>,
     pub pin_prompt_sound: Option<Option<String>>,
     pub invalid_pin_sound: Option<Option<String>>,
     pub moh_sound: Option<Option<String>>,
@@ -202,6 +208,7 @@ pub async fn create_meeting(
         auto_record: req.auto_record,
         default_locked: req.default_locked,
         permanent: req.permanent,
+        owner_id: req.owner_id,
         pin_prompt_sound: req.pin_prompt_sound,
         invalid_pin_sound: req.invalid_pin_sound,
         moh_sound: req.moh_sound,
@@ -292,6 +299,9 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.permanent {
         meeting.permanent = v;
+    }
+    if let Some(v) = req.owner_id {
+        meeting.owner_id = v;
     }
     if let Some(v) = req.pin_prompt_sound {
         meeting.pin_prompt_sound = v;

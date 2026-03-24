@@ -397,6 +397,8 @@ struct CreateMeetingRequest {
     #[serde(default)]
     permanent: bool,
     #[serde(default)]
+    owner_id: Option<String>,
+    #[serde(default)]
     pin_prompt_sound: Option<String>,
     #[serde(default)]
     invalid_pin_sound: Option<String>,
@@ -476,6 +478,19 @@ async fn create_meeting_handler(
         );
     }
 
+    // Warn if guest and host PINs are the same (host PIN would be useless)
+    if let (Some(ref gp), Some(ref hp)) = (&payload.guest_pin, &payload.host_pin) {
+        if gp == hp {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Guest PIN and Host PIN must be different. When they are the same, \
+                              no one can authenticate as host, which breaks wait-for-moderator."
+                })),
+            );
+        }
+    }
+
     // Check for duplicate room number
     match state
         .storage
@@ -516,6 +531,7 @@ async fn create_meeting_handler(
         auto_record: payload.auto_record,
         default_locked: payload.default_locked,
         permanent: payload.permanent,
+        owner_id: payload.owner_id,
         pin_prompt_sound: payload.pin_prompt_sound,
         invalid_pin_sound: payload.invalid_pin_sound,
         moh_sound: payload.moh_sound,
@@ -593,6 +609,7 @@ struct UpdateMeetingRequest {
     auto_record: Option<bool>,
     default_locked: Option<bool>,
     permanent: Option<bool>,
+    owner_id: Option<Option<String>>,
     pin_prompt_sound: Option<Option<String>>,
     invalid_pin_sound: Option<Option<String>>,
     moh_sound: Option<Option<String>>,
@@ -677,6 +694,10 @@ async fn update_meeting_handler(
     if let Some(v) = payload.permanent {
         meeting.permanent = v;
         changed_fields.push("permanent".to_string());
+    }
+    if let Some(v) = payload.owner_id {
+        meeting.owner_id = v;
+        changed_fields.push("owner_id".to_string());
     }
     if let Some(v) = payload.pin_prompt_sound {
         meeting.pin_prompt_sound = v;
@@ -1761,6 +1782,7 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
         "auto_record": meeting.auto_record,
         "default_locked": meeting.default_locked,
         "permanent": meeting.permanent,
+        "owner_id": meeting.owner_id,
         "pin_prompt_sound": meeting.pin_prompt_sound,
         "invalid_pin_sound": meeting.invalid_pin_sound,
         "moh_sound": meeting.moh_sound,

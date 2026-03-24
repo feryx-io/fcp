@@ -507,6 +507,12 @@ pub struct ConferenceSection {
     #[serde(default = "default_max_wait_for_moderator_secs")]
     pub max_wait_for_moderator_secs: u64,
 
+    /// Interval (seconds) between repeating the wait-for-moderator announcement.
+    /// The announcement plays once, then hold music (or silence) plays for this
+    /// duration before the announcement repeats. Default: 30.
+    #[serde(default = "default_moh_announcement_interval_secs")]
+    pub moh_announcement_interval_secs: u64,
+
     /// Maximum SIP INVITE rate per source IP per second. 0 = unlimited.
     /// Prevents brute-force PIN attacks and INVITE floods. Default: 10.
     #[serde(default = "default_max_invite_rate")]
@@ -596,11 +602,15 @@ fn default_jitter_buffer_ms() -> u64 {
 }
 
 fn default_cache_ttl_secs() -> u64 {
-    60
+    5
 }
 
 fn default_max_wait_for_moderator_secs() -> u64 {
     300
+}
+
+fn default_moh_announcement_interval_secs() -> u64 {
+    30
 }
 
 fn default_max_invite_rate() -> u32 {
@@ -658,6 +668,7 @@ impl Default for ConferenceSection {
             enable_srtp: false,
             announcements_dir: default_announcements_dir(),
             max_wait_for_moderator_secs: default_max_wait_for_moderator_secs(),
+            moh_announcement_interval_secs: default_moh_announcement_interval_secs(),
             max_invite_rate_per_ip: default_max_invite_rate(),
             session_expires_secs: default_session_expires_secs(),
             max_recording_size_mb: default_max_recording_size_mb(),

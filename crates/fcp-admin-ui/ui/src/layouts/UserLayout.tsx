@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Voicemail, PhoneForwarded, Settings, LogOut,
+  LayoutDashboard, Voicemail, PhoneForwarded, Users, Settings, LogOut,
   Moon, Sun, Monitor, Menu, X, Boxes,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -24,6 +24,7 @@ const navItems: NavItem[] = [
   { label: 'Dashboard', href: '/user', icon: LayoutDashboard },
   { label: 'Voicemail', href: '/user/voicemail', icon: Voicemail },
   { label: 'Call Forwarding', href: '/user/forwarding', icon: PhoneForwarded },
+  { label: 'Conferences', href: '/user/conferences', icon: Users },
   { label: 'Settings', href: '/user/settings', icon: Settings },
 ]
 
