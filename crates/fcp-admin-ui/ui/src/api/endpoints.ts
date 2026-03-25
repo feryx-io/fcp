@@ -599,3 +599,78 @@ export const conferences = {
   enableMeeting: (id: string) => apiClient.post<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}/enable`),
   disableMeeting: (id: string) => apiClient.post<MeetingResponse>(`/conferences/meetings/${encodeURIComponent(id)}/disable`),
 }
+
+// Conference server live API (direct connection for real-time operations)
+// The conference server HTTP API runs on a separate port from the admin API.
+// Auto-detect: same hostname, port 8090.
+const CONF_API_BASE = `${window.location.protocol}//${window.location.hostname}:8090`
+
+export interface DialOutResponse {
+  status: string
+  participant_id: string
+  destination: string
+  room_number: string
+}
+
+export interface LiveParticipant {
+  participant_id: string
+  state: string
+  gain: number
+  is_host: boolean
+  is_dial_out?: boolean
+  display_name?: string
+  caller_id?: string
+  codec?: string
+  duration_secs?: number
+}
+
+export interface LiveConference {
+  room_number: string
+  participant_count: number
+  is_locked: boolean
+  is_recording: boolean
+  participants: LiveParticipant[]
+}
+
+export const conferenceLive = {
+  /** List active conferences with participants */
+  list: async (): Promise<LiveConference[]> => {
+    const res = await fetch(`${CONF_API_BASE}/conferences`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  },
+  /** Get a single active conference */
+  get: async (roomNumber: string): Promise<LiveConference> => {
+    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/stats`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  },
+  /** Dial out to invite a participant into the conference */
+  dialOut: async (roomNumber: string, destination: string): Promise<DialOutResponse> => {
+    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/dial-out`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+      throw new Error(err.error || `HTTP ${res.status}`)
+    }
+    return res.json()
+  },
+  /** Kick a participant */
+  kick: async (roomNumber: string, participantId: string): Promise<void> => {
+    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/kick/${encodeURIComponent(participantId)}`, { method: 'POST' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  },
+  /** Mute a participant */
+  mute: async (roomNumber: string, participantId: string): Promise<void> => {
+    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/mute/${encodeURIComponent(participantId)}`, { method: 'POST' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  },
+  /** Unmute a participant */
+  unmute: async (roomNumber: string, participantId: string): Promise<void> => {
+    const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/unmute/${encodeURIComponent(participantId)}`, { method: 'POST' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  },
+}

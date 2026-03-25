@@ -8,12 +8,16 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { Pencil, Phone, Users } from 'lucide-react'
-import { me } from '@/api/endpoints'
+import { Pencil, Phone, PhoneOutgoing, Users } from 'lucide-react'
+import { me, conferenceLive } from '@/api/endpoints'
 import type { MeetingResponse, UpdateMeetingRequest } from '@/types'
 
 export function UserConferencesPage() {
   const [editItem, setEditItem] = useState<MeetingResponse | null>(null)
+  const [dialOutRoom, setDialOutRoom] = useState<string | null>(null)
+  const [dialOutDest, setDialOutDest] = useState('')
+  const [dialOutPending, setDialOutPending] = useState(false)
+  const [dialOutResult, setDialOutResult] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: conferences = [], isLoading } = useQuery({
@@ -62,9 +66,14 @@ export function UserConferencesPage() {
                   <Phone className="h-5 w-5 text-primary" />
                   <CardTitle className="text-lg">{conf.name}</CardTitle>
                 </div>
-                <Button variant="ghost" size="icon" onClick={() => setEditItem(conf)}>
-                  <Pencil className="h-4 w-4" />
-                </Button>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="icon" onClick={() => { setDialOutRoom(conf.room_number); setDialOutDest(''); setDialOutResult(null) }} title="Dial Out">
+                    <PhoneOutgoing className="h-4 w-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={() => setEditItem(conf)} title="Edit">
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
               <CardDescription>Room: <span className="font-mono font-medium">{conf.room_number}</span></CardDescription>
             </CardHeader>
@@ -95,6 +104,56 @@ export function UserConferencesPage() {
         onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }}
         isPending={updateMutation.isPending}
       />
+
+      {/* Dial-Out Dialog */}
+      <Dialog open={!!dialOutRoom} onOpenChange={(open) => { if (!open) setDialOutRoom(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Invite Participant — Room {dialOutRoom}</DialogTitle>
+            <DialogDescription>
+              Call someone and connect them to your conference.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Phone Number or SIP Address</Label>
+              <Input
+                value={dialOutDest}
+                onChange={(e) => setDialOutDest(e.target.value)}
+                placeholder="sip:user@domain or tel:+15551234567"
+                disabled={dialOutPending}
+              />
+            </div>
+            {dialOutResult && (
+              <p className={`text-sm ${dialOutResult.startsWith('Error') ? 'text-destructive' : 'text-green-600'}`}>
+                {dialOutResult}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setDialOutRoom(null)} disabled={dialOutPending}>Cancel</Button>
+              <Button
+                disabled={!dialOutDest.trim() || dialOutPending}
+                onClick={async () => {
+                  setDialOutPending(true)
+                  setDialOutResult(null)
+                  try {
+                    const res = await conferenceLive.dialOut(dialOutRoom!, dialOutDest.trim())
+                    setDialOutResult(`Connected: ${res.participant_id}`)
+                    setTimeout(() => setDialOutRoom(null), 2000)
+                  } catch (e) {
+                    setDialOutResult(`Error: ${(e as Error).message}`)
+                  } finally {
+                    setDialOutPending(false)
+                  }
+                }}
+              >
+                <PhoneOutgoing className="mr-2 h-4 w-4" />
+                {dialOutPending ? 'Calling...' : 'Call'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

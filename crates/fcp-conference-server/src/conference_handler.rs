@@ -94,6 +94,8 @@ pub struct ParticipantSession {
     pub room_number: String,
     pub participant_id: String,
     pub is_host: bool,
+    /// True if this participant was invited via dial-out
+    pub is_dial_out: bool,
     pub audio_bridge_handle: JoinHandle<()>,
     pub port_pair: PortPair,
     pub rtp_socket: Arc<RtpSocketPair>,
@@ -755,6 +757,7 @@ impl ConferenceCallHandler {
             if let Some(ref cid) = session.caller_id {
                 json["caller_id"] = serde_json::json!(cid);
             }
+            json["is_dial_out"] = serde_json::json!(session.is_dial_out);
             let silence = session.stats.silence_frames.load(Ordering::Relaxed);
             json["stats"] = serde_json::json!({
                 "packets_received": session.stats.packets_received.load(Ordering::Relaxed),
@@ -1108,6 +1111,267 @@ impl ConferenceCallHandler {
         Ok(())
     }
 
+    /// Dial out to a destination and bridge them into the conference.
+    ///
+    /// Sends an outbound SIP INVITE. When the callee answers, their audio
+    /// is bridged into the conference mixer as a regular participant.
+    pub async fn dial_out(
+        &self,
+        room_number: &str,
+        destination: &str,
+        tenant_id: TenantId,
+    ) -> Result<String> {
+        // 1. Validate room exists and is not full
+        let room = self.bridge.get_room(room_number)
+            .map_err(|_| anyhow::anyhow!("Conference room '{}' not active", room_number))?;
+
+        if let Some(cfg) = room.get_effective_config() {
+            if cfg.max_channels > 0 && room.participant_count() >= cfg.max_channels {
+                anyhow::bail!("Conference room is full");
+            }
+        }
+
+        if room.is_locked() {
+            anyhow::bail!("Conference room is locked");
+        }
+
+        // 2. Allocate RTP port pair
+        let port_pair = self.port_pool.allocate().await
+            .context("Failed to allocate RTP port pair for dial-out")?;
+
+        // 3. Build multi-codec SDP offer
+        let ip = self.local_addr.split(':').next().unwrap_or(&self.local_addr);
+        let sdp_offer = format!(
+            "v=0\r\n\
+             o=fcp-conference 0 0 IN IP4 {ip}\r\n\
+             s=Conference Dial-Out\r\n\
+             c=IN IP4 {ip}\r\n\
+             t=0 0\r\n\
+             m=audio {rtp_port} RTP/AVP 0 8 9 101\r\n\
+             a=rtpmap:0 PCMU/8000\r\n\
+             a=rtpmap:8 PCMA/8000\r\n\
+             a=rtpmap:9 G722/8000\r\n\
+             a=rtpmap:101 telephone-event/8000\r\n\
+             a=fmtp:101 0-16\r\n\
+             a=sendrecv\r\n\
+             a=ptime:20\r\n",
+            ip = ip,
+            rtp_port = port_pair.rtp_port,
+        );
+
+        // 4. Send INVITE via UAC
+        info!(room = %room_number, destination = %destination, "Initiating dial-out INVITE");
+        let call_handle = match self.uac.invite(destination, Some(&sdp_offer)).await {
+            Ok(h) => h,
+            Err(e) => {
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.publish_event(ConferenceEvent::DialOutFailed {
+                    room_number: room_number.to_string(),
+                    destination: destination.to_string(),
+                    reason: format!("INVITE failed: {}", e),
+                    tenant_id,
+                    timestamp: SystemTime::now(),
+                });
+                anyhow::bail!("Failed to send INVITE: {}", e);
+            }
+        };
+
+        // 5. Wait for final response with timeout
+        let timeout_secs = self.conference_config.read().dial_out_timeout_secs;
+        let timeout = Duration::from_secs(timeout_secs);
+        let result = tokio::time::timeout(timeout, call_handle.await_final()).await;
+
+        let response = match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.publish_event(ConferenceEvent::DialOutFailed {
+                    room_number: room_number.to_string(),
+                    destination: destination.to_string(),
+                    reason: format!("Call failed: {}", e),
+                    tenant_id,
+                    timestamp: SystemTime::now(),
+                });
+                anyhow::bail!("Dial-out call failed: {}", e);
+            }
+            Err(_) => {
+                // Timeout — cancel the INVITE
+                let _ = call_handle.cancel().await;
+                let pool = Arc::clone(&self.port_pool);
+                tokio::spawn(async move { pool.deallocate(port_pair).await });
+                self.publish_event(ConferenceEvent::DialOutFailed {
+                    room_number: room_number.to_string(),
+                    destination: destination.to_string(),
+                    reason: format!("No answer (timeout {}s)", timeout_secs),
+                    tenant_id,
+                    timestamp: SystemTime::now(),
+                });
+                anyhow::bail!("Dial-out timed out after {}s", timeout_secs);
+            }
+        };
+
+        // 6. Check for 2xx success
+        let status_code = response.code();
+        if status_code < 200 || status_code >= 300 {
+            let pool = Arc::clone(&self.port_pool);
+            tokio::spawn(async move { pool.deallocate(port_pair).await });
+            let reason_phrase = response.reason();
+            self.publish_event(ConferenceEvent::DialOutFailed {
+                room_number: room_number.to_string(),
+                destination: destination.to_string(),
+                reason: format!("{} {}", status_code, reason_phrase),
+                tenant_id,
+                timestamp: SystemTime::now(),
+            });
+            anyhow::bail!("Callee rejected: {} {}", status_code, reason_phrase);
+        }
+
+        // 7. Parse SDP answer for codec and remote address
+        let answer_body = response.body();
+        let answer_sdp = std::str::from_utf8(&answer_body[..]).unwrap_or("");
+
+        let offered_codecs = parse_sdp_codecs(answer_sdp);
+        let (codec_name, payload_type) = {
+            let mut result = ("PCMU".to_string(), 0u8);
+            for codec in &offered_codecs {
+                let name = codec.encoding_name.to_uppercase();
+                if name != "TELEPHONE-EVENT" {
+                    result = (name, codec.payload_type);
+                    break;
+                }
+            }
+            result
+        };
+        let frame_size: usize = match codec_name.as_str() {
+            "G722" => 320,
+            _ => 160,
+        };
+        let te_pt = find_telephone_event_pt(&offered_codecs, answer_sdp);
+        let dtmf_clock_rate = find_telephone_event_clock_rate(&offered_codecs, answer_sdp);
+
+        // 8. Create RTP socket and set remote endpoint
+        let rtp_socket = Arc::new(
+            RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await
+                .context("Failed to create RTP socket for dial-out")?
+        );
+        if let Some(remote_addr) = parse_remote_rtp_addr(answer_sdp) {
+            rtp_socket
+                .set_remote_endpoint(RemoteEndpoint {
+                    rtp_addr: remote_addr,
+                    rtcp_addr: None,
+                })
+                .await;
+        }
+
+        // 9. Get dialog from call handle
+        let dialog = call_handle.dialog.read().await.clone();
+        let call_id = dialog.id().call_id().to_string();
+
+        // 10. Generate participant ID and add to room
+        let short_uuid = uuid::Uuid::new_v4().to_string();
+        let participant_id = format!("dialout-{}", &short_uuid[..8]);
+
+        if let Err(e) = room.add_participant(&participant_id, false) {
+            // Room rejected (full, locked, etc) — hang up
+            let _ = self.uac.bye(&dialog).await;
+            let pool = Arc::clone(&self.port_pool);
+            tokio::spawn(async move { pool.deallocate(port_pair).await });
+            anyhow::bail!("Failed to add dial-out participant: {}", e);
+        }
+
+        // 11. Spawn audio bridge
+        let conf = self.conference_config.read().clone();
+        let encoder = create_codec_instance(&codec_name)?;
+        let decoder = create_codec_instance(&codec_name)?;
+        let stats = Arc::new(AudioStats::new());
+        let stats_clone = Arc::clone(&stats);
+        let dtmf_handler = if conf.dtmf_enabled {
+            Some(self.get_or_create_dtmf_handler(room_number))
+        } else {
+            None
+        };
+        let bridge_room = Arc::clone(&room);
+        let bridge_pid = participant_id.clone();
+        let bridge_socket = Arc::clone(&rtp_socket);
+        let audio_bridge_handle = tokio::spawn(audio_bridge::run_audio_bridge(
+            bridge_room,
+            bridge_pid,
+            bridge_socket,
+            encoder,
+            decoder,
+            payload_type,
+            frame_size,
+            conf.jitter_buffer_ms,
+            te_pt,
+            dtmf_clock_rate,
+            dtmf_handler,
+            false, // dial-out participants are not hosts
+            stats_clone,
+            None, // no SRTP for dial-out (plain RTP)
+            conf.sample_rate,
+        ));
+
+        // 12. Store session
+        let remote_addr = parse_remote_rtp_addr(answer_sdp).unwrap_or(UNKNOWN_REMOTE);
+        let codec_name_log = codec_name.clone();
+        self.room_sessions
+            .entry(room_number.to_string())
+            .or_default()
+            .push(call_id.clone());
+        self.sessions.insert(
+            call_id.clone(),
+            ParticipantSession {
+                call_id,
+                room_number: room_number.to_string(),
+                participant_id: participant_id.clone(),
+                is_host: false,
+                is_dial_out: true,
+                audio_bridge_handle,
+                port_pair,
+                rtp_socket,
+                remote_addr,
+                codec_name,
+                tenant_id,
+                dialog,
+                joined_at: SystemTime::now(),
+                te_pt,
+                stats,
+                display_name: Some(format!("Dial-out: {}", destination)),
+                caller_id: Some(destination.to_string()),
+                srtp_context: None,
+                last_refreshed: Instant::now(),
+            },
+        );
+
+        // 13. Publish events
+        self.publish_event(ConferenceEvent::DialOutInvited {
+            room_number: room_number.to_string(),
+            participant_id: participant_id.clone(),
+            destination: destination.to_string(),
+            tenant_id,
+            timestamp: SystemTime::now(),
+        });
+        self.publish_event(ConferenceEvent::ParticipantJoined {
+            room_number: room_number.to_string(),
+            participant_id: participant_id.clone(),
+            is_host: false,
+            tenant_id,
+            timestamp: SystemTime::now(),
+        });
+
+        info!(
+            room = %room_number,
+            destination = %destination,
+            participant = %participant_id,
+            codec = %codec_name_log,
+            "Dial-out participant connected"
+        );
+
+        Ok(participant_id)
+    }
+
     /// Force-destroy a specific conference room: BYE all participants, stop recording, delete room.
     pub async fn destroy_conference(&self, room_number: &str) -> Result<usize> {
         // Verify room exists
@@ -1392,7 +1656,9 @@ impl ConferenceCallHandler {
             | ConferenceEvent::PinFailed { room_number, .. }
             | ConferenceEvent::MeetingCreated { room_number, .. }
             | ConferenceEvent::MeetingUpdated { room_number, .. }
-            | ConferenceEvent::MeetingDeleted { room_number, .. } => Some(room_number.clone()),
+            | ConferenceEvent::MeetingDeleted { room_number, .. }
+            | ConferenceEvent::DialOutInvited { room_number, .. }
+            | ConferenceEvent::DialOutFailed { room_number, .. } => Some(room_number.clone()),
         };
 
         // Notify RFC 4575 subscribers for this room
@@ -2706,6 +2972,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         room_number,
                         participant_id,
                         is_host,
+                        is_dial_out: false,
                         audio_bridge_handle: wait_handle,
                         port_pair,
                         rtp_socket: Arc::clone(&rtp_socket),
@@ -2907,6 +3174,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 room_number,
                 participant_id,
                 is_host,
+                is_dial_out: false,
                 audio_bridge_handle,
                 port_pair,
                 rtp_socket,

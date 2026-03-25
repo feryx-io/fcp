@@ -567,6 +567,10 @@ pub struct ConferenceSection {
     /// Path to WAV file played as music-on-hold while waiting for a moderator.
     #[serde(default)]
     pub moh_sound: Option<String>,
+
+    /// Timeout in seconds for dial-out INVITE to be answered. Default: 30.
+    #[serde(default = "default_dial_out_timeout_secs")]
+    pub dial_out_timeout_secs: u64,
 }
 
 fn default_announcements_dir() -> String {
@@ -649,6 +653,10 @@ fn default_recording_size_check_interval_secs() -> u64 {
     30
 }
 
+fn default_dial_out_timeout_secs() -> u64 {
+    30
+}
+
 impl Default for ConferenceSection {
     fn default() -> Self {
         Self {
@@ -681,6 +689,7 @@ impl Default for ConferenceSection {
             pin_prompt_sound: None,
             invalid_pin_sound: None,
             moh_sound: None,
+            dial_out_timeout_secs: default_dial_out_timeout_secs(),
         }
     }
 }

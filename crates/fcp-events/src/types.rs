@@ -589,6 +589,26 @@ pub enum ConferenceEvent {
         #[serde(with = "system_time_serde")]
         timestamp: SystemTime,
     },
+
+    /// Dial-out invitation initiated to an external participant
+    DialOutInvited {
+        room_number: String,
+        participant_id: String,
+        destination: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// Dial-out invitation failed (callee rejected or timed out)
+    DialOutFailed {
+        room_number: String,
+        destination: String,
+        reason: String,
+        tenant_id: TenantId,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
 }
 
 /// Queue/ACD-related events.
@@ -1123,6 +1143,8 @@ impl PlatformEvent {
                 ConferenceEvent::MeetingDeleted { .. } => "conference.meeting_deleted",
                 ConferenceEvent::MeetingStarted { .. } => "conference.meeting_started",
                 ConferenceEvent::MeetingEnded { .. } => "conference.meeting_ended",
+                ConferenceEvent::DialOutInvited { .. } => "conference.dial_out_invited",
+                ConferenceEvent::DialOutFailed { .. } => "conference.dial_out_failed",
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { .. } => "queue.caller_enqueued",
@@ -1197,7 +1219,9 @@ impl PlatformEvent {
                 | ConferenceEvent::MeetingUpdated { tenant_id, .. }
                 | ConferenceEvent::MeetingDeleted { tenant_id, .. }
                 | ConferenceEvent::MeetingStarted { tenant_id, .. }
-                | ConferenceEvent::MeetingEnded { tenant_id, .. } => Some(tenant_id),
+                | ConferenceEvent::MeetingEnded { tenant_id, .. }
+                | ConferenceEvent::DialOutInvited { tenant_id, .. }
+                | ConferenceEvent::DialOutFailed { tenant_id, .. } => Some(tenant_id),
             },
             PlatformEvent::Queue(e) => match e {
                 QueueEvent::CallerEnqueued { tenant_id, .. }
@@ -1474,7 +1498,9 @@ impl ConferenceEvent {
             | ConferenceEvent::MeetingUpdated { timestamp, .. }
             | ConferenceEvent::MeetingDeleted { timestamp, .. }
             | ConferenceEvent::MeetingStarted { timestamp, .. }
-            | ConferenceEvent::MeetingEnded { timestamp, .. } => *timestamp,
+            | ConferenceEvent::MeetingEnded { timestamp, .. }
+            | ConferenceEvent::DialOutInvited { timestamp, .. }
+            | ConferenceEvent::DialOutFailed { timestamp, .. } => *timestamp,
         }
     }
 }

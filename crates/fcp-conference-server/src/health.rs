@@ -134,6 +134,11 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             "/conferences/{room_number}/admit-all",
             post(admit_all_handler),
         )
+        // Dial-out: invite an external participant by calling them
+        .route(
+            "/conferences/{room_number}/dial-out",
+            post(dial_out_handler),
+        )
         // AI participant
         .route("/conferences/{room_number}/ai", post(attach_ai_handler))
         .route("/conferences/{room_number}/ai", delete(detach_ai_handler))
@@ -911,6 +916,69 @@ async fn kick_participant_handler(
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": format!("{}", e) })),
         ),
+    }
+}
+
+#[derive(Deserialize)]
+struct DialOutRequest {
+    destination: String,
+}
+
+async fn dial_out_handler(
+    State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
+    Path(room_number): Path<String>,
+    Json(payload): Json<DialOutRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let dest = payload.destination.trim().to_string();
+    if !dest.starts_with("sip:") && !dest.starts_with("tel:") && !dest.contains('@') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Destination must be a SIP URI (sip:user@domain), tel URI (tel:+15551234567), or user@domain"
+            })),
+        );
+    }
+
+    // Normalize: if user@domain without sip: prefix, add it
+    let dest = if !dest.starts_with("sip:") && !dest.starts_with("tel:") && dest.contains('@') {
+        format!("sip:{}", dest)
+    } else {
+        dest
+    };
+
+    let tenant_id = extract_tenant_id(&headers);
+
+    match state.conference_handler.dial_out(&room_number, &dest, tenant_id).await {
+        Ok(participant_id) => {
+            info!(
+                action = "dial_out",
+                room = %room_number,
+                destination = %dest,
+                participant = %participant_id,
+                "AUDIT: dial-out initiated via API"
+            );
+            (StatusCode::OK, Json(serde_json::json!({
+                "status": "connected",
+                "participant_id": participant_id,
+                "destination": dest,
+                "room_number": room_number,
+            })))
+        }
+        Err(e) => {
+            warn!(room = %room_number, destination = %dest, error = %e, "Dial-out failed");
+            let msg = format!("{}", e);
+            let code = if msg.contains("not active") {
+                StatusCode::NOT_FOUND
+            } else if msg.contains("full") || msg.contains("locked") {
+                StatusCode::CONFLICT
+            } else if msg.contains("timed out") || msg.contains("rejected") {
+                StatusCode::GATEWAY_TIMEOUT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (code, Json(serde_json::json!({ "error": msg })))
+        }
     }
 }
 

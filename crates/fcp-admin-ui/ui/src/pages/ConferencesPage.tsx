@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, Pencil, Trash2, Phone } from 'lucide-react'
+import { MoreHorizontal, Plus, Pencil, Trash2, Phone, PhoneOutgoing } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/switch'
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { conferences, prompts, users, type PromptResponse } from '@/api/endpoints'
+import { conferences, conferenceLive, prompts, users, type PromptResponse } from '@/api/endpoints'
 import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, User } from '@/types'
 
 const createSchema = z.object({
@@ -96,6 +96,10 @@ function AudioPromptSelect({ value, onChange, promptList, label }: {
 export function ConferencesPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editItem, setEditItem] = useState<MeetingResponse | null>(null)
+  const [dialOutRoom, setDialOutRoom] = useState<string | null>(null)
+  const [dialOutDest, setDialOutDest] = useState('')
+  const [dialOutPending, setDialOutPending] = useState(false)
+  const [dialOutResult, setDialOutResult] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: items = [], isLoading } = useQuery({
@@ -223,6 +227,9 @@ export function ConferencesPage() {
             <DropdownMenuItem onClick={() => setEditItem(row.original)}>
               <Pencil className="mr-2 h-4 w-4" /> Edit
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { setDialOutRoom(row.original.room_number); setDialOutDest(''); setDialOutResult(null) }}>
+              <PhoneOutgoing className="mr-2 h-4 w-4" /> Dial Out
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => toggleMutation.mutate({ id: row.original.id, enabled: !row.original.enabled })}
             >
@@ -266,6 +273,56 @@ export function ConferencesPage() {
 
       <CreateDialog open={createOpen} onOpenChange={setCreateOpen} onSubmit={(data) => createMutation.mutate(data)} isPending={createMutation.isPending} promptList={promptList} userList={userList} />
       <EditDialog item={editItem} onOpenChange={(open) => { if (!open) setEditItem(null) }} onSubmit={(data) => { if (editItem) updateMutation.mutate({ id: editItem.id, data }) }} isPending={updateMutation.isPending} promptList={promptList} userList={userList} />
+
+      {/* Dial-Out Dialog */}
+      <Dialog open={!!dialOutRoom} onOpenChange={(open) => { if (!open) setDialOutRoom(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Dial Out — Room {dialOutRoom}</DialogTitle>
+            <DialogDescription>
+              Invite a participant by calling them. Enter a SIP URI or phone number.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Destination</Label>
+              <Input
+                value={dialOutDest}
+                onChange={(e) => setDialOutDest(e.target.value)}
+                placeholder="sip:user@domain or tel:+15551234567"
+                disabled={dialOutPending}
+              />
+            </div>
+            {dialOutResult && (
+              <p className={`text-sm ${dialOutResult.startsWith('Error') ? 'text-destructive' : 'text-green-600'}`}>
+                {dialOutResult}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setDialOutRoom(null)} disabled={dialOutPending}>Cancel</Button>
+              <Button
+                disabled={!dialOutDest.trim() || dialOutPending}
+                onClick={async () => {
+                  setDialOutPending(true)
+                  setDialOutResult(null)
+                  try {
+                    const res = await conferenceLive.dialOut(dialOutRoom!, dialOutDest.trim())
+                    setDialOutResult(`Connected: ${res.participant_id}`)
+                    setTimeout(() => setDialOutRoom(null), 2000)
+                  } catch (e) {
+                    setDialOutResult(`Error: ${(e as Error).message}`)
+                  } finally {
+                    setDialOutPending(false)
+                  }
+                }}
+              >
+                <PhoneOutgoing className="mr-2 h-4 w-4" />
+                {dialOutPending ? 'Calling...' : 'Call'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
