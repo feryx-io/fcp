@@ -1123,6 +1123,18 @@ impl ConferenceCallHandler {
         greeting_tts: Option<&str>,
         greeting_prompt: Option<&str>,
     ) -> Result<String> {
+        // 0. Normalize destination
+        let destination = if destination.starts_with("sip:") || destination.starts_with("tel:") {
+            destination.to_string()
+        } else if destination.contains('@') {
+            format!("sip:{}", destination)
+        } else {
+            // Bare extension/number → sip:ext@local_domain
+            let domain = self.local_addr.split(':').next().unwrap_or(&self.local_addr);
+            format!("sip:{}@{}", destination, domain)
+        };
+        let destination = &destination;
+
         // 1. Look up meeting config and get or create the room
         let meeting = self
             .lookup_meeting(&tenant_id, room_number)
@@ -1994,8 +2006,16 @@ impl ConferenceCallHandler {
             wait_for_moderator: Some(meeting.wait_for_moderator),
             min_users: None,
             min_recording_participants: if meeting.auto_record { Some(1) } else { None },
-            join_sound: None,
-            exit_sound: None,
+            join_sound: if meeting.play_entry_exit_tones {
+                resolve_sound(&meeting.join_sound, &conf.join_sound)
+            } else {
+                Some(None) // Explicitly disable
+            },
+            exit_sound: if meeting.play_entry_exit_tones {
+                resolve_sound(&meeting.exit_sound, &conf.exit_sound)
+            } else {
+                Some(None)
+            },
             alone_sound: None,
             invalid_pin_sound: resolve_sound(&meeting.invalid_pin_sound, &conf.invalid_pin_sound),
             locked_sound: None,
@@ -3218,7 +3238,12 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // 17. Create DTMF handler and stats for audio bridge
         let dtmf_handler = if conf.dtmf_enabled {
-            Some(self.get_or_create_dtmf_handler(&room_number))
+            let handler = self.get_or_create_dtmf_handler(&room_number);
+            // Propagate host status so DTMF host commands work immediately
+            if is_host {
+                handler.set_host(&participant_id, true);
+            }
+            Some(handler)
         } else {
             None
         };

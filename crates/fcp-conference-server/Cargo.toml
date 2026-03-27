@@ -57,6 +57,7 @@ sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors"] }
 tower = "0.5"
+hound = "3"
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }

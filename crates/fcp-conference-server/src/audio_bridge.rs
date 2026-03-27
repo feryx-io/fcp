@@ -515,7 +515,21 @@ fn execute_dtmf_command(
             }
             false
         }
-        DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin => {
+        DtmfCommand::DialOut(destination) => {
+            if is_host {
+                info!(
+                    participant = %participant_id,
+                    destination = %destination,
+                    "DTMF host: dial-out requested"
+                );
+                // Signal the conference handler to initiate dial-out.
+                // We can't do async SIP here, so publish via the room's
+                // dial-out request channel. The handler polls this.
+                room.request_dial_out(&destination);
+            }
+            false
+        }
+        DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin | DtmfCommand::EnterDialOut => {
             // Internal states, no action needed
             false
         }

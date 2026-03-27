@@ -427,6 +427,12 @@ struct CreateMeetingRequest {
     invalid_pin_tts: Option<String>,
     #[serde(default)]
     welcome_tts: Option<String>,
+    #[serde(default = "default_true")]
+    play_entry_exit_tones: bool,
+    #[serde(default)]
+    join_sound: Option<String>,
+    #[serde(default)]
+    exit_sound: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -555,6 +561,9 @@ async fn create_meeting_handler(
         pin_prompt_tts: payload.pin_prompt_tts,
         invalid_pin_tts: payload.invalid_pin_tts,
         welcome_tts: payload.welcome_tts,
+        play_entry_exit_tones: payload.play_entry_exit_tones,
+        join_sound: payload.join_sound,
+        exit_sound: payload.exit_sound,
         created_at: now,
         updated_at: now,
     };
@@ -633,6 +642,9 @@ struct UpdateMeetingRequest {
     pin_prompt_tts: Option<Option<String>>,
     invalid_pin_tts: Option<Option<String>>,
     welcome_tts: Option<Option<String>>,
+    play_entry_exit_tones: Option<bool>,
+    join_sound: Option<Option<String>>,
+    exit_sound: Option<Option<String>>,
 }
 
 async fn update_meeting_handler(
@@ -739,6 +751,18 @@ async fn update_meeting_handler(
     if let Some(v) = payload.welcome_tts {
         meeting.welcome_tts = v;
         changed_fields.push("welcome_tts".to_string());
+    }
+    if let Some(v) = payload.play_entry_exit_tones {
+        meeting.play_entry_exit_tones = v;
+        changed_fields.push("play_entry_exit_tones".to_string());
+    }
+    if let Some(v) = payload.join_sound {
+        meeting.join_sound = v;
+        changed_fields.push("join_sound".to_string());
+    }
+    if let Some(v) = payload.exit_sound {
+        meeting.exit_sound = v;
+        changed_fields.push("exit_sound".to_string());
     }
     meeting.updated_at = SystemTime::now();
 
@@ -1888,6 +1912,9 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
         "pin_prompt_tts": meeting.pin_prompt_tts,
         "invalid_pin_tts": meeting.invalid_pin_tts,
         "welcome_tts": meeting.welcome_tts,
+        "play_entry_exit_tones": meeting.play_entry_exit_tones,
+        "join_sound": meeting.join_sound,
+        "exit_sound": meeting.exit_sound,
         "created_at": meeting.created_at
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

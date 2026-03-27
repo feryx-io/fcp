@@ -34,9 +34,12 @@ const createSchema = z.object({
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
   owner_id: z.string().optional(),
+  play_entry_exit_tones: z.boolean().optional(),
   pin_prompt_sound: z.string().optional(),
   invalid_pin_sound: z.string().optional(),
   moh_sound: z.string().optional(),
+  join_sound: z.string().optional(),
+  exit_sound: z.string().optional(),
   pin_prompt_tts: z.string().optional(),
   invalid_pin_tts: z.string().optional(),
   welcome_tts: z.string().optional(),
@@ -53,9 +56,12 @@ const editSchema = z.object({
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
   owner_id: z.string().optional(),
+  play_entry_exit_tones: z.boolean().optional(),
   pin_prompt_sound: z.string().optional(),
   invalid_pin_sound: z.string().optional(),
   moh_sound: z.string().optional(),
+  join_sound: z.string().optional(),
+  exit_sound: z.string().optional(),
   pin_prompt_tts: z.string().optional(),
   invalid_pin_tts: z.string().optional(),
   welcome_tts: z.string().optional(),
@@ -367,9 +373,12 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       default_locked: data.default_locked,
       permanent: data.permanent,
       owner_id: data.owner_id || undefined,
+      play_entry_exit_tones: data.play_entry_exit_tones,
       pin_prompt_sound: data.pin_prompt_sound || undefined,
       invalid_pin_sound: data.invalid_pin_sound || undefined,
       moh_sound: data.moh_sound || undefined,
+      join_sound: data.join_sound || undefined,
+      exit_sound: data.exit_sound || undefined,
       pin_prompt_tts: data.pin_prompt_tts || undefined,
       invalid_pin_tts: data.invalid_pin_tts || undefined,
       welcome_tts: data.welcome_tts || undefined,
@@ -463,6 +472,12 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
               <AudioPromptSelect label="PIN Prompt Audio" value={watch('pin_prompt_sound')} onChange={(v) => setValue('pin_prompt_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="Invalid PIN Audio" value={watch('invalid_pin_sound')} onChange={(v) => setValue('invalid_pin_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="MOH / Hold Music" value={watch('moh_sound')} onChange={(v) => setValue('moh_sound', v)} promptList={promptList} />
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Entry/Exit Tones</Label>
+                <Switch checked={watch('play_entry_exit_tones') !== false} onCheckedChange={(v) => setValue('play_entry_exit_tones', v)} />
+              </div>
+              <AudioPromptSelect label="Join Tone" value={watch('join_sound')} onChange={(v) => setValue('join_sound', v)} promptList={promptList} />
+              <AudioPromptSelect label="Exit Tone" value={watch('exit_sound')} onChange={(v) => setValue('exit_sound', v)} promptList={promptList} />
               <div>
                 <Label className="text-xs">PIN Prompt TTS Text</Label>
                 <Input {...register('pin_prompt_tts')} placeholder="e.g. Please enter your PIN" className="text-sm" />
@@ -514,9 +529,12 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       default_locked: item.default_locked,
       permanent: item.permanent,
       owner_id: item.owner_id || '',
+      play_entry_exit_tones: item.play_entry_exit_tones,
       pin_prompt_sound: item.pin_prompt_sound || '',
       invalid_pin_sound: item.invalid_pin_sound || '',
       moh_sound: item.moh_sound || '',
+      join_sound: item.join_sound || '',
+      exit_sound: item.exit_sound || '',
       pin_prompt_tts: item.pin_prompt_tts || '',
       invalid_pin_tts: item.invalid_pin_tts || '',
       welcome_tts: item.welcome_tts || '',
@@ -535,9 +553,12 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.default_locked !== undefined) update.default_locked = data.default_locked
     if (data.permanent !== undefined) update.permanent = data.permanent
     if (data.owner_id !== undefined) update.owner_id = data.owner_id || null
+    if (data.play_entry_exit_tones !== undefined) update.play_entry_exit_tones = data.play_entry_exit_tones
     if (data.pin_prompt_sound !== undefined) update.pin_prompt_sound = data.pin_prompt_sound || null
     if (data.invalid_pin_sound !== undefined) update.invalid_pin_sound = data.invalid_pin_sound || null
     if (data.moh_sound !== undefined) update.moh_sound = data.moh_sound || null
+    if (data.join_sound !== undefined) update.join_sound = data.join_sound || null
+    if (data.exit_sound !== undefined) update.exit_sound = data.exit_sound || null
     if (data.pin_prompt_tts !== undefined) update.pin_prompt_tts = data.pin_prompt_tts || null
     if (data.invalid_pin_tts !== undefined) update.invalid_pin_tts = data.invalid_pin_tts || null
     if (data.welcome_tts !== undefined) update.welcome_tts = data.welcome_tts || null
@@ -620,6 +641,12 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
               <AudioPromptSelect label="PIN Prompt Audio" value={watch('pin_prompt_sound')} onChange={(v) => setValue('pin_prompt_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="Invalid PIN Audio" value={watch('invalid_pin_sound')} onChange={(v) => setValue('invalid_pin_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="MOH / Hold Music" value={watch('moh_sound')} onChange={(v) => setValue('moh_sound', v)} promptList={promptList} />
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Entry/Exit Tones</Label>
+                <Switch checked={watch('play_entry_exit_tones') !== false} onCheckedChange={(v) => setValue('play_entry_exit_tones', v)} />
+              </div>
+              <AudioPromptSelect label="Join Tone" value={watch('join_sound')} onChange={(v) => setValue('join_sound', v)} promptList={promptList} />
+              <AudioPromptSelect label="Exit Tone" value={watch('exit_sound')} onChange={(v) => setValue('exit_sound', v)} promptList={promptList} />
               <div>
                 <Label className="text-xs">PIN Prompt TTS Text</Label>
                 <Input {...register('pin_prompt_tts')} placeholder="e.g. Please enter your PIN" className="text-sm" />

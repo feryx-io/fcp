@@ -238,6 +238,12 @@ async fn main() -> Result<()> {
             ("conf_dialout_greeting", "Conference Dial-Out Greeting",
              "Please hold while we connect you to the conference.",
              fcp_core::prompt::PromptCategory::System),
+            ("conf_join_tone", "Conference Join Tone (generated beep)",
+             "",
+             fcp_core::prompt::PromptCategory::System),
+            ("conf_exit_tone", "Conference Exit Tone (generated beep)",
+             "",
+             fcp_core::prompt::PromptCategory::System),
         ];
         for (name, description, tts_text, category) in default_prompts {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
@@ -525,7 +531,7 @@ async fn main() -> Result<()> {
             &config.tts.cache_dir,
         );
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting"] {
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone"] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
@@ -550,6 +556,73 @@ async fn main() -> Result<()> {
                 }
                 Ok(Some(_)) => {} // Already has audio
                 _ => {}
+            }
+        }
+    }
+
+    // Generate default join/exit tone WAV files (short beeps, not TTS).
+    // Join = ascending two-tone (440Hz → 580Hz), Exit = descending (580Hz → 440Hz).
+    {
+        let tones_dir = std::path::Path::new(&config.tts.cache_dir);
+        let _ = std::fs::create_dir_all(tones_dir);
+        let sample_rate = config.conference.sample_rate;
+        let mut conf_write = conference_handler.conference_config.write();
+
+        let generate_tone = |freqs: &[(f64, f64)], path: &std::path::Path| -> bool {
+            // Each segment: (frequency_hz, duration_secs)
+            let mut samples: Vec<i16> = Vec::new();
+            for &(freq, dur) in freqs {
+                let n = (sample_rate as f64 * dur) as usize;
+                for i in 0..n {
+                    let t = i as f64 / sample_rate as f64;
+                    // Apply fade envelope (10ms fade in/out) to avoid clicks
+                    let fade_samples = (sample_rate as f64 * 0.01) as usize;
+                    let envelope = if i < fade_samples {
+                        i as f64 / fade_samples as f64
+                    } else if i > n - fade_samples {
+                        (n - i) as f64 / fade_samples as f64
+                    } else {
+                        1.0
+                    };
+                    let val = (12000.0 * envelope * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16;
+                    samples.push(val);
+                }
+            }
+            // Write as WAV
+            if let Ok(mut writer) = hound::WavWriter::create(
+                path,
+                hound::WavSpec {
+                    channels: 1,
+                    sample_rate,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            ) {
+                for s in &samples {
+                    let _ = writer.write_sample(*s);
+                }
+                let _ = writer.finalize();
+                true
+            } else {
+                false
+            }
+        };
+
+        let join_path = tones_dir.join("conf_join_tone.wav");
+        if conf_write.join_sound.is_none() {
+            // Ascending: 440Hz 100ms → 10ms silence → 580Hz 100ms
+            if generate_tone(&[(440.0, 0.1), (0.0, 0.01), (580.0, 0.1)], &join_path) {
+                conf_write.join_sound = Some(join_path.display().to_string());
+                info!(path = %join_path.display(), "Generated join tone");
+            }
+        }
+
+        let exit_path = tones_dir.join("conf_exit_tone.wav");
+        if conf_write.exit_sound.is_none() {
+            // Descending: 580Hz 100ms → 10ms silence → 440Hz 150ms
+            if generate_tone(&[(580.0, 0.1), (0.0, 0.01), (440.0, 0.15)], &exit_path) {
+                conf_write.exit_sound = Some(exit_path.display().to_string());
+                info!(path = %exit_path.display(), "Generated exit tone");
             }
         }
     }
@@ -723,6 +796,36 @@ async fn main() -> Result<()> {
             session_expires_secs = config.conference.session_expires_secs,
             "Session timer reaper started"
         );
+    }
+
+    // 24a2. Spawn DTMF dial-out request poller
+    {
+        let dialout_handler = Arc::clone(&conference_handler);
+        let dialout_bridge = Arc::clone(&bridge);
+        tokio::spawn(supervise_task("dtmf-dialout-poller", async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                // Check each active room for pending dial-out requests
+                for room_id in dialout_bridge.list_rooms() {
+                    if let Ok(room) = dialout_bridge.get_room(&room_id) {
+                        let requests = room.drain_dial_out_requests();
+                        for destination in requests {
+                            let handler = Arc::clone(&dialout_handler);
+                            let rn = room_id.clone();
+                            let dest = destination.clone();
+                            tokio::spawn(async move {
+                                info!(room = %rn, destination = %dest, "Processing DTMF dial-out request");
+                                match handler.dial_out(&rn, &dest, fcp_core::TenantId::nil(), None, None).await {
+                                    Ok(pid) => info!(room = %rn, destination = %dest, participant = %pid, "DTMF dial-out connected"),
+                                    Err(e) => warn!(room = %rn, destination = %dest, error = %e, "DTMF dial-out failed"),
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }));
+        info!("DTMF dial-out poller started");
     }
 
     // 24b. Spawn recording size monitor

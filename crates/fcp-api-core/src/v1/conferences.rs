@@ -53,6 +53,11 @@ pub struct MeetingResponse {
     pub invalid_pin_tts: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub welcome_tts: Option<String>,
+    pub play_entry_exit_tones: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub join_sound: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_sound: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -80,6 +85,9 @@ impl From<Meeting> for MeetingResponse {
             pin_prompt_tts: m.pin_prompt_tts,
             invalid_pin_tts: m.invalid_pin_tts,
             welcome_tts: m.welcome_tts,
+            play_entry_exit_tones: m.play_entry_exit_tones,
+            join_sound: m.join_sound,
+            exit_sound: m.exit_sound,
             created_at: m.created_at,
             updated_at: m.updated_at,
         }
@@ -123,6 +131,12 @@ pub struct CreateMeetingRequest {
     pub invalid_pin_tts: Option<String>,
     #[serde(default)]
     pub welcome_tts: Option<String>,
+    #[serde(default = "default_true")]
+    pub play_entry_exit_tones: bool,
+    #[serde(default)]
+    pub join_sound: Option<String>,
+    #[serde(default)]
+    pub exit_sound: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -149,6 +163,9 @@ pub struct UpdateMeetingRequest {
     pub pin_prompt_tts: Option<Option<String>>,
     pub invalid_pin_tts: Option<Option<String>>,
     pub welcome_tts: Option<Option<String>>,
+    pub play_entry_exit_tones: Option<bool>,
+    pub join_sound: Option<Option<String>>,
+    pub exit_sound: Option<Option<String>>,
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
@@ -215,6 +232,9 @@ pub async fn create_meeting(
         pin_prompt_tts: req.pin_prompt_tts,
         invalid_pin_tts: req.invalid_pin_tts,
         welcome_tts: req.welcome_tts,
+        play_entry_exit_tones: req.play_entry_exit_tones,
+        join_sound: req.join_sound,
+        exit_sound: req.exit_sound,
         created_at: now,
         updated_at: now,
     };
@@ -320,6 +340,15 @@ pub async fn update_meeting(
     }
     if let Some(v) = req.welcome_tts {
         meeting.welcome_tts = v;
+    }
+    if let Some(v) = req.play_entry_exit_tones {
+        meeting.play_entry_exit_tones = v;
+    }
+    if let Some(v) = req.join_sound {
+        meeting.join_sound = v;
+    }
+    if let Some(v) = req.exit_sound {
+        meeting.exit_sound = v;
     }
     meeting.updated_at = SystemTime::now();
 

@@ -1809,6 +1809,7 @@ dependencies = [
  "forge-resampler",
  "forge-rtp",
  "futures",
+ "hound",
  "parking_lot 0.12.5",
  "rand 0.8.5",
  "reqwest 0.12.28",

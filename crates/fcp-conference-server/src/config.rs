@@ -571,6 +571,14 @@ pub struct ConferenceSection {
     /// Timeout in seconds for dial-out INVITE to be answered. Default: 30.
     #[serde(default = "default_dial_out_timeout_secs")]
     pub dial_out_timeout_secs: u64,
+
+    /// Path to join tone WAV file
+    #[serde(default)]
+    pub join_sound: Option<String>,
+
+    /// Path to exit tone WAV file
+    #[serde(default)]
+    pub exit_sound: Option<String>,
 }
 
 fn default_announcements_dir() -> String {
@@ -690,6 +698,8 @@ impl Default for ConferenceSection {
             invalid_pin_sound: None,
             moh_sound: None,
             dial_out_timeout_secs: default_dial_out_timeout_secs(),
+            join_sound: None,
+            exit_sound: None,
         }
     }
 }
