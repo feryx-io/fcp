@@ -646,11 +646,11 @@ export const conferenceLive = {
     return res.json()
   },
   /** Dial out to invite a participant into the conference */
-  dialOut: async (roomNumber: string, destination: string): Promise<DialOutResponse> => {
+  dialOut: async (roomNumber: string, destination: string, options?: { greeting_tts?: string; greeting_prompt?: string }): Promise<DialOutResponse> => {
     const res = await fetch(`${CONF_API_BASE}/conferences/${encodeURIComponent(roomNumber)}/dial-out`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ destination }),
+      body: JSON.stringify({ destination, ...options }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))

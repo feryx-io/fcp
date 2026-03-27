@@ -55,6 +55,7 @@ sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
 
 # HTTP API
 axum = "0.7"
+tower-http = { version = "0.6", features = ["cors"] }
 tower = "0.5"
 
 # CLI and configuration

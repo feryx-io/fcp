@@ -16,6 +16,7 @@ export function UserConferencesPage() {
   const [editItem, setEditItem] = useState<MeetingResponse | null>(null)
   const [dialOutRoom, setDialOutRoom] = useState<string | null>(null)
   const [dialOutDest, setDialOutDest] = useState('')
+  const [dialOutGreeting, setDialOutGreeting] = useState('')
   const [dialOutPending, setDialOutPending] = useState(false)
   const [dialOutResult, setDialOutResult] = useState<string | null>(null)
   const queryClient = useQueryClient()
@@ -120,9 +121,19 @@ export function UserConferencesPage() {
               <Input
                 value={dialOutDest}
                 onChange={(e) => setDialOutDest(e.target.value)}
-                placeholder="sip:user@domain or tel:+15551234567"
+                placeholder="e.g. 1001, jerry@domain, or +15551234567"
                 disabled={dialOutPending}
               />
+            </div>
+            <div>
+              <Label>Greeting (optional)</Label>
+              <Input
+                value={dialOutGreeting}
+                onChange={(e) => setDialOutGreeting(e.target.value)}
+                placeholder="e.g. You are being invited to my conference"
+                disabled={dialOutPending}
+              />
+              <p className="text-xs text-muted-foreground mt-1">TTS text played to the callee before connecting. Leave blank for default.</p>
             </div>
             {dialOutResult && (
               <p className={`text-sm ${dialOutResult.startsWith('Error') ? 'text-destructive' : 'text-green-600'}`}>
@@ -137,7 +148,9 @@ export function UserConferencesPage() {
                   setDialOutPending(true)
                   setDialOutResult(null)
                   try {
-                    const res = await conferenceLive.dialOut(dialOutRoom!, dialOutDest.trim())
+                    const opts: { greeting_tts?: string } = {}
+                    if (dialOutGreeting.trim()) opts.greeting_tts = dialOutGreeting.trim()
+                    const res = await conferenceLive.dialOut(dialOutRoom!, dialOutDest.trim(), opts)
                     setDialOutResult(`Connected: ${res.participant_id}`)
                     setTimeout(() => setDialOutRoom(null), 2000)
                   } catch (e) {

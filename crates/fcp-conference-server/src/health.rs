@@ -61,89 +61,89 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
         // Meeting CRUD (persistent config in DB)
         .route("/meetings", get(list_meetings_handler))
         .route("/meetings", post(create_meeting_handler))
-        .route("/meetings/{id}", get(get_meeting_handler))
-        .route("/meetings/{id}", post(update_meeting_handler))
-        .route("/meetings/{id}", delete(delete_meeting_handler))
+        .route("/meetings/:id", get(get_meeting_handler))
+        .route("/meetings/:id", post(update_meeting_handler))
+        .route("/meetings/:id", delete(delete_meeting_handler))
         // Runtime conference operations (active rooms on THIS instance)
         .route("/conferences", get(list_conferences_handler))
         .route(
-            "/conferences/{room_number}",
+            "/conferences/:room_number",
             get(get_conference_handler).delete(destroy_conference_handler),
         )
         .route(
-            "/conferences/{room_number}/kick/{pid}",
+            "/conferences/:room_number/kick/:pid",
             post(kick_participant_handler),
         )
         .route(
-            "/conferences/{room_number}/mute/{pid}",
+            "/conferences/:room_number/mute/:pid",
             post(mute_participant_handler),
         )
         .route(
-            "/conferences/{room_number}/unmute/{pid}",
+            "/conferences/:room_number/unmute/:pid",
             post(unmute_participant_handler),
         )
-        .route("/conferences/{room_number}/lock", post(lock_room_handler))
+        .route("/conferences/:room_number/lock", post(lock_room_handler))
         .route(
-            "/conferences/{room_number}/unlock",
+            "/conferences/:room_number/unlock",
             post(unlock_room_handler),
         )
         .route(
-            "/conferences/{room_number}/recording/start",
+            "/conferences/:room_number/recording/start",
             post(start_recording_handler),
         )
         .route(
-            "/conferences/{room_number}/recording/stop",
+            "/conferences/:room_number/recording/stop",
             post(stop_recording_handler),
         )
         // Participant details and stats
         .route(
-            "/conferences/{room_number}/participants/{pid}",
+            "/conferences/:room_number/participants/:pid",
             get(get_participant_handler),
         )
         .route(
-            "/conferences/{room_number}/participants/{pid}/gain",
+            "/conferences/:room_number/participants/:pid/gain",
             post(set_gain_handler),
         )
         .route(
-            "/conferences/{room_number}/participants/{pid}/recording/start",
+            "/conferences/:room_number/participants/:pid/recording/start",
             post(start_participant_recording_handler),
         )
         .route(
-            "/conferences/{room_number}/participants/{pid}/recording/stop",
+            "/conferences/:room_number/participants/:pid/recording/stop",
             post(stop_participant_recording_handler),
         )
         .route(
-            "/conferences/{room_number}/waiting",
+            "/conferences/:room_number/waiting",
             get(list_waiting_handler),
         )
         .route(
-            "/conferences/{room_number}/promote/{pid}",
+            "/conferences/:room_number/promote/:pid",
             post(promote_participant_handler),
         )
-        .route("/conferences/{room_number}/stats", get(room_stats_handler))
+        .route("/conferences/:room_number/stats", get(room_stats_handler))
         .route(
-            "/conferences/{room_number}/announce",
+            "/conferences/:room_number/announce",
             post(announce_handler),
         )
         // Admin: admit waiting participants
         .route(
-            "/conferences/{room_number}/admit/{pid}",
+            "/conferences/:room_number/admit/:pid",
             post(admit_participant_handler),
         )
         .route(
-            "/conferences/{room_number}/admit-all",
+            "/conferences/:room_number/admit-all",
             post(admit_all_handler),
         )
         // Dial-out: invite an external participant by calling them
         .route(
-            "/conferences/{room_number}/dial-out",
+            "/conferences/:room_number/dial-out",
             post(dial_out_handler),
         )
         // AI participant
-        .route("/conferences/{room_number}/ai", post(attach_ai_handler))
-        .route("/conferences/{room_number}/ai", delete(detach_ai_handler))
+        .route("/conferences/:room_number/ai", post(attach_ai_handler))
+        .route("/conferences/:room_number/ai", delete(detach_ai_handler))
         .route(
-            "/conferences/{room_number}/ai/status",
+            "/conferences/:room_number/ai/status",
             get(ai_status_handler),
         )
         // Server-Sent Events stream
@@ -151,7 +151,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
         // Recording management
         .route("/recordings", get(list_recordings_handler))
         .route(
-            "/recordings/{filename}",
+            "/recordings/:filename",
             get(download_recording_handler).delete(delete_recording_handler),
         )
 }
@@ -188,10 +188,22 @@ pub async fn run_http_server(
     }
 
     let max_body_size = state.max_body_size_bytes;
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers(tower_http::cors::Any);
     let app = public_router()
         .merge(protected)
         .with_state(state)
-        .layer(DefaultBodyLimit::max(max_body_size));
+        .layer(DefaultBodyLimit::max(max_body_size))
+        .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
@@ -922,6 +934,12 @@ async fn kick_participant_handler(
 #[derive(Deserialize)]
 struct DialOutRequest {
     destination: String,
+    /// TTS text to play to the callee before connecting (e.g. "You are being invited to Jerry's conference")
+    #[serde(default)]
+    greeting_tts: Option<String>,
+    /// Name of an audio prompt to play as greeting (looked up from prompt store)
+    #[serde(default)]
+    greeting_prompt: Option<String>,
 }
 
 async fn dial_out_handler(
@@ -930,26 +948,39 @@ async fn dial_out_handler(
     Path(room_number): Path<String>,
     Json(payload): Json<DialOutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let dest = payload.destination.trim().to_string();
-    if !dest.starts_with("sip:") && !dest.starts_with("tel:") && !dest.contains('@') {
+    let raw = payload.destination.trim().to_string();
+    if raw.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Destination must be a SIP URI (sip:user@domain), tel URI (tel:+15551234567), or user@domain"
-            })),
+            Json(serde_json::json!({ "error": "Destination is required" })),
         );
     }
 
-    // Normalize: if user@domain without sip: prefix, add it
-    let dest = if !dest.starts_with("sip:") && !dest.starts_with("tel:") && dest.contains('@') {
-        format!("sip:{}", dest)
+    // Normalize the destination into a proper SIP or tel URI.
+    // Accepts: sip:user@host, tel:+15551234, user@host, +15551234, 1001
+    let dest = if raw.starts_with("sip:") || raw.starts_with("tel:") {
+        // Already a proper URI
+        raw
+    } else if raw.contains('@') {
+        // user@domain → sip:user@domain
+        format!("sip:{}", raw)
     } else {
-        dest
+        // Bare extension or phone number → sip:ext@local_domain
+        // Extract the domain from the conference server's local SIP address
+        let local_addr = &state.conference_handler.local_addr;
+        let domain = local_addr.split(':').next().unwrap_or(local_addr);
+        format!("sip:{}@{}", raw, domain)
     };
 
     let tenant_id = extract_tenant_id(&headers);
 
-    match state.conference_handler.dial_out(&room_number, &dest, tenant_id).await {
+    match state.conference_handler.dial_out(
+        &room_number,
+        &dest,
+        tenant_id,
+        payload.greeting_tts.as_deref(),
+        payload.greeting_prompt.as_deref(),
+    ).await {
         Ok(participant_id) => {
             info!(
                 action = "dial_out",

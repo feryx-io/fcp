@@ -1120,10 +1120,28 @@ impl ConferenceCallHandler {
         room_number: &str,
         destination: &str,
         tenant_id: TenantId,
+        greeting_tts: Option<&str>,
+        greeting_prompt: Option<&str>,
     ) -> Result<String> {
-        // 1. Validate room exists and is not full
-        let room = self.bridge.get_room(room_number)
-            .map_err(|_| anyhow::anyhow!("Conference room '{}' not active", room_number))?;
+        // 1. Look up meeting config and get or create the room
+        let meeting = self
+            .lookup_meeting(&tenant_id, room_number)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Meeting '{}' not found", room_number))?;
+
+        if !meeting.enabled {
+            anyhow::bail!("Conference is disabled");
+        }
+
+        let room = self
+            .bridge
+            .get_or_create_room(room_number, None)
+            .context("Failed to create conference room")?;
+
+        // Configure room from meeting settings (idempotent)
+        let room_config = self.meeting_to_room_config(&meeting);
+        let global_config = ConferenceConfig::default();
+        let _ = room.configure(room_config, &global_config);
 
         if let Some(cfg) = room.get_effective_config() {
             if cfg.max_channels > 0 && room.participant_count() >= cfg.max_channels {
@@ -1269,20 +1287,85 @@ impl ConferenceCallHandler {
         let dialog = call_handle.dialog.read().await.clone();
         let call_id = dialog.id().call_id().to_string();
 
-        // 10. Generate participant ID and add to room
+        // 10. Play greeting to the dial-out participant BEFORE adding to mixer.
+        //     This ensures they hear only the greeting, not conference audio.
+        let conf = self.conference_config.read().clone();
+        {
+            let mut greeting_samples: Option<Vec<i16>> = None;
+            let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
+
+            // Priority: greeting_prompt (WAV from prompt store) > greeting_tts > meeting default > none
+            if let Some(prompt_name) = greeting_prompt {
+                if let Some(prompt_store) = self.storage.prompt_store() {
+                    let tid = fcp_core::TenantId::nil();
+                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, prompt_name).await {
+                        if let Some(ref path) = prompt.audio_path {
+                            greeting_samples = player.load_audio_file(path).map(|s| s.to_vec());
+                        }
+                    }
+                }
+            }
+
+            if greeting_samples.is_none() {
+                if let Some(tts_text) = greeting_tts {
+                    if let Some(ref tts) = self.tts_service {
+                        match tokio::time::timeout(
+                            Duration::from_secs(10),
+                            tts.synthesize(tts_text, None, None),
+                        ).await {
+                            Ok(Ok(path)) => {
+                                greeting_samples = player.load_audio_file(&path).map(|s| s.to_vec());
+                            }
+                            Ok(Err(e)) => warn!(error = %e, "Dial-out TTS greeting synthesis failed"),
+                            Err(_) => warn!("Dial-out TTS greeting synthesis timed out (3s)"),
+                        }
+                    }
+                }
+            }
+
+            // Fall back to a default dial-out greeting from the prompt store
+            if greeting_samples.is_none() && greeting_tts.is_none() && greeting_prompt.is_none() {
+                if let Some(prompt_store) = self.storage.prompt_store() {
+                    let tid = fcp_core::TenantId::nil();
+                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, "conf_dialout_greeting").await {
+                        if let Some(ref path) = prompt.audio_path {
+                            greeting_samples = player.load_audio_file(path).map(|s| s.to_vec());
+                        }
+                    }
+                }
+            }
+
+            if let Some(samples) = greeting_samples {
+                let mut greeting_encoder = create_codec_instance(&codec_name)?;
+                play_prompt_to_rtp(
+                    &rtp_socket,
+                    &samples,
+                    greeting_encoder.as_mut(),
+                    payload_type,
+                    frame_size,
+                    &None, // no SRTP for dial-out
+                    conf.sample_rate,
+                )
+                .await;
+                info!(room = %room_number, destination = %destination, samples = samples.len(), "Played dial-out greeting");
+            }
+        }
+
+        // 11. Generate participant ID and add to room (AFTER greeting plays)
         let short_uuid = uuid::Uuid::new_v4().to_string();
         let participant_id = format!("dialout-{}", &short_uuid[..8]);
 
-        if let Err(e) = room.add_participant(&participant_id, false) {
-            // Room rejected (full, locked, etc) — hang up
+        // Add as host to bypass wait-for-moderator (dial-out is an admin/host action).
+        // This also releases any waiting guests, which is the desired behavior —
+        // if the admin is dialing people in, the conference should be active.
+        if let Err(e) = room.add_participant(&participant_id, true) {
             let _ = self.uac.bye(&dialog).await;
             let pool = Arc::clone(&self.port_pool);
             tokio::spawn(async move { pool.deallocate(port_pair).await });
             anyhow::bail!("Failed to add dial-out participant: {}", e);
         }
 
-        // 11. Spawn audio bridge
-        let conf = self.conference_config.read().clone();
+        // 12. Spawn audio bridge
         let encoder = create_codec_instance(&codec_name)?;
         let decoder = create_codec_instance(&codec_name)?;
         let stats = Arc::new(AudioStats::new());

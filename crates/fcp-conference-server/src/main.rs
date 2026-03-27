@@ -235,6 +235,9 @@ async fn main() -> Result<()> {
             ("conf_welcome", "Conference Welcome",
              "You have joined the conference.",
              fcp_core::prompt::PromptCategory::System),
+            ("conf_dialout_greeting", "Conference Dial-Out Greeting",
+             "Please hold while we connect you to the conference.",
+             fcp_core::prompt::PromptCategory::System),
         ];
         for (name, description, tts_text, category) in default_prompts {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
@@ -522,7 +525,7 @@ async fn main() -> Result<()> {
             &config.tts.cache_dir,
         );
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome"] {
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting"] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
