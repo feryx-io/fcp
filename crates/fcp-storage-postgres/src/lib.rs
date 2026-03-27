@@ -1818,7 +1818,7 @@ impl ConferenceStore for PostgresStorage {
                     enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
-                    play_entry_exit_tones, join_sound, exit_sound,
+                    play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     created_at, updated_at
              FROM conference_meetings WHERE id = $1",
         )
@@ -1843,7 +1843,7 @@ impl ConferenceStore for PostgresStorage {
                     enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
-                    play_entry_exit_tones, join_sound, exit_sound,
+                    play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 AND room_number = $2",
         )
@@ -1865,7 +1865,7 @@ impl ConferenceStore for PostgresStorage {
                     enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
-                    play_entry_exit_tones, join_sound, exit_sound,
+                    play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     created_at, updated_at
              FROM conference_meetings WHERE tenant_id = $1 ORDER BY room_number",
         )
@@ -1892,7 +1892,7 @@ impl ConferenceStore for PostgresStorage {
                     enabled, auto_record, default_locked, permanent, owner_id,
                     pin_prompt_sound, invalid_pin_sound, moh_sound,
                     pin_prompt_tts, invalid_pin_tts, welcome_tts,
-                    play_entry_exit_tones, join_sound, exit_sound,
+                    play_entry_tone, play_exit_tone, join_sound, exit_sound,
                     created_at, updated_at
              FROM conference_meetings
              WHERE tenant_id = $1 AND owner_id = $2
@@ -1921,9 +1921,9 @@ impl ConferenceStore for PostgresStorage {
               enabled, auto_record, default_locked, permanent, owner_id,
               pin_prompt_sound, invalid_pin_sound, moh_sound,
               pin_prompt_tts, invalid_pin_tts, welcome_tts,
-              play_entry_exit_tones, join_sound, exit_sound,
+              play_entry_tone, play_exit_tone, join_sound, exit_sound,
               created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
              ON CONFLICT (id) DO UPDATE SET
               tenant_id = EXCLUDED.tenant_id,
               room_number = EXCLUDED.room_number,
@@ -1944,7 +1944,8 @@ impl ConferenceStore for PostgresStorage {
               pin_prompt_tts = EXCLUDED.pin_prompt_tts,
               invalid_pin_tts = EXCLUDED.invalid_pin_tts,
               welcome_tts = EXCLUDED.welcome_tts,
-              play_entry_exit_tones = EXCLUDED.play_entry_exit_tones,
+              play_entry_tone = EXCLUDED.play_entry_tone,
+              play_exit_tone = EXCLUDED.play_exit_tone,
               join_sound = EXCLUDED.join_sound,
               exit_sound = EXCLUDED.exit_sound,
               updated_at = EXCLUDED.updated_at",
@@ -1969,7 +1970,8 @@ impl ConferenceStore for PostgresStorage {
         .bind(meeting.pin_prompt_tts.as_deref())
         .bind(meeting.invalid_pin_tts.as_deref())
         .bind(meeting.welcome_tts.as_deref())
-        .bind(meeting.play_entry_exit_tones)
+        .bind(meeting.play_entry_tone)
+        .bind(meeting.play_exit_tone)
         .bind(meeting.join_sound.as_deref())
         .bind(meeting.exit_sound.as_deref())
         .bind(created_at)
@@ -2021,7 +2023,8 @@ fn map_meeting_row_pg(row: sqlx::postgres::PgRow) -> Result<fcp_core::Meeting> {
         pin_prompt_tts: row.get("pin_prompt_tts"),
         invalid_pin_tts: row.get("invalid_pin_tts"),
         welcome_tts: row.get("welcome_tts"),
-        play_entry_exit_tones: row.get("play_entry_exit_tones"),
+        play_entry_tone: row.get("play_entry_tone"),
+        play_exit_tone: row.get("play_exit_tone"),
         join_sound: row.get("join_sound"),
         exit_sound: row.get("exit_sound"),
         created_at: datetime_to_system_time(created_at),

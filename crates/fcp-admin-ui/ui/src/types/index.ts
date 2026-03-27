@@ -1004,7 +1004,8 @@ export interface MeetingResponse {
   pin_prompt_tts?: string | null
   invalid_pin_tts?: string | null
   welcome_tts?: string | null
-  play_entry_exit_tones: boolean
+  play_entry_tone: boolean
+  play_exit_tone: boolean
   join_sound?: string | null
   exit_sound?: string | null
   created_at: string
@@ -1030,7 +1031,8 @@ export interface CreateMeetingRequest {
   pin_prompt_tts?: string | null
   invalid_pin_tts?: string | null
   welcome_tts?: string | null
-  play_entry_exit_tones?: boolean
+  play_entry_tone?: boolean
+  play_exit_tone?: boolean
   join_sound?: string | null
   exit_sound?: string | null
 }
@@ -1053,7 +1055,8 @@ export interface UpdateMeetingRequest {
   pin_prompt_tts?: string | null
   invalid_pin_tts?: string | null
   welcome_tts?: string | null
-  play_entry_exit_tones?: boolean
+  play_entry_tone?: boolean
+  play_exit_tone?: boolean
   join_sound?: string | null
   exit_sound?: string | null
 }

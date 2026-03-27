@@ -186,7 +186,8 @@ function EditConferenceDialog({ item, onOpenChange, onSubmit, isPending }: {
     wait_for_moderator: boolean
     auto_record: boolean
     default_locked: boolean
-    play_entry_exit_tones: boolean
+    play_entry_tone: boolean
+    play_exit_tone: boolean
     welcome_tts: string
   }>()
 
@@ -202,7 +203,8 @@ function EditConferenceDialog({ item, onOpenChange, onSubmit, isPending }: {
       wait_for_moderator: item.wait_for_moderator,
       auto_record: item.auto_record,
       default_locked: item.default_locked,
-      play_entry_exit_tones: item.play_entry_exit_tones,
+      play_entry_tone: item.play_entry_tone,
+      play_exit_tone: item.play_exit_tone,
       welcome_tts: item.welcome_tts || '',
     })
   }
@@ -217,7 +219,8 @@ function EditConferenceDialog({ item, onOpenChange, onSubmit, isPending }: {
     if (data.wait_for_moderator !== undefined) update.wait_for_moderator = data.wait_for_moderator
     if (data.auto_record !== undefined) update.auto_record = data.auto_record
     if (data.default_locked !== undefined) update.default_locked = data.default_locked
-    if (data.play_entry_exit_tones !== undefined) update.play_entry_exit_tones = data.play_entry_exit_tones
+    if (data.play_entry_tone !== undefined) update.play_entry_tone = data.play_entry_tone
+    if (data.play_exit_tone !== undefined) update.play_exit_tone = data.play_exit_tone
     if (data.welcome_tts !== undefined) update.welcome_tts = data.welcome_tts || null
     onSubmit(update)
   })
@@ -271,8 +274,12 @@ function EditConferenceDialog({ item, onOpenChange, onSubmit, isPending }: {
               <Switch checked={watch('default_locked')} onCheckedChange={(v) => setValue('default_locked', v)} />
             </div>
             <div className="flex items-center justify-between">
-              <Label>Entry/Exit Tones</Label>
-              <Switch checked={watch('play_entry_exit_tones') !== false} onCheckedChange={(v) => setValue('play_entry_exit_tones', v)} />
+              <Label>Entry Tone</Label>
+              <Switch checked={watch('play_entry_tone') !== false} onCheckedChange={(v) => setValue('play_entry_tone', v)} />
+            </div>
+            <div className="flex items-center justify-between">
+              <Label>Exit Tone</Label>
+              <Switch checked={watch('play_exit_tone') !== false} onCheckedChange={(v) => setValue('play_exit_tone', v)} />
             </div>
           </div>
 

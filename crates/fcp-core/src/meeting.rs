@@ -83,9 +83,13 @@ pub struct Meeting {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub welcome_tts: Option<String>,
 
-    /// Enable entry/exit tones when participants join or leave
+    /// Play a tone when a participant joins
     #[serde(default = "default_true")]
-    pub play_entry_exit_tones: bool,
+    pub play_entry_tone: bool,
+
+    /// Play a tone when a participant leaves
+    #[serde(default = "default_true")]
+    pub play_exit_tone: bool,
 
     /// Override path for join tone WAV file (None = use server default)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,7 +134,8 @@ mod tests {
             pin_prompt_tts: None,
             invalid_pin_tts: None,
             welcome_tts: None,
-            play_entry_exit_tones: true,
+            play_entry_tone: true,
+            play_exit_tone: true,
             join_sound: Some("/sounds/join.wav".to_string()),
             exit_sound: None,
             created_at: UNIX_EPOCH + std::time::Duration::from_secs(1700000000),
@@ -144,7 +149,8 @@ mod tests {
         assert_eq!(parsed.guest_pin, Some("1234".to_string()));
         assert!(parsed.require_guest_pin);
         assert_eq!(parsed.max_participants, 50);
-        assert!(parsed.play_entry_exit_tones);
+        assert!(parsed.play_entry_tone);
+        assert!(parsed.play_exit_tone);
         assert_eq!(parsed.join_sound, Some("/sounds/join.wav".to_string()));
         assert_eq!(parsed.exit_sound, None);
     }

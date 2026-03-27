@@ -34,7 +34,8 @@ const createSchema = z.object({
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
   owner_id: z.string().optional(),
-  play_entry_exit_tones: z.boolean().optional(),
+  play_entry_tone: z.boolean().optional(),
+  play_exit_tone: z.boolean().optional(),
   pin_prompt_sound: z.string().optional(),
   invalid_pin_sound: z.string().optional(),
   moh_sound: z.string().optional(),
@@ -56,7 +57,8 @@ const editSchema = z.object({
   default_locked: z.boolean().optional(),
   permanent: z.boolean().optional(),
   owner_id: z.string().optional(),
-  play_entry_exit_tones: z.boolean().optional(),
+  play_entry_tone: z.boolean().optional(),
+  play_exit_tone: z.boolean().optional(),
   pin_prompt_sound: z.string().optional(),
   invalid_pin_sound: z.string().optional(),
   moh_sound: z.string().optional(),
@@ -373,7 +375,8 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
       default_locked: data.default_locked,
       permanent: data.permanent,
       owner_id: data.owner_id || undefined,
-      play_entry_exit_tones: data.play_entry_exit_tones,
+      play_entry_tone: data.play_entry_tone,
+      play_exit_tone: data.play_exit_tone,
       pin_prompt_sound: data.pin_prompt_sound || undefined,
       invalid_pin_sound: data.invalid_pin_sound || undefined,
       moh_sound: data.moh_sound || undefined,
@@ -473,8 +476,12 @@ function CreateDialog({ open, onOpenChange, onSubmit, isPending, promptList, use
               <AudioPromptSelect label="Invalid PIN Audio" value={watch('invalid_pin_sound')} onChange={(v) => setValue('invalid_pin_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="MOH / Hold Music" value={watch('moh_sound')} onChange={(v) => setValue('moh_sound', v)} promptList={promptList} />
               <div className="flex items-center justify-between">
-                <Label className="text-xs">Entry/Exit Tones</Label>
-                <Switch checked={watch('play_entry_exit_tones') !== false} onCheckedChange={(v) => setValue('play_entry_exit_tones', v)} />
+                <Label className="text-xs">Entry Tone</Label>
+                <Switch checked={watch('play_entry_tone') !== false} onCheckedChange={(v) => setValue('play_entry_tone', v)} />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Exit Tone</Label>
+                <Switch checked={watch('play_exit_tone') !== false} onCheckedChange={(v) => setValue('play_exit_tone', v)} />
               </div>
               <AudioPromptSelect label="Join Tone" value={watch('join_sound')} onChange={(v) => setValue('join_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="Exit Tone" value={watch('exit_sound')} onChange={(v) => setValue('exit_sound', v)} promptList={promptList} />
@@ -529,7 +536,8 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
       default_locked: item.default_locked,
       permanent: item.permanent,
       owner_id: item.owner_id || '',
-      play_entry_exit_tones: item.play_entry_exit_tones,
+      play_entry_tone: item.play_entry_tone,
+      play_exit_tone: item.play_exit_tone,
       pin_prompt_sound: item.pin_prompt_sound || '',
       invalid_pin_sound: item.invalid_pin_sound || '',
       moh_sound: item.moh_sound || '',
@@ -553,7 +561,8 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
     if (data.default_locked !== undefined) update.default_locked = data.default_locked
     if (data.permanent !== undefined) update.permanent = data.permanent
     if (data.owner_id !== undefined) update.owner_id = data.owner_id || null
-    if (data.play_entry_exit_tones !== undefined) update.play_entry_exit_tones = data.play_entry_exit_tones
+    if (data.play_entry_tone !== undefined) update.play_entry_tone = data.play_entry_tone
+    if (data.play_exit_tone !== undefined) update.play_exit_tone = data.play_exit_tone
     if (data.pin_prompt_sound !== undefined) update.pin_prompt_sound = data.pin_prompt_sound || null
     if (data.invalid_pin_sound !== undefined) update.invalid_pin_sound = data.invalid_pin_sound || null
     if (data.moh_sound !== undefined) update.moh_sound = data.moh_sound || null
@@ -642,8 +651,12 @@ function EditDialog({ item, onOpenChange, onSubmit, isPending, promptList, userL
               <AudioPromptSelect label="Invalid PIN Audio" value={watch('invalid_pin_sound')} onChange={(v) => setValue('invalid_pin_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="MOH / Hold Music" value={watch('moh_sound')} onChange={(v) => setValue('moh_sound', v)} promptList={promptList} />
               <div className="flex items-center justify-between">
-                <Label className="text-xs">Entry/Exit Tones</Label>
-                <Switch checked={watch('play_entry_exit_tones') !== false} onCheckedChange={(v) => setValue('play_entry_exit_tones', v)} />
+                <Label className="text-xs">Entry Tone</Label>
+                <Switch checked={watch('play_entry_tone') !== false} onCheckedChange={(v) => setValue('play_entry_tone', v)} />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="text-xs">Exit Tone</Label>
+                <Switch checked={watch('play_exit_tone') !== false} onCheckedChange={(v) => setValue('play_exit_tone', v)} />
               </div>
               <AudioPromptSelect label="Join Tone" value={watch('join_sound')} onChange={(v) => setValue('join_sound', v)} promptList={promptList} />
               <AudioPromptSelect label="Exit Tone" value={watch('exit_sound')} onChange={(v) => setValue('exit_sound', v)} promptList={promptList} />

@@ -428,7 +428,9 @@ struct CreateMeetingRequest {
     #[serde(default)]
     welcome_tts: Option<String>,
     #[serde(default = "default_true")]
-    play_entry_exit_tones: bool,
+    play_entry_tone: bool,
+    #[serde(default = "default_true")]
+    play_exit_tone: bool,
     #[serde(default)]
     join_sound: Option<String>,
     #[serde(default)]
@@ -561,7 +563,8 @@ async fn create_meeting_handler(
         pin_prompt_tts: payload.pin_prompt_tts,
         invalid_pin_tts: payload.invalid_pin_tts,
         welcome_tts: payload.welcome_tts,
-        play_entry_exit_tones: payload.play_entry_exit_tones,
+        play_entry_tone: payload.play_entry_tone,
+        play_exit_tone: payload.play_exit_tone,
         join_sound: payload.join_sound,
         exit_sound: payload.exit_sound,
         created_at: now,
@@ -642,7 +645,8 @@ struct UpdateMeetingRequest {
     pin_prompt_tts: Option<Option<String>>,
     invalid_pin_tts: Option<Option<String>>,
     welcome_tts: Option<Option<String>>,
-    play_entry_exit_tones: Option<bool>,
+    play_entry_tone: Option<bool>,
+    play_exit_tone: Option<bool>,
     join_sound: Option<Option<String>>,
     exit_sound: Option<Option<String>>,
 }
@@ -752,9 +756,13 @@ async fn update_meeting_handler(
         meeting.welcome_tts = v;
         changed_fields.push("welcome_tts".to_string());
     }
-    if let Some(v) = payload.play_entry_exit_tones {
-        meeting.play_entry_exit_tones = v;
-        changed_fields.push("play_entry_exit_tones".to_string());
+    if let Some(v) = payload.play_entry_tone {
+        meeting.play_entry_tone = v;
+        changed_fields.push("play_entry_tone".to_string());
+    }
+    if let Some(v) = payload.play_exit_tone {
+        meeting.play_exit_tone = v;
+        changed_fields.push("play_exit_tone".to_string());
     }
     if let Some(v) = payload.join_sound {
         meeting.join_sound = v;
@@ -1912,7 +1920,8 @@ fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {
         "pin_prompt_tts": meeting.pin_prompt_tts,
         "invalid_pin_tts": meeting.invalid_pin_tts,
         "welcome_tts": meeting.welcome_tts,
-        "play_entry_exit_tones": meeting.play_entry_exit_tones,
+        "play_entry_tone": meeting.play_entry_tone,
+        "play_exit_tone": meeting.play_exit_tone,
         "join_sound": meeting.join_sound,
         "exit_sound": meeting.exit_sound,
         "created_at": meeting.created_at

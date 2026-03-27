@@ -2006,12 +2006,12 @@ impl ConferenceCallHandler {
             wait_for_moderator: Some(meeting.wait_for_moderator),
             min_users: None,
             min_recording_participants: if meeting.auto_record { Some(1) } else { None },
-            join_sound: if meeting.play_entry_exit_tones {
+            join_sound: if meeting.play_entry_tone {
                 resolve_sound(&meeting.join_sound, &conf.join_sound)
             } else {
                 Some(None) // Explicitly disable
             },
-            exit_sound: if meeting.play_entry_exit_tones {
+            exit_sound: if meeting.play_exit_tone {
                 resolve_sound(&meeting.exit_sound, &conf.exit_sound)
             } else {
                 Some(None)

@@ -150,6 +150,22 @@ pub async fn run_audio_bridge(
         "Audio bridge started"
     );
 
+    // Drain stale RTP packets that accumulated in the kernel UDP buffer
+    // during the welcome message / TTS playback delay. Without this,
+    // hundreds of buffered packets arrive at once and flood the mixer.
+    {
+        let mut drained = 0u32;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(1), rtp_socket.recv_rtp_raw()).await {
+                Ok(Ok(_)) => { drained += 1; }
+                _ => break,
+            }
+        }
+        if drained > 0 {
+            debug!(drained, "Drained stale RTP packets before bridge start");
+        }
+    }
+
     loop {
         tokio::select! {
             // Branch 1: Receive inbound RTP → decrypt (if SRTP) → buffer → decode → write to mixer
