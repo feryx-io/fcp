@@ -15,7 +15,8 @@ use tracing::{debug, info, info_span, trace, warn, Instrument};
 pub const MAX_GAIN: f32 = 10.0;
 
 /// Gain adjustment step per DTMF volume up/down press.
-const DTMF_GAIN_STEP: f32 = 0.1;
+/// 0.25 gives ~4 presses to double volume from default 1.0.
+const DTMF_GAIN_STEP: f32 = 0.25;
 
 /// VAD silence threshold: RMS² below this value is considered silence (~-40 dBFS, ~100 RMS).
 const VAD_SILENCE_THRESHOLD: i64 = 10_000;
@@ -118,6 +119,10 @@ pub async fn run_audio_bridge(
     let mut timestamp: u32 = 0;
     let mut interval = tokio::time::interval(Duration::from_millis(20));
     let mut jitter_buffer = JitterBuffer::new(Duration::from_millis(jitter_buffer_ms));
+
+    // Output gain: controls how loud the conference mix sounds to THIS participant.
+    // Adjusted via DTMF *7 (up) and *8 (down). Default 1.0 = unity.
+    let mut output_gain: f32 = 1.0;
 
     // Resamplers for codec ↔ mixer rate conversion (e.g. G.722@16kHz ↔ mixer@8kHz)
     let codec_rate = decoder.native_format().sample_rate;
@@ -225,6 +230,11 @@ pub async fn run_audio_bridge(
                                                             is_host,
                                                             cmd,
                                                         );
+                                                        // Apply output gain adjustment
+                                                        if result.gain_delta != 0.0 {
+                                                            output_gain = (output_gain + result.gain_delta).clamp(0.0, MAX_GAIN);
+                                                            info!(participant = %participant_id, output_gain = output_gain, "Output gain adjusted");
+                                                        }
                                                         // Play feedback audio to THIS participant only
                                                         if let Some(ref fb) = result.feedback {
                                                             let fb_samples = match fb {
@@ -369,6 +379,14 @@ pub async fn run_audio_bridge(
                 }
                 match mix_result {
                     Ok(Some(mixed_pcm)) => {
+                        // Apply output gain (DTMF *7/*8 volume control)
+                        let mixed_pcm = if (output_gain - 1.0).abs() > 0.01 {
+                            mixed_pcm.iter().map(|&s| {
+                                (s as f32 * output_gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                            }).collect::<Vec<i16>>()
+                        } else {
+                            mixed_pcm
+                        };
                         // Resample from mixer rate to codec rate if needed
                         // (e.g. mixer@8kHz → G.722@16kHz)
                         let codec_pcm = if let Some(ref mut rs) = outbound_resampler {
@@ -473,6 +491,8 @@ struct DtmfResult {
     should_leave: bool,
     /// Optional audio feedback to play to THIS participant only
     feedback: Option<DtmfFeedback>,
+    /// Output gain adjustment (applied to the mix sent to this participant)
+    gain_delta: f32,
 }
 
 enum DtmfFeedback {
@@ -509,32 +529,24 @@ fn execute_dtmf_command(
                 }
                 Err(e) => warn!(error = %e, "Failed to get participant state for mute toggle"),
             }
-            DtmfResult { should_leave: false, feedback }
+            DtmfResult { should_leave: false, feedback, gain_delta: 0.0 }
         }
         DtmfCommand::VolumeUp => {
-            if let Ok(meta) = room.get_participant_metadata(participant_id) {
-                let new_gain = (meta.gain + DTMF_GAIN_STEP).min(MAX_GAIN);
-                let _ = room.set_participant_gain(participant_id, new_gain);
-                debug!(participant = %participant_id, gain = new_gain, "DTMF volume up");
-            }
-            DtmfResult { should_leave: false, feedback: None }
+            info!(participant = %participant_id, "DTMF volume up");
+            DtmfResult { should_leave: false, feedback: None, gain_delta: DTMF_GAIN_STEP }
         }
         DtmfCommand::VolumeDown => {
-            if let Ok(meta) = room.get_participant_metadata(participant_id) {
-                let new_gain = (meta.gain - DTMF_GAIN_STEP).max(0.0);
-                let _ = room.set_participant_gain(participant_id, new_gain);
-                debug!(participant = %participant_id, gain = new_gain, "DTMF volume down");
-            }
-            DtmfResult { should_leave: false, feedback: None }
+            info!(participant = %participant_id, "DTMF volume down");
+            DtmfResult { should_leave: false, feedback: None, gain_delta: -DTMF_GAIN_STEP }
         }
         DtmfCommand::Info => {
             let count = room.participant_count();
             info!(participant = %participant_id, participant_count = count, "DTMF info request");
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::Leave => {
             info!(participant = %participant_id, "DTMF leave requested");
-            DtmfResult { should_leave: true, feedback: None }
+            DtmfResult { should_leave: true, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::MuteAll => {
             if is_host {
@@ -543,7 +555,7 @@ fn execute_dtmf_command(
                 }
                 info!(participant = %participant_id, "DTMF host: muted all");
             }
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::UnmuteAll => {
             if is_host {
@@ -552,21 +564,21 @@ fn execute_dtmf_command(
                 }
                 info!(participant = %participant_id, "DTMF host: unmuted all");
             }
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::LockConference => {
             if is_host {
                 room.lock();
                 info!(participant = %participant_id, "DTMF host: locked conference");
             }
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::UnlockConference => {
             if is_host {
                 room.unlock();
                 info!(participant = %participant_id, "DTMF host: unlocked conference");
             }
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::EndConference => {
             if is_host {
@@ -578,7 +590,7 @@ fn execute_dtmf_command(
                     let _ = room.remove_participant(&pid);
                 }
             }
-            DtmfResult { should_leave: true, feedback: None }
+            DtmfResult { should_leave: true, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::KickParticipant(participant_num) => {
             if is_host {
@@ -594,7 +606,7 @@ fn execute_dtmf_command(
                     }
                 }
             }
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::DialOut(destination) => {
             if is_host {
@@ -608,11 +620,11 @@ fn execute_dtmf_command(
                 // dial-out request channel. The handler polls this.
                 room.request_dial_out(&destination);
             }
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin | DtmfCommand::EnterDialOut => {
             // Internal states, no action needed
-            DtmfResult { should_leave: false, feedback: None }
+            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
     }
 }
