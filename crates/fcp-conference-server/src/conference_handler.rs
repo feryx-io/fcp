@@ -2533,27 +2533,40 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
 
-                // Play PIN prompt sound before collecting DTMF
-                if let Some(ref samples) = pin_prompt_samples {
-                    debug!(room = %room_number, participant = %participant_id, "Playing PIN prompt");
-                    play_prompt_to_rtp(
-                        &rtp_socket,
-                        samples,
-                        prompt_encoder.as_mut(),
-                        payload_type,
-                        frame_size,
-                        &srtp_context,
-                        mixer_sample_rate,
-                    )
-                    .await;
-                } else if attempt == 1 {
-                    warn!(
-                        room = %room_number,
-                        "No PIN prompt audio configured — caller hears silence. \
-                         Set conference.pin_prompt_sound in config, or set \
-                         pin_prompt_tts on the meeting with TTS enabled."
-                    );
-                }
+                // Play PIN prompt in the background so DTMF collection
+                // starts immediately (caller can "type through" the prompt).
+                let prompt_handle = if let Some(ref samples) = pin_prompt_samples {
+                    debug!(room = %room_number, participant = %participant_id, "Playing PIN prompt (interruptible)");
+                    let prompt_socket = Arc::clone(&rtp_socket);
+                    let prompt_samples = Arc::clone(samples);
+                    let prompt_codec = codec_name.clone();
+                    let prompt_srtp = srtp_context.clone();
+                    let prompt_ms = mixer_sample_rate;
+                    Some(tokio::spawn(async move {
+                        if let Ok(mut enc) = create_codec_instance(&prompt_codec) {
+                            play_prompt_to_rtp(
+                                &prompt_socket,
+                                &prompt_samples,
+                                enc.as_mut(),
+                                payload_type,
+                                frame_size,
+                                &prompt_srtp,
+                                prompt_ms,
+                            )
+                            .await;
+                        }
+                    }))
+                } else {
+                    if attempt == 1 {
+                        warn!(
+                            room = %room_number,
+                            "No PIN prompt audio configured — caller hears silence. \
+                             Set conference.pin_prompt_sound in config, or set \
+                             pin_prompt_tts on the meeting with TTS enabled."
+                        );
+                    }
+                    None
+                };
 
                 debug!(
                     room = %room_number,
@@ -2562,9 +2575,17 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     "Waiting for PIN entry via DTMF"
                 );
 
-                match pin_collector
+                // Collect DTMF concurrently with prompt playback
+                let pin_result = pin_collector
                     .collect_pin_dtmf(&rtp_socket, te_pt, pin_timeout)
-                    .await
+                    .await;
+
+                // Stop prompt playback if still running
+                if let Some(h) = prompt_handle {
+                    h.abort();
+                }
+
+                match pin_result
                 {
                     Some(ref pin) if pin.is_empty() => {
                         // Empty PIN (user pressed # immediately) — treat as incorrect
