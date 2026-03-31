@@ -158,6 +158,9 @@ pub struct ConferenceCallHandler {
     tts_service: Option<Arc<fcp_media::TtsService>>,
     /// Calls that have been answered and are waiting for PIN input.
     pending_pin_auth: DashMap<String, PendingPinAuth>,
+    /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
+    pub dtmf_muted_samples: Option<Arc<Vec<i16>>>,
+    pub dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -559,6 +562,8 @@ impl ConferenceCallHandler {
             handler_latency: HandlerLatency::new(),
             tts_service: None,
             pending_pin_auth: DashMap::new(),
+            dtmf_muted_samples: None,
+            dtmf_unmuted_samples: None,
         }
     }
 
@@ -1406,6 +1411,8 @@ impl ConferenceCallHandler {
             stats_clone,
             None, // no SRTP for dial-out (plain RTP)
             conf.sample_rate,
+            self.dtmf_muted_samples.clone(),
+            self.dtmf_unmuted_samples.clone(),
         ));
 
         // 12. Store session
@@ -2073,7 +2080,7 @@ impl ConferenceCallHandler {
 ///
 /// The samples are expected at the mixer sample rate. If the codec operates at
 /// a different rate, the audio is resampled before encoding.
-async fn play_prompt_to_rtp(
+pub async fn play_prompt_to_rtp(
     rtp_socket: &RtpSocketPair,
     samples: &[i16],
     encoder: &mut dyn AudioCodec,
@@ -2818,6 +2825,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let moh_frame_size = frame_size;
                 let moh_rtp_socket = Arc::clone(&rtp_socket);
                 let moh_srtp = srtp_context.clone();
+                let wait_muted_samples = self.dtmf_muted_samples.clone();
+                let wait_unmuted_samples = self.dtmf_unmuted_samples.clone();
 
                 let wait_handle = tokio::spawn(async move {
                     // Spawn a background task that plays: announcement → music/silence → repeat
@@ -3054,6 +3063,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     wait_stats_clone,
                                     wait_srtp.clone(),
                                     mixer_sample_rate,
+                                    wait_muted_samples.clone(),
+                                    wait_unmuted_samples.clone(),
                                 )
                                 .await;
                             }
@@ -3271,6 +3282,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             stats_clone,
             bridge_srtp,
             conf.sample_rate,
+            self.dtmf_muted_samples.clone(),
+            self.dtmf_unmuted_samples.clone(),
         ));
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
@@ -3413,6 +3426,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_dtmf_clock_rate =
                     find_telephone_event_clock_rate(&offered_codecs, sdp_offer);
                 let reinvite_srtp = session.srtp_context.clone();
+                let reinvite_muted = self.dtmf_muted_samples.clone();
+                let reinvite_unmuted = self.dtmf_unmuted_samples.clone();
                 let new_handle = tokio::spawn(async move {
                     // Wait for old bridge to actually stop (with timeout) before starting new one
                     match tokio::time::timeout(Duration::from_millis(500), old_handle).await {
@@ -3436,6 +3451,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_stats,
                         reinvite_srtp,
                         reinvite_mixer_rate,
+                        reinvite_muted,
+                        reinvite_unmuted,
                     )
                     .await;
                 });
@@ -4296,7 +4313,7 @@ fn dtmf_digit_to_char(digit: &DtmfDigit) -> Option<char> {
 }
 
 /// Create a codec instance by name for audio encoding/decoding.
-fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
+pub fn create_codec_instance(codec_name: &str) -> Result<Box<dyn AudioCodec>> {
     match codec_name {
         "PCMU" => Ok(Box::new(g711::G711MuLaw::new(8000))),
         "PCMA" => Ok(Box::new(g711::G711ALaw::new(8000))),

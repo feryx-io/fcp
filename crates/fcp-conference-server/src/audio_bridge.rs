@@ -102,6 +102,8 @@ pub async fn run_audio_bridge(
     stats: Arc<AudioStats>,
     srtp_context: Option<Arc<RwLock<SrtpContext>>>,
     mixer_sample_rate: u32,
+    dtmf_muted_samples: Option<Arc<Vec<i16>>>,
+    dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
 ) {
     let span = info_span!(
         "audio_bridge",
@@ -217,13 +219,59 @@ pub async fn run_audio_bridge(
                                                     if let Some((cmd, _role)) =
                                                         handler.process_digit(&participant_id, ch)
                                                     {
-                                                        let should_leave = execute_dtmf_command(
+                                                        let result = execute_dtmf_command(
                                                             &room,
                                                             &participant_id,
                                                             is_host,
                                                             cmd,
                                                         );
-                                                        if should_leave {
+                                                        // Play feedback audio to THIS participant only
+                                                        if let Some(ref fb) = result.feedback {
+                                                            let fb_samples = match fb {
+                                                                DtmfFeedback::Muted => &dtmf_muted_samples,
+                                                                DtmfFeedback::Unmuted => &dtmf_unmuted_samples,
+                                                            };
+                                                            if let Some(ref pcm) = fb_samples {
+                                                                // Map payload type to short codec name for create_codec_instance
+                                                                let codec_name = match payload_type {
+                                                                    0 => "PCMU",
+                                                                    8 => "PCMA",
+                                                                    9 => "G722",
+                                                                    _ => "PCMU",
+                                                                }.to_string();
+                                                                info!(
+                                                                    participant = %participant_id,
+                                                                    codec = %codec_name,
+                                                                    samples = pcm.len(),
+                                                                    "Playing DTMF feedback audio"
+                                                                );
+                                                                match crate::conference_handler::create_codec_instance(&codec_name) {
+                                                                    Ok(mut fb_encoder) => {
+                                                                        crate::conference_handler::play_prompt_to_rtp(
+                                                                            &rtp_socket, pcm, fb_encoder.as_mut(),
+                                                                            payload_type, frame_size, &srtp_context,
+                                                                            mixer_sample_rate,
+                                                                        ).await;
+                                                                        // Drain RTP that accumulated during playback
+                                                                        loop {
+                                                                            match tokio::time::timeout(
+                                                                                Duration::from_millis(1),
+                                                                                rtp_socket.recv_rtp_raw(),
+                                                                            ).await {
+                                                                                Ok(Ok(_)) => {}
+                                                                                _ => break,
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        warn!(error = %e, "Failed to create DTMF feedback encoder");
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                warn!(participant = %participant_id, "No DTMF feedback samples loaded");
+                                                            }
+                                                        }
+                                                        if result.should_leave {
                                                             debug!(
                                                                 participant = %participant_id,
                                                                 "DTMF leave command, stopping bridge"
@@ -419,17 +467,30 @@ pub async fn run_audio_bridge(
     }.instrument(span).await
 }
 
+/// Result of executing a DTMF command
+struct DtmfResult {
+    /// True if the participant should leave (bridge should stop)
+    should_leave: bool,
+    /// Optional audio feedback to play to THIS participant only
+    feedback: Option<DtmfFeedback>,
+}
+
+enum DtmfFeedback {
+    Muted,
+    Unmuted,
+}
+
 /// Execute a DTMF command on the conference room.
-/// Returns `true` if the participant should leave (bridge should stop).
 fn execute_dtmf_command(
     room: &Arc<ConferenceRoom>,
     participant_id: &str,
     is_host: bool,
     command: DtmfCommand,
-) -> bool {
+) -> DtmfResult {
     match command {
         DtmfCommand::MuteToggle => {
             // Toggle between Active and Muted
+            let mut feedback = None;
             match room.get_participant_metadata(participant_id) {
                 Ok(meta) => {
                     let new_state = match meta.state {
@@ -440,11 +501,15 @@ fn execute_dtmf_command(
                         warn!(error = %e, "Failed to toggle mute");
                     } else {
                         info!(participant = %participant_id, state = ?new_state, "DTMF mute toggle");
+                        feedback = Some(match new_state {
+                            ParticipantState::Muted => DtmfFeedback::Muted,
+                            _ => DtmfFeedback::Unmuted,
+                        });
                     }
                 }
                 Err(e) => warn!(error = %e, "Failed to get participant state for mute toggle"),
             }
-            false
+            DtmfResult { should_leave: false, feedback }
         }
         DtmfCommand::VolumeUp => {
             if let Ok(meta) = room.get_participant_metadata(participant_id) {
@@ -452,7 +517,7 @@ fn execute_dtmf_command(
                 let _ = room.set_participant_gain(participant_id, new_gain);
                 debug!(participant = %participant_id, gain = new_gain, "DTMF volume up");
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::VolumeDown => {
             if let Ok(meta) = room.get_participant_metadata(participant_id) {
@@ -460,16 +525,16 @@ fn execute_dtmf_command(
                 let _ = room.set_participant_gain(participant_id, new_gain);
                 debug!(participant = %participant_id, gain = new_gain, "DTMF volume down");
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::Info => {
             let count = room.participant_count();
             info!(participant = %participant_id, participant_count = count, "DTMF info request");
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::Leave => {
             info!(participant = %participant_id, "DTMF leave requested");
-            true // Signal bridge to stop
+            DtmfResult { should_leave: true, feedback: None }
         }
         DtmfCommand::MuteAll => {
             if is_host {
@@ -478,7 +543,7 @@ fn execute_dtmf_command(
                 }
                 info!(participant = %participant_id, "DTMF host: muted all");
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::UnmuteAll => {
             if is_host {
@@ -487,21 +552,21 @@ fn execute_dtmf_command(
                 }
                 info!(participant = %participant_id, "DTMF host: unmuted all");
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::LockConference => {
             if is_host {
                 room.lock();
                 info!(participant = %participant_id, "DTMF host: locked conference");
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::UnlockConference => {
             if is_host {
                 room.unlock();
                 info!(participant = %participant_id, "DTMF host: unlocked conference");
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::EndConference => {
             if is_host {
@@ -513,7 +578,7 @@ fn execute_dtmf_command(
                     let _ = room.remove_participant(&pid);
                 }
             }
-            true // Host leaves too
+            DtmfResult { should_leave: true, feedback: None }
         }
         DtmfCommand::KickParticipant(participant_num) => {
             if is_host {
@@ -529,7 +594,7 @@ fn execute_dtmf_command(
                     }
                 }
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::DialOut(destination) => {
             if is_host {
@@ -543,11 +608,11 @@ fn execute_dtmf_command(
                 // dial-out request channel. The handler polls this.
                 room.request_dial_out(&destination);
             }
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
         DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin | DtmfCommand::EnterDialOut => {
             // Internal states, no action needed
-            false
+            DtmfResult { should_leave: false, feedback: None }
         }
     }
 }

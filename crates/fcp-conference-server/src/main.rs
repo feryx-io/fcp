@@ -244,6 +244,12 @@ async fn main() -> Result<()> {
             ("conf_exit_tone", "Conference Exit Tone (generated beep)",
              "",
              fcp_core::prompt::PromptCategory::System),
+            ("conf_muted", "Conference Muted Notification",
+             "Muted.",
+             fcp_core::prompt::PromptCategory::System),
+            ("conf_unmuted", "Conference Unmuted Notification",
+             "Unmuted.",
+             fcp_core::prompt::PromptCategory::System),
         ];
         for (name, description, tts_text, category) in default_prompts {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
@@ -531,7 +537,7 @@ async fn main() -> Result<()> {
             &config.tts.cache_dir,
         );
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone"] {
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone", "conf_muted", "conf_unmuted"] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
@@ -556,6 +562,29 @@ async fn main() -> Result<()> {
                 }
                 Ok(Some(_)) => {} // Already has audio
                 _ => {}
+            }
+        }
+    }
+
+    // Load pre-synthesized mute/unmute audio samples for DTMF feedback
+    if let Some(prompt_store) = dyn_storage.prompt_store() {
+        let tenant_id = fcp_core::TenantId::nil();
+        let player = forge_conference::AudioFeedbackPlayer::new(config.conference.sample_rate);
+        for (prompt_name, field_setter) in [
+            ("conf_muted", "muted" as &str),
+            ("conf_unmuted", "unmuted"),
+        ] {
+            if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, prompt_name).await {
+                if let Some(ref path) = prompt.audio_path {
+                    if let Some(samples) = player.load_audio_file(path) {
+                        match field_setter {
+                            "muted" => conference_handler.dtmf_muted_samples = Some(Arc::new(samples)),
+                            "unmuted" => conference_handler.dtmf_unmuted_samples = Some(Arc::new(samples)),
+                            _ => {}
+                        }
+                        info!(prompt = prompt_name, "Loaded DTMF feedback audio");
+                    }
+                }
             }
         }
     }
