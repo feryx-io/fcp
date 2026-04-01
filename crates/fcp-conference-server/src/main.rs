@@ -566,6 +566,31 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Pre-synthesize welcome message variants so they're cached for instant playback.
+    // The TTS cache is keyed by text, so these only need to be synthesized once.
+    if let Some(ref tts) = tts_service {
+        let welcome_variants = [
+            "You have joined the conference. You are the only participant in this conference.",
+            "You have joined the conference. There is 1 other participant in the conference.",
+            "You have joined the conference. There are 2 other participants in the conference.",
+            "You have joined the conference. There are 3 other participants in the conference.",
+            "You have joined the conference. There are 4 other participants in the conference.",
+            "You have joined the conference. There are 5 other participants in the conference.",
+            "You have joined the conference. There are 6 other participants in the conference.",
+            "You have joined the conference. There are 7 other participants in the conference.",
+            "You have joined the conference. There are 8 other participants in the conference.",
+            "You have joined the conference. There are 9 other participants in the conference.",
+            "You have joined the conference.",
+        ];
+        for text in &welcome_variants {
+            match tts.synthesize(text, None, None).await {
+                Ok(_) => {}
+                Err(e) => warn!(error = %e, text, "Failed to pre-synthesize welcome variant"),
+            }
+        }
+        info!("Pre-synthesized {} welcome message variants", welcome_variants.len());
+    }
+
     // Load pre-synthesized mute/unmute audio samples for DTMF feedback
     if let Some(prompt_store) = dyn_storage.prompt_store() {
         let tenant_id = fcp_core::TenantId::nil();

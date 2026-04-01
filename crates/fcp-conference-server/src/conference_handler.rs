@@ -2730,7 +2730,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         let should_wait = if should_wait {
             true
         } else {
-            match room.add_participant(&participant_id, is_host) {
+            match room.add_participant_quiet(&participant_id, is_host) {
                 Ok(()) => false,
                 Err(ConferenceError::WaitingForModerator) => true,
                 Err(ConferenceError::ConferenceFull(max)) => {
@@ -3205,31 +3205,31 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // 15b. Play welcome message before starting the audio bridge.
         //      Try TTS with a short timeout; fall back to static prompt if slow.
         {
-            let participant_count = room.participant_count();
+            // Count OTHER real participants (exclude audio feedback + self)
+            let total_in_mixer = room.participant_count();
+            let others_count = total_in_mixer.saturating_sub(2); // -1 for audio_feedback, -1 for self
             let mixer_rate = conf.sample_rate;
             let mut welcome_encoder = create_codec_instance(&codec_name)?;
             let player = forge_conference::AudioFeedbackPlayer::new(mixer_rate);
             let mut welcome_played = false;
 
-            // Try TTS with 2s timeout — Kokoro cache hits are <100ms, misses take 1-3s
+            // Try TTS with 5s timeout — Kokoro cache hits are <100ms, first synthesis 1-3s
             if let Some(ref tts) = self.tts_service {
                 let welcome_text = if let Some(ref custom) = meeting.welcome_tts {
-                    custom.replace("{count}", &participant_count.to_string())
+                    custom.replace("{count}", &others_count.to_string())
                 } else {
-                    let others = if participant_count <= 1 {
-                        "You are the first participant.".to_string()
+                    let others = if others_count == 0 {
+                        "You are the only participant in this conference.".to_string()
+                    } else if others_count == 1 {
+                        "There is 1 other participant in the conference.".to_string()
                     } else {
-                        let n = participant_count - 1;
-                        if n == 1 {
-                            "There is 1 other participant in the conference.".to_string()
-                        } else {
-                            format!("There are {} other participants in the conference.", n)
-                        }
+                        format!("There are {} other participants in the conference.", others_count)
                     };
                     format!("You have joined the conference. {}", others)
                 };
+                info!(room = %room_number, text = %welcome_text, "Synthesizing welcome message");
                 match tokio::time::timeout(
-                    Duration::from_secs(2),
+                    Duration::from_secs(5),
                     tts.synthesize(&welcome_text, None, None),
                 ).await {
                     Ok(Ok(path)) => {
@@ -3241,8 +3241,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                             welcome_played = true;
                         }
                     }
-                    Ok(Err(e)) => debug!(room = %room_number, error = %e, "TTS welcome failed"),
-                    Err(_) => debug!(room = %room_number, "TTS welcome timed out, using static prompt"),
+                    Ok(Err(e)) => warn!(room = %room_number, error = %e, "TTS welcome synthesis failed"),
+                    Err(_) => warn!(room = %room_number, "TTS welcome timed out (5s), using static prompt"),
                 }
             }
 
@@ -3263,6 +3263,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 }
             }
         }
+
+        // 15c. Now that the welcome message has played, trigger the join tone
+        //       so other participants hear the beep right before audio bridges.
+        room.play_join_sound();
 
         // 16. Create codec instances for the audio bridge
         let encoder = create_codec_instance(&codec_name)?;
