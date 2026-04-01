@@ -161,6 +161,8 @@ pub struct ConferenceCallHandler {
     /// Pre-loaded DTMF feedback audio: "Muted" / "Unmuted" PCM samples
     pub dtmf_muted_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
+    pub dtmf_locked_samples: Option<Arc<Vec<i16>>>,
+    pub dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -564,6 +566,8 @@ impl ConferenceCallHandler {
             pending_pin_auth: DashMap::new(),
             dtmf_muted_samples: None,
             dtmf_unmuted_samples: None,
+            dtmf_locked_samples: None,
+            dtmf_unlocked_samples: None,
         }
     }
 
@@ -1413,6 +1417,8 @@ impl ConferenceCallHandler {
             conf.sample_rate,
             self.dtmf_muted_samples.clone(),
             self.dtmf_unmuted_samples.clone(),
+            self.dtmf_locked_samples.clone(),
+            self.dtmf_unlocked_samples.clone(),
         ));
 
         // 12. Store session
@@ -2848,6 +2854,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let moh_srtp = srtp_context.clone();
                 let wait_muted_samples = self.dtmf_muted_samples.clone();
                 let wait_unmuted_samples = self.dtmf_unmuted_samples.clone();
+                let wait_locked_samples = self.dtmf_locked_samples.clone();
+                let wait_unlocked_samples = self.dtmf_unlocked_samples.clone();
 
                 let wait_handle = tokio::spawn(async move {
                     // Spawn a background task that plays: announcement → music/silence → repeat
@@ -3086,6 +3094,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     mixer_sample_rate,
                                     wait_muted_samples.clone(),
                                     wait_unmuted_samples.clone(),
+                                    wait_locked_samples.clone(),
+                                    wait_unlocked_samples.clone(),
                                 )
                                 .await;
                             }
@@ -3309,6 +3319,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             conf.sample_rate,
             self.dtmf_muted_samples.clone(),
             self.dtmf_unmuted_samples.clone(),
+            self.dtmf_locked_samples.clone(),
+            self.dtmf_unlocked_samples.clone(),
         ));
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
@@ -3453,6 +3465,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_srtp = session.srtp_context.clone();
                 let reinvite_muted = self.dtmf_muted_samples.clone();
                 let reinvite_unmuted = self.dtmf_unmuted_samples.clone();
+                let reinvite_locked = self.dtmf_locked_samples.clone();
+                let reinvite_unlocked = self.dtmf_unlocked_samples.clone();
                 let new_handle = tokio::spawn(async move {
                     // Wait for old bridge to actually stop (with timeout) before starting new one
                     match tokio::time::timeout(Duration::from_millis(500), old_handle).await {
@@ -3478,6 +3492,8 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_mixer_rate,
                         reinvite_muted,
                         reinvite_unmuted,
+                        reinvite_locked,
+                        reinvite_unlocked,
                     )
                     .await;
                 });

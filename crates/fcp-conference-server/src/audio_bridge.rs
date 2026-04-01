@@ -105,6 +105,8 @@ pub async fn run_audio_bridge(
     mixer_sample_rate: u32,
     dtmf_muted_samples: Option<Arc<Vec<i16>>>,
     dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
+    dtmf_locked_samples: Option<Arc<Vec<i16>>>,
+    dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
 ) {
     let span = info_span!(
         "audio_bridge",
@@ -240,6 +242,8 @@ pub async fn run_audio_bridge(
                                                             let fb_samples = match fb {
                                                                 DtmfFeedback::Muted => &dtmf_muted_samples,
                                                                 DtmfFeedback::Unmuted => &dtmf_unmuted_samples,
+                                                                DtmfFeedback::Locked => &dtmf_locked_samples,
+                                                                DtmfFeedback::Unlocked => &dtmf_unlocked_samples,
                                                             };
                                                             if let Some(ref pcm) = fb_samples {
                                                                 // Map payload type to short codec name for create_codec_instance
@@ -498,6 +502,8 @@ struct DtmfResult {
 enum DtmfFeedback {
     Muted,
     Unmuted,
+    Locked,
+    Unlocked,
 }
 
 /// Execute a DTMF command on the conference room.
@@ -567,18 +573,22 @@ fn execute_dtmf_command(
             DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::LockConference => {
+            let mut feedback = None;
             if is_host {
                 room.lock();
                 info!(participant = %participant_id, "DTMF host: locked conference");
+                feedback = Some(DtmfFeedback::Locked);
             }
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult { should_leave: false, feedback, gain_delta: 0.0 }
         }
         DtmfCommand::UnlockConference => {
+            let mut feedback = None;
             if is_host {
                 room.unlock();
                 info!(participant = %participant_id, "DTMF host: unlocked conference");
+                feedback = Some(DtmfFeedback::Unlocked);
             }
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult { should_leave: false, feedback, gain_delta: 0.0 }
         }
         DtmfCommand::EndConference => {
             if is_host {

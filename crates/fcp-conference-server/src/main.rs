@@ -250,6 +250,12 @@ async fn main() -> Result<()> {
             ("conf_unmuted", "Conference Unmuted Notification",
              "Unmuted.",
              fcp_core::prompt::PromptCategory::System),
+            ("conf_locked", "Conference Locked Notification",
+             "Conference locked.",
+             fcp_core::prompt::PromptCategory::System),
+            ("conf_unlocked", "Conference Unlocked Notification",
+             "Conference unlocked.",
+             fcp_core::prompt::PromptCategory::System),
         ];
         for (name, description, tts_text, category) in default_prompts {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
@@ -537,7 +543,7 @@ async fn main() -> Result<()> {
             &config.tts.cache_dir,
         );
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone", "conf_muted", "conf_unmuted"] {
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone", "conf_muted", "conf_unmuted", "conf_locked", "conf_unlocked"] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
@@ -598,6 +604,8 @@ async fn main() -> Result<()> {
         for (prompt_name, field_setter) in [
             ("conf_muted", "muted" as &str),
             ("conf_unmuted", "unmuted"),
+            ("conf_locked", "locked"),
+            ("conf_unlocked", "unlocked"),
         ] {
             if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, prompt_name).await {
                 if let Some(ref path) = prompt.audio_path {
@@ -605,6 +613,8 @@ async fn main() -> Result<()> {
                         match field_setter {
                             "muted" => conference_handler.dtmf_muted_samples = Some(Arc::new(samples)),
                             "unmuted" => conference_handler.dtmf_unmuted_samples = Some(Arc::new(samples)),
+                            "locked" => conference_handler.dtmf_locked_samples = Some(Arc::new(samples)),
+                            "unlocked" => conference_handler.dtmf_unlocked_samples = Some(Arc::new(samples)),
                             _ => {}
                         }
                         info!(prompt = prompt_name, "Loaded DTMF feedback audio");
