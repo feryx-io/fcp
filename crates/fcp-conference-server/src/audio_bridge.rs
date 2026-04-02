@@ -107,6 +107,7 @@ pub async fn run_audio_bridge(
     dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
     dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
+    dtmf_ending_samples: Option<Arc<Vec<i16>>>,
 ) {
     let span = info_span!(
         "audio_bridge",
@@ -239,11 +240,18 @@ pub async fn run_audio_bridge(
                                                         }
                                                         // Play feedback audio to THIS participant only
                                                         if let Some(ref fb) = result.feedback {
+                                                            // EndingAnnouncement plays to EVERYONE via mixer, not just this participant
+                                                            if matches!(fb, DtmfFeedback::EndingAnnouncement) {
+                                                                // Signal the handler to play announcement to all and tear down
+                                                                room.request_end_conference();
+                                                                return;
+                                                            }
                                                             let fb_samples = match fb {
                                                                 DtmfFeedback::Muted => &dtmf_muted_samples,
                                                                 DtmfFeedback::Unmuted => &dtmf_unmuted_samples,
                                                                 DtmfFeedback::Locked => &dtmf_locked_samples,
                                                                 DtmfFeedback::Unlocked => &dtmf_unlocked_samples,
+                                                                DtmfFeedback::EndingAnnouncement => unreachable!(),
                                                             };
                                                             if let Some(ref pcm) = fb_samples {
                                                                 // Map payload type to short codec name for create_codec_instance
@@ -346,6 +354,12 @@ pub async fn run_audio_bridge(
                                     }
 
                                     if let Err(e) = room.write_audio(&participant_id, &mixer_samples) {
+                                        let err_str = e.to_string();
+                                        if err_str.contains("not found") {
+                                            // Participant was removed (BYE processed) — stop bridge
+                                            debug!(participant = %participant_id, "Participant removed from mixer, stopping bridge");
+                                            return;
+                                        }
                                         warn!(participant = %participant_id, error = %e, "write_audio failed");
                                     }
                                 }
@@ -504,6 +518,8 @@ enum DtmfFeedback {
     Unmuted,
     Locked,
     Unlocked,
+    /// Play to ALL participants via mixer, then end conference
+    EndingAnnouncement,
 }
 
 /// Execute a DTMF command on the conference room.
@@ -593,14 +609,15 @@ fn execute_dtmf_command(
         DtmfCommand::EndConference => {
             if is_host {
                 info!(participant = %participant_id, "DTMF host: ending conference");
-                room.lock();
-                // Remove all participants — their audio bridges will detect
-                // the mix error and stop, triggering cleanup in the handler.
-                for pid in room.participants() {
-                    let _ = room.remove_participant(&pid);
-                }
+                room.lock(); // Prevent new joins
+                // Don't remove participants yet — let the announcement play first.
+                // The bridge will handle removal after the announcement.
             }
-            DtmfResult { should_leave: true, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: true,
+                feedback: if is_host { Some(DtmfFeedback::EndingAnnouncement) } else { None },
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::KickParticipant(participant_num) => {
             if is_host {

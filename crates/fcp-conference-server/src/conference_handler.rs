@@ -163,6 +163,7 @@ pub struct ConferenceCallHandler {
     pub dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     pub dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
+    pub dtmf_ending_samples: Option<Arc<Vec<i16>>>,
 }
 
 /// Tracks an active RFC 4575 conference event subscription.
@@ -568,6 +569,7 @@ impl ConferenceCallHandler {
             dtmf_unmuted_samples: None,
             dtmf_locked_samples: None,
             dtmf_unlocked_samples: None,
+            dtmf_ending_samples: None,
         }
     }
 
@@ -1419,6 +1421,7 @@ impl ConferenceCallHandler {
             self.dtmf_unmuted_samples.clone(),
             self.dtmf_locked_samples.clone(),
             self.dtmf_unlocked_samples.clone(),
+            self.dtmf_ending_samples.clone(),
         ));
 
         // 12. Store session
@@ -1478,6 +1481,48 @@ impl ConferenceCallHandler {
         );
 
         Ok(participant_id)
+    }
+
+    /// Play audio samples to all participants' RTP sockets directly.
+    /// Used for conference-wide announcements (e.g. "conference ending").
+    pub async fn play_to_all_participants(&self, room_number: &str, samples: &[i16]) {
+        // Get all sessions for this room
+        if let Some(call_ids) = self.room_sessions.get(room_number) {
+            let call_ids: Vec<String> = call_ids.clone();
+            drop(call_ids); // release DashMap ref
+
+            if let Some(sessions_ref) = self.room_sessions.get(room_number) {
+                let cids: Vec<String> = sessions_ref.clone();
+                drop(sessions_ref);
+
+                let mut handles = Vec::new();
+                for call_id in cids {
+                    if let Some(session) = self.sessions.get(&call_id) {
+                        let rtp_socket = Arc::clone(&session.rtp_socket);
+                        let codec = session.codec_name.clone();
+                        let pt = match codec.as_str() {
+                            "PCMU" => 0u8,
+                            "PCMA" => 8,
+                            "G722" => 9,
+                            _ => 0,
+                        };
+                        let fs: usize = if codec == "G722" { 320 } else { 160 };
+                        let srtp = session.srtp_context.clone();
+                        let pcm = samples.to_vec();
+                        let sr = self.conference_config.read().sample_rate;
+                        handles.push(tokio::spawn(async move {
+                            if let Ok(mut enc) = create_codec_instance(&codec) {
+                                play_prompt_to_rtp(&rtp_socket, &pcm, enc.as_mut(), pt, fs, &srtp, sr).await;
+                            }
+                        }));
+                    }
+                }
+                // Wait for all playback to complete
+                for h in handles {
+                    let _ = h.await;
+                }
+            }
+        }
     }
 
     /// Force-destroy a specific conference room: BYE all participants, stop recording, delete room.
@@ -2856,6 +2901,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let wait_unmuted_samples = self.dtmf_unmuted_samples.clone();
                 let wait_locked_samples = self.dtmf_locked_samples.clone();
                 let wait_unlocked_samples = self.dtmf_unlocked_samples.clone();
+                let wait_ending_samples = self.dtmf_ending_samples.clone();
 
                 let wait_handle = tokio::spawn(async move {
                     // Spawn a background task that plays: announcement → music/silence → repeat
@@ -3096,6 +3142,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                     wait_unmuted_samples.clone(),
                                     wait_locked_samples.clone(),
                                     wait_unlocked_samples.clone(),
+                                    wait_ending_samples.clone(),
                                 )
                                 .await;
                             }
@@ -3321,6 +3368,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             self.dtmf_unmuted_samples.clone(),
             self.dtmf_locked_samples.clone(),
             self.dtmf_unlocked_samples.clone(),
+            self.dtmf_ending_samples.clone(),
         ));
 
         // 19. Store session (room_sessions already updated above for MeetingStarted dedup)
@@ -3467,6 +3515,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 let reinvite_unmuted = self.dtmf_unmuted_samples.clone();
                 let reinvite_locked = self.dtmf_locked_samples.clone();
                 let reinvite_unlocked = self.dtmf_unlocked_samples.clone();
+                let reinvite_ending = self.dtmf_ending_samples.clone();
                 let new_handle = tokio::spawn(async move {
                     // Wait for old bridge to actually stop (with timeout) before starting new one
                     match tokio::time::timeout(Duration::from_millis(500), old_handle).await {
@@ -3494,6 +3543,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         reinvite_unmuted,
                         reinvite_locked,
                         reinvite_unlocked,
+                        reinvite_ending,
                     )
                     .await;
                 });

@@ -253,6 +253,9 @@ async fn main() -> Result<()> {
             ("conf_locked", "Conference Locked Notification",
              "Conference locked.",
              fcp_core::prompt::PromptCategory::System),
+            ("conf_ending", "Conference Ending Notification",
+             "The moderator has ended this conference. Goodbye.",
+             fcp_core::prompt::PromptCategory::System),
             ("conf_unlocked", "Conference Unlocked Notification",
              "Conference unlocked.",
              fcp_core::prompt::PromptCategory::System),
@@ -543,7 +546,7 @@ async fn main() -> Result<()> {
             &config.tts.cache_dir,
         );
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone", "conf_muted", "conf_unmuted", "conf_locked", "conf_unlocked"] {
+        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone", "conf_muted", "conf_unmuted", "conf_locked", "conf_unlocked", "conf_ending"] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
@@ -606,6 +609,7 @@ async fn main() -> Result<()> {
             ("conf_unmuted", "unmuted"),
             ("conf_locked", "locked"),
             ("conf_unlocked", "unlocked"),
+            ("conf_ending", "ending"),
         ] {
             if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, prompt_name).await {
                 if let Some(ref path) = prompt.audio_path {
@@ -615,6 +619,7 @@ async fn main() -> Result<()> {
                             "unmuted" => conference_handler.dtmf_unmuted_samples = Some(Arc::new(samples)),
                             "locked" => conference_handler.dtmf_locked_samples = Some(Arc::new(samples)),
                             "unlocked" => conference_handler.dtmf_unlocked_samples = Some(Arc::new(samples)),
+                            "ending" => conference_handler.dtmf_ending_samples = Some(Arc::new(samples)),
                             _ => {}
                         }
                         info!(prompt = prompt_name, "Loaded DTMF feedback audio");
@@ -869,9 +874,30 @@ async fn main() -> Result<()> {
         tokio::spawn(supervise_task("dtmf-dialout-poller", async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                // Check each active room for pending dial-out requests
+                // Check each active room for pending requests
                 for room_id in dialout_bridge.list_rooms() {
                     if let Ok(room) = dialout_bridge.get_room(&room_id) {
+                        // Check for end-conference request (host pressed *00)
+                        if room.take_end_conference_request() {
+                            let handler = Arc::clone(&dialout_handler);
+                            let rn = room_id.clone();
+                            let ending_samples = handler.dtmf_ending_samples.clone();
+                            tokio::spawn(async move {
+                                info!(room = %rn, "Processing end-conference request");
+                                // Play ending announcement to each participant's RTP socket
+                                if let Some(ref pcm) = ending_samples {
+                                    handler.play_to_all_participants(&rn, pcm).await;
+                                }
+                                // Now send BYE to all
+                                match handler.destroy_conference(&rn).await {
+                                    Ok(n) => info!(room = %rn, kicked = n, "Conference ended by host"),
+                                    Err(e) => warn!(room = %rn, error = %e, "Failed to end conference"),
+                                }
+                            });
+                            continue;
+                        }
+
+                        // Check for dial-out requests
                         let requests = room.drain_dial_out_requests();
                         for destination in requests {
                             let handler = Arc::clone(&dialout_handler);
