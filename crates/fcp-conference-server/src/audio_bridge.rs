@@ -573,15 +573,22 @@ fn execute_dtmf_command(
         DtmfCommand::MuteAll => {
             if is_host {
                 for pid in room.participants() {
+                    // Don't mute the host or the audio feedback participant
+                    if pid == participant_id || pid == "__audio_feedback__" {
+                        continue;
+                    }
                     let _ = room.set_participant_state(&pid, ParticipantState::Muted);
                 }
-                info!(participant = %participant_id, "DTMF host: muted all");
+                info!(participant = %participant_id, "DTMF host: muted all (except host)");
             }
             DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
         }
         DtmfCommand::UnmuteAll => {
             if is_host {
                 for pid in room.participants() {
+                    if pid == "__audio_feedback__" {
+                        continue;
+                    }
                     let _ = room.set_participant_state(&pid, ParticipantState::Active);
                 }
                 info!(participant = %participant_id, "DTMF host: unmuted all");
