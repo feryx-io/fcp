@@ -241,8 +241,9 @@ async fn main() -> Result<()> {
     {
         let pm_clone = presence_manager.clone();
         let tenant_id = fcp_core::TenantId::nil();
+        let storage_for_presence = Arc::clone(&storage);
         tokio::spawn(async move {
-            run_presence_listener(event_bus_for_presence, pm_clone, tenant_id).await;
+            run_presence_listener(event_bus_for_presence, pm_clone, tenant_id, storage_for_presence).await;
         });
         info!("Admin presence event listener started");
     }
@@ -554,6 +555,22 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
     }
 }
 
+/// Extract the IP:port from a SIP contact URI like "sip:alice@192.168.1.80:5060"
+fn extract_ip_from_contact(contact: &str) -> Option<String> {
+    let stripped = contact.trim_start_matches("sip:").trim_start_matches("sips:");
+    // After stripping scheme, format is "user@host:port;params" or "host:port"
+    if let Some(at_pos) = stripped.find('@') {
+        let host_part = &stripped[at_pos + 1..];
+        // Take up to first semicolon (strip params)
+        let host_port = host_part.split(';').next().unwrap_or(host_part);
+        // Strip angle brackets
+        let host_port = host_port.trim_end_matches('>');
+        Some(host_port.to_string())
+    } else {
+        None
+    }
+}
+
 /// Subscribe to registration and call events on the local event bus and update
 /// the admin's PresenceManager accordingly.  Events arrive via the events server
 /// WebSocket subscriber that republishes cluster-wide events to the local bus.
@@ -561,6 +578,7 @@ async fn run_presence_listener(
     event_bus: Arc<dyn EventBus>,
     presence: fcp_presence::PresenceManager,
     tenant_id: fcp_core::TenantId,
+    _storage: Arc<fcp_core::DynStorage>,
 ) {
     use fcp_events::filter::EventType;
     use fcp_events::{EventFilter, PlatformEvent};
@@ -590,27 +608,30 @@ async fn run_presence_listener(
                     aor,
                     ..
                 }) => {
-                    if let Some(aor) = extract_aor(aor) {
+                    if let Some(aor_str) = extract_aor(aor) {
                         let update = fcp_presence::PresenceUpdate {
-                            aor,
+                            aor: aor_str,
                             state: fcp_presence::PresenceState::Open,
                             note: None,
                         };
                         let _ = presence.update_presence(update, &tenant_id).await;
                     }
+                    // Device registration state is enriched at query time in list_devices()
+                    // using live registration data — no need to write to DB here.
                 }
                 PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered {
                     aor,
                     ..
                 }) => {
-                    if let Some(aor) = extract_aor(aor) {
+                    if let Some(aor_str) = extract_aor(aor) {
                         let update = fcp_presence::PresenceUpdate {
-                            aor,
+                            aor: aor_str,
                             state: fcp_presence::PresenceState::Closed,
                             note: None,
                         };
                         let _ = presence.update_presence(update, &tenant_id).await;
                     }
+                    // Device registration state is enriched at query time in list_devices()
                 }
                 PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, call_id, .. }) => {
                     let call_id_str = call_id.to_string();

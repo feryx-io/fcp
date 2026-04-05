@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -59,7 +59,7 @@ export function DevicesPage() {
   const [editItem, setEditItem] = useState<Device | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: items = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ['devices'],
     queryFn: devices.list,
   })
@@ -137,6 +137,15 @@ export function DevicesPage() {
         <Badge variant={regBadge(row.original.registration_state)}>
           {row.original.registration_state}
         </Badge>
+      ),
+    },
+    {
+      accessorKey: 'last_ip_address',
+      header: 'IP Address',
+      cell: ({ row }) => (
+        <span className="text-sm font-mono text-muted-foreground">
+          {row.original.last_ip_address || '—'}
+        </span>
       ),
     },
     {
@@ -238,6 +247,10 @@ export function DevicesPage() {
           <p className="text-muted-foreground">Manage SIP phones and devices</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => refetch()} disabled={isFetching}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button variant="outline" onClick={() => exportDevices(items)}>
             <Download className="mr-2 h-4 w-4" />
             Export

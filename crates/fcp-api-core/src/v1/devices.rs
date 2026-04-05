@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::DeviceStore;
+use fcp_core::storage::{DeviceStore, RegistrationStore};
 use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
@@ -147,10 +147,136 @@ pub async fn list_devices(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list devices: {}", e)))?;
 
-    let response: Vec<DeviceResponse> = devices.into_iter().map(|d| d.into()).collect();
+    // Fetch live registrations and build a lookup by AOR
+    let live_regs = match storage.get_all_registrations().await {
+        Ok(regs) => {
+            info!("Fetched {} live registrations for device enrichment", regs.len());
+            regs
+        }
+        Err(e) => {
+            info!("No registrations available for device enrichment: {}", e);
+            vec![]
+        }
+    };
+    let now = std::time::SystemTime::now();
+
+    // Build map: AOR (e.g. "alice@192.168.1.225") → Vec<(contact_ip, user_agent)>
+    let mut reg_map: std::collections::HashMap<String, Vec<(String, Option<String>)>> =
+        std::collections::HashMap::new();
+    for reg in &live_regs {
+        if reg.expires_at <= now {
+            continue;
+        }
+        let aor_str = reg.aor.trim_start_matches("sip:")
+            .trim_start_matches("sips:")
+            .to_string();
+        let contact_ip = extract_ip_from_contact(&reg.contact);
+        reg_map
+            .entry(aor_str)
+            .or_default()
+            .push((contact_ip, reg.user_agent.clone()));
+    }
+
+    // Count how many devices share each AOR (for disambiguation)
+    let mut devices_per_aor: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for d in &devices {
+        if let Some(ref uri) = d.sip_uri {
+            let n = uri.trim_start_matches("sip:").trim_start_matches("sips:");
+            *devices_per_aor.entry(n.to_string()).or_default() += 1;
+        }
+    }
+
+    let response: Vec<DeviceResponse> = devices.into_iter().map(|d| {
+        let mut resp = DeviceResponse::from(d);
+        // Enrich with live registration data
+        if let Some(ref sip_uri) = resp.sip_uri {
+            let normalized = sip_uri.trim_start_matches("sip:")
+                .trim_start_matches("sips:");
+            info!(device = %resp.name, normalized_uri = %normalized, reg_keys = ?reg_map.keys().collect::<Vec<_>>(), "Looking up registration");
+            if let Some(contacts) = reg_map.get(normalized) {
+                let device_count = devices_per_aor.get(normalized).copied().unwrap_or(1);
+                let best = if contacts.len() == 1 && device_count == 1 {
+                    // Only one contact AND one device for this AOR — direct match
+                    Some(&contacts[0])
+                } else {
+                    // Multiple contacts: try to match by model or MAC in user-agent
+                    let model_lower = resp.model.as_ref()
+                        .map(|m| m.to_lowercase())
+                        .unwrap_or_default();
+                    let mac_clean = resp.mac_address.as_ref()
+                        .map(|m| m.replace(':', "").replace('-', "").to_lowercase())
+                        .unwrap_or_default();
+                    contacts.iter().find(|(_, ua)| {
+                        if let Some(ref agent) = ua {
+                            let a = agent.to_lowercase();
+                            // Model name in user-agent (e.g., "PolycomVVX-VVX_250-UA/...")
+                            if !model_lower.is_empty() && a.contains(&model_lower) {
+                                return true;
+                            }
+                            // Model starts with the UA brand (e.g., model="Zoiper" matches UA starting with "Z")
+                            if !model_lower.is_empty() {
+                                let ua_brand = a.split_whitespace().next().unwrap_or("");
+                                if model_lower.starts_with(ua_brand) && !ua_brand.is_empty() {
+                                    return true;
+                                }
+                            }
+                            // MAC address in UA
+                            if !mac_clean.is_empty() && a.contains(&mac_clean) {
+                                return true;
+                            }
+                        }
+                        false
+                    }).or_else(|| {
+                        // Fall back: match by known IP from previous registration
+                        if let Some(ref known_ip) = resp.last_ip_address {
+                            let known_host = known_ip.split(':').next().unwrap_or("");
+                            contacts.iter().find(|(ip, _)| ip.starts_with(known_host))
+                        } else {
+                            None
+                        }
+                    })
+                };
+
+                tracing::info!(
+                    device = %resp.name,
+                    contacts = contacts.len(),
+                    device_count = device_count,
+                    best_found = best.is_some(),
+                    model = ?resp.model,
+                    "Device registration enrichment"
+                );
+                if let Some((ref ip, ref ua)) = best {
+                    resp.registration_state = "registered".to_string();
+                    if !ip.is_empty() {
+                        resp.last_ip_address = Some(ip.clone());
+                    }
+                    if let Some(ref agent) = ua {
+                        resp.user_agent = Some(agent.clone());
+                    }
+                }
+            }
+        }
+        resp
+    }).collect();
 
     info!("Listed {} devices", response.len());
     Ok(Json(response))
+}
+
+/// Extract IP:port from a SIP contact URI like "<sip:alice@192.168.1.80:5060;transport=tcp>"
+fn extract_ip_from_contact(contact: &str) -> String {
+    let stripped = contact
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim_start_matches("sip:")
+        .trim_start_matches("sips:");
+    if let Some(at_pos) = stripped.find('@') {
+        let host_part = &stripped[at_pos + 1..];
+        host_part.split(';').next().unwrap_or(host_part).to_string()
+    } else {
+        stripped.split(';').next().unwrap_or(stripped).to_string()
+    }
 }
 
 /// Get device by ID.
