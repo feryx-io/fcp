@@ -460,10 +460,10 @@ function RuleForm({ form, trunkList, onSubmit, isSubmitting, submitLabel = 'Crea
           <div className="grid grid-cols-2 gap-4 p-3 bg-muted rounded-lg">
             <div>
               <Label>Target Trunk</Label>
-              <Select value={watch('target_trunk_id')} onValueChange={(v) => setValue('target_trunk_id', v)}>
+              <Select value={watch('target_trunk_id') || '__none__'} onValueChange={(v) => setValue('target_trunk_id', v === '__none__' ? '' : v)}>
                 <SelectTrigger><SelectValue placeholder="Select trunk..." /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">None (use group)</SelectItem>
+                  <SelectItem value="__none__">None (use group)</SelectItem>
                   {trunkList.filter((t) => t.enabled).map((t) => (
                     <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                   ))}
@@ -472,10 +472,10 @@ function RuleForm({ form, trunkList, onSubmit, isSubmitting, submitLabel = 'Crea
             </div>
             <div>
               <Label>Or Trunk Group (failover)</Label>
-              <Select value={watch('target_trunk_group')} onValueChange={(v) => setValue('target_trunk_group', v)}>
+              <Select value={watch('target_trunk_group') || '__none__'} onValueChange={(v) => setValue('target_trunk_group', v === '__none__' ? '' : v)}>
                 <SelectTrigger><SelectValue placeholder="Select group..." /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">None</SelectItem>
+                  <SelectItem value="__none__">None</SelectItem>
                   {trunkGroups.map((g) => (
                     <SelectItem key={g} value={g}>{g}</SelectItem>
                   ))}
