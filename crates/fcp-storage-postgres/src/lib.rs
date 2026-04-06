@@ -2357,6 +2357,13 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
     let prepend_digits: Option<String> = row.try_get("prepend_digits")?;
     let cps_limit: i32 = row.try_get("cps_limit")?;
     let description: Option<String> = row.try_get("description")?;
+    let srtp_mode: String = row.try_get("srtp_mode")?;
+    let dtmf_mode: String = row.try_get("dtmf_mode")?;
+    let session_timer_secs: i32 = row.try_get("session_timer_secs")?;
+    let t38_enabled: bool = row.try_get("t38_enabled")?;
+    let outbound_proxy: Option<String> = row.try_get("outbound_proxy")?;
+    let trunk_group: Option<String> = row.try_get("trunk_group")?;
+    let header_rules: Option<String> = row.try_get("header_rules")?;
     let created_at: DateTime<Utc> = row.try_get("created_at")?;
     let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
 
@@ -2392,6 +2399,13 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
         prepend_digits,
         cps_limit,
         description,
+        srtp_mode,
+        dtmf_mode,
+        session_timer_secs,
+        t38_enabled,
+        outbound_proxy,
+        trunk_group,
+        header_rules,
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })
@@ -2409,6 +2423,8 @@ impl TrunkStore for PostgresStorage {
                     health_check_enabled, health_check_interval_secs,
                     codec_prefs, caller_id_override, from_domain,
                     strip_digits, prepend_digits, cps_limit, description,
+                    srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
+                    outbound_proxy, trunk_group, header_rules,
                     created_at, updated_at
              FROM trunks WHERE id = $1",
         )
@@ -2432,6 +2448,8 @@ impl TrunkStore for PostgresStorage {
                     health_check_enabled, health_check_interval_secs,
                     codec_prefs, caller_id_override, from_domain,
                     strip_digits, prepend_digits, cps_limit, description,
+                    srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
+                    outbound_proxy, trunk_group, header_rules,
                     created_at, updated_at
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
@@ -2454,8 +2472,10 @@ impl TrunkStore for PostgresStorage {
                     health_check_enabled, health_check_interval_secs,
                     codec_prefs, caller_id_override, from_domain,
                     strip_digits, prepend_digits, cps_limit, description,
+                    srtp_mode, dtmf_mode, session_timer_secs, t38_enabled,
+                    outbound_proxy, trunk_group, header_rules,
                     created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -2483,6 +2503,13 @@ impl TrunkStore for PostgresStorage {
                 prepend_digits = EXCLUDED.prepend_digits,
                 cps_limit = EXCLUDED.cps_limit,
                 description = EXCLUDED.description,
+                srtp_mode = EXCLUDED.srtp_mode,
+                dtmf_mode = EXCLUDED.dtmf_mode,
+                session_timer_secs = EXCLUDED.session_timer_secs,
+                t38_enabled = EXCLUDED.t38_enabled,
+                outbound_proxy = EXCLUDED.outbound_proxy,
+                trunk_group = EXCLUDED.trunk_group,
+                header_rules = EXCLUDED.header_rules,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -2513,6 +2540,13 @@ impl TrunkStore for PostgresStorage {
         .bind(&trunk.prepend_digits)
         .bind(trunk.cps_limit)
         .bind(&trunk.description)
+        .bind(&trunk.srtp_mode)
+        .bind(&trunk.dtmf_mode)
+        .bind(trunk.session_timer_secs)
+        .bind(trunk.t38_enabled)
+        .bind(&trunk.outbound_proxy)
+        .bind(&trunk.trunk_group)
+        .bind(&trunk.header_rules)
         .bind(system_time_to_datetime(trunk.created_at))
         .bind(system_time_to_datetime(trunk.updated_at))
         .execute(&self.pool)

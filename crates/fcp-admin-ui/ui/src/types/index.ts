@@ -601,6 +601,13 @@ export interface SipTrunk {
   prepend_digits: string | null
   cps_limit: number
   description: string | null
+  srtp_mode: string
+  dtmf_mode: string
+  session_timer_secs: number
+  t38_enabled: boolean
+  outbound_proxy: string | null
+  trunk_group: string | null
+  header_rules: string | null
   health_status: string // "healthy" | "degraded" | "down" | "disabled" | "unknown"
   consecutive_failures: number
   uptime_secs: number | null
@@ -635,6 +642,13 @@ export interface CreateTrunkRequest {
   prepend_digits?: string
   cps_limit?: number
   description?: string
+  srtp_mode?: string
+  dtmf_mode?: string
+  session_timer_secs?: number
+  t38_enabled?: boolean
+  outbound_proxy?: string
+  trunk_group?: string
+  header_rules?: string
 }
 
 // Legacy SBC trunk types (for live status monitoring)

@@ -405,6 +405,8 @@ pub fn router() -> Router<ApiState> {
                 .patch(trunks::update_trunk)
                 .delete(trunks::delete_trunk),
         )
+        .route("/trunks/:id/test", post(trunks::test_trunk))
+        .route("/trunks/:id/clone", post(trunks::clone_trunk))
         // Conference / Meetings
         .route(
             "/conferences/meetings",

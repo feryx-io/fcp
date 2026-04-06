@@ -171,6 +171,29 @@ pub struct Trunk {
     /// Free-text description/notes
     pub description: Option<String>,
 
+    /// SRTP mode: "disabled", "optional", "mandatory"
+    pub srtp_mode: String,
+
+    /// DTMF mode: "rfc2833", "sip_info", "inband"
+    pub dtmf_mode: String,
+
+    /// RFC 4028 session timer interval in seconds (0 = disabled)
+    pub session_timer_secs: i32,
+
+    /// T.38 fax relay: enable/disable
+    pub t38_enabled: bool,
+
+    /// Outbound proxy (route through this proxy before reaching trunk)
+    /// e.g. "sip:proxy.carrier.com:5060"
+    pub outbound_proxy: Option<String>,
+
+    /// Trunk group name for logical grouping (e.g. "US Carriers")
+    pub trunk_group: Option<String>,
+
+    /// Custom SIP header rules as JSON array
+    /// e.g. [{"action":"add","name":"X-Custom","value":"foo"}]
+    pub header_rules: Option<String>,
+
     /// Created timestamp
     pub created_at: SystemTime,
 
@@ -211,6 +234,13 @@ impl Trunk {
             prepend_digits: None,
             cps_limit: 0,
             description: None,
+            srtp_mode: "disabled".to_string(),
+            dtmf_mode: "rfc2833".to_string(),
+            session_timer_secs: 0,
+            t38_enabled: false,
+            outbound_proxy: None,
+            trunk_group: None,
+            header_rules: None,
             created_at: now,
             updated_at: now,
         }

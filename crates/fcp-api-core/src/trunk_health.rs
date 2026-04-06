@@ -212,6 +212,11 @@ pub async fn run_trunk_health_probes(
     }
 }
 
+/// Public wrapper for probe_trunk_hosts (used by test-call endpoint).
+pub async fn probe_trunk_hosts_public(trunk: &fcp_core::Trunk) -> bool {
+    probe_trunk_hosts(trunk).await
+}
+
 /// Send a SIP OPTIONS probe to a trunk's hosts via raw UDP.
 /// Returns true if any host responds (2xx, 401, 407 all count as reachable).
 async fn probe_trunk_hosts(trunk: &fcp_core::Trunk) -> bool {

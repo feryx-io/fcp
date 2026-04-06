@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
+import { useNavigate } from 'react-router-dom'
 import {
   Server, Plus, Pencil, Trash2, RefreshCw, ChevronRight,
-  Power, PowerOff,
+  Power, PowerOff, Copy, Zap, History,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -84,6 +85,13 @@ interface TrunkFormData {
   from_domain: string
   strip_digits: number
   prepend_digits: string
+  srtp_mode: string
+  dtmf_mode: string
+  session_timer_secs: number
+  t38_enabled: boolean
+  outbound_proxy: string
+  trunk_group: string
+  header_rules: string
   max_failures: number
   recovery_interval_secs: number
   health_check_enabled: boolean
@@ -113,6 +121,13 @@ const defaultValues: TrunkFormData = {
   from_domain: '',
   strip_digits: 0,
   prepend_digits: '',
+  srtp_mode: 'disabled',
+  dtmf_mode: 'rfc2833',
+  session_timer_secs: 0,
+  t38_enabled: false,
+  outbound_proxy: '',
+  trunk_group: '',
+  header_rules: '',
   max_failures: 5,
   recovery_interval_secs: 60,
   health_check_enabled: true,
@@ -143,6 +158,13 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
     from_domain: trunk.from_domain ?? '',
     strip_digits: trunk.strip_digits,
     prepend_digits: trunk.prepend_digits ?? '',
+    srtp_mode: trunk.srtp_mode,
+    dtmf_mode: trunk.dtmf_mode,
+    session_timer_secs: trunk.session_timer_secs,
+    t38_enabled: trunk.t38_enabled,
+    outbound_proxy: trunk.outbound_proxy ?? '',
+    trunk_group: trunk.trunk_group ?? '',
+    header_rules: trunk.header_rules ?? '',
     max_failures: trunk.max_failures,
     recovery_interval_secs: trunk.recovery_interval_secs,
     health_check_enabled: trunk.health_check_enabled,
@@ -176,6 +198,13 @@ function formToRequest(form: TrunkFormData): CreateTrunkRequest {
     from_domain: form.from_domain || undefined,
     strip_digits: form.strip_digits,
     prepend_digits: form.prepend_digits || undefined,
+    srtp_mode: form.srtp_mode,
+    dtmf_mode: form.dtmf_mode,
+    session_timer_secs: form.session_timer_secs,
+    t38_enabled: form.t38_enabled,
+    outbound_proxy: form.outbound_proxy || undefined,
+    trunk_group: form.trunk_group || undefined,
+    header_rules: form.header_rules || undefined,
     max_failures: form.max_failures,
     recovery_interval_secs: form.recovery_interval_secs,
     health_check_enabled: form.health_check_enabled,
@@ -223,6 +252,22 @@ export function TrunksPage() {
       setDeleteTrunk(null)
     },
   })
+
+  const cloneMutation = useMutation({
+    mutationFn: (id: string) => trunks.clone(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['trunks'] }),
+  })
+
+  const [testResult, setTestResult] = useState<{ name: string; success: boolean; message: string } | null>(null)
+  const testMutation = useMutation({
+    mutationFn: (id: string) => trunks.test(id),
+    onSuccess: (data, id) => {
+      const trunk = trunkList.find((t) => t.id === id)
+      setTestResult({ name: trunk?.name ?? id, ...data })
+    },
+  })
+
+  const navigate = useNavigate()
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
@@ -282,6 +327,9 @@ export function TrunksPage() {
               onEdit={() => openEdit(trunk)}
               onDelete={() => setDeleteTrunk(trunk)}
               onToggle={() => toggleMutation.mutate({ id: trunk.id, enabled: !trunk.enabled })}
+              onClone={() => cloneMutation.mutate(trunk.id)}
+              onTest={() => testMutation.mutate(trunk.id)}
+              onViewCdrs={() => navigate(`/admin/cdrs?trunk=${encodeURIComponent(trunk.name)}`)}
             />
           ))}
         </div>
@@ -323,6 +371,21 @@ export function TrunksPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Test Result */}
+      <Dialog open={!!testResult} onOpenChange={() => setTestResult(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Connectivity Test: {testResult?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="flex items-center gap-3 py-4">
+            <Badge variant={testResult?.success ? 'success' : 'destructive'} className="text-base px-4 py-1">
+              {testResult?.success ? 'PASS' : 'FAIL'}
+            </Badge>
+            <p className="text-sm text-muted-foreground">{testResult?.message}</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete Confirmation */}
       <Dialog open={!!deleteTrunk} onOpenChange={() => setDeleteTrunk(null)}>
         <DialogContent>
@@ -347,12 +410,15 @@ export function TrunksPage() {
   )
 }
 
-function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
+function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle, onClone, onTest, onViewCdrs }: {
   trunk: SipTrunk
   onSelect: () => void
   onEdit: () => void
   onDelete: () => void
   onToggle: () => void
+  onClone: () => void
+  onTest: () => void
+  onViewCdrs: () => void
 }) {
   return (
     <Card className={`hover:border-primary/30 transition-colors ${!trunk.enabled ? 'opacity-60' : ''}`}>
@@ -373,8 +439,11 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {trunk.description && (
-          <p className="text-xs text-muted-foreground truncate">{trunk.description}</p>
+        {(trunk.description || trunk.trunk_group) && (
+          <div className="flex items-center gap-2">
+            {trunk.trunk_group && <Badge variant="outline" className="text-xs">{trunk.trunk_group}</Badge>}
+            {trunk.description && <p className="text-xs text-muted-foreground truncate">{trunk.description}</p>}
+          </div>
         )}
         <div className="grid grid-cols-4 gap-2 text-center text-sm">
           <div>
@@ -402,6 +471,15 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
             {trunk.has_credentials && <Badge variant="secondary" className="text-xs">AUTH</Badge>}
           </div>
           <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Test connectivity" onClick={(e) => { e.stopPropagation(); onTest() }}>
+              <Zap className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="View CDRs" onClick={(e) => { e.stopPropagation(); onViewCdrs() }}>
+              <History className="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" title="Clone" onClick={(e) => { e.stopPropagation(); onClone() }}>
+              <Copy className="h-3.5 w-3.5" />
+            </Button>
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.stopPropagation(); onToggle() }}>
               {trunk.enabled ? <PowerOff className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
             </Button>
@@ -440,6 +518,12 @@ function TrunkDetailView({ trunk, onEdit }: { trunk: SipTrunk; onEdit: () => voi
         )}
         {trunk.codec_prefs.length > 0 && <Field label="Codecs" value={trunk.codec_prefs.join(', ')} />}
         {trunk.cps_limit > 0 && <Field label="CPS Limit" value={String(trunk.cps_limit)} />}
+        <Field label="SRTP" value={trunk.srtp_mode} />
+        <Field label="DTMF" value={trunk.dtmf_mode.replace('_', ' ')} />
+        {trunk.session_timer_secs > 0 && <Field label="Session Timer" value={`${trunk.session_timer_secs}s`} />}
+        {trunk.t38_enabled && <Field label="T.38 Fax" value="Enabled" />}
+        {trunk.outbound_proxy && <Field label="Outbound Proxy" value={trunk.outbound_proxy} />}
+        {trunk.trunk_group && <Field label="Group" value={trunk.trunk_group} />}
         {trunk.verify_tls && trunk.transport_protocol === 'tls' && <Field label="TLS Verify" value="Enabled" />}
       </div>
 
@@ -634,6 +718,72 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
           <div>
             <Label htmlFor="cps_limit">CPS Limit (0 = no limit)</Label>
             <Input id="cps_limit" type="number" {...register('cps_limit', { valueAsNumber: true })} />
+          </div>
+        </div>
+      </div>
+
+      {/* Media */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Media</h3>
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <Label>SRTP Mode</Label>
+            <Select value={watch('srtp_mode')} onValueChange={(v) => setValue('srtp_mode', v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="disabled">Disabled</SelectItem>
+                <SelectItem value="optional">Optional</SelectItem>
+                <SelectItem value="mandatory">Mandatory</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>DTMF Mode</Label>
+            <Select value={watch('dtmf_mode')} onValueChange={(v) => setValue('dtmf_mode', v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="rfc2833">RFC 2833</SelectItem>
+                <SelectItem value="sip_info">SIP INFO</SelectItem>
+                <SelectItem value="inband">Inband</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end">
+            <div className="flex items-center gap-2">
+              <Switch id="t38_enabled" checked={watch('t38_enabled')} onCheckedChange={(v) => setValue('t38_enabled', v)} />
+              <Label htmlFor="t38_enabled">T.38 Fax</Label>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="session_timer_secs">Session Timer (0 = disabled)</Label>
+            <Input id="session_timer_secs" type="number" {...register('session_timer_secs', { valueAsNumber: true })} />
+          </div>
+        </div>
+      </div>
+
+      {/* Advanced */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Advanced</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="outbound_proxy">Outbound Proxy</Label>
+            <Input id="outbound_proxy" placeholder="e.g. sip:proxy.carrier.com:5060" {...register('outbound_proxy')} />
+          </div>
+          <div>
+            <Label htmlFor="trunk_group">Trunk Group</Label>
+            <Input id="trunk_group" placeholder="e.g. US Carriers" {...register('trunk_group')} />
+          </div>
+          <div className="col-span-2">
+            <Label htmlFor="header_rules">Header Rules (JSON)</Label>
+            <textarea
+              id="header_rules"
+              rows={2}
+              className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder='[{"action":"add","name":"X-Custom","value":"foo"}]'
+              {...register('header_rules')}
+            />
           </div>
         </div>
       </div>

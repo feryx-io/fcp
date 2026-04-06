@@ -54,6 +54,13 @@ pub struct TrunkResponse {
     pub prepend_digits: Option<String>,
     pub cps_limit: i32,
     pub description: Option<String>,
+    pub srtp_mode: String,
+    pub dtmf_mode: String,
+    pub session_timer_secs: i32,
+    pub t38_enabled: bool,
+    pub outbound_proxy: Option<String>,
+    pub trunk_group: Option<String>,
+    pub header_rules: Option<String>,
     pub health_status: String,
     pub consecutive_failures: u32,
     pub uptime_secs: Option<u64>,
@@ -92,6 +99,13 @@ impl From<Trunk> for TrunkResponse {
             prepend_digits: t.prepend_digits,
             cps_limit: t.cps_limit,
             description: t.description,
+            srtp_mode: t.srtp_mode,
+            dtmf_mode: t.dtmf_mode,
+            session_timer_secs: t.session_timer_secs,
+            t38_enabled: t.t38_enabled,
+            outbound_proxy: t.outbound_proxy,
+            trunk_group: t.trunk_group,
+            header_rules: t.header_rules,
             health_status: "unknown".to_string(),
             consecutive_failures: 0,
             uptime_secs: None,
@@ -167,6 +181,15 @@ pub struct CreateTrunkRequest {
     #[serde(default)]
     pub cps_limit: Option<i32>,
     pub description: Option<String>,
+    pub srtp_mode: Option<String>,
+    pub dtmf_mode: Option<String>,
+    #[serde(default)]
+    pub session_timer_secs: Option<i32>,
+    #[serde(default)]
+    pub t38_enabled: Option<bool>,
+    pub outbound_proxy: Option<String>,
+    pub trunk_group: Option<String>,
+    pub header_rules: Option<String>,
 }
 
 /// Update trunk request.
@@ -198,6 +221,13 @@ pub struct UpdateTrunkRequest {
     pub prepend_digits: Option<String>,
     pub cps_limit: Option<i32>,
     pub description: Option<String>,
+    pub srtp_mode: Option<String>,
+    pub dtmf_mode: Option<String>,
+    pub session_timer_secs: Option<i32>,
+    pub t38_enabled: Option<bool>,
+    pub outbound_proxy: Option<String>,
+    pub trunk_group: Option<String>,
+    pub header_rules: Option<String>,
 }
 
 /// List trunks.
@@ -284,6 +314,13 @@ pub async fn create_trunk(
     trunk.prepend_digits = req.prepend_digits;
     if let Some(cps) = req.cps_limit { trunk.cps_limit = cps; }
     trunk.description = req.description;
+    if let Some(ref mode) = req.srtp_mode { trunk.srtp_mode = mode.clone(); }
+    if let Some(ref mode) = req.dtmf_mode { trunk.dtmf_mode = mode.clone(); }
+    if let Some(secs) = req.session_timer_secs { trunk.session_timer_secs = secs; }
+    if let Some(t38) = req.t38_enabled { trunk.t38_enabled = t38; }
+    trunk.outbound_proxy = req.outbound_proxy;
+    trunk.trunk_group = req.trunk_group;
+    trunk.header_rules = req.header_rules;
 
     info!(trunk_name = %trunk.name, trunk_id = %trunk.id, "Creating SIP trunk");
 
@@ -339,6 +376,13 @@ pub async fn update_trunk(
     if let Some(prepend) = req.prepend_digits { trunk.prepend_digits = Some(prepend); }
     if let Some(cps) = req.cps_limit { trunk.cps_limit = cps; }
     if let Some(desc) = req.description { trunk.description = Some(desc); }
+    if let Some(mode) = req.srtp_mode { trunk.srtp_mode = mode; }
+    if let Some(mode) = req.dtmf_mode { trunk.dtmf_mode = mode; }
+    if let Some(secs) = req.session_timer_secs { trunk.session_timer_secs = secs; }
+    if let Some(t38) = req.t38_enabled { trunk.t38_enabled = t38; }
+    if let Some(proxy) = req.outbound_proxy { trunk.outbound_proxy = Some(proxy); }
+    if let Some(group) = req.trunk_group { trunk.trunk_group = Some(group); }
+    if let Some(rules) = req.header_rules { trunk.header_rules = Some(rules); }
 
     trunk.updated_at = SystemTime::now();
 
@@ -375,4 +419,66 @@ pub async fn delete_trunk(
         .map_err(|e| ApiError::Internal(format!("Failed to delete trunk: {}", e)))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Test trunk connectivity by sending an OPTIONS probe.
+pub async fn test_trunk(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let trunk_id = TrunkId::from_string(id);
+
+    let trunk = storage
+        .get_trunk(&trunk_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+
+    if trunk.hosts.is_empty() {
+        return Err(ApiError::BadRequest("Trunk has no hosts configured".to_string()));
+    }
+
+    info!(trunk_name = %trunk.name, "Sending OPTIONS test probe");
+    let success = crate::trunk_health::probe_trunk_hosts_public(&trunk).await;
+
+    Ok(Json(serde_json::json!({
+        "trunk_id": trunk.id.to_string(),
+        "trunk_name": trunk.name,
+        "success": success,
+        "message": if success { "Trunk is reachable" } else { "Trunk did not respond" },
+    })))
+}
+
+/// Clone a trunk (create a copy with a new name).
+pub async fn clone_trunk(
+    State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let trunk_id = TrunkId::from_string(id);
+
+    let source = storage
+        .get_trunk(&trunk_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+
+    let mut clone = source.clone();
+    clone.id = fcp_core::TrunkId::new();
+    clone.name = format!("{} (copy)", clone.name);
+    clone.enabled = false; // Disable clone by default
+    let now = SystemTime::now();
+    clone.created_at = now;
+    clone.updated_at = now;
+
+    info!(trunk_name = %clone.name, source = %source.name, "Cloning SIP trunk");
+
+    storage
+        .put_trunk(clone.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create trunk clone: {}", e)))?;
+
+    Ok((StatusCode::CREATED, Json(TrunkResponse::from(clone))))
 }

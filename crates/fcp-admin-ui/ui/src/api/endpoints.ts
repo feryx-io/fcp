@@ -372,6 +372,8 @@ export const trunks = {
   update: (id: string, data: Partial<CreateTrunkRequest>) =>
     apiClient.patch<SipTrunk>(`/trunks/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/trunks/${encodeURIComponent(id)}`),
+  test: (id: string) => apiClient.post<{ success: boolean; message: string }>(`/trunks/${encodeURIComponent(id)}/test`),
+  clone: (id: string) => apiClient.post<SipTrunk>(`/trunks/${encodeURIComponent(id)}/clone`),
 }
 
 // SIP Trunk live status (SBC admin API)
