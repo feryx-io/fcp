@@ -594,6 +594,13 @@ export interface SipTrunk {
   recovery_interval_secs: number
   health_check_enabled: boolean
   health_check_interval_secs: number
+  codec_prefs: string[]
+  caller_id_override: string | null
+  from_domain: string | null
+  strip_digits: number
+  prepend_digits: string | null
+  cps_limit: number
+  description: string | null
   health_status: string // "healthy" | "degraded" | "down" | "disabled" | "unknown"
   consecutive_failures: number
   uptime_secs: number | null
@@ -621,6 +628,13 @@ export interface CreateTrunkRequest {
   recovery_interval_secs?: number
   health_check_enabled?: boolean
   health_check_interval_secs?: number
+  codec_prefs?: string[]
+  caller_id_override?: string
+  from_domain?: string
+  strip_digits?: number
+  prepend_digits?: string
+  cps_limit?: number
+  description?: string
 }
 
 // Legacy SBC trunk types (for live status monitoring)

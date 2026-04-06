@@ -63,6 +63,7 @@ const protocolLabel = (proto: string) => proto.toUpperCase()
 
 interface TrunkFormData {
   name: string
+  description: string
   enabled: boolean
   direction: string
   priority: number
@@ -77,6 +78,12 @@ interface TrunkFormData {
   register: boolean
   register_expiry: number
   max_concurrent_calls: number
+  cps_limit: number
+  codec_prefs: string
+  caller_id_override: string
+  from_domain: string
+  strip_digits: number
+  prepend_digits: string
   max_failures: number
   recovery_interval_secs: number
   health_check_enabled: boolean
@@ -85,6 +92,7 @@ interface TrunkFormData {
 
 const defaultValues: TrunkFormData = {
   name: '',
+  description: '',
   enabled: true,
   direction: 'upstream',
   priority: 10,
@@ -99,6 +107,12 @@ const defaultValues: TrunkFormData = {
   register: false,
   register_expiry: 3600,
   max_concurrent_calls: 0,
+  cps_limit: 0,
+  codec_prefs: '',
+  caller_id_override: '',
+  from_domain: '',
+  strip_digits: 0,
+  prepend_digits: '',
   max_failures: 5,
   recovery_interval_secs: 60,
   health_check_enabled: true,
@@ -108,6 +122,7 @@ const defaultValues: TrunkFormData = {
 function trunkToForm(trunk: SipTrunk): TrunkFormData {
   return {
     name: trunk.name,
+    description: trunk.description ?? '',
     enabled: trunk.enabled,
     direction: trunk.direction,
     priority: trunk.priority,
@@ -122,6 +137,12 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
     register: trunk.register,
     register_expiry: trunk.register_expiry,
     max_concurrent_calls: trunk.max_concurrent_calls,
+    cps_limit: trunk.cps_limit,
+    codec_prefs: trunk.codec_prefs.join(', '),
+    caller_id_override: trunk.caller_id_override ?? '',
+    from_domain: trunk.from_domain ?? '',
+    strip_digits: trunk.strip_digits,
+    prepend_digits: trunk.prepend_digits ?? '',
     max_failures: trunk.max_failures,
     recovery_interval_secs: trunk.recovery_interval_secs,
     health_check_enabled: trunk.health_check_enabled,
@@ -131,8 +152,10 @@ function trunkToForm(trunk: SipTrunk): TrunkFormData {
 
 function formToRequest(form: TrunkFormData): CreateTrunkRequest {
   const hosts = form.hosts.split('\n').map((h) => h.trim()).filter(Boolean)
+  const codecs = form.codec_prefs.split(',').map((c) => c.trim()).filter(Boolean)
   return {
     name: form.name,
+    description: form.description || undefined,
     enabled: form.enabled,
     direction: form.direction,
     priority: form.priority,
@@ -147,6 +170,12 @@ function formToRequest(form: TrunkFormData): CreateTrunkRequest {
     register: form.register,
     register_expiry: form.register_expiry,
     max_concurrent_calls: form.max_concurrent_calls,
+    cps_limit: form.cps_limit,
+    codec_prefs: codecs.length > 0 ? codecs : undefined,
+    caller_id_override: form.caller_id_override || undefined,
+    from_domain: form.from_domain || undefined,
+    strip_digits: form.strip_digits,
+    prepend_digits: form.prepend_digits || undefined,
     max_failures: form.max_failures,
     recovery_interval_secs: form.recovery_interval_secs,
     health_check_enabled: form.health_check_enabled,
@@ -344,6 +373,9 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {trunk.description && (
+          <p className="text-xs text-muted-foreground truncate">{trunk.description}</p>
+        )}
         <div className="grid grid-cols-4 gap-2 text-center text-sm">
           <div>
             <p className="text-lg font-bold">{trunk.hosts.length}</p>
@@ -401,6 +433,13 @@ function TrunkDetailView({ trunk, onEdit }: { trunk: SipTrunk; onEdit: () => voi
         <Field label="Registration" value={trunk.register ? `Enabled (${trunk.register_expiry}s)` : 'Disabled'} />
         <Field label="Health Check" value={trunk.health_check_enabled ? `Every ${trunk.health_check_interval_secs}s` : 'Disabled'} />
         <Field label="Failover" value={`${trunk.max_failures} failures / ${trunk.recovery_interval_secs}s recovery`} />
+        {trunk.caller_id_override && <Field label="Caller ID" value={trunk.caller_id_override} />}
+        {trunk.from_domain && <Field label="From Domain" value={trunk.from_domain} />}
+        {(trunk.strip_digits > 0 || trunk.prepend_digits) && (
+          <Field label="Number Rules" value={`Strip ${trunk.strip_digits}${trunk.prepend_digits ? `, prepend ${trunk.prepend_digits}` : ''}`} />
+        )}
+        {trunk.codec_prefs.length > 0 && <Field label="Codecs" value={trunk.codec_prefs.join(', ')} />}
+        {trunk.cps_limit > 0 && <Field label="CPS Limit" value={String(trunk.cps_limit)} />}
         {trunk.verify_tls && trunk.transport_protocol === 'tls' && <Field label="TLS Verify" value="Enabled" />}
       </div>
 
@@ -441,9 +480,19 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
       <div className="space-y-4">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Basic</h3>
         <div className="grid grid-cols-2 gap-4">
-          <div className="col-span-2">
+          <div>
             <Label htmlFor="name">Trunk Name</Label>
             <Input id="name" placeholder="e.g. twilio-us-east" {...register('name', { required: true })} />
+          </div>
+          <div className="flex items-end">
+            <div className="flex items-center gap-2">
+              <Switch id="enabled" checked={watch('enabled')} onCheckedChange={(v) => setValue('enabled', v)} />
+              <Label htmlFor="enabled">Enabled</Label>
+            </div>
+          </div>
+          <div className="col-span-2">
+            <Label htmlFor="description">Description</Label>
+            <Input id="description" placeholder="e.g. Twilio US East - account #12345" {...register('description')} />
           </div>
           <div>
             <Label>Direction</Label>
@@ -455,12 +504,6 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
                 <SelectItem value="bidirectional">Bidirectional</SelectItem>
               </SelectContent>
             </Select>
-          </div>
-          <div className="flex items-end gap-4">
-            <div className="flex items-center gap-2">
-              <Switch id="enabled" checked={watch('enabled')} onCheckedChange={(v) => setValue('enabled', v)} />
-              <Label htmlFor="enabled">Enabled</Label>
-            </div>
           </div>
         </div>
       </div>
@@ -550,6 +593,51 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
         </div>
       </div>
 
+      {/* Caller ID & Domain */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Caller ID & Domain</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="caller_id_override">Caller ID Override</Label>
+            <Input id="caller_id_override" placeholder="e.g. +15551234567" {...register('caller_id_override')} />
+          </div>
+          <div>
+            <Label htmlFor="from_domain">From Domain</Label>
+            <Input id="from_domain" placeholder="e.g. sip.carrier.com" {...register('from_domain')} />
+          </div>
+        </div>
+      </div>
+
+      {/* Number Manipulation */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Number Manipulation</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="strip_digits">Strip Leading Digits</Label>
+            <Input id="strip_digits" type="number" min={0} {...register('strip_digits', { valueAsNumber: true })} />
+          </div>
+          <div>
+            <Label htmlFor="prepend_digits">Prepend Digits</Label>
+            <Input id="prepend_digits" placeholder="e.g. +1" {...register('prepend_digits')} />
+          </div>
+        </div>
+      </div>
+
+      {/* Codecs & Rate Limiting */}
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Codecs & Limits</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="codec_prefs">Codec Preferences (comma-separated)</Label>
+            <Input id="codec_prefs" placeholder="e.g. PCMU, PCMA, G722" {...register('codec_prefs')} />
+          </div>
+          <div>
+            <Label htmlFor="cps_limit">CPS Limit (0 = no limit)</Label>
+            <Input id="cps_limit" type="number" {...register('cps_limit', { valueAsNumber: true })} />
+          </div>
+        </div>
+      </div>
+
       {/* Load Balancing */}
       <div className="space-y-4">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Load Balancing</h3>
@@ -563,7 +651,7 @@ function TrunkForm({ form, onSubmit, isSubmitting, submitLabel = 'Create Trunk' 
             <Input id="weight" type="number" {...register('weight', { valueAsNumber: true })} />
           </div>
           <div>
-            <Label htmlFor="max_concurrent_calls">Max Concurrent (0 = unlimited)</Label>
+            <Label htmlFor="max_concurrent_calls">Max Calls (0 = no limit)</Label>
             <Input id="max_concurrent_calls" type="number" {...register('max_concurrent_calls', { valueAsNumber: true })} />
           </div>
         </div>

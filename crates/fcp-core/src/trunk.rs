@@ -146,6 +146,31 @@ pub struct Trunk {
     /// Health check interval in seconds
     pub health_check_interval_secs: i32,
 
+    /// Preferred codecs in priority order (e.g. ["PCMU", "PCMA", "G722"])
+    /// Empty = accept all codecs
+    pub codec_prefs: Vec<String>,
+
+    /// Outbound caller ID override (replaces From header user/display)
+    /// e.g. "+15551234567" or "Company Name <+15551234567>"
+    pub caller_id_override: Option<String>,
+
+    /// Override domain in outbound From/Contact headers
+    /// e.g. "sip.carrier.com" instead of local IP
+    pub from_domain: Option<String>,
+
+    /// Strip N leading digits from dialed number before sending
+    pub strip_digits: i32,
+
+    /// Prepend this string to dialed number after stripping
+    /// e.g. "+1" for E.164 formatting
+    pub prepend_digits: Option<String>,
+
+    /// Maximum calls per second (0 = unlimited)
+    pub cps_limit: i32,
+
+    /// Free-text description/notes
+    pub description: Option<String>,
+
     /// Created timestamp
     pub created_at: SystemTime,
 
@@ -179,6 +204,13 @@ impl Trunk {
             recovery_interval_secs: 60,
             health_check_enabled: true,
             health_check_interval_secs: 30,
+            codec_prefs: vec![],
+            caller_id_override: None,
+            from_domain: None,
+            strip_digits: 0,
+            prepend_digits: None,
+            cps_limit: 0,
+            description: None,
             created_at: now,
             updated_at: now,
         }

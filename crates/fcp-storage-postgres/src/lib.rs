@@ -2350,6 +2350,13 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
     let recovery_interval_secs: i32 = row.try_get("recovery_interval_secs")?;
     let health_check_enabled: bool = row.try_get("health_check_enabled")?;
     let health_check_interval_secs: i32 = row.try_get("health_check_interval_secs")?;
+    let codec_prefs: Vec<String> = row.try_get("codec_prefs")?;
+    let caller_id_override: Option<String> = row.try_get("caller_id_override")?;
+    let from_domain: Option<String> = row.try_get("from_domain")?;
+    let strip_digits: i32 = row.try_get("strip_digits")?;
+    let prepend_digits: Option<String> = row.try_get("prepend_digits")?;
+    let cps_limit: i32 = row.try_get("cps_limit")?;
+    let description: Option<String> = row.try_get("description")?;
     let created_at: DateTime<Utc> = row.try_get("created_at")?;
     let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
 
@@ -2378,6 +2385,13 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
         recovery_interval_secs,
         health_check_enabled,
         health_check_interval_secs,
+        codec_prefs,
+        caller_id_override,
+        from_domain,
+        strip_digits,
+        prepend_digits,
+        cps_limit,
+        description,
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
     })
@@ -2393,6 +2407,8 @@ impl TrunkStore for PostgresStorage {
                     register, register_expiry, max_concurrent_calls,
                     max_failures, recovery_interval_secs,
                     health_check_enabled, health_check_interval_secs,
+                    codec_prefs, caller_id_override, from_domain,
+                    strip_digits, prepend_digits, cps_limit, description,
                     created_at, updated_at
              FROM trunks WHERE id = $1",
         )
@@ -2414,6 +2430,8 @@ impl TrunkStore for PostgresStorage {
                     register, register_expiry, max_concurrent_calls,
                     max_failures, recovery_interval_secs,
                     health_check_enabled, health_check_interval_secs,
+                    codec_prefs, caller_id_override, from_domain,
+                    strip_digits, prepend_digits, cps_limit, description,
                     created_at, updated_at
              FROM trunks WHERE tenant_id = $1
              ORDER BY priority, name",
@@ -2434,8 +2452,10 @@ impl TrunkStore for PostgresStorage {
                     register, register_expiry, max_concurrent_calls,
                     max_failures, recovery_interval_secs,
                     health_check_enabled, health_check_interval_secs,
+                    codec_prefs, caller_id_override, from_domain,
+                    strip_digits, prepend_digits, cps_limit, description,
                     created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
              ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 enabled = EXCLUDED.enabled,
@@ -2456,6 +2476,13 @@ impl TrunkStore for PostgresStorage {
                 recovery_interval_secs = EXCLUDED.recovery_interval_secs,
                 health_check_enabled = EXCLUDED.health_check_enabled,
                 health_check_interval_secs = EXCLUDED.health_check_interval_secs,
+                codec_prefs = EXCLUDED.codec_prefs,
+                caller_id_override = EXCLUDED.caller_id_override,
+                from_domain = EXCLUDED.from_domain,
+                strip_digits = EXCLUDED.strip_digits,
+                prepend_digits = EXCLUDED.prepend_digits,
+                cps_limit = EXCLUDED.cps_limit,
+                description = EXCLUDED.description,
                 updated_at = EXCLUDED.updated_at",
         )
         .bind(trunk.id.to_string())
@@ -2479,6 +2506,13 @@ impl TrunkStore for PostgresStorage {
         .bind(trunk.recovery_interval_secs)
         .bind(trunk.health_check_enabled)
         .bind(trunk.health_check_interval_secs)
+        .bind(&trunk.codec_prefs)
+        .bind(&trunk.caller_id_override)
+        .bind(&trunk.from_domain)
+        .bind(trunk.strip_digits)
+        .bind(&trunk.prepend_digits)
+        .bind(trunk.cps_limit)
+        .bind(&trunk.description)
         .bind(system_time_to_datetime(trunk.created_at))
         .bind(system_time_to_datetime(trunk.updated_at))
         .execute(&self.pool)

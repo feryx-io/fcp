@@ -47,6 +47,13 @@ pub struct TrunkResponse {
     pub recovery_interval_secs: i32,
     pub health_check_enabled: bool,
     pub health_check_interval_secs: i32,
+    pub codec_prefs: Vec<String>,
+    pub caller_id_override: Option<String>,
+    pub from_domain: Option<String>,
+    pub strip_digits: i32,
+    pub prepend_digits: Option<String>,
+    pub cps_limit: i32,
+    pub description: Option<String>,
     pub health_status: String,
     pub consecutive_failures: u32,
     pub uptime_secs: Option<u64>,
@@ -78,6 +85,13 @@ impl From<Trunk> for TrunkResponse {
             recovery_interval_secs: t.recovery_interval_secs,
             health_check_enabled: t.health_check_enabled,
             health_check_interval_secs: t.health_check_interval_secs,
+            codec_prefs: t.codec_prefs,
+            caller_id_override: t.caller_id_override,
+            from_domain: t.from_domain,
+            strip_digits: t.strip_digits,
+            prepend_digits: t.prepend_digits,
+            cps_limit: t.cps_limit,
+            description: t.description,
             health_status: "unknown".to_string(),
             consecutive_failures: 0,
             uptime_secs: None,
@@ -143,6 +157,16 @@ pub struct CreateTrunkRequest {
     pub health_check_enabled: Option<bool>,
     #[serde(default)]
     pub health_check_interval_secs: Option<i32>,
+    #[serde(default)]
+    pub codec_prefs: Option<Vec<String>>,
+    pub caller_id_override: Option<String>,
+    pub from_domain: Option<String>,
+    #[serde(default)]
+    pub strip_digits: Option<i32>,
+    pub prepend_digits: Option<String>,
+    #[serde(default)]
+    pub cps_limit: Option<i32>,
+    pub description: Option<String>,
 }
 
 /// Update trunk request.
@@ -167,6 +191,13 @@ pub struct UpdateTrunkRequest {
     pub recovery_interval_secs: Option<i32>,
     pub health_check_enabled: Option<bool>,
     pub health_check_interval_secs: Option<i32>,
+    pub codec_prefs: Option<Vec<String>>,
+    pub caller_id_override: Option<String>,
+    pub from_domain: Option<String>,
+    pub strip_digits: Option<i32>,
+    pub prepend_digits: Option<String>,
+    pub cps_limit: Option<i32>,
+    pub description: Option<String>,
 }
 
 /// List trunks.
@@ -246,6 +277,13 @@ pub async fn create_trunk(
     if let Some(secs) = req.recovery_interval_secs { trunk.recovery_interval_secs = secs; }
     if let Some(enabled) = req.health_check_enabled { trunk.health_check_enabled = enabled; }
     if let Some(secs) = req.health_check_interval_secs { trunk.health_check_interval_secs = secs; }
+    if let Some(codecs) = req.codec_prefs { trunk.codec_prefs = codecs; }
+    trunk.caller_id_override = req.caller_id_override;
+    trunk.from_domain = req.from_domain;
+    if let Some(n) = req.strip_digits { trunk.strip_digits = n; }
+    trunk.prepend_digits = req.prepend_digits;
+    if let Some(cps) = req.cps_limit { trunk.cps_limit = cps; }
+    trunk.description = req.description;
 
     info!(trunk_name = %trunk.name, trunk_id = %trunk.id, "Creating SIP trunk");
 
@@ -294,6 +332,13 @@ pub async fn update_trunk(
     if let Some(secs) = req.recovery_interval_secs { trunk.recovery_interval_secs = secs; }
     if let Some(enabled) = req.health_check_enabled { trunk.health_check_enabled = enabled; }
     if let Some(secs) = req.health_check_interval_secs { trunk.health_check_interval_secs = secs; }
+    if let Some(codecs) = req.codec_prefs { trunk.codec_prefs = codecs; }
+    if let Some(cid) = req.caller_id_override { trunk.caller_id_override = Some(cid); }
+    if let Some(domain) = req.from_domain { trunk.from_domain = Some(domain); }
+    if let Some(n) = req.strip_digits { trunk.strip_digits = n; }
+    if let Some(prepend) = req.prepend_digits { trunk.prepend_digits = Some(prepend); }
+    if let Some(cps) = req.cps_limit { trunk.cps_limit = cps; }
+    if let Some(desc) = req.description { trunk.description = Some(desc); }
 
     trunk.updated_at = SystemTime::now();
 
