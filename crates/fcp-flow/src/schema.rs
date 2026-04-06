@@ -390,6 +390,27 @@ pub enum NodeType {
         #[serde(skip_serializing_if = "Option::is_none")]
         next_on_error: Option<String>,
     },
+
+    /// Route call to an ACD queue
+    Queue {
+        /// Queue name or extension to route the call to
+        queue_name: String,
+
+        /// Priority for this caller in the queue (0 = normal, lower = higher priority)
+        #[serde(default)]
+        priority: u32,
+
+        /// Node to execute when the call is answered by an agent
+        next_on_answer: String,
+
+        /// Node to execute if the queue times out or overflows
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_on_timeout: Option<String>,
+
+        /// Node to execute on error (queue not found, etc.)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_on_error: Option<String>,
+    },
 }
 
 /// Prompt configuration for Gather node

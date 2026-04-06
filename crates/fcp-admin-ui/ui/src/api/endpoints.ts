@@ -12,6 +12,7 @@ import type {
   CallInfo, OriginateCallRequest,
   CdrResponse, ListCdrsResponse, CdrQueryParams,
   QueueResponse, QueueStatsResponse, AgentResponse, AgentLoginRequest,
+  QueueConfigResponse, CreateQueueConfigRequest,
   MailboxResponse, VoicemailMessage, MailboxStats, CreateMailboxRequest, UpdateMailboxRequest,
   PresenceResponse, PresenceStats,
   Registration,
@@ -234,7 +235,17 @@ export const flowTraces = {
     apiClient.get<FlowTraceEntry[]>(`/flow-traces/${encodeURIComponent(callId)}`),
 }
 
-// Queues (Phase 2 - ACD queues)
+// Queue Configuration (database-backed CRUD)
+export const queueConfigs = {
+  list: () => apiClient.get<QueueConfigResponse[]>('/queue-configs'),
+  get: (id: string) => apiClient.get<QueueConfigResponse>(`/queue-configs/${encodeURIComponent(id)}`),
+  create: (data: CreateQueueConfigRequest) => apiClient.post<QueueConfigResponse>('/queue-configs', data),
+  update: (id: string, data: Partial<CreateQueueConfigRequest>) =>
+    apiClient.patch<QueueConfigResponse>(`/queue-configs/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/queue-configs/${encodeURIComponent(id)}`),
+}
+
+// Queues (Phase 2 - ACD runtime status)
 export const queues = {
   list: () => apiClient.get<QueueResponse[]>('/queues'),
   get: (name: string) => apiClient.get<QueueResponse>(`/queues/${encodeURIComponent(name)}`),

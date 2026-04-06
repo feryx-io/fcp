@@ -19,6 +19,7 @@ pub mod metrics;
 pub mod phone_numbers;
 pub mod presence;
 pub mod prompts;
+pub mod queue_config;
 pub mod queues;
 pub mod registrations;
 pub mod routing;
@@ -274,6 +275,8 @@ pub fn router() -> Router<ApiState> {
             "/queues/:name/agents/:id",
             delete(queues::agent_logout).patch(queues::update_agent_state),
         )
+        .route("/queues/:name/agents/:id/pause", post(queues::pause_agent))
+        .route("/queues/:name/agents/:id/resume", post(queues::resume_agent))
         // Presence
         .route("/presence", get(presence::list_presences))
         .route("/presence/stats", get(presence::get_stats))
@@ -405,6 +408,17 @@ pub fn router() -> Router<ApiState> {
             get(routing::get_routing_rule)
                 .patch(routing::update_routing_rule)
                 .delete(routing::delete_routing_rule),
+        )
+        // Queue Configs (persistent CRUD)
+        .route(
+            "/queue-configs",
+            get(queue_config::list_queue_configs).post(queue_config::create_queue_config),
+        )
+        .route(
+            "/queue-configs/:id",
+            get(queue_config::get_queue_config)
+                .patch(queue_config::update_queue_config)
+                .delete(queue_config::delete_queue_config),
         )
         // SIP Trunks
         .route(

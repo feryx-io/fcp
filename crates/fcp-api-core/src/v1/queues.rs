@@ -277,6 +277,70 @@ pub async fn agent_logout(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// POST /queues/:name/agents/:id/pause — Pause an agent.
+pub async fn pause_agent(
+    State(state): State<ApiState>,
+    Path((name, id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let qm = require_queue_manager!(state);
+
+    // Verify queue exists
+    if qm.get_queue_config(&name).is_none() {
+        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
+    }
+
+    qm.set_agent_state(&id, AgentState::Paused)
+        .await
+        .map_err(|e| ApiError::NotFound(e.to_string()))?;
+
+    info!(agent_id = %id, queue = %name, "Agent paused via API");
+
+    let agent = qm
+        .get_agent(&id)
+        .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
+
+    Ok(Json(AgentResponse {
+        id: agent.id,
+        extension: agent.extension,
+        state: agent.state.to_string(),
+        queues: agent.queues,
+        calls_handled: agent.calls_handled,
+        priority: agent.priority,
+    }))
+}
+
+/// POST /queues/:name/agents/:id/resume — Resume a paused agent.
+pub async fn resume_agent(
+    State(state): State<ApiState>,
+    Path((name, id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let qm = require_queue_manager!(state);
+
+    // Verify queue exists
+    if qm.get_queue_config(&name).is_none() {
+        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
+    }
+
+    qm.set_agent_state(&id, AgentState::Available)
+        .await
+        .map_err(|e| ApiError::NotFound(e.to_string()))?;
+
+    info!(agent_id = %id, queue = %name, "Agent resumed via API");
+
+    let agent = qm
+        .get_agent(&id)
+        .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
+
+    Ok(Json(AgentResponse {
+        id: agent.id,
+        extension: agent.extension,
+        state: agent.state.to_string(),
+        queues: agent.queues,
+        calls_handled: agent.calls_handled,
+        priority: agent.priority,
+    }))
+}
+
 /// PATCH /queues/:name/agents/:id — Update agent state.
 pub async fn update_agent_state(
     State(state): State<ApiState>,

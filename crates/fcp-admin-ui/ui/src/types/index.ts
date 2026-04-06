@@ -453,6 +453,51 @@ export interface AgentLoginRequest {
   skills?: string[]
 }
 
+// Queue Configuration (database-backed CRUD)
+export interface QueueConfigResponse {
+  id: string
+  tenant_id: string
+  name: string
+  extension: string
+  strategy: string
+  max_wait_time_secs: number
+  max_queue_depth: number
+  overflow_destination: string | null
+  moh_class: string | null
+  announce_position: boolean
+  announce_interval_secs: number
+  retry_on_no_answer: boolean
+  agents: string[]
+  priority: number
+  required_skills: string[]
+  record_calls: boolean
+  callback_enabled: boolean
+  timezone: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateQueueConfigRequest {
+  name: string
+  extension: string
+  strategy?: string
+  max_wait_time_secs?: number
+  max_queue_depth?: number
+  overflow_destination?: string
+  moh_class?: string
+  announce_position?: boolean
+  announce_interval_secs?: number
+  retry_on_no_answer?: boolean
+  agents?: string[]
+  priority?: number
+  required_skills?: string[]
+  record_calls?: boolean
+  callback_enabled?: boolean
+  timezone?: string
+  enabled?: boolean
+}
+
 // Voicemail (matches voicemail.rs)
 export interface MailboxResponse {
   id: string

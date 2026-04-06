@@ -647,6 +647,37 @@ impl FlowEngine {
                     next_on_error: next_on_error.clone(),
                 })
             }
+
+            NodeType::Queue {
+                queue_name,
+                priority,
+                next_on_answer,
+                next_on_timeout,
+                next_on_error,
+            } => {
+                let interpolated_queue = self.interpolate_variables(queue_name, context)?;
+
+                info!(
+                    call_id = %context.call_id,
+                    queue = %interpolated_queue,
+                    priority = %priority,
+                    "Routing call to ACD queue"
+                );
+
+                // Store queue routing configuration in context for the flow handler
+                context.set_variable("__queue_name".to_string(), interpolated_queue.clone());
+                context.set_variable("__queue_priority".to_string(), priority.to_string());
+                context.set_variable("__queue_next_on_answer".to_string(), next_on_answer.clone());
+                if let Some(timeout_node) = next_on_timeout {
+                    context.set_variable("__queue_next_on_timeout".to_string(), timeout_node.clone());
+                }
+                if let Some(error_node) = next_on_error {
+                    context.set_variable("__queue_next_on_error".to_string(), error_node.clone());
+                }
+
+                // Continue to the answer node; the flow handler will manage queue routing
+                Ok(FlowExecutionResult::Continue(next_on_answer.clone()))
+            }
         };
 
         match &result {

@@ -1051,6 +1051,22 @@ pub trait RoutingRuleStore: Send + Sync {
     async fn delete_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<()>;
 }
 
+/// Queue configuration storage operations.
+#[async_trait::async_trait]
+pub trait QueueConfigStore: Send + Sync {
+    /// Get a queue config by ID
+    async fn get_queue_config(&self, id: &crate::QueueConfigId) -> Result<Option<crate::QueueConfigRecord>>;
+
+    /// List all queue configs for a tenant
+    async fn list_queue_configs(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::QueueConfigRecord>>;
+
+    /// Create or update a queue config
+    async fn put_queue_config(&self, config: crate::QueueConfigRecord) -> Result<()>;
+
+    /// Delete a queue config by ID
+    async fn delete_queue_config(&self, id: &crate::QueueConfigId) -> Result<()>;
+}
+
 /// Site location storage operations.
 #[async_trait::async_trait]
 pub trait SiteLocationStore: Send + Sync {
@@ -1991,6 +2007,7 @@ pub struct DynStorage {
     site_location_store: Arc<dyn SiteLocationStore>,
     trunk_store: Arc<dyn TrunkStore>,
     routing_rule_store: Arc<dyn RoutingRuleStore>,
+    queue_config_store: Arc<dyn QueueConfigStore>,
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
@@ -2020,6 +2037,7 @@ impl DynStorage {
         site_location_store: Arc<dyn SiteLocationStore>,
         trunk_store: Arc<dyn TrunkStore>,
         routing_rule_store: Arc<dyn RoutingRuleStore>,
+        queue_config_store: Arc<dyn QueueConfigStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -2041,6 +2059,7 @@ impl DynStorage {
             site_location_store,
             trunk_store,
             routing_rule_store,
+            queue_config_store,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2074,6 +2093,7 @@ impl DynStorage {
             + SiteLocationStore
             + TrunkStore
             + RoutingRuleStore
+            + QueueConfigStore
             + 'static,
     {
         Self {
@@ -2095,7 +2115,8 @@ impl DynStorage {
             webhook_store: storage.clone(),
             site_location_store: storage.clone(),
             trunk_store: storage.clone(),
-            routing_rule_store: storage,
+            routing_rule_store: storage.clone(),
+            queue_config_store: storage,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2460,6 +2481,22 @@ impl RoutingRuleStore for DynStorage {
     }
     async fn delete_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<()> {
         self.routing_rule_store.delete_routing_rule(id).await
+    }
+}
+
+#[async_trait]
+impl QueueConfigStore for DynStorage {
+    async fn get_queue_config(&self, id: &crate::QueueConfigId) -> Result<Option<crate::QueueConfigRecord>> {
+        self.queue_config_store.get_queue_config(id).await
+    }
+    async fn list_queue_configs(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::QueueConfigRecord>> {
+        self.queue_config_store.list_queue_configs(tenant_id).await
+    }
+    async fn put_queue_config(&self, config: crate::QueueConfigRecord) -> Result<()> {
+        self.queue_config_store.put_queue_config(config).await
+    }
+    async fn delete_queue_config(&self, id: &crate::QueueConfigId) -> Result<()> {
+        self.queue_config_store.delete_queue_config(id).await
     }
 }
 

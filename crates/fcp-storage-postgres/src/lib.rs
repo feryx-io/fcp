@@ -39,7 +39,7 @@ use chrono::{DateTime, Utc};
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
-        LineBindingStore, PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore,
+        LineBindingStore, PhoneNumberStore, PresenceStore, QueueConfigStore, QueueStore, RegistrationStore,
         ResourceListStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
         StoredResourceList, StoredSubscription, TenantStore, TrunkStore, RoutingRuleStore,
         VoicemailStore,
@@ -50,6 +50,7 @@ use fcp_core::{
     HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences, NumberState,
     PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, SiteLocation, Tenant,
     Trunk, TrunkDirection, TrunkId, RoutingAction, RoutingRule, RoutingRuleId,
+    QueueConfigId, QueueConfigRecord,
     TenantId, User, UserId, WebhookId,
 };
 use fcp_core::porting::PortingStore;
@@ -2743,6 +2744,130 @@ impl RoutingRuleStore for PostgresStorage {
 
     async fn delete_routing_rule(&self, id: &RoutingRuleId) -> Result<()> {
         sqlx::query("DELETE FROM routing_rules WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Queue Config Store
+// ============================================================================
+
+fn row_to_queue_config(row: sqlx::postgres::PgRow) -> Result<QueueConfigRecord> {
+    let id_str: String = row.try_get("id")?;
+    let tenant_id_str: String = row.try_get("tenant_id")?;
+    let created_at: DateTime<Utc> = row.try_get("created_at")?;
+    let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+
+    Ok(QueueConfigRecord {
+        id: QueueConfigId::from_string(id_str),
+        tenant_id: TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil()),
+        name: row.try_get("name")?,
+        extension: row.try_get("extension")?,
+        strategy: row.try_get::<String, _>("strategy").unwrap_or_else(|_| "round_robin".to_string()),
+        max_wait_time_secs: row.try_get("max_wait_time_secs").unwrap_or(300),
+        max_queue_depth: row.try_get("max_queue_depth").unwrap_or(50),
+        overflow_destination: row.try_get("overflow_destination")?,
+        moh_class: row.try_get("moh_class")?,
+        announce_position: row.try_get("announce_position").unwrap_or(true),
+        announce_interval_secs: row.try_get("announce_interval_secs").unwrap_or(30),
+        retry_on_no_answer: row.try_get("retry_on_no_answer").unwrap_or(true),
+        agents: row.try_get::<Vec<String>, _>("agents").unwrap_or_default(),
+        priority: row.try_get("priority").unwrap_or(0),
+        required_skills: row.try_get::<Vec<String>, _>("required_skills").unwrap_or_default(),
+        record_calls: row.try_get("record_calls").unwrap_or(false),
+        callback_enabled: row.try_get("callback_enabled").unwrap_or(false),
+        timezone: row.try_get::<String, _>("timezone").unwrap_or_else(|_| "UTC".to_string()),
+        enabled: row.try_get("enabled").unwrap_or(true),
+        created_at: datetime_to_system_time(created_at),
+        updated_at: datetime_to_system_time(updated_at),
+    })
+}
+
+#[async_trait]
+impl QueueConfigStore for PostgresStorage {
+    async fn get_queue_config(&self, id: &QueueConfigId) -> Result<Option<QueueConfigRecord>> {
+        let row = sqlx::query(
+            "SELECT * FROM queue_configs WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(Some(row_to_queue_config(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_queue_configs(&self, tenant_id: &TenantId) -> Result<Vec<QueueConfigRecord>> {
+        let rows = sqlx::query(
+            "SELECT * FROM queue_configs WHERE tenant_id = $1 ORDER BY priority, name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let configs = rows.into_iter().filter_map(|r| row_to_queue_config(r).ok()).collect();
+        Ok(configs)
+    }
+
+    async fn put_queue_config(&self, config: QueueConfigRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO queue_configs (id, tenant_id, name, extension, strategy,
+                    max_wait_time_secs, max_queue_depth, overflow_destination,
+                    moh_class, announce_position, announce_interval_secs,
+                    retry_on_no_answer, agents, priority, required_skills,
+                    record_calls, callback_enabled, timezone, enabled,
+                    created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+             ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name, extension = EXCLUDED.extension,
+                strategy = EXCLUDED.strategy,
+                max_wait_time_secs = EXCLUDED.max_wait_time_secs,
+                max_queue_depth = EXCLUDED.max_queue_depth,
+                overflow_destination = EXCLUDED.overflow_destination,
+                moh_class = EXCLUDED.moh_class,
+                announce_position = EXCLUDED.announce_position,
+                announce_interval_secs = EXCLUDED.announce_interval_secs,
+                retry_on_no_answer = EXCLUDED.retry_on_no_answer,
+                agents = EXCLUDED.agents,
+                priority = EXCLUDED.priority,
+                required_skills = EXCLUDED.required_skills,
+                record_calls = EXCLUDED.record_calls,
+                callback_enabled = EXCLUDED.callback_enabled,
+                timezone = EXCLUDED.timezone,
+                enabled = EXCLUDED.enabled,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(config.id.to_string())
+        .bind(config.tenant_id.to_string())
+        .bind(&config.name)
+        .bind(&config.extension)
+        .bind(&config.strategy)
+        .bind(config.max_wait_time_secs)
+        .bind(config.max_queue_depth)
+        .bind(&config.overflow_destination)
+        .bind(&config.moh_class)
+        .bind(config.announce_position)
+        .bind(config.announce_interval_secs)
+        .bind(config.retry_on_no_answer)
+        .bind(&config.agents)
+        .bind(config.priority)
+        .bind(&config.required_skills)
+        .bind(config.record_calls)
+        .bind(config.callback_enabled)
+        .bind(&config.timezone)
+        .bind(config.enabled)
+        .bind(system_time_to_datetime(config.created_at))
+        .bind(system_time_to_datetime(config.updated_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_queue_config(&self, id: &QueueConfigId) -> Result<()> {
+        sqlx::query("DELETE FROM queue_configs WHERE id = $1")
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;

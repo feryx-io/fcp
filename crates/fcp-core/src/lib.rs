@@ -23,6 +23,7 @@ pub mod phone_number;
 pub mod porting;
 pub mod flow_trace;
 pub mod prompt;
+pub mod queue_config;
 pub mod routing;
 pub mod routing_engine;
 pub mod routing_rule;
@@ -83,12 +84,13 @@ pub use crate::storage::{
     AccountStatus, ApiToken, ApiTokenStore, CallDetailRecord, CallDisposition, CdrQuery, CdrStore, SiteLocationStore,
     ClusterParkedCall, ClusterParkingStore, ConferenceStore, CredentialStore, DynStorage,
     EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences, PresenceStore,
-    QueueStore, Registration, RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
+    QueueConfigStore, QueueStore, Registration, RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
     RoutingRuleStore, StoredSubscription, TenantStore, TrunkStore, User, UserFileEntry,
     WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
 };
 pub use crate::prompt::{Prompt, PromptCategory, PromptService, PromptSourceType, PromptStore};
 pub use crate::tenant::{Tenant, TenantStatus};
+pub use crate::queue_config::{QueueConfigId, QueueConfigRecord};
 pub use crate::trunk::{Trunk, TrunkDirection, TrunkId, TrunkStats};
 pub use crate::routing_rule::{RoutingAction, RoutingRule, RoutingRuleId};
 pub use crate::transport::{
