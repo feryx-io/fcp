@@ -33,6 +33,7 @@ pub mod storage;
 pub mod tenant;
 pub mod time;
 pub mod transport;
+pub mod trunk;
 pub mod voicemail;
 
 // Re-export commonly used types
@@ -82,11 +83,12 @@ pub use crate::storage::{
     ClusterParkedCall, ClusterParkingStore, ConferenceStore, CredentialStore, DynStorage,
     EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences, PresenceStore,
     QueueStore, Registration, RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-    StoredSubscription, TenantStore, User, UserFileEntry, WebhookDeliveryLog, WebhookEndpoint,
-    WebhookStore,
+    StoredSubscription, TenantStore, TrunkStore, User, UserFileEntry, WebhookDeliveryLog,
+    WebhookEndpoint, WebhookStore,
 };
 pub use crate::prompt::{Prompt, PromptCategory, PromptService, PromptSourceType, PromptStore};
 pub use crate::tenant::{Tenant, TenantStatus};
+pub use crate::trunk::{Trunk, TrunkDirection, TrunkId};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

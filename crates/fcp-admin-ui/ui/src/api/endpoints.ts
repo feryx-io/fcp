@@ -15,6 +15,7 @@ import type {
   MailboxResponse, VoicemailMessage, MailboxStats, CreateMailboxRequest, UpdateMailboxRequest,
   PresenceResponse, PresenceStats,
   Registration,
+  SipTrunk, CreateTrunkRequest,
   TrunkSummary, TrunkDetail, QualityMetrics,
   PolicyRule, CreatePolicyRuleRequest,
   FlowResponse, CreateFlowRequest, UpdateFlowRequest, ListFlowsResponse, ListFlowsQuery,
@@ -363,9 +364,19 @@ export const registrations = {
 
 // --- Phase 3: Advanced Features ---
 
-// SIP Trunks (SBC admin API - different base path)
-const SBC_BASE = '/admin'
+// SIP Trunks (database-backed CRUD)
 export const trunks = {
+  list: () => apiClient.get<SipTrunk[]>('/trunks'),
+  get: (id: string) => apiClient.get<SipTrunk>(`/trunks/${encodeURIComponent(id)}`),
+  create: (data: CreateTrunkRequest) => apiClient.post<SipTrunk>('/trunks', data),
+  update: (id: string, data: Partial<CreateTrunkRequest>) =>
+    apiClient.patch<SipTrunk>(`/trunks/${encodeURIComponent(id)}`, data),
+  delete: (id: string) => apiClient.delete<void>(`/trunks/${encodeURIComponent(id)}`),
+}
+
+// SIP Trunk live status (SBC admin API)
+const SBC_BASE = '/admin'
+export const trunkStatus = {
   list: () => apiClient.get<TrunkSummary[]>(`${SBC_BASE}/trunks`),
   get: (name: string) => apiClient.get<TrunkDetail>(`${SBC_BASE}/trunks/${encodeURIComponent(name)}`),
   enable: (name: string) => apiClient.post<void>(`${SBC_BASE}/trunks/${encodeURIComponent(name)}/enable`),

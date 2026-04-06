@@ -1019,6 +1019,22 @@ pub trait DeviceStore: Send + Sync {
     async fn delete_device(&self, id: &crate::DeviceId) -> Result<()>;
 }
 
+/// SIP trunk storage operations.
+#[async_trait::async_trait]
+pub trait TrunkStore: Send + Sync {
+    /// Get a trunk by ID
+    async fn get_trunk(&self, id: &crate::TrunkId) -> Result<Option<crate::Trunk>>;
+
+    /// List all trunks for a tenant
+    async fn list_trunks(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Trunk>>;
+
+    /// Create or update a trunk
+    async fn put_trunk(&self, trunk: crate::Trunk) -> Result<()>;
+
+    /// Delete a trunk by ID
+    async fn delete_trunk(&self, id: &crate::TrunkId) -> Result<()>;
+}
+
 /// Site location storage operations.
 #[async_trait::async_trait]
 pub trait SiteLocationStore: Send + Sync {
@@ -1957,6 +1973,7 @@ pub struct DynStorage {
     resource_list_store: Arc<dyn ResourceListStore>,
     webhook_store: Arc<dyn WebhookStore>,
     site_location_store: Arc<dyn SiteLocationStore>,
+    trunk_store: Arc<dyn TrunkStore>,
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
@@ -1984,6 +2001,7 @@ impl DynStorage {
         resource_list_store: Arc<dyn ResourceListStore>,
         webhook_store: Arc<dyn WebhookStore>,
         site_location_store: Arc<dyn SiteLocationStore>,
+        trunk_store: Arc<dyn TrunkStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -2003,6 +2021,7 @@ impl DynStorage {
             resource_list_store,
             webhook_store,
             site_location_store,
+            trunk_store,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2034,6 +2053,7 @@ impl DynStorage {
             + ResourceListStore
             + WebhookStore
             + SiteLocationStore
+            + TrunkStore
             + 'static,
     {
         Self {
@@ -2053,7 +2073,8 @@ impl DynStorage {
             presence_store: storage.clone(),
             resource_list_store: storage.clone(),
             webhook_store: storage.clone(),
-            site_location_store: storage,
+            site_location_store: storage.clone(),
+            trunk_store: storage,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2379,6 +2400,25 @@ impl DeviceStore for DynStorage {
 
     async fn delete_device(&self, id: &crate::DeviceId) -> Result<()> {
         self.device_store.delete_device(id).await
+    }
+}
+
+#[async_trait]
+impl TrunkStore for DynStorage {
+    async fn get_trunk(&self, id: &crate::TrunkId) -> Result<Option<crate::Trunk>> {
+        self.trunk_store.get_trunk(id).await
+    }
+
+    async fn list_trunks(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Trunk>> {
+        self.trunk_store.list_trunks(tenant_id).await
+    }
+
+    async fn put_trunk(&self, trunk: crate::Trunk) -> Result<()> {
+        self.trunk_store.put_trunk(trunk).await
+    }
+
+    async fn delete_trunk(&self, id: &crate::TrunkId) -> Result<()> {
+        self.trunk_store.delete_trunk(id).await
     }
 }
 

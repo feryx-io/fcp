@@ -41,14 +41,14 @@ use fcp_core::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
         LineBindingStore, PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore,
         ResourceListStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-        StoredResourceList, StoredSubscription, TenantStore, VoicemailStore, WebhookDeliveryLog,
-        WebhookEndpoint, WebhookStore,
+        StoredResourceList, StoredSubscription, TenantStore, TrunkStore, VoicemailStore,
+        WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
     HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences, NumberState,
     PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, SiteLocation, Tenant,
-    TenantId, User, UserId, WebhookId,
+    Trunk, TrunkDirection, TrunkId, TenantId, User, UserId, WebhookId,
 };
 use fcp_core::porting::PortingStore;
 use fcp_flow::schema::{FlowDefinition, FlowNode};
@@ -2324,6 +2324,178 @@ fn row_to_site_location(row: sqlx::postgres::PgRow) -> Result<SiteLocation> {
 
 // ============================================================================
 // SiteLocationStore Implementation
+// ============================================================================
+// Trunk Store
+// ============================================================================
+
+fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
+    let id_str: String = row.try_get("id")?;
+    let tenant_id_str: String = row.try_get("tenant_id")?;
+    let name: String = row.try_get("name")?;
+    let enabled: bool = row.try_get("enabled")?;
+    let direction_str: String = row.try_get("direction")?;
+    let priority: i32 = row.try_get("priority")?;
+    let weight: i32 = row.try_get("weight")?;
+    let hosts: Vec<String> = row.try_get("hosts")?;
+    let transport_protocol: String = row.try_get("transport_protocol")?;
+    let transport_port: i32 = row.try_get("transport_port")?;
+    let verify_tls: bool = row.try_get("verify_tls")?;
+    let auth_username: Option<String> = row.try_get("auth_username")?;
+    let auth_password: Option<String> = row.try_get("auth_password")?;
+    let auth_realm: Option<String> = row.try_get("auth_realm")?;
+    let register: bool = row.try_get("register")?;
+    let register_expiry: i32 = row.try_get("register_expiry")?;
+    let max_concurrent_calls: i32 = row.try_get("max_concurrent_calls")?;
+    let max_failures: i32 = row.try_get("max_failures")?;
+    let recovery_interval_secs: i32 = row.try_get("recovery_interval_secs")?;
+    let health_check_enabled: bool = row.try_get("health_check_enabled")?;
+    let health_check_interval_secs: i32 = row.try_get("health_check_interval_secs")?;
+    let created_at: DateTime<Utc> = row.try_get("created_at")?;
+    let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+
+    let direction = direction_str.parse::<TrunkDirection>()
+        .unwrap_or(TrunkDirection::Upstream);
+
+    Ok(Trunk {
+        id: TrunkId::from_string(id_str),
+        tenant_id: TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil()),
+        name,
+        enabled,
+        direction,
+        priority,
+        weight,
+        hosts,
+        transport_protocol,
+        transport_port,
+        verify_tls,
+        auth_username,
+        auth_password,
+        auth_realm,
+        register,
+        register_expiry,
+        max_concurrent_calls,
+        max_failures,
+        recovery_interval_secs,
+        health_check_enabled,
+        health_check_interval_secs,
+        created_at: datetime_to_system_time(created_at),
+        updated_at: datetime_to_system_time(updated_at),
+    })
+}
+
+#[async_trait]
+impl TrunkStore for PostgresStorage {
+    async fn get_trunk(&self, id: &TrunkId) -> Result<Option<Trunk>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, enabled, direction, priority, weight, hosts,
+                    transport_protocol, transport_port, verify_tls,
+                    auth_username, auth_password, auth_realm,
+                    register, register_expiry, max_concurrent_calls,
+                    max_failures, recovery_interval_secs,
+                    health_check_enabled, health_check_interval_secs,
+                    created_at, updated_at
+             FROM trunks WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_trunk(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_trunks(&self, tenant_id: &TenantId) -> Result<Vec<Trunk>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, enabled, direction, priority, weight, hosts,
+                    transport_protocol, transport_port, verify_tls,
+                    auth_username, auth_password, auth_realm,
+                    register, register_expiry, max_concurrent_calls,
+                    max_failures, recovery_interval_secs,
+                    health_check_enabled, health_check_interval_secs,
+                    created_at, updated_at
+             FROM trunks WHERE tenant_id = $1
+             ORDER BY priority, name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let trunks = rows.into_iter().filter_map(|row| row_to_trunk(row).ok()).collect();
+        Ok(trunks)
+    }
+
+    async fn put_trunk(&self, trunk: Trunk) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO trunks (id, tenant_id, name, enabled, direction, priority, weight, hosts,
+                    transport_protocol, transport_port, verify_tls,
+                    auth_username, auth_password, auth_realm,
+                    register, register_expiry, max_concurrent_calls,
+                    max_failures, recovery_interval_secs,
+                    health_check_enabled, health_check_interval_secs,
+                    created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+             ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                enabled = EXCLUDED.enabled,
+                direction = EXCLUDED.direction,
+                priority = EXCLUDED.priority,
+                weight = EXCLUDED.weight,
+                hosts = EXCLUDED.hosts,
+                transport_protocol = EXCLUDED.transport_protocol,
+                transport_port = EXCLUDED.transport_port,
+                verify_tls = EXCLUDED.verify_tls,
+                auth_username = EXCLUDED.auth_username,
+                auth_password = EXCLUDED.auth_password,
+                auth_realm = EXCLUDED.auth_realm,
+                register = EXCLUDED.register,
+                register_expiry = EXCLUDED.register_expiry,
+                max_concurrent_calls = EXCLUDED.max_concurrent_calls,
+                max_failures = EXCLUDED.max_failures,
+                recovery_interval_secs = EXCLUDED.recovery_interval_secs,
+                health_check_enabled = EXCLUDED.health_check_enabled,
+                health_check_interval_secs = EXCLUDED.health_check_interval_secs,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(trunk.id.to_string())
+        .bind(trunk.tenant_id.to_string())
+        .bind(&trunk.name)
+        .bind(trunk.enabled)
+        .bind(trunk.direction.to_string())
+        .bind(trunk.priority)
+        .bind(trunk.weight)
+        .bind(&trunk.hosts)
+        .bind(&trunk.transport_protocol)
+        .bind(trunk.transport_port)
+        .bind(trunk.verify_tls)
+        .bind(&trunk.auth_username)
+        .bind(&trunk.auth_password)
+        .bind(&trunk.auth_realm)
+        .bind(trunk.register)
+        .bind(trunk.register_expiry)
+        .bind(trunk.max_concurrent_calls)
+        .bind(trunk.max_failures)
+        .bind(trunk.recovery_interval_secs)
+        .bind(trunk.health_check_enabled)
+        .bind(trunk.health_check_interval_secs)
+        .bind(system_time_to_datetime(trunk.created_at))
+        .bind(system_time_to_datetime(trunk.updated_at))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_trunk(&self, id: &TrunkId) -> Result<()> {
+        sqlx::query("DELETE FROM trunks WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
 // ============================================================================
 
 #[async_trait]

@@ -25,6 +25,7 @@ pub mod self_service;
 pub mod sip_trace;
 pub mod system;
 pub mod tenants;
+pub mod trunks;
 pub mod users;
 pub mod voicemail;
 
@@ -392,6 +393,17 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/api-tokens/:id",
             delete(api_tokens::delete_api_token),
+        )
+        // SIP Trunks
+        .route(
+            "/trunks",
+            get(trunks::list_trunks).post(trunks::create_trunk),
+        )
+        .route(
+            "/trunks/:id",
+            get(trunks::get_trunk)
+                .patch(trunks::update_trunk)
+                .delete(trunks::delete_trunk),
         )
         // Conference / Meetings
         .route(

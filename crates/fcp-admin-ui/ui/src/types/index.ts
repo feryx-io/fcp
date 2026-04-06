@@ -571,7 +571,56 @@ export interface ToastMessage {
 
 // --- Phase 3: Advanced Features ---
 
-// SIP Trunks (matches fcp-sbc admin.rs)
+// SIP Trunks (database-backed CRUD)
+export interface SipTrunk {
+  id: string
+  tenant_id: string
+  name: string
+  enabled: boolean
+  direction: string // "upstream" | "downstream" | "bidirectional"
+  priority: number
+  weight: number
+  hosts: string[]
+  transport_protocol: string // "udp" | "tcp" | "tls"
+  transport_port: number
+  verify_tls: boolean
+  has_credentials: boolean
+  auth_username: string | null
+  auth_realm: string | null
+  register: boolean
+  register_expiry: number
+  max_concurrent_calls: number
+  max_failures: number
+  recovery_interval_secs: number
+  health_check_enabled: boolean
+  health_check_interval_secs: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateTrunkRequest {
+  name: string
+  enabled?: boolean
+  direction?: string
+  priority?: number
+  weight?: number
+  hosts?: string[]
+  transport_protocol?: string
+  transport_port?: number
+  verify_tls?: boolean
+  auth_username?: string
+  auth_password?: string
+  auth_realm?: string
+  register?: boolean
+  register_expiry?: number
+  max_concurrent_calls?: number
+  max_failures?: number
+  recovery_interval_secs?: number
+  health_check_enabled?: boolean
+  health_check_interval_secs?: number
+}
+
+// Legacy SBC trunk types (for live status monitoring)
 export interface TrunkSummary {
   name: string
   enabled: boolean
