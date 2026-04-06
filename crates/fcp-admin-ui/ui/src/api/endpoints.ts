@@ -17,7 +17,7 @@ import type {
   Registration,
   SipTrunk, CreateTrunkRequest, TrunkStatsResponse,
   TrunkSummary, TrunkDetail, QualityMetrics,
-  PolicyRule, CreatePolicyRuleRequest,
+  RoutingRule, CreateRoutingRuleRequest,
   FlowResponse, CreateFlowRequest, UpdateFlowRequest, ListFlowsResponse, ListFlowsQuery,
   SystemStatus,
   PortRequest, CreatePortRequest,
@@ -391,11 +391,11 @@ export const trunkStatus = {
 
 // Routing / Policy Rules
 export const routing = {
-  list: () => apiClient.get<PolicyRule[]>('/routing/rules'),
-  get: (id: string) => apiClient.get<PolicyRule>(`/routing/rules/${encodeURIComponent(id)}`),
-  create: (data: CreatePolicyRuleRequest) => apiClient.post<PolicyRule>('/routing/rules', data),
-  update: (id: string, data: Partial<CreatePolicyRuleRequest>) =>
-    apiClient.put<PolicyRule>(`/routing/rules/${encodeURIComponent(id)}`, data),
+  list: () => apiClient.get<RoutingRule[]>('/routing/rules'),
+  get: (id: string) => apiClient.get<RoutingRule>(`/routing/rules/${encodeURIComponent(id)}`),
+  create: (data: CreateRoutingRuleRequest) => apiClient.post<RoutingRule>('/routing/rules', data),
+  update: (id: string, data: Partial<CreateRoutingRuleRequest>) =>
+    apiClient.patch<RoutingRule>(`/routing/rules/${encodeURIComponent(id)}`, data),
   delete: (id: string) => apiClient.delete<void>(`/routing/rules/${encodeURIComponent(id)}`),
 }
 

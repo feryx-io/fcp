@@ -25,6 +25,7 @@ pub mod flow_trace;
 pub mod prompt;
 pub mod routing;
 pub mod routing_engine;
+pub mod routing_rule;
 pub mod service;
 pub mod sip_handler;
 pub mod sip_trace;
@@ -83,12 +84,13 @@ pub use crate::storage::{
     ClusterParkedCall, ClusterParkingStore, ConferenceStore, CredentialStore, DynStorage,
     EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences, PresenceStore,
     QueueStore, Registration, RegistrationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-    StoredSubscription, TenantStore, TrunkStore, User, UserFileEntry, WebhookDeliveryLog,
-    WebhookEndpoint, WebhookStore,
+    RoutingRuleStore, StoredSubscription, TenantStore, TrunkStore, User, UserFileEntry,
+    WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
 };
 pub use crate::prompt::{Prompt, PromptCategory, PromptService, PromptSourceType, PromptStore};
 pub use crate::tenant::{Tenant, TenantStatus};
 pub use crate::trunk::{Trunk, TrunkDirection, TrunkId, TrunkStats};
+pub use crate::routing_rule::{RoutingAction, RoutingRule, RoutingRuleId};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

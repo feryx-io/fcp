@@ -21,6 +21,7 @@ pub mod presence;
 pub mod prompts;
 pub mod queues;
 pub mod registrations;
+pub mod routing;
 pub mod self_service;
 pub mod sip_trace;
 pub mod system;
@@ -393,6 +394,17 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/api-tokens/:id",
             delete(api_tokens::delete_api_token),
+        )
+        // Routing Rules
+        .route(
+            "/routing/rules",
+            get(routing::list_routing_rules).post(routing::create_routing_rule),
+        )
+        .route(
+            "/routing/rules/:id",
+            get(routing::get_routing_rule)
+                .patch(routing::update_routing_rule)
+                .delete(routing::delete_routing_rule),
         )
         // SIP Trunks
         .route(

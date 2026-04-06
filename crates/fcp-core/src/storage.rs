@@ -1042,6 +1042,15 @@ pub trait TrunkStore: Send + Sync {
     }
 }
 
+/// Routing rule storage operations.
+#[async_trait::async_trait]
+pub trait RoutingRuleStore: Send + Sync {
+    async fn get_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<Option<crate::RoutingRule>>;
+    async fn list_routing_rules(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::RoutingRule>>;
+    async fn put_routing_rule(&self, rule: crate::RoutingRule) -> Result<()>;
+    async fn delete_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<()>;
+}
+
 /// Site location storage operations.
 #[async_trait::async_trait]
 pub trait SiteLocationStore: Send + Sync {
@@ -1981,6 +1990,7 @@ pub struct DynStorage {
     webhook_store: Arc<dyn WebhookStore>,
     site_location_store: Arc<dyn SiteLocationStore>,
     trunk_store: Arc<dyn TrunkStore>,
+    routing_rule_store: Arc<dyn RoutingRuleStore>,
     config_store: Option<Arc<dyn crate::config_store::ConfigStore>>,
     sip_trace_store: Option<Arc<dyn crate::sip_trace::SipTraceStore>>,
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
@@ -2009,6 +2019,7 @@ impl DynStorage {
         webhook_store: Arc<dyn WebhookStore>,
         site_location_store: Arc<dyn SiteLocationStore>,
         trunk_store: Arc<dyn TrunkStore>,
+        routing_rule_store: Arc<dyn RoutingRuleStore>,
     ) -> Self {
         Self {
             credential_store,
@@ -2029,6 +2040,7 @@ impl DynStorage {
             webhook_store,
             site_location_store,
             trunk_store,
+            routing_rule_store,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2061,6 +2073,7 @@ impl DynStorage {
             + WebhookStore
             + SiteLocationStore
             + TrunkStore
+            + RoutingRuleStore
             + 'static,
     {
         Self {
@@ -2081,7 +2094,8 @@ impl DynStorage {
             resource_list_store: storage.clone(),
             webhook_store: storage.clone(),
             site_location_store: storage.clone(),
-            trunk_store: storage,
+            trunk_store: storage.clone(),
+            routing_rule_store: storage,
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
@@ -2430,6 +2444,22 @@ impl TrunkStore for DynStorage {
 
     async fn get_trunk_stats(&self, trunk_name: &str) -> Result<crate::TrunkStats> {
         self.trunk_store.get_trunk_stats(trunk_name).await
+    }
+}
+
+#[async_trait]
+impl RoutingRuleStore for DynStorage {
+    async fn get_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<Option<crate::RoutingRule>> {
+        self.routing_rule_store.get_routing_rule(id).await
+    }
+    async fn list_routing_rules(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::RoutingRule>> {
+        self.routing_rule_store.list_routing_rules(tenant_id).await
+    }
+    async fn put_routing_rule(&self, rule: crate::RoutingRule) -> Result<()> {
+        self.routing_rule_store.put_routing_rule(rule).await
+    }
+    async fn delete_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<()> {
+        self.routing_rule_store.delete_routing_rule(id).await
     }
 }
 

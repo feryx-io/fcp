@@ -41,14 +41,16 @@ use fcp_core::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
         LineBindingStore, PhoneNumberStore, PresenceStore, QueueStore, RegistrationStore,
         ResourceListStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-        StoredResourceList, StoredSubscription, TenantStore, TrunkStore, VoicemailStore,
+        StoredResourceList, StoredSubscription, TenantStore, TrunkStore, RoutingRuleStore,
+        VoicemailStore,
         WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
     HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences, NumberState,
     PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, SiteLocation, Tenant,
-    Trunk, TrunkDirection, TrunkId, TenantId, User, UserId, WebhookId,
+    Trunk, TrunkDirection, TrunkId, RoutingAction, RoutingRule, RoutingRuleId,
+    TenantId, User, UserId, WebhookId,
 };
 use fcp_core::porting::PortingStore;
 use fcp_flow::schema::{FlowDefinition, FlowNode};
@@ -2628,6 +2630,123 @@ impl TrunkStore for PostgresStorage {
             pdd_ms: avg_setup_ms,
             hourly_volume: hourly,
         })
+    }
+}
+
+// ============================================================================
+// Routing Rule Store
+// ============================================================================
+
+fn row_to_routing_rule(row: sqlx::postgres::PgRow) -> Result<RoutingRule> {
+    let id_str: String = row.try_get("id")?;
+    let tenant_id_str: String = row.try_get("tenant_id")?;
+    let action_str: String = row.try_get("action")?;
+    let created_at: DateTime<Utc> = row.try_get("created_at")?;
+    let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
+
+    Ok(RoutingRule {
+        id: RoutingRuleId::from_string(id_str),
+        tenant_id: TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil()),
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        priority: row.try_get("priority")?,
+        enabled: row.try_get("enabled")?,
+        destination_pattern: row.try_get("destination_pattern")?,
+        source_pattern: row.try_get("source_pattern")?,
+        source_ip_ranges: row.try_get::<Vec<String>, _>("source_ip_ranges").unwrap_or_default(),
+        time_window_days: row.try_get::<Vec<String>, _>("time_window_days").unwrap_or_default(),
+        time_window_start: row.try_get("time_window_start")?,
+        time_window_end: row.try_get("time_window_end")?,
+        time_window_timezone: row.try_get::<String, _>("time_window_timezone").unwrap_or_else(|_| "UTC".to_string()),
+        action: action_str.parse::<RoutingAction>().unwrap_or(RoutingAction::Allow),
+        target_trunk_id: row.try_get("target_trunk_id")?,
+        target_trunk_group: row.try_get("target_trunk_group")?,
+        reason: row.try_get("reason")?,
+        created_at: datetime_to_system_time(created_at),
+        updated_at: datetime_to_system_time(updated_at),
+    })
+}
+
+#[async_trait]
+impl RoutingRuleStore for PostgresStorage {
+    async fn get_routing_rule(&self, id: &RoutingRuleId) -> Result<Option<RoutingRule>> {
+        let row = sqlx::query(
+            "SELECT * FROM routing_rules WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(Some(row_to_routing_rule(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_routing_rules(&self, tenant_id: &TenantId) -> Result<Vec<RoutingRule>> {
+        let rows = sqlx::query(
+            "SELECT * FROM routing_rules WHERE tenant_id = $1 ORDER BY priority, name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let rules = rows.into_iter().filter_map(|r| row_to_routing_rule(r).ok()).collect();
+        Ok(rules)
+    }
+
+    async fn put_routing_rule(&self, rule: RoutingRule) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO routing_rules (id, tenant_id, name, description, priority, enabled,
+                    destination_pattern, source_pattern, source_ip_ranges,
+                    time_window_days, time_window_start, time_window_end, time_window_timezone,
+                    action, target_trunk_id, target_trunk_group, reason,
+                    created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+             ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name, description = EXCLUDED.description,
+                priority = EXCLUDED.priority, enabled = EXCLUDED.enabled,
+                destination_pattern = EXCLUDED.destination_pattern,
+                source_pattern = EXCLUDED.source_pattern,
+                source_ip_ranges = EXCLUDED.source_ip_ranges,
+                time_window_days = EXCLUDED.time_window_days,
+                time_window_start = EXCLUDED.time_window_start,
+                time_window_end = EXCLUDED.time_window_end,
+                time_window_timezone = EXCLUDED.time_window_timezone,
+                action = EXCLUDED.action,
+                target_trunk_id = EXCLUDED.target_trunk_id,
+                target_trunk_group = EXCLUDED.target_trunk_group,
+                reason = EXCLUDED.reason,
+                updated_at = EXCLUDED.updated_at",
+        )
+        .bind(rule.id.to_string())
+        .bind(rule.tenant_id.to_string())
+        .bind(&rule.name)
+        .bind(&rule.description)
+        .bind(rule.priority)
+        .bind(rule.enabled)
+        .bind(&rule.destination_pattern)
+        .bind(&rule.source_pattern)
+        .bind(&rule.source_ip_ranges)
+        .bind(&rule.time_window_days)
+        .bind(&rule.time_window_start)
+        .bind(&rule.time_window_end)
+        .bind(&rule.time_window_timezone)
+        .bind(rule.action.to_string())
+        .bind(&rule.target_trunk_id)
+        .bind(&rule.target_trunk_group)
+        .bind(&rule.reason)
+        .bind(system_time_to_datetime(rule.created_at))
+        .bind(system_time_to_datetime(rule.updated_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_routing_rule(&self, id: &RoutingRuleId) -> Result<()> {
+        sqlx::query("DELETE FROM routing_rules WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

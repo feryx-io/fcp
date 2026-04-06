@@ -684,7 +684,48 @@ export interface TrunkDetail extends TrunkSummary {
   registration_error: string | null
 }
 
-// Routing / Policy Rules (matches fcp-routing policy.rs)
+// Routing Rules (database-backed, matches fcp-api-core routing.rs)
+export interface RoutingRule {
+  id: string
+  tenant_id: string
+  name: string
+  description: string | null
+  priority: number
+  enabled: boolean
+  destination_pattern: string | null
+  source_pattern: string | null
+  source_ip_ranges: string[]
+  time_window_days: string[]
+  time_window_start: string | null
+  time_window_end: string | null
+  time_window_timezone: string
+  action: string // "allow" | "deny" | "route_to_trunk"
+  target_trunk_id: string | null
+  target_trunk_group: string | null
+  reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateRoutingRuleRequest {
+  name: string
+  description?: string
+  priority?: number
+  enabled?: boolean
+  destination_pattern?: string
+  source_pattern?: string
+  source_ip_ranges?: string[]
+  time_window_days?: string[]
+  time_window_start?: string
+  time_window_end?: string
+  time_window_timezone?: string
+  action?: string
+  target_trunk_id?: string
+  target_trunk_group?: string
+  reason?: string
+}
+
+// Legacy Routing / Policy Rules (matches fcp-routing policy.rs)
 export interface PolicyRule {
   id: string
   name: string
