@@ -19,7 +19,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
 import { trunks } from '@/api/endpoints'
-import type { SipTrunk, CreateTrunkRequest } from '@/types'
+import type { SipTrunk, CreateTrunkRequest, TrunkStatsResponse } from '@/types'
 
 const healthBadge = (status: string) => {
   switch (status) {
@@ -222,6 +222,12 @@ export function TrunksPage() {
   const createForm = useForm<TrunkFormData>({ defaultValues })
   const editForm = useForm<TrunkFormData>({ defaultValues })
 
+  const { data: trunkStats } = useQuery({
+    queryKey: ['trunk-stats', detailTrunk?.id],
+    queryFn: () => trunks.stats(detailTrunk!.id),
+    enabled: !!detailTrunk,
+  })
+
   const { data: trunkList = [], isLoading, isFetching, refetch } = useQuery({
     queryKey: ['trunks'],
     queryFn: trunks.list,
@@ -367,7 +373,7 @@ export function TrunksPage() {
             </DialogTitle>
             <DialogDescription>Trunk configuration details</DialogDescription>
           </DialogHeader>
-          {detailTrunk && <TrunkDetailView trunk={detailTrunk} onEdit={() => { setDetailTrunk(null); openEdit(detailTrunk) }} />}
+          {detailTrunk && <TrunkDetailView trunk={detailTrunk} stats={trunkStats} onEdit={() => { setDetailTrunk(null); openEdit(detailTrunk) }} />}
         </DialogContent>
       </Dialog>
 
@@ -496,9 +502,50 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle, onClone, onTes
   )
 }
 
-function TrunkDetailView({ trunk, onEdit }: { trunk: SipTrunk; onEdit: () => void }) {
+function Sparkline({ data, width = 120, height = 28 }: { data: number[]; width?: number; height?: number }) {
+  if (!data || data.length === 0) return null
+  const max = Math.max(...data, 1)
+  const step = width / (data.length - 1 || 1)
+  const points = data.map((v, i) => `${i * step},${height - (v / max) * height}`).join(' ')
+  return (
+    <svg width={width} height={height} className="inline-block">
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth={1.5} className="text-primary" />
+      <polyline points={`0,${height} ${points} ${width},${height}`} fill="currentColor" className="text-primary/10" />
+    </svg>
+  )
+}
+
+function TrunkDetailView({ trunk, stats, onEdit }: { trunk: SipTrunk; stats?: TrunkStatsResponse; onEdit: () => void }) {
   return (
     <div className="space-y-4">
+      {/* Stats bar */}
+      {stats && stats.total_calls_24h > 0 && (
+        <div className="grid grid-cols-4 gap-3 p-3 bg-muted rounded-lg text-center">
+          <div>
+            <p className="text-lg font-bold">{stats.total_calls_24h}</p>
+            <p className="text-xs text-muted-foreground">Calls (24h)</p>
+          </div>
+          <div>
+            <p className="text-lg font-bold">{stats.asr.toFixed(1)}%</p>
+            <p className="text-xs text-muted-foreground">ASR</p>
+          </div>
+          <div>
+            <p className="text-lg font-bold">{stats.acd_secs.toFixed(0)}s</p>
+            <p className="text-xs text-muted-foreground">ACD</p>
+          </div>
+          <div>
+            <p className="text-lg font-bold">{stats.pdd_ms.toFixed(0)}ms</p>
+            <p className="text-xs text-muted-foreground">PDD</p>
+          </div>
+        </div>
+      )}
+      {stats && stats.hourly_volume.some((v) => v > 0) && (
+        <div className="p-3 bg-muted rounded-lg">
+          <p className="text-xs text-muted-foreground mb-1">Traffic (24h)</p>
+          <Sparkline data={stats.hourly_volume} width={380} height={32} />
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-4 text-sm">
         <Field label="Status" badge={trunk.enabled ? 'success' : 'secondary'} value={trunk.enabled ? 'Enabled' : 'Disabled'} />
         <Field label="Health" badge={healthBadge(trunk.health_status)} value={trunk.health_status} />

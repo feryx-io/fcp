@@ -88,7 +88,7 @@ pub use crate::storage::{
 };
 pub use crate::prompt::{Prompt, PromptCategory, PromptService, PromptSourceType, PromptStore};
 pub use crate::tenant::{Tenant, TenantStatus};
-pub use crate::trunk::{Trunk, TrunkDirection, TrunkId};
+pub use crate::trunk::{Trunk, TrunkDirection, TrunkId, TrunkStats};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

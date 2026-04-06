@@ -1033,6 +1033,13 @@ pub trait TrunkStore: Send + Sync {
 
     /// Delete a trunk by ID
     async fn delete_trunk(&self, id: &crate::TrunkId) -> Result<()>;
+
+    /// Get aggregated stats for a trunk from CDRs (last 24h).
+    async fn get_trunk_stats(&self, trunk_name: &str) -> Result<crate::TrunkStats> {
+        // Default: return empty stats (override in implementations with CDR access)
+        let _ = trunk_name;
+        Ok(crate::TrunkStats::default())
+    }
 }
 
 /// Site location storage operations.
@@ -2419,6 +2426,10 @@ impl TrunkStore for DynStorage {
 
     async fn delete_trunk(&self, id: &crate::TrunkId) -> Result<()> {
         self.trunk_store.delete_trunk(id).await
+    }
+
+    async fn get_trunk_stats(&self, trunk_name: &str) -> Result<crate::TrunkStats> {
+        self.trunk_store.get_trunk_stats(trunk_name).await
     }
 }
 

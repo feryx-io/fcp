@@ -15,7 +15,7 @@ import type {
   MailboxResponse, VoicemailMessage, MailboxStats, CreateMailboxRequest, UpdateMailboxRequest,
   PresenceResponse, PresenceStats,
   Registration,
-  SipTrunk, CreateTrunkRequest,
+  SipTrunk, CreateTrunkRequest, TrunkStatsResponse,
   TrunkSummary, TrunkDetail, QualityMetrics,
   PolicyRule, CreatePolicyRuleRequest,
   FlowResponse, CreateFlowRequest, UpdateFlowRequest, ListFlowsResponse, ListFlowsQuery,
@@ -374,6 +374,7 @@ export const trunks = {
   delete: (id: string) => apiClient.delete<void>(`/trunks/${encodeURIComponent(id)}`),
   test: (id: string) => apiClient.post<{ success: boolean; message: string }>(`/trunks/${encodeURIComponent(id)}/test`),
   clone: (id: string) => apiClient.post<SipTrunk>(`/trunks/${encodeURIComponent(id)}/clone`),
+  stats: (id: string) => apiClient.get<TrunkStatsResponse>(`/trunks/${encodeURIComponent(id)}/stats`),
 }
 
 // SIP Trunk live status (SBC admin API)

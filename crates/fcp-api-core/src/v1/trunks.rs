@@ -482,3 +482,25 @@ pub async fn clone_trunk(
 
     Ok((StatusCode::CREATED, Json(TrunkResponse::from(clone))))
 }
+
+/// Get trunk stats (ASR, ACD, PDD, hourly volume) from CDRs.
+pub async fn get_trunk_stats(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let storage = require_storage!(state);
+    let trunk_id = TrunkId::from_string(id);
+
+    let trunk = storage
+        .get_trunk(&trunk_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+
+    let stats = storage
+        .get_trunk_stats(&trunk.name)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get trunk stats: {}", e)))?;
+
+    Ok(Json(stats))
+}

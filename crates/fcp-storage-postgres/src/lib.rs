@@ -2562,6 +2562,73 @@ impl TrunkStore for PostgresStorage {
             .await?;
         Ok(())
     }
+
+    async fn get_trunk_stats(&self, trunk_name: &str) -> Result<fcp_core::TrunkStats> {
+        let cutoff = system_time_to_datetime(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(86400),
+        );
+
+        // Aggregate stats from CDRs where gateway_id matches trunk name
+        let row = sqlx::query(
+            "SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE disposition = 'answered') as answered,
+                COALESCE(AVG(call_duration_ms) FILTER (WHERE disposition = 'answered'), 0) as avg_duration_ms,
+                COALESCE(AVG(setup_duration_ms) FILTER (WHERE disposition = 'answered'), 0) as avg_setup_ms
+             FROM cdrs
+             WHERE gateway_id = $1 AND start_time >= $2",
+        )
+        .bind(trunk_name)
+        .bind(cutoff)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let total: i64 = row.try_get("total").unwrap_or(0);
+        let answered: i64 = row.try_get("answered").unwrap_or(0);
+        let avg_duration_ms: f64 = row.try_get::<f64, _>("avg_duration_ms").unwrap_or(0.0);
+        let avg_setup_ms: f64 = row.try_get::<f64, _>("avg_setup_ms").unwrap_or(0.0);
+
+        let asr = if total > 0 {
+            (answered as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Hourly volume: 24 buckets over last 24h
+        let rows = sqlx::query(
+            "SELECT
+                date_trunc('hour', start_time) as bucket,
+                COUNT(*) as cnt
+             FROM cdrs
+             WHERE gateway_id = $1 AND start_time >= $2
+             GROUP BY bucket
+             ORDER BY bucket",
+        )
+        .bind(trunk_name)
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Build 24-slot vector
+        let mut hourly = vec![0u64; 24];
+        for row in &rows {
+            let bucket: DateTime<Utc> = row.try_get("bucket")?;
+            let cnt: i64 = row.try_get("cnt").unwrap_or(0);
+            let hours_ago = (chrono::Utc::now() - bucket).num_hours();
+            if hours_ago >= 0 && hours_ago < 24 {
+                hourly[23 - hours_ago as usize] = cnt as u64;
+            }
+        }
+
+        Ok(fcp_core::TrunkStats {
+            total_calls_24h: total as u64,
+            answered_calls_24h: answered as u64,
+            asr,
+            acd_secs: avg_duration_ms / 1000.0,
+            pdd_ms: avg_setup_ms,
+            hourly_volume: hourly,
+        })
+    }
 }
 
 // ============================================================================

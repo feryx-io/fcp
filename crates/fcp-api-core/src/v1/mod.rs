@@ -407,6 +407,7 @@ pub fn router() -> Router<ApiState> {
         )
         .route("/trunks/:id/test", post(trunks::test_trunk))
         .route("/trunks/:id/clone", post(trunks::clone_trunk))
+        .route("/trunks/:id/stats", get(trunks::get_trunk_stats))
         // Conference / Meetings
         .route(
             "/conferences/meetings",

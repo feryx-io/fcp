@@ -201,6 +201,23 @@ pub struct Trunk {
     pub updated_at: SystemTime,
 }
 
+/// Aggregated statistics for a trunk computed from CDRs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrunkStats {
+    /// Total calls through this trunk (last 24h)
+    pub total_calls_24h: u64,
+    /// Answered calls (last 24h)
+    pub answered_calls_24h: u64,
+    /// Answer-Seizure Ratio as percentage (0-100)
+    pub asr: f64,
+    /// Average Call Duration in seconds (answered calls only)
+    pub acd_secs: f64,
+    /// Average Post-Dial Delay in milliseconds
+    pub pdd_ms: f64,
+    /// Call volume per hour for last 24h (24 buckets, oldest first)
+    pub hourly_volume: Vec<u64>,
+}
+
 impl Trunk {
     /// Create a new trunk with defaults.
     pub fn new(name: String, tenant_id: TenantId) -> Self {

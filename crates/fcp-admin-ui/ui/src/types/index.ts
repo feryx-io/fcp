@@ -651,6 +651,15 @@ export interface CreateTrunkRequest {
   header_rules?: string
 }
 
+export interface TrunkStatsResponse {
+  total_calls_24h: number
+  answered_calls_24h: number
+  asr: number
+  acd_secs: number
+  pdd_ms: number
+  hourly_volume: number[]
+}
+
 // Legacy SBC trunk types (for live status monitoring)
 export interface TrunkSummary {
   name: string
