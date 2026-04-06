@@ -1,9 +1,21 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
+import {
+  ReactFlow,
+  ReactFlowProvider,
+  Background,
+  Controls,
+  MiniMap,
+  useViewport,
+  useReactFlow,
+  type Node,
+  type NodeProps,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
 import type { SipTraceMessage } from '@/api/endpoints'
 
 interface SipLadderProps {
   messages: SipTraceMessage[]
-  /** If true, auto-scroll to bottom when new messages arrive */
+  /** If true, auto-pan to latest message when new messages arrive */
   live?: boolean
 }
 
@@ -52,224 +64,344 @@ function getMessageLabel(msg: SipTraceMessage): string {
   return msg.method_or_status
 }
 
+interface Column {
+  addr: string
+  x: number
+}
+
+const COL_SPACING = 240
+const COL_FIRST_X = 120
+const ROW_HEIGHT = 42
+const TOP_MARGIN = 40
+const ARROW_Y_OFFSET = 14
+const NODE_HEIGHT = 28
+const HEADER_HEIGHT = 32
+
 /**
- * Determine the three columns for the ladder diagram.
- * Left = A-leg peer, Center = FCP, Right = B-leg peer.
- * We infer these from the addresses seen in the messages.
+ * Infer columns for the ladder diagram from the message set.
+ * Supports multi-hop: each unique address becomes its own column.
+ * Ordering: inbound-side peers (callers) → local addresses → outbound-side peers (callees).
  */
-function inferColumns(messages: SipTraceMessage[]): { left: string; center: string; right: string } {
-  // Collect all unique addresses
-  const localAddrs = new Set<string>()
-  const peerAddrs = new Set<string>()
+function inferColumns(messages: SipTraceMessage[]): Column[] {
+  const localSet = new Set<string>()
+  for (const msg of messages) {
+    if (msg.direction === 'inbound') localSet.add(msg.dest_addr)
+    else localSet.add(msg.source_addr)
+  }
+
+  const callers: string[] = []
+  const callees: string[] = []
+  const locals: string[] = []
+  const seen = new Set<string>()
+
+  const add = (addr: string, side: 'in' | 'out') => {
+    if (!addr || seen.has(addr)) return
+    seen.add(addr)
+    if (localSet.has(addr)) locals.push(addr)
+    else if (side === 'in') callers.push(addr)
+    else callees.push(addr)
+  }
 
   for (const msg of messages) {
     if (msg.direction === 'inbound') {
-      peerAddrs.add(msg.source_addr)
-      localAddrs.add(msg.dest_addr)
+      add(msg.source_addr, 'in')
+      add(msg.dest_addr, 'out')
     } else {
-      localAddrs.add(msg.source_addr)
-      peerAddrs.add(msg.dest_addr)
+      add(msg.dest_addr, 'out')
+      add(msg.source_addr, 'in')
     }
   }
 
-  // Pick a local address for center (our FCP node)
-  const center = Array.from(localAddrs)[0] || 'FCP'
-
-  // For peers, the first one seen on inbound is the A-leg (caller),
-  // the other is the B-leg (callee)
-  const peers = Array.from(peerAddrs)
-  let left = peers[0] || 'Caller'
-  let right = peers[1] || 'Callee'
-
-  // If there's only one peer, it's a single-leg trace
-  if (peers.length <= 1) {
-    right = ''
-  }
-
-  return { left, center, right }
+  const ordered = [...callers, ...locals, ...callees]
+  return ordered.map((addr, i) => ({
+    addr,
+    x: COL_FIRST_X + i * COL_SPACING,
+  }))
 }
 
-type ArrowDir = 'left-to-center' | 'center-to-left' | 'center-to-right' | 'right-to-center'
-
-function getArrowDirection(msg: SipTraceMessage, columns: { left: string; center: string; right: string }): ArrowDir {
-  if (msg.direction === 'inbound') {
-    if (msg.source_addr === columns.left) return 'left-to-center'
-    if (msg.source_addr === columns.right) return 'right-to-center'
-    return 'left-to-center' // fallback
-  } else {
-    if (msg.dest_addr === columns.left) return 'center-to-left'
-    if (msg.dest_addr === columns.right) return 'center-to-right'
-    // If not matched, guess based on whether it's the first peer
-    return 'center-to-right' // fallback
-  }
+function getArrowXs(msg: SipTraceMessage, columns: Column[]): { fromX: number; toX: number } | null {
+  const sourceCol = columns.find((c) => c.addr === msg.source_addr)
+  const destCol = columns.find((c) => c.addr === msg.dest_addr)
+  if (!sourceCol || !destCol) return null
+  return { fromX: sourceCol.x, toX: destCol.x }
 }
 
-const COL_LEFT_X = 120
-const COL_CENTER_X = 350
-const COL_RIGHT_X = 580
-const ROW_HEIGHT = 40
-const TOP_MARGIN = 50
-const ARROW_HEAD_SIZE = 8
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom nodes
 
-function Arrow({ fromX, toX, y, color, label, onClick, selected }: {
-  fromX: number
-  toX: number
-  y: number
-  color: string
-  label: string
-  onClick: () => void
-  selected: boolean
-}) {
-  const midX = (fromX + toX) / 2
-  const direction = toX > fromX ? 1 : -1
-  const arrowTipX = toX
-  const arrowBaseX = toX - direction * ARROW_HEAD_SIZE
+interface LifelinesData extends Record<string, unknown> {
+  columns: Column[]
+  height: number
+  width: number
+}
 
+function LifelinesNode({ data }: NodeProps<Node<LifelinesData>>) {
   return (
-    <g
-      onClick={onClick}
-      className="cursor-pointer"
-      style={{ opacity: selected ? 1 : 0.85 }}
+    <svg
+      width={data.width}
+      height={data.height}
+      style={{ pointerEvents: 'none', display: 'block' }}
     >
-      {/* Hover target (wider invisible line) */}
-      <line
-        x1={fromX} y1={y} x2={toX} y2={y}
-        stroke="transparent" strokeWidth={16}
-      />
-      {/* Visible line */}
-      <line
-        x1={fromX} y1={y} x2={toX} y2={y}
-        stroke={color}
-        strokeWidth={selected ? 2.5 : 1.5}
-      />
-      {/* Arrow head */}
-      <polygon
-        points={`${arrowTipX},${y} ${arrowBaseX},${y - ARROW_HEAD_SIZE / 2} ${arrowBaseX},${y + ARROW_HEAD_SIZE / 2}`}
-        fill={color}
-      />
-      {/* Label */}
-      <text
-        x={midX} y={y - 6}
-        textAnchor="middle"
-        fontSize={11}
-        fontFamily="monospace"
-        fill={color}
-        fontWeight={selected ? 700 : 400}
-      >
-        {label}
-      </text>
-    </g>
+      {data.columns.map((col) => (
+        <line
+          key={col.addr}
+          x1={col.x}
+          y1={0}
+          x2={col.x}
+          y2={data.height}
+          stroke="currentColor"
+          strokeWidth={1}
+          strokeDasharray="4 4"
+          opacity={0.3}
+          className="stroke-foreground"
+        />
+      ))}
+    </svg>
   )
 }
 
-export function SipLadder({ messages, live }: SipLadderProps) {
+interface MessageNodeData extends Record<string, unknown> {
+  fromX: number
+  toX: number
+  label: string
+  color: string
+  selected: boolean
+  timestampLabel: string
+  width: number
+}
+
+function MessageNode({ data }: NodeProps<Node<MessageNodeData>>) {
+  const { fromX, toX, label, color, selected, timestampLabel, width } = data
+  const arrowHead = 8
+  const direction = toX > fromX ? 1 : -1
+  const arrowTipX = toX
+  const arrowBaseX = toX - direction * arrowHead
+  const midX = (fromX + toX) / 2
+  const y = ARROW_Y_OFFSET
+
+  return (
+    <div
+      style={{ width, height: NODE_HEIGHT, cursor: 'pointer' }}
+      className={selected ? 'bg-accent/30 rounded' : 'hover:bg-accent/10 rounded'}
+    >
+      <svg width={width} height={NODE_HEIGHT} className="select-none" style={{ display: 'block' }}>
+        {/* Timestamp at left */}
+        <text
+          x={8}
+          y={y + 4}
+          fontSize={9}
+          fontFamily="monospace"
+          fill="currentColor"
+          opacity={0.5}
+          className="fill-foreground"
+        >
+          {timestampLabel}
+        </text>
+        {/* Hover hit area */}
+        <line x1={fromX} y1={y} x2={toX} y2={y} stroke="transparent" strokeWidth={16} />
+        {/* Visible line */}
+        <line
+          x1={fromX}
+          y1={y}
+          x2={toX}
+          y2={y}
+          stroke={color}
+          strokeWidth={selected ? 2.5 : 1.5}
+        />
+        {/* Arrow head */}
+        <polygon
+          points={`${arrowTipX},${y} ${arrowBaseX},${y - arrowHead / 2} ${arrowBaseX},${y + arrowHead / 2}`}
+          fill={color}
+        />
+        {/* Label */}
+        <text
+          x={midX}
+          y={y - 6}
+          textAnchor="middle"
+          fontSize={11}
+          fontFamily="monospace"
+          fill={color}
+          fontWeight={selected ? 700 : 400}
+        >
+          {label}
+        </text>
+      </svg>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sticky headers — synced to viewport pan/zoom
+
+function StickyHeaders({ columns }: { columns: Column[] }) {
+  const { x: vx, zoom } = useViewport()
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: HEADER_HEIGHT,
+        pointerEvents: 'none',
+        overflow: 'hidden',
+        zIndex: 5,
+      }}
+      className="bg-card/90 backdrop-blur-sm border-b"
+    >
+      {columns.map((col) => {
+        const fontSize = Math.max(9, Math.min(12 * zoom, 14))
+        const displayAddr = col.addr.length > 24 ? col.addr.slice(0, 24) + '...' : col.addr
+        return (
+          <div
+            key={col.addr}
+            style={{
+              position: 'absolute',
+              left: col.x * zoom + vx,
+              top: 8,
+              transform: 'translateX(-50%)',
+              fontSize,
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              fontFamily: 'monospace',
+            }}
+            className="text-foreground"
+            title={col.addr}
+          >
+            {displayAddr}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+const nodeTypes = {
+  lifelines: LifelinesNode,
+  message: MessageNode,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inner component (inside ReactFlowProvider)
+
+function SipLadderInner({ messages, live }: SipLadderProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const svgRef = useRef<SVGSVGElement>(null)
+  const reactFlow = useReactFlow()
 
   const columns = useMemo(() => inferColumns(messages), [messages])
-  const hasRight = columns.right !== ''
 
-  // Auto-scroll when live and new messages arrive
-  useEffect(() => {
-    if (live && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight
-    }
-  }, [messages.length, live])
-
-  const svgHeight = TOP_MARGIN + messages.length * ROW_HEIGHT + 30
-  const svgWidth = hasRight ? 700 : 480
-
-  // Format the timestamp relative to the first message
   const baseTime = messages.length > 0 ? messages[0].timestamp : 0
-  const formatRelTime = (ts: number) => {
-    const delta = ts - baseTime
-    if (delta < 1000) return `+${delta}ms`
-    return `+${(delta / 1000).toFixed(2)}s`
-  }
+  const formatRelTime = useCallback(
+    (ts: number) => {
+      const delta = ts - baseTime
+      if (delta < 1000) return `+${delta}ms`
+      return `+${(delta / 1000).toFixed(2)}s`
+    },
+    [baseTime],
+  )
+
+  const totalHeight = TOP_MARGIN + messages.length * ROW_HEIGHT + 30
+  const totalWidth =
+    columns.length > 0 ? columns[columns.length - 1].x + COL_FIRST_X : 600
+
+  const nodes = useMemo<Node[]>(() => {
+    const result: Node[] = []
+
+    // Lifelines first so they render behind message arrows
+    result.push({
+      id: 'lifelines',
+      type: 'lifelines',
+      position: { x: 0, y: 0 },
+      data: { columns, height: totalHeight, width: totalWidth },
+      draggable: false,
+      selectable: false,
+      style: { width: totalWidth, height: totalHeight },
+    })
+
+    messages.forEach((msg, i) => {
+      const xs = getArrowXs(msg, columns)
+      if (!xs) return
+      result.push({
+        id: `msg-${i}`,
+        type: 'message',
+        position: { x: 0, y: TOP_MARGIN + i * ROW_HEIGHT - NODE_HEIGHT / 2 + ARROW_Y_OFFSET },
+        data: {
+          fromX: xs.fromX,
+          toX: xs.toX,
+          label: getMessageLabel(msg),
+          color: getMessageColor(msg.method_or_status),
+          selected: selectedIdx === i,
+          timestampLabel: formatRelTime(msg.timestamp),
+          width: totalWidth,
+        },
+        draggable: false,
+        selectable: false,
+        style: { width: totalWidth, height: NODE_HEIGHT },
+      })
+    })
+
+    return result
+  }, [messages, columns, selectedIdx, totalHeight, totalWidth, formatRelTime])
+
+  // Auto-pan to latest message when live
+  useEffect(() => {
+    if (!live || messages.length === 0) return
+    const lastY = TOP_MARGIN + (messages.length - 1) * ROW_HEIGHT
+    const zoom = reactFlow.getZoom()
+    reactFlow.setCenter(totalWidth / 2, lastY, { zoom, duration: 300 })
+  }, [messages.length, live, totalWidth, reactFlow])
 
   return (
     <div className="flex gap-4">
-      {/* Ladder SVG */}
-      <div ref={containerRef} className="flex-1 overflow-auto border rounded-lg bg-card" style={{ maxHeight: '70vh' }}>
-        <svg ref={svgRef} width={svgWidth} height={svgHeight} className="select-none">
-          {/* Column headers */}
-          <text x={COL_LEFT_X} y={20} textAnchor="middle" fontSize={12} fontWeight={700} fill="currentColor" className="fill-foreground">
-            {columns.left.length > 21 ? columns.left.slice(0, 21) + '...' : columns.left}
-          </text>
-          <text x={COL_CENTER_X} y={20} textAnchor="middle" fontSize={12} fontWeight={700} fill="currentColor" className="fill-foreground">
-            {columns.center.length > 21 ? columns.center.slice(0, 21) + '...' : columns.center}
-          </text>
-          {hasRight && (
-            <text x={COL_RIGHT_X} y={20} textAnchor="middle" fontSize={12} fontWeight={700} fill="currentColor" className="fill-foreground">
-              {columns.right.length > 21 ? columns.right.slice(0, 21) + '...' : columns.right}
-            </text>
-          )}
-
-          {/* Vertical lifelines */}
-          <line x1={COL_LEFT_X} y1={30} x2={COL_LEFT_X} y2={svgHeight - 10} stroke="currentColor" strokeWidth={1} strokeDasharray="4 4" opacity={0.3} className="stroke-foreground" />
-          <line x1={COL_CENTER_X} y1={30} x2={COL_CENTER_X} y2={svgHeight - 10} stroke="currentColor" strokeWidth={1} strokeDasharray="4 4" opacity={0.3} className="stroke-foreground" />
-          {hasRight && (
-            <line x1={COL_RIGHT_X} y1={30} x2={COL_RIGHT_X} y2={svgHeight - 10} stroke="currentColor" strokeWidth={1} strokeDasharray="4 4" opacity={0.3} className="stroke-foreground" />
-          )}
-
-          {/* Messages as arrows */}
-          {messages.map((msg, i) => {
-            const y = TOP_MARGIN + i * ROW_HEIGHT
-            const dir = getArrowDirection(msg, columns)
-            const color = getMessageColor(msg.method_or_status)
-            const label = getMessageLabel(msg)
-
-            let fromX: number, toX: number
-            switch (dir) {
-              case 'left-to-center': fromX = COL_LEFT_X; toX = COL_CENTER_X; break
-              case 'center-to-left': fromX = COL_CENTER_X; toX = COL_LEFT_X; break
-              case 'center-to-right': fromX = COL_CENTER_X; toX = COL_RIGHT_X; break
-              case 'right-to-center': fromX = COL_RIGHT_X; toX = COL_CENTER_X; break
+      {/* Flow container */}
+      <div
+        className="flex-1 relative border rounded-lg overflow-hidden bg-card"
+        style={{ height: '70vh' }}
+      >
+        <ReactFlow
+          nodes={nodes}
+          edges={[]}
+          nodeTypes={nodeTypes}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          onNodeClick={(_, node) => {
+            if (node.type !== 'message') return
+            const idx = parseInt(node.id.replace('msg-', ''), 10)
+            if (!isNaN(idx)) {
+              setSelectedIdx((prev) => (prev === idx ? null : idx))
             }
-
-            return (
-              <g key={msg.id || i}>
-                {/* Selected row highlight */}
-                {selectedIdx === i && (
-                  <rect
-                    x={0} y={y - ROW_HEIGHT / 2 + 2} width={svgWidth} height={ROW_HEIGHT - 4}
-                    fill="currentColor" opacity={0.05} className="fill-foreground"
-                  />
-                )}
-                {/* Timestamp */}
-                <text
-                  x={8} y={y + 4}
-                  fontSize={9} fontFamily="monospace"
-                  fill="currentColor" opacity={0.5} className="fill-foreground"
-                >
-                  {formatRelTime(msg.timestamp)}
-                </text>
-                <Arrow
-                  fromX={fromX}
-                  toX={toX}
-                  y={y}
-                  color={color}
-                  label={label}
-                  onClick={() => setSelectedIdx(selectedIdx === i ? null : i)}
-                  selected={selectedIdx === i}
-                />
-              </g>
-            )
-          })}
-        </svg>
+          }}
+          panOnDrag
+          panOnScroll={false}
+          zoomOnScroll
+          zoomOnPinch
+          zoomOnDoubleClick={false}
+          minZoom={0.2}
+          maxZoom={2}
+          fitView
+          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+        >
+          <Background gap={20} />
+          <Controls showInteractive={false} />
+          <MiniMap pannable zoomable style={{ height: 80 }} />
+        </ReactFlow>
+        <StickyHeaders columns={columns} />
       </div>
 
       {/* Raw message detail panel */}
       {selectedIdx !== null && messages[selectedIdx] && (
-        <div className="w-96 border rounded-lg bg-card flex flex-col" style={{ maxHeight: '70vh' }}>
+        <div
+          className="w-96 border rounded-lg bg-card flex flex-col"
+          style={{ maxHeight: '70vh' }}
+        >
           <div className="p-3 border-b flex items-center justify-between">
             <div>
-              <p className="font-semibold text-sm">
-                {messages[selectedIdx].method_or_status}
-              </p>
+              <p className="font-semibold text-sm">{messages[selectedIdx].method_or_status}</p>
               <p className="text-xs text-muted-foreground">
-                {messages[selectedIdx].direction} | {messages[selectedIdx].transport.toUpperCase()} | {formatRelTime(messages[selectedIdx].timestamp)}
+                {messages[selectedIdx].direction} | {messages[selectedIdx].transport.toUpperCase()} |{' '}
+                {formatRelTime(messages[selectedIdx].timestamp)}
               </p>
             </div>
             <button
@@ -315,5 +447,13 @@ export function SipLadder({ messages, live }: SipLadderProps) {
         </div>
       )}
     </div>
+  )
+}
+
+export function SipLadder(props: SipLadderProps) {
+  return (
+    <ReactFlowProvider>
+      <SipLadderInner {...props} />
+    </ReactFlowProvider>
   )
 }
