@@ -248,6 +248,20 @@ async fn main() -> Result<()> {
         info!("Admin presence event listener started");
     }
 
+    // Spawn trunk health probe background task
+    let trunk_health_map = fcp_api_core::trunk_health::new_health_map();
+    {
+        let storage_for_health = Arc::clone(&storage);
+        let health_map_clone = Arc::clone(&trunk_health_map);
+        let tenant_id = fcp_core::TenantId::nil();
+        tokio::spawn(fcp_api_core::trunk_health::run_trunk_health_probes(
+            storage_for_health,
+            health_map_clone,
+            tenant_id,
+        ));
+        info!("Trunk health probe task started");
+    }
+
     // Create API state
     let api_state = fcp_api_core::ApiState::new(
         Some(storage),
@@ -264,7 +278,8 @@ async fn main() -> Result<()> {
         fcp_core::TenantId::nil(),
     )
     .with_events_server_url(events_server_url.clone())
-    .with_config_store(config_store);
+    .with_config_store(config_store)
+    .with_trunk_health(trunk_health_map);
 
     // Set security policy from config
     let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {

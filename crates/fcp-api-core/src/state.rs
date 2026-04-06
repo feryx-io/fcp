@@ -107,6 +107,9 @@ pub struct ApiState {
     /// Derived from the configured `auth_token` at startup. When `None`,
     /// JWT-based auth endpoints (login, me, refresh) will fail.
     pub jwt_secret: Option<Vec<u8>>,
+
+    /// Trunk health monitoring map (populated by background health probe task).
+    pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
 }
 
 impl ApiState {
@@ -148,6 +151,7 @@ impl ApiState {
             tts_service: None,
             auth_config: None,
             jwt_secret: None,
+            trunk_health: None,
         }
     }
 
@@ -209,6 +213,11 @@ impl ApiState {
     ///
     /// Uses HMAC-SHA256 as a KDF to derive a 32-byte key from the auth token,
     /// so the JWT secret is never the same as the bearer token itself.
+    pub fn with_trunk_health(mut self, health: crate::trunk_health::TrunkHealthMap) -> Self {
+        self.trunk_health = Some(health);
+        self
+    }
+
     pub fn with_jwt_secret_from_token(mut self, auth_token: &str) -> Self {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;

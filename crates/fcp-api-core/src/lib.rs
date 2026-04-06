@@ -13,6 +13,7 @@
 pub mod auth;
 pub mod error;
 pub mod state;
+pub mod trunk_health;
 pub mod v1;
 pub mod validation;
 

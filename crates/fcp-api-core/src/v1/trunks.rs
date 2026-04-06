@@ -47,6 +47,8 @@ pub struct TrunkResponse {
     pub recovery_interval_secs: i32,
     pub health_check_enabled: bool,
     pub health_check_interval_secs: i32,
+    pub health_status: String,
+    pub consecutive_failures: u32,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -75,9 +77,24 @@ impl From<Trunk> for TrunkResponse {
             recovery_interval_secs: t.recovery_interval_secs,
             health_check_enabled: t.health_check_enabled,
             health_check_interval_secs: t.health_check_interval_secs,
+            health_status: "unknown".to_string(),
+            consecutive_failures: 0,
             created_at: t.created_at,
             updated_at: t.updated_at,
         }
+    }
+}
+
+impl TrunkResponse {
+    /// Enrich with health data from the health map.
+    fn with_health(mut self, health_map: &Option<crate::trunk_health::TrunkHealthMap>) -> Self {
+        if let Some(map) = health_map {
+            if let Some(entry) = map.get(&self.id) {
+                self.health_status = entry.status.to_string();
+                self.consecutive_failures = entry.consecutive_failures;
+            }
+        }
+        self
     }
 }
 
@@ -157,7 +174,11 @@ pub async fn list_trunks(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list trunks: {}", e)))?;
 
-    let response: Vec<TrunkResponse> = trunks.into_iter().map(TrunkResponse::from).collect();
+    let health_map = &state.trunk_health;
+    let response: Vec<TrunkResponse> = trunks
+        .into_iter()
+        .map(|t| TrunkResponse::from(t).with_health(health_map))
+        .collect();
     Ok(Json(response))
 }
 
@@ -175,7 +196,7 @@ pub async fn get_trunk(
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
 
-    Ok(Json(TrunkResponse::from(trunk)))
+    Ok(Json(TrunkResponse::from(trunk).with_health(&state.trunk_health)))
 }
 
 /// Create a new trunk.

@@ -1600,6 +1600,7 @@ dependencies = [
  "axum 0.7.9",
  "base64 0.22.1",
  "chrono",
+ "dashmap 6.1.0",
  "fcp-core",
  "fcp-events",
  "fcp-flow",
@@ -1619,6 +1620,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-http 0.5.2",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

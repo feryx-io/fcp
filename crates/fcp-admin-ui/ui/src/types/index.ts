@@ -594,6 +594,8 @@ export interface SipTrunk {
   recovery_interval_secs: number
   health_check_enabled: boolean
   health_check_interval_secs: number
+  health_status: string // "healthy" | "degraded" | "down" | "unknown"
+  consecutive_failures: number
   created_at: string
   updated_at: string
 }

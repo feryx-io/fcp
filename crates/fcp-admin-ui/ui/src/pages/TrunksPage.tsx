@@ -20,6 +20,15 @@ import {
 import { trunks } from '@/api/endpoints'
 import type { SipTrunk, CreateTrunkRequest } from '@/types'
 
+const healthBadge = (status: string) => {
+  switch (status) {
+    case 'healthy': return 'success' as const
+    case 'degraded': return 'warning' as const
+    case 'down': return 'destructive' as const
+    default: return 'outline' as const
+  }
+}
+
 const directionLabel = (dir: string) => {
   switch (dir) {
     case 'upstream': return 'Outbound'
@@ -146,6 +155,7 @@ export function TrunksPage() {
   const { data: trunkList = [], isLoading, isFetching, refetch } = useQuery({
     queryKey: ['trunks'],
     queryFn: trunks.list,
+    refetchInterval: 15000, // Auto-refresh every 15s for health status
   })
 
   const createMutation = useMutation({
@@ -312,6 +322,9 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
             <ChevronRight className="h-4 w-4 text-muted-foreground" />
           </button>
           <div className="flex items-center gap-1">
+            <Badge variant={healthBadge(trunk.health_status)}>
+              {trunk.health_status}
+            </Badge>
             <Badge variant={directionBadge(trunk.direction)}>
               {directionLabel(trunk.direction)}
             </Badge>
@@ -362,6 +375,7 @@ function TrunkDetailView({ trunk, onEdit }: { trunk: SipTrunk; onEdit: () => voi
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4 text-sm">
         <Field label="Status" badge={trunk.enabled ? 'success' : 'secondary'} value={trunk.enabled ? 'Enabled' : 'Disabled'} />
+        <Field label="Health" badge={healthBadge(trunk.health_status)} value={trunk.health_status} />
         <Field label="Direction" value={directionLabel(trunk.direction)} />
         <Field label="Transport" value={`${protocolLabel(trunk.transport_protocol)}:${trunk.transport_port}`} />
         <Field label="Max Calls" value={trunk.max_concurrent_calls ? String(trunk.max_concurrent_calls) : 'Unlimited'} />
