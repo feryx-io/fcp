@@ -197,7 +197,7 @@ use crate::settings::ServerSettings;
 use fcp_b2bua_core::B2buaConfig;
 use fcp_core::storage::{
     CredentialStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore, TenantStore,
-    VoicemailStore,
+    TrunkStore, VoicemailStore,
 };
 
 /// Result of outbound route resolution.
@@ -1148,6 +1148,81 @@ impl SipMessageHandler {
                 debug!("Rejecting INVITE with 422: Session-Expires below Min-SE");
                 handle.send_final(reject).await;
                 return Ok(());
+            }
+        }
+
+        // Trunk admission control: check if source IP is allowed
+        // Local registered devices are always allowed; external sources must match an enabled trunk
+        if let Some(storage) = &self.storage {
+            let peer_ip = peer.ip();
+            let local_ip: std::net::IpAddr = self.local_addr.parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            let is_local = peer_ip == local_ip || peer_ip.is_loopback();
+
+            if !is_local {
+                // Check if the source is a registered device by matching source IP
+                // against registered contacts
+                let is_registered_device = if let Some(registrar) = &self.registrar {
+                    let from_header = sip_parse::header(request.headers(), "From");
+                    let from_aor = from_header.and_then(|h| {
+                        let s = h.as_str();
+                        // Extract URI from name-addr: "Name" <sip:user@host> or sip:user@host
+                        let uri = if let Some(start) = s.find('<') {
+                            let end = s.find('>').unwrap_or(s.len());
+                            &s[start + 1..end]
+                        } else {
+                            s.split(';').next().unwrap_or(s)
+                        };
+                        let cleaned = uri.trim_start_matches("sip:").trim_start_matches("sips:");
+                        if cleaned.contains('@') { Some(format!("sip:{}", cleaned)) } else { None }
+                    });
+                    if let Some(aor) = from_aor {
+                        registrar.get_registrations(&aor).await
+                            .map(|regs| {
+                                regs.iter().any(|binding| {
+                                    binding.contact().contains(&peer_ip.to_string())
+                                })
+                            })
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if !is_registered_device {
+                    // Check if source IP matches any enabled trunk
+                    let peer_ip_str = peer_ip.to_string();
+                    let trunk_allowed = match storage.list_trunks(&fcp_core::TenantId::nil()).await {
+                        Ok(trunks) => {
+                            trunks.iter().any(|t| {
+                                t.enabled && t.hosts.iter().any(|h| {
+                                    let host = h.split(':').next().unwrap_or(h);
+                                    host == peer_ip_str
+                                })
+                            })
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to query trunks for admission check, denying");
+                            false
+                        }
+                    };
+
+                    if !trunk_allowed {
+                        info!(
+                            source = %peer,
+                            "Rejecting INVITE: source IP does not match any enabled trunk"
+                        );
+                        let response = self.create_simple_response(
+                            request,
+                            403,
+                            "Forbidden - no trunk configured for source",
+                        );
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                    debug!(source = %peer, "INVITE admitted via trunk");
+                }
             }
         }
 
