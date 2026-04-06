@@ -49,6 +49,7 @@ pub struct TrunkResponse {
     pub health_check_interval_secs: i32,
     pub health_status: String,
     pub consecutive_failures: u32,
+    pub uptime_secs: Option<u64>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -79,6 +80,7 @@ impl From<Trunk> for TrunkResponse {
             health_check_interval_secs: t.health_check_interval_secs,
             health_status: "unknown".to_string(),
             consecutive_failures: 0,
+            uptime_secs: None,
             created_at: t.created_at,
             updated_at: t.updated_at,
         }
@@ -88,10 +90,16 @@ impl From<Trunk> for TrunkResponse {
 impl TrunkResponse {
     /// Enrich with health data from the health map.
     fn with_health(mut self, health_map: &Option<crate::trunk_health::TrunkHealthMap>) -> Self {
+        if !self.enabled {
+            self.health_status = "disabled".to_string();
+            self.uptime_secs = None;
+            return self;
+        }
         if let Some(map) = health_map {
             if let Some(entry) = map.get(&self.id) {
                 self.health_status = entry.status.to_string();
                 self.consecutive_failures = entry.consecutive_failures;
+                self.uptime_secs = entry.uptime_secs();
             }
         }
         self

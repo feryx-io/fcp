@@ -54,17 +54,17 @@ pub struct TrunkHealthEntry {
     pub last_probe: Option<Instant>,
     pub last_success: Option<Instant>,
     pub last_failure: Option<Instant>,
+    /// When the trunk first became healthy (reset on any failure).
+    pub healthy_since: Option<Instant>,
 }
 
 impl TrunkHealthEntry {
-    pub fn to_info(&self) -> TrunkHealthInfo {
-        let now = Instant::now();
-        TrunkHealthInfo {
-            status: self.status,
-            consecutive_failures: self.consecutive_failures,
-            last_probe_ms: self.last_probe.map(|t| now.duration_since(t).as_millis() as u64),
-            last_success_ms: self.last_success.map(|t| now.duration_since(t).as_millis() as u64),
-            last_failure_ms: self.last_failure.map(|t| now.duration_since(t).as_millis() as u64),
+    /// Uptime in seconds (how long continuously healthy), or None.
+    pub fn uptime_secs(&self) -> Option<u64> {
+        if self.status == HealthStatus::Healthy {
+            self.healthy_since.map(|t| Instant::now().duration_since(t).as_secs())
+        } else {
+            None
         }
     }
 }
@@ -122,6 +122,7 @@ pub async fn run_trunk_health_probes(
                         last_probe: None,
                         last_success: None,
                         last_failure: None,
+                        healthy_since: None,
                     });
                 continue;
             }
@@ -163,6 +164,7 @@ pub async fn run_trunk_health_probes(
                     last_probe: None,
                     last_success: None,
                     last_failure: None,
+                    healthy_since: None,
                 });
 
             entry.last_probe = Some(now);
@@ -170,13 +172,18 @@ pub async fn run_trunk_health_probes(
             entry.recovery_interval_secs = trunk.recovery_interval_secs as u64;
 
             if success {
+                let was_healthy = entry.status == HealthStatus::Healthy;
                 entry.consecutive_failures = 0;
                 entry.last_success = Some(now);
                 entry.status = HealthStatus::Healthy;
+                if !was_healthy {
+                    entry.healthy_since = Some(now);
+                }
                 debug!(trunk = %trunk.name, "OPTIONS probe succeeded");
             } else {
                 entry.consecutive_failures += 1;
                 entry.last_failure = Some(now);
+                entry.healthy_since = None; // Reset uptime on failure
                 if entry.consecutive_failures >= entry.max_failures {
                     entry.status = HealthStatus::Down;
                 } else if entry.consecutive_failures >= entry.max_failures / 2 {
@@ -196,6 +203,7 @@ pub async fn run_trunk_health_probes(
                     if now.duration_since(last_fail).as_secs() >= entry.recovery_interval_secs {
                         entry.status = HealthStatus::Healthy;
                         entry.consecutive_failures = 0;
+                        entry.healthy_since = Some(now);
                         info!(trunk = %trunk.name, "Degraded trunk auto-recovered to Healthy");
                     }
                 }

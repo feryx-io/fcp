@@ -25,8 +25,20 @@ const healthBadge = (status: string) => {
     case 'healthy': return 'success' as const
     case 'degraded': return 'warning' as const
     case 'down': return 'destructive' as const
+    case 'disabled': return 'secondary' as const
     default: return 'outline' as const
   }
+}
+
+function formatUptime(secs: number | null): string {
+  if (secs == null) return '-'
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  if (h < 24) return `${h}h ${m}m`
+  const d = Math.floor(h / 24)
+  return `${d}d ${h % 24}h`
 }
 
 const directionLabel = (dir: string) => {
@@ -332,7 +344,7 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-3 gap-2 text-center text-sm">
+        <div className="grid grid-cols-4 gap-2 text-center text-sm">
           <div>
             <p className="text-lg font-bold">{trunk.hosts.length}</p>
             <p className="text-xs text-muted-foreground">Hosts</p>
@@ -344,6 +356,10 @@ function TrunkCard({ trunk, onSelect, onEdit, onDelete, onToggle }: {
           <div>
             <Badge variant="outline" className="text-xs">{protocolLabel(trunk.transport_protocol)}</Badge>
             <p className="text-xs text-muted-foreground mt-1">Transport</p>
+          </div>
+          <div>
+            <p className="text-lg font-bold font-mono">{formatUptime(trunk.uptime_secs)}</p>
+            <p className="text-xs text-muted-foreground">Uptime</p>
           </div>
         </div>
 
@@ -376,6 +392,7 @@ function TrunkDetailView({ trunk, onEdit }: { trunk: SipTrunk; onEdit: () => voi
       <div className="grid grid-cols-2 gap-4 text-sm">
         <Field label="Status" badge={trunk.enabled ? 'success' : 'secondary'} value={trunk.enabled ? 'Enabled' : 'Disabled'} />
         <Field label="Health" badge={healthBadge(trunk.health_status)} value={trunk.health_status} />
+        <Field label="Uptime" value={formatUptime(trunk.uptime_secs)} />
         <Field label="Direction" value={directionLabel(trunk.direction)} />
         <Field label="Transport" value={`${protocolLabel(trunk.transport_protocol)}:${trunk.transport_port}`} />
         <Field label="Max Calls" value={trunk.max_concurrent_calls ? String(trunk.max_concurrent_calls) : 'Unlimited'} />
