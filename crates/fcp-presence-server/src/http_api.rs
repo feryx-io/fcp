@@ -160,12 +160,6 @@ async fn get_presence(
 struct UpdatePresenceRequest {
     state: String,
     note: Option<String>,
-    #[serde(default = "default_tenant")]
-    tenant_id: String,
-}
-
-fn default_tenant() -> String {
-    "tenant-00000000-0000-0000-0000-000000000000".to_string()
 }
 
 async fn update_presence(
@@ -188,7 +182,8 @@ async fn update_presence(
         }
     };
 
-    let tenant_id: fcp_core::TenantId = body.tenant_id.parse().unwrap_or_default();
+    // SECURITY: Use server-configured tenant, not client-supplied
+    let tenant_id = state.default_tenant_id.clone();
     let update = fcp_presence::PresenceUpdate {
         aor: aor.clone(),
         state: presence_state,
@@ -222,7 +217,8 @@ async fn remove_presence(
     State(state): State<Arc<AppState>>,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
-    let tenant_id = fcp_core::TenantId::default();
+    // SECURITY: Use server-configured tenant, not hardcoded default
+    let tenant_id = state.default_tenant_id.clone();
 
     if let Some(ref sip) = state.sip_handler {
         if let Err(e) = sip.terminate_watchers_noresource(&aor, &tenant_id).await {

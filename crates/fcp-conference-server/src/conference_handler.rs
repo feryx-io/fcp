@@ -4256,14 +4256,9 @@ pub fn validate_room_number(room: &str) -> bool {
 }
 
 /// Extract tenant ID from the SIP request.
-fn extract_tenant(request: &sip_core::Request) -> TenantId {
-    for header in request.headers() {
-        if header.name().eq_ignore_ascii_case("X-Tenant-ID") {
-            if let Ok(tid) = header.value().parse::<TenantId>() {
-                return tid;
-            }
-        }
-    }
+/// SECURITY: Does NOT trust X-Tenant-ID header from external sources.
+/// Uses server default (nil). Multi-tenant should derive from authenticated context.
+fn extract_tenant(_request: &sip_core::Request) -> TenantId {
     TenantId::nil()
 }
 

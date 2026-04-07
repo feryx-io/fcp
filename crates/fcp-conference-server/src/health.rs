@@ -605,9 +605,12 @@ async fn get_meeting_handler(
         }
     };
 
+    let expected_tenant = extract_tenant_id(&HeaderMap::new());
     match state.storage.get_meeting(&meeting_id).await {
-        Ok(Some(meeting)) => (StatusCode::OK, Json(meeting_to_json(&meeting))),
-        Ok(None) => (
+        Ok(Some(meeting)) if meeting.tenant_id == expected_tenant => {
+            (StatusCode::OK, Json(meeting_to_json(&meeting)))
+        }
+        Ok(Some(_)) | Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "Meeting not found" })),
         ),
@@ -1886,16 +1889,10 @@ fn is_valid_identifier(id: &str) -> bool {
         && !id.contains('\\')
 }
 
-/// Extract tenant ID from request headers.
-/// Checks X-Tenant-ID header first, falls back to TenantId::nil().
-fn extract_tenant_id(headers: &HeaderMap) -> TenantId {
-    if let Some(value) = headers.get("X-Tenant-ID") {
-        if let Ok(s) = value.to_str() {
-            if let Ok(tid) = s.parse::<TenantId>() {
-                return tid;
-            }
-        }
-    }
+/// Extract tenant ID.
+/// SECURITY: Does NOT trust X-Tenant-ID header. Always uses server default (nil).
+/// Multi-tenant deployments should derive tenant from authenticated session claims.
+fn extract_tenant_id(_headers: &HeaderMap) -> TenantId {
     TenantId::nil()
 }
 

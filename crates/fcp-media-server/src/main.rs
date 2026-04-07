@@ -183,9 +183,9 @@ async fn main() -> Result<()> {
                             }
                         }
                         "auth" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
-                                config.auth = v;
-                            }
+                            // SECURITY: Auth config stays TOML-only.
+                            // DB overrides could silently disable auth on public binds.
+                            info!(service = svc, section, "Skipping DB override for auth (TOML-only for security)");
                         }
                         "ai" => {
                             if let Ok(v) = serde_json::from_value(entry.value) {
@@ -226,6 +226,9 @@ async fn main() -> Result<()> {
             }
         }
         info!("Operational config loading complete (DB primary, TOML seed)");
+
+        // SECURITY: Re-validate config after DB overrides to catch any unsafe state
+        config::validate_config(&config)?;
     }
 
     // 6. Convert to ApiServerConfig
