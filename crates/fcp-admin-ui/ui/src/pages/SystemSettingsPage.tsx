@@ -13,7 +13,10 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { Save, RotateCcw, X, History, AlertCircle, CheckCircle2, Trash2, RefreshCw } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Save, RotateCcw, X, History, AlertCircle, CheckCircle2, Trash2, RefreshCw, ChevronDown, ChevronRight, Code } from 'lucide-react'
 
 const SERVICES = [
   { value: 'call-manager', label: 'Call Manager' },
@@ -252,23 +255,50 @@ function SectionEditor({
   error: string | null
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [rawMode, setRawMode] = useState(false)
+
+  // Parse the JSON value for visual editing
+  let parsedValue: Record<string, unknown> | null = null
+  try {
+    parsedValue = JSON.parse(value)
+  } catch {
+    // If JSON is invalid, force raw mode
+  }
+
+  const updateField = (key: string, newVal: unknown) => {
+    if (!parsedValue) return
+    const updated = { ...parsedValue, [key]: newVal }
+    onChange(JSON.stringify(updated, null, 2))
+  }
+
+  const updateNestedField = (parentKey: string, childKey: string, newVal: unknown) => {
+    if (!parsedValue) return
+    const parent = (parsedValue[parentKey] as Record<string, unknown>) || {}
+    const updated = { ...parsedValue, [parentKey]: { ...parent, [childKey]: newVal } }
+    onChange(JSON.stringify(updated, null, 2))
+  }
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle className="text-lg">
-              {service} / {section}
-            </CardTitle>
+            <CardTitle className="text-lg">{service} / {section}</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Edit the JSON configuration below
+              {rawMode ? 'Edit raw JSON' : 'Edit configuration fields'}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {isDirty && (
-              <Badge variant="secondary">Unsaved changes</Badge>
-            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setRawMode(!rawMode)}
+              title={rawMode ? 'Switch to visual editor' : 'Switch to raw JSON'}
+            >
+              <Code className="h-4 w-4 mr-1" />
+              {rawMode ? 'Visual' : 'JSON'}
+            </Button>
+            {isDirty && <Badge variant="secondary">Unsaved changes</Badge>}
             <Button variant="ghost" size="icon" onClick={onCancel}>
               <X className="h-4 w-4" />
             </Button>
@@ -283,18 +313,32 @@ function SectionEditor({
           </div>
         )}
 
-        <textarea
-          className="w-full min-h-[400px] rounded-md border bg-muted/50 p-4 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          spellCheck={false}
-        />
+        {rawMode || !parsedValue ? (
+          <textarea
+            className="w-full min-h-[400px] rounded-md border bg-muted/50 p-4 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            spellCheck={false}
+          />
+        ) : (
+          <div className="space-y-1">
+            {Object.entries(parsedValue).map(([key, val]) => (
+              <ConfigField
+                key={key}
+                fieldKey={key}
+                value={val}
+                onChange={(v) => updateField(key, v)}
+                onNestedChange={(childKey, v) => updateNestedField(key, childKey, v)}
+              />
+            ))}
+          </div>
+        )}
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
               <Trash2 className="mr-2 h-4 w-4" />
-              Delete
+              Delete Section
             </Button>
             {confirmDelete && (
               <span className="text-sm text-destructive">
@@ -318,6 +362,161 @@ function SectionEditor({
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+/** Known enum fields with their options. */
+const ENUM_OPTIONS: Record<string, string[]> = {
+  strategy: ['round_robin', 'longest_idle', 'fewest_calls', 'random', 'linear', 'skills_based', 'weighted'],
+  log_level: ['trace', 'debug', 'info', 'warn', 'error'],
+  level: ['trace', 'debug', 'info', 'warn', 'error'],
+  format: ['json', 'pretty', 'compact'],
+  log_format: ['json', 'pretty', 'compact'],
+  transport: ['udp', 'tcp', 'tls'],
+  protocol: ['udp', 'tcp', 'tls'],
+  codec: ['PCMU', 'PCMA', 'G722', 'G729', 'opus'],
+  recording_format: ['wav', 'opus'],
+  dtmf_mode: ['rfc2833', 'sip_info', 'inband'],
+  srtp_mode: ['disabled', 'optional', 'mandatory'],
+  direction: ['upstream', 'downstream', 'bidirectional'],
+  mode: ['proxy', 'b2bua', 'registrar', 'full-uas'],
+}
+
+/** Render a config field with the appropriate control. */
+function ConfigField({ fieldKey, value, onChange, onNestedChange }: {
+  fieldKey: string
+  value: unknown
+  onChange: (v: unknown) => void
+  onNestedChange: (childKey: string, v: unknown) => void
+}) {
+  const label = fieldKey.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
+  // Boolean → Switch
+  if (typeof value === 'boolean') {
+    return (
+      <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50">
+        <Label className="cursor-pointer">{label}</Label>
+        <Switch checked={value} onCheckedChange={(v) => onChange(v)} />
+      </div>
+    )
+  }
+
+  // Number → Number input
+  if (typeof value === 'number') {
+    return (
+      <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50">
+        <Label className="min-w-[200px]">{label}</Label>
+        <Input
+          type="number"
+          className="w-32 text-right"
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
+      </div>
+    )
+  }
+
+  // String with known enum → Select
+  if (typeof value === 'string' && ENUM_OPTIONS[fieldKey]) {
+    return (
+      <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50">
+        <Label className="min-w-[200px]">{label}</Label>
+        <Select value={value} onValueChange={(v) => onChange(v)}>
+          <SelectTrigger className="w-48">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ENUM_OPTIONS[fieldKey].map((opt) => (
+              <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    )
+  }
+
+  // String → Text input
+  if (typeof value === 'string') {
+    return (
+      <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50">
+        <Label className="min-w-[200px]">{label}</Label>
+        <Input
+          className="max-w-sm"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+    )
+  }
+
+  // Array → comma-separated input
+  if (Array.isArray(value)) {
+    const items = value.map(String).join(', ')
+    return (
+      <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50">
+        <Label className="min-w-[200px]">{label}</Label>
+        <Input
+          className="max-w-sm font-mono text-sm"
+          value={items}
+          placeholder="comma-separated"
+          onChange={(e) => {
+            const parts = e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
+            // Preserve number types if original was numbers
+            if (value.length > 0 && typeof value[0] === 'number') {
+              onChange(parts.map(Number))
+            } else {
+              onChange(parts)
+            }
+          }}
+        />
+      </div>
+    )
+  }
+
+  // Object → collapsible section with nested fields
+  if (typeof value === 'object' && value !== null) {
+    return <NestedSection label={label} obj={value as Record<string, unknown>} onFieldChange={onNestedChange} />
+  }
+
+  // Null → text input
+  return (
+    <div className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50">
+      <Label className="min-w-[200px]">{label}</Label>
+      <span className="text-sm text-muted-foreground italic">null</span>
+    </div>
+  )
+}
+
+function NestedSection({ label, obj, onFieldChange }: {
+  label: string
+  obj: Record<string, unknown>
+  onFieldChange: (key: string, v: unknown) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="border rounded-lg">
+      <button
+        className="flex items-center justify-between w-full py-2 px-3 text-sm font-medium hover:bg-muted/50"
+        onClick={() => setOpen(!open)}
+      >
+        <span>{label}</span>
+        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+      </button>
+      {open && (
+        <div className="border-t px-2 py-1">
+          {Object.entries(obj).map(([key, val]) => (
+            <ConfigField
+              key={key}
+              fieldKey={key}
+              value={val}
+              onChange={(v) => onFieldChange(key, v)}
+              onNestedChange={() => {}}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
