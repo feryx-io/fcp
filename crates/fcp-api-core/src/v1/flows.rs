@@ -21,6 +21,14 @@ fn get_flow_store(state: &ApiState) -> Result<Arc<dyn FlowStore>, ApiError> {
         .ok_or_else(|| ApiError::Internal("Flow store not available".to_string()))
 }
 
+fn ensure_flow_in_tenant(flow: FlowDefinition, tenant_id: &str, id: &str) -> Result<FlowDefinition, ApiError> {
+    if flow.tenant_id.as_deref() == Some(tenant_id) {
+        Ok(flow)
+    } else {
+        Err(ApiError::NotFound(format!("Flow not found: {}", id)))
+    }
+}
+
 /// Flow response model.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FlowResponse {
@@ -140,6 +148,7 @@ pub struct ListFlowsResponse {
 /// GET /api/v1/flows
 pub async fn list_flows(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Query(params): Query<ListFlowsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!("Listing flows with filters: {:?}", params);
@@ -161,7 +170,7 @@ pub async fn list_flows(
 
     // Build FlowQuery from request parameters
     let query = FlowQuery {
-        tenant_id: params.tenant_id.clone(),
+        tenant_id: Some(tenant.0.to_string()),
         enabled: params.enabled,
         name_contains: params.name.clone(),
         description_contains: params.description.clone(),
@@ -195,6 +204,7 @@ pub async fn list_flows(
 /// GET /api/v1/flows/:id
 pub async fn get_flow(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!(flow_id = %id, "Getting flow");
@@ -205,7 +215,8 @@ pub async fn get_flow(
         .get_flow(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get flow: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))
+        .and_then(|flow| ensure_flow_in_tenant(flow, &tenant.0.to_string(), &id))?;
 
     Ok(Json(FlowResponse::from(flow)))
 }
@@ -215,6 +226,7 @@ pub async fn get_flow(
 /// POST /api/v1/flows
 pub async fn create_flow(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreateFlowRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     info!(flow_id = %req.id, flow_name = %req.name, "Creating flow");
@@ -237,7 +249,7 @@ pub async fn create_flow(
         initial_node: req.initial_node,
         nodes,
         variables,
-        tenant_id: req.tenant_id,
+        tenant_id: Some(tenant.0.to_string()),
         enabled: req.enabled,
         webhook_url: req.webhook_url,
         created_at: None, // Will be set by storage
@@ -260,6 +272,7 @@ pub async fn create_flow(
 /// PUT /api/v1/flows/:id
 pub async fn update_flow(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateFlowRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -272,7 +285,8 @@ pub async fn update_flow(
         .get_flow(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get flow: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))
+        .and_then(|flow| ensure_flow_in_tenant(flow, &tenant.0.to_string(), &id))?;
 
     // Update fields
     if let Some(name) = req.name {
@@ -315,11 +329,19 @@ pub async fn update_flow(
 /// DELETE /api/v1/flows/:id
 pub async fn delete_flow(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     info!(flow_id = %id, "Deleting flow");
 
     let store = get_flow_store(&state)?;
+
+    store
+        .get_flow(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get flow: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Flow not found: {}", id)))
+        .and_then(|flow| ensure_flow_in_tenant(flow, &tenant.0.to_string(), &id))?;
 
     store
         .delete_flow(&id)
@@ -339,6 +361,7 @@ pub async fn delete_flow(
 /// GET /api/v1/flows/:id/versions
 pub async fn list_flow_versions(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     debug!(flow_id = %id, "Listing flow versions");
@@ -349,8 +372,16 @@ pub async fn list_flow_versions(
         .list_flow_versions(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list flow versions: {}", e)))?;
+    let tenant_id = tenant.0.to_string();
+    let responses: Vec<FlowResponse> = versions
+        .into_iter()
+        .filter(|flow| flow.tenant_id.as_deref() == Some(tenant_id.as_str()))
+        .map(FlowResponse::from)
+        .collect();
 
-    let responses: Vec<FlowResponse> = versions.into_iter().map(FlowResponse::from).collect();
+    if responses.is_empty() {
+        return Err(ApiError::NotFound(format!("Flow not found: {}", id)));
+    }
 
     Ok(Json(serde_json::json!({
         "id": id,

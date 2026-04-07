@@ -3000,19 +3000,84 @@ impl SiteLocationStore for PostgresStorage {
 
 #[async_trait]
 impl QueueStore for PostgresStorage {
-    async fn save_agents(&self, _tenant_id: &TenantId, _agents: Vec<StoredAgent>) -> Result<()> {
-        Ok(()) // TODO: implement when PostgreSQL queue persistence is needed
-    }
+    async fn save_agents(&self, tenant_id: &TenantId, agents: Vec<StoredAgent>) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
 
-    async fn load_agents(&self, _tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
-        Ok(Vec::new())
-    }
+        sqlx::query("DELETE FROM queue_agents WHERE tenant_id = $1")
+            .bind(tenant_id.to_string())
+            .execute(&mut *tx)
+            .await?;
 
-    async fn remove_agent(&self, _tenant_id: &TenantId, _agent_id: &str) -> Result<()> {
+        for agent in agents {
+            let queue_priorities = serde_json::to_value(&agent.queue_priorities)?;
+            sqlx::query(
+                "INSERT INTO queue_agents (
+                    tenant_id, agent_id, extension, queues, skills, priority, state,
+                    queue_priorities, max_concurrent_calls, updated_at
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())",
+            )
+            .bind(tenant_id.to_string())
+            .bind(&agent.id)
+            .bind(&agent.extension)
+            .bind(&agent.queues)
+            .bind(&agent.skills)
+            .bind(agent.priority as i32)
+            .bind(&agent.state)
+            .bind(queue_priorities)
+            .bind(agent.max_concurrent_calls as i32)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 
-    async fn clear_agents(&self, _tenant_id: &TenantId) -> Result<()> {
+    async fn load_agents(&self, tenant_id: &TenantId) -> Result<Vec<StoredAgent>> {
+        let rows = sqlx::query(
+            "SELECT agent_id, extension, queues, skills, priority, state, queue_priorities,
+                    max_concurrent_calls
+             FROM queue_agents
+             WHERE tenant_id = $1
+             ORDER BY agent_id",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut agents = Vec::with_capacity(rows.len());
+        for row in rows {
+            let queue_priorities = row
+                .get::<serde_json::Value, _>("queue_priorities");
+            agents.push(StoredAgent {
+                id: row.get("agent_id"),
+                extension: row.get("extension"),
+                queues: row.try_get::<Vec<String>, _>("queues").unwrap_or_default(),
+                skills: row.try_get::<Vec<String>, _>("skills").unwrap_or_default(),
+                priority: row.get::<i32, _>("priority") as u32,
+                state: row.get("state"),
+                queue_priorities: serde_json::from_value(queue_priorities).unwrap_or_default(),
+                max_concurrent_calls: row.get::<i32, _>("max_concurrent_calls") as u32,
+            });
+        }
+
+        Ok(agents)
+    }
+
+    async fn remove_agent(&self, tenant_id: &TenantId, agent_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM queue_agents WHERE tenant_id = $1 AND agent_id = $2")
+            .bind(tenant_id.to_string())
+            .bind(agent_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn clear_agents(&self, tenant_id: &TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM queue_agents WHERE tenant_id = $1")
+            .bind(tenant_id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

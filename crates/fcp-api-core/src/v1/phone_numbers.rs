@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::PhoneNumberStore;
+use fcp_core::storage::{PhoneNumberStore, SiteLocationStore};
 use fcp_core::{E911Address, LocationId, PhoneNumber, PhoneNumberId, TenantId};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -153,6 +153,18 @@ fn default_tenant_id() -> TenantId {
     TenantId::nil()
 }
 
+fn ensure_phone_number_in_tenant(
+    number: PhoneNumber,
+    tenant_id: &TenantId,
+    id: &PhoneNumberId,
+) -> Result<PhoneNumber, ApiError> {
+    if &number.tenant_id == tenant_id {
+        Ok(number)
+    } else {
+        Err(ApiError::NotFound(format!("Phone number {} not found", id)))
+    }
+}
+
 /// Update phone number request.
 #[derive(Debug, Deserialize)]
 pub struct UpdatePhoneNumberRequest {
@@ -191,6 +203,7 @@ pub async fn list_phone_numbers(
 /// Get phone number by ID.
 pub async fn get_phone_number(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<PhoneNumberResponse>, ApiError> {
     let storage = require_storage!(state);
@@ -202,7 +215,8 @@ pub async fn get_phone_number(
         .get_phone_number(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get phone number: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))
+        .and_then(|number| ensure_phone_number_in_tenant(number, &tenant.0, &id))?;
 
     Ok(Json(number.into()))
 }
@@ -210,12 +224,13 @@ pub async fn get_phone_number(
 /// Create phone number.
 pub async fn create_phone_number(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreatePhoneNumberRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
     // Parse and validate E.164
-    let mut number = PhoneNumber::new(req.e164.clone(), req.tenant_id)
+    let mut number = PhoneNumber::new(req.e164.clone(), tenant.0.clone())
         .map_err(|e| ApiError::BadRequest(format!("Invalid phone number: {}", e)))?;
 
     // Set optional fields
@@ -236,10 +251,20 @@ pub async fn create_phone_number(
     }
     if let Some(ref loc_id) = req.location_id {
         if !loc_id.is_empty() {
-            number.location_id = Some(
-                LocationId::from_str(loc_id)
-                    .map_err(|e| ApiError::BadRequest(format!("Invalid location_id: {}", e)))?,
-            );
+            let location_id = LocationId::from_str(loc_id)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location_id: {}", e)))?;
+            let location = storage
+                .get_location(&location_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+            if location.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Location {} is not in the authenticated tenant",
+                    location_id
+                )));
+            }
+            number.location_id = Some(location_id);
         }
     }
 
@@ -257,6 +282,7 @@ pub async fn create_phone_number(
 /// Update phone number.
 pub async fn update_phone_number(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdatePhoneNumberRequest>,
 ) -> Result<Json<PhoneNumberResponse>, ApiError> {
@@ -270,7 +296,8 @@ pub async fn update_phone_number(
         .get_phone_number(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get phone number: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))
+        .and_then(|number| ensure_phone_number_in_tenant(number, &tenant.0, &id))?;
 
     // Update fields if provided
     // NOTE: State transitions are NOT allowed via PATCH to prevent bypassing lifecycle validation.
@@ -313,10 +340,20 @@ pub async fn update_phone_number(
         if loc_id.is_empty() {
             number.location_id = None;
         } else {
-            number.location_id = Some(
-                LocationId::from_str(loc_id)
-                    .map_err(|e| ApiError::BadRequest(format!("Invalid location_id: {}", e)))?,
-            );
+            let location_id = LocationId::from_str(loc_id)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location_id: {}", e)))?;
+            let location = storage
+                .get_location(&location_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+            if location.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Location {} is not in the authenticated tenant",
+                    location_id
+                )));
+            }
+            number.location_id = Some(location_id);
         }
     }
 
@@ -337,6 +374,7 @@ pub async fn update_phone_number(
 /// Delete phone number.
 pub async fn delete_phone_number(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -344,10 +382,16 @@ pub async fn delete_phone_number(
     let id = PhoneNumberId::from_str(&id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid phone number ID: {}", e)))?;
 
-    storage
-        .delete_phone_number(&id)
+    let number = storage
+        .get_phone_number(&id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete phone number: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to get phone number: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))
+        .and_then(|number| ensure_phone_number_in_tenant(number, &tenant.0, &id))?;
+
+    storage.delete_phone_number(&number.id).await.map_err(|e| {
+        ApiError::Internal(format!("Failed to delete phone number: {}", e))
+    })?;
 
     info!("Deleted phone number {}", id);
     Ok(StatusCode::NO_CONTENT)
@@ -356,6 +400,7 @@ pub async fn delete_phone_number(
 /// Activate phone number.
 pub async fn activate_phone_number(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<PhoneNumberResponse>, ApiError> {
     let storage = require_storage!(state);
@@ -368,7 +413,8 @@ pub async fn activate_phone_number(
         .get_phone_number(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get phone number: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))
+        .and_then(|number| ensure_phone_number_in_tenant(number, &tenant.0, &id))?;
 
     // Activate the number
     number

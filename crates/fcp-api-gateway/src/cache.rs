@@ -3,11 +3,13 @@
 use axum::{
     body::Body,
     extract::State,
-    http::{Request, StatusCode},
+    http::{header::HeaderName, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::Response,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
 use crate::config::{CacheConfig, RedisConfig};
@@ -20,6 +22,65 @@ pub struct CacheState {
 
     /// Configuration
     config: CacheConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedHeader {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedResponse {
+    status: u16,
+    headers: Vec<CachedHeader>,
+    body_base64: String,
+}
+
+fn cacheable_header(name: &HeaderName) -> bool {
+    !matches!(
+        name.as_str().to_ascii_lowercase().as_str(),
+        "content-length" | "transfer-encoding" | "connection" | "x-cache"
+    )
+}
+
+fn serialize_cached_response(parts: &axum::http::response::Parts, bytes: &[u8]) -> CachedResponse {
+    let headers = parts
+        .headers
+        .iter()
+        .filter(|(name, _)| cacheable_header(name))
+        .filter_map(|(name, value)| {
+            value.to_str().ok().map(|value| CachedHeader {
+                name: name.as_str().to_string(),
+                value: value.to_string(),
+            })
+        })
+        .collect();
+
+    CachedResponse {
+        status: parts.status.as_u16(),
+        headers,
+        body_base64: BASE64.encode(bytes),
+    }
+}
+
+fn build_cached_response(entry: CachedResponse) -> Response {
+    let body = BASE64
+        .decode(entry.body_base64.as_bytes())
+        .unwrap_or_default();
+    let mut builder =
+        Response::builder().status(StatusCode::from_u16(entry.status).unwrap_or(StatusCode::OK));
+    let headers = builder.headers_mut().expect("response builder has headers");
+    for header in entry.headers {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(header.name.as_bytes()),
+            HeaderValue::from_str(&header.value),
+        ) {
+            headers.append(name, value);
+        }
+    }
+    headers.insert("X-Cache", HeaderValue::from_static("HIT"));
+    builder.body(Body::from(body)).unwrap()
 }
 
 impl CacheState {
@@ -47,14 +108,20 @@ impl CacheState {
     }
 
     /// Get cached response from Redis
-    async fn get_cached(&self, key: &str) -> Option<Vec<u8>> {
+    async fn get_cached(&self, key: &str) -> Option<CachedResponse> {
         let client = self.client.as_ref()?;
 
         match client.get_multiplexed_async_connection().await {
             Ok(mut conn) => match conn.get::<_, Vec<u8>>(key).await {
-                Ok(data) => {
+                Ok(data) => match serde_json::from_slice::<CachedResponse>(&data) {
+                    Ok(entry) => {
                     debug!(key = %key, size = data.len(), "Cache hit");
-                    Some(data)
+                    Some(entry)
+                    }
+                    Err(e) => {
+                        warn!(key = %key, error = %e, "Failed to deserialize cached response");
+                        None
+                    }
                 }
                 Err(_) => None,
             },
@@ -66,17 +133,24 @@ impl CacheState {
     }
 
     /// Store response in Redis
-    async fn set_cached(&self, key: &str, value: Vec<u8>) {
+    async fn set_cached(&self, key: &str, value: CachedResponse) {
         let client = match self.client.as_ref() {
             Some(c) => c,
             None => return,
         };
 
         let ttl_secs = self.config.default_ttl.as_secs();
+        let serialized = match serde_json::to_vec(&value) {
+            Ok(serialized) => serialized,
+            Err(e) => {
+                error!(error = %e, "Failed to serialize cached response");
+                return;
+            }
+        };
 
         match client.get_multiplexed_async_connection().await {
             Ok(mut conn) => {
-                if let Err(e) = conn.set_ex::<_, _, ()>(key, value, ttl_secs).await {
+                if let Err(e) = conn.set_ex::<_, _, ()>(key, serialized, ttl_secs).await {
                     error!(error = %e, "Failed to cache response");
                 }
             }
@@ -150,14 +224,9 @@ pub async fn cache_middleware(
     let cache_key = cache.cache_key(&req);
 
     // Check cache
-    if let Some(cached_data) = cache.get_cached(&cache_key).await {
+    if let Some(cached_response) = cache.get_cached(&cache_key).await {
         debug!(key = %cache_key, "Serving from cache");
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header("X-Cache", "HIT")
-            .header("Content-Type", "application/json")
-            .body(Body::from(cached_data))
-            .unwrap());
+        return Ok(build_cached_response(cached_response));
     }
 
     // Cache miss - forward to backend
@@ -172,9 +241,9 @@ pub async fn cache_middleware(
                 // Cache the response
                 let cache_clone = cache.clone();
                 let key_clone = cache_key.clone();
-                let bytes_clone = bytes.to_vec();
+                let cache_entry = serialize_cached_response(&parts, &bytes);
                 tokio::spawn(async move {
-                    cache_clone.set_cached(&key_clone, bytes_clone).await;
+                    cache_clone.set_cached(&key_clone, cache_entry).await;
                 });
 
                 // Return response with cache miss header

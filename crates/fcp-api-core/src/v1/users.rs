@@ -19,7 +19,8 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    storage::password, AccountStatus, CredentialStore, EmergencyContact, User, UserRole,
+    storage::password, AccountStatus, CredentialStore, EmergencyContact, SiteLocationStore, User,
+    UserRole,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -136,6 +137,18 @@ fn default_true() -> bool {
     true
 }
 
+fn ensure_user_in_tenant(
+    user: User,
+    tenant_id: &fcp_core::TenantId,
+    username: &str,
+) -> Result<User, ApiError> {
+    if &user.tenant_id == tenant_id {
+        Ok(user)
+    } else {
+        Err(ApiError::NotFound(format!("User '{}' not found", username)))
+    }
+}
+
 /// Parse role string to UserRole enum.
 fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
     match role_str {
@@ -202,9 +215,15 @@ pub struct UpdateDigestPasswordRequest {
 /// GET /api/v1/users
 pub async fn list_users(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let storage = require_storage!(state);
-    let users = storage.list_users().await?;
+    let users = storage
+        .list_users()
+        .await?
+        .into_iter()
+        .filter(|user| user.tenant_id == tenant.0)
+        .collect::<Vec<_>>();
     let responses: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
     Ok(Json(responses))
 }
@@ -214,6 +233,7 @@ pub async fn list_users(
 /// GET /api/v1/users/:username
 pub async fn get_user(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<Json<UserResponse>, ApiError> {
     validation::validate_username(&username)?;
@@ -222,7 +242,8 @@ pub async fn get_user(
     let user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     Ok(Json(UserResponse::from(user)))
 }
@@ -236,6 +257,7 @@ pub async fn get_user(
 /// before returning an error to match the timing of successful creation.
 pub async fn create_user(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -294,7 +316,7 @@ pub async fn create_user(
         digest_password: None, // Can be set separately via API for Cisco-style security
         sip_ha1_hash: Some(sip_ha1_hash),
         display_name: req.display_name,
-        tenant_id: req.tenant_id,
+        tenant_id: tenant.0.clone(),
         enabled: req.enabled,
         role,                             // NEW: User role for RBAC
         department_id: req.department_id, // NEW: Department scoping for department admins
@@ -310,8 +332,24 @@ pub async fn create_user(
         department: req.department,
         job_title: req.job_title,
         location: req.location,
-        location_id: req.location_id
-            .and_then(|s| fcp_core::LocationId::from_str(&s).ok()),
+        location_id: if let Some(location_id_str) = req.location_id {
+            let location_id = fcp_core::LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?;
+            let location = storage
+                .get_location(&location_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+            if location.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Location {} is not in the authenticated tenant",
+                    location_id
+                )));
+            }
+            Some(location_id)
+        } else {
+            None
+        },
         language: req.language.unwrap_or_else(|| "en-US".to_string()),
         timezone: req.timezone.unwrap_or_else(|| "UTC".to_string()),
         account_status,
@@ -365,6 +403,7 @@ pub async fn create_user(
 /// PUT /api/v1/users/:username
 pub async fn update_user(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
@@ -376,7 +415,8 @@ pub async fn update_user(
     let mut user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     // Update fields
     if let Some(display_name) = req.display_name {
@@ -441,8 +481,20 @@ pub async fn update_user(
         user.location_id = if location_id_str.is_empty() {
             None
         } else {
-            Some(fcp_core::LocationId::from_str(&location_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?)
+            let location_id = fcp_core::LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?;
+            let location = storage
+                .get_location(&location_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+            if location.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Location {} is not in the authenticated tenant",
+                    location_id
+                )));
+            }
+            Some(location_id)
         };
     }
     if let Some(language) = req.language {
@@ -505,6 +557,7 @@ pub async fn update_user(
 /// PUT /api/v1/users/:username/password
 pub async fn update_password(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
     Json(req): Json<UpdatePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
@@ -516,7 +569,8 @@ pub async fn update_password(
     let mut user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     // Hash new password
     let password_hash = password::hash_password(&req.password)
@@ -572,6 +626,7 @@ pub async fn update_password(
 /// **Note:** If digest_password is not set (NULL), the main password is used for SIP.
 pub async fn update_digest_password(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
     Json(req): Json<UpdateDigestPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
@@ -583,7 +638,8 @@ pub async fn update_digest_password(
     let mut user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     // Hash new digest password for audit/display purposes
     let digest_password_hash = password::hash_password(&req.digest_password)
@@ -632,6 +688,7 @@ pub async fn update_digest_password(
 /// for SIP authentication. The HA1 hash will be recomputed from the main password.
 pub async fn delete_digest_password(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validation::validate_username(&username)?;
@@ -641,7 +698,8 @@ pub async fn delete_digest_password(
     let mut user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     // Check if digest password is set
     if user.digest_password.is_none() {
@@ -694,6 +752,7 @@ pub async fn delete_digest_password(
 /// Resets failed login attempts, clears lockout, and sets account status to Active.
 pub async fn unlock_user(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<Json<UserResponse>, ApiError> {
     validation::validate_username(&username)?;
@@ -702,7 +761,8 @@ pub async fn unlock_user(
     let mut user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     user.failed_login_attempts = 0;
     user.account_locked_until = None;
@@ -725,6 +785,7 @@ pub async fn unlock_user(
 /// DELETE /api/v1/users/:username
 pub async fn delete_user(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validation::validate_username(&username)?;
@@ -734,7 +795,8 @@ pub async fn delete_user(
     let user = storage
         .get_user(&username)
         .await?
-        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
+        .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     // Delete user
     storage.delete_user(&username).await?;

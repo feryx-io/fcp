@@ -141,11 +141,13 @@ pub struct SectionQuery {
 /// GET /api/v1/config -- list all config entries
 pub async fn list_configs(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Query(params): Query<ListConfigsQuery>,
 ) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
+    let tenant_id = tenant.0.to_string();
     let entries = store
-        .list_configs(params.service.as_deref(), params.tenant_id.as_deref())
+        .list_configs(params.service.as_deref(), Some(tenant_id.as_str()))
         .await
         .map_err(|e| ApiError::Internal(format!("failed to list configs: {e}")))?;
 
@@ -155,12 +157,14 @@ pub async fn list_configs(
 /// GET /api/v1/config/:service -- list sections for a service
 pub async fn list_service_config(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(service): Path<String>,
-    Query(params): Query<SectionQuery>,
+    Query(_params): Query<SectionQuery>,
 ) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
+    let tenant_id = tenant.0.to_string();
     let entries = store
-        .get_service_config(&service, &params.tenant_id)
+        .get_service_config(&service, tenant_id.as_str())
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get service config: {e}")))?;
 
@@ -170,18 +174,20 @@ pub async fn list_service_config(
 /// GET /api/v1/config/:service/:section -- get specific section
 pub async fn get_config(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path((service, section)): Path<(String, String)>,
-    Query(params): Query<SectionQuery>,
+    Query(_params): Query<SectionQuery>,
 ) -> Result<Json<ConfigEntryResponse>, ApiError> {
     let store = get_store(&state)?;
+    let tenant_id = tenant.0.to_string();
     let entry = store
-        .get_config(&service, &section, &params.tenant_id)
+        .get_config(&service, &section, tenant_id.as_str())
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get config: {e}")))?
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "config not found: {service}/{section} (tenant: {})",
-                params.tenant_id
+                tenant_id
             ))
         })?;
 
@@ -191,10 +197,12 @@ pub async fn get_config(
 /// PUT /api/v1/config/:service/:section -- update/create section
 pub async fn update_config(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path((service, section)): Path<(String, String)>,
     Json(req): Json<UpdateConfigRequest>,
 ) -> Result<Json<UpdateConfigResponse>, ApiError> {
     let store = get_store(&state)?;
+    let tenant_id = tenant.0.to_string();
 
     // Validate that value is a JSON object
     if !req.value.is_object() {
@@ -207,7 +215,7 @@ pub async fn update_config(
         .set_config(
             &service,
             &section,
-            &req.tenant_id,
+            tenant_id.as_str(),
             req.value,
             req.updated_by.as_deref(),
         )
@@ -218,19 +226,21 @@ pub async fn update_config(
         version,
         service,
         section,
-        tenant_id: req.tenant_id,
+        tenant_id,
     }))
 }
 
 /// DELETE /api/v1/config/:service/:section -- delete config entry
 pub async fn delete_config(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path((service, section)): Path<(String, String)>,
-    Query(params): Query<SectionQuery>,
+    Query(_params): Query<SectionQuery>,
 ) -> Result<Json<DeleteConfigResponse>, ApiError> {
     let store = get_store(&state)?;
+    let tenant_id = tenant.0.to_string();
     let deleted = store
-        .delete_config(&service, &section, &params.tenant_id)
+        .delete_config(&service, &section, tenant_id.as_str())
         .await
         .map_err(|e| ApiError::Internal(format!("failed to delete config: {e}")))?;
 
@@ -240,6 +250,7 @@ pub async fn delete_config(
 /// GET /api/v1/config/audit -- audit log
 pub async fn get_audit_log(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Query(params): Query<AuditLogQuery>,
 ) -> Result<Json<Vec<AuditEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
@@ -255,8 +266,15 @@ pub async fn get_audit_log(
         .get_audit_log(service, params.section.as_deref(), limit)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get audit log: {e}")))?;
+    let tenant_id = tenant.0.to_string();
 
-    Ok(Json(entries.into_iter().map(Into::into).collect()))
+    Ok(Json(
+        entries
+            .into_iter()
+            .filter(|entry| entry.tenant_id == tenant_id)
+            .map(Into::into)
+            .collect(),
+    ))
 }
 
 /// POST /api/v1/config/:service/:section/validate -- validate without saving

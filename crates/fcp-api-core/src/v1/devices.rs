@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::{DeviceStore, RegistrationStore};
+use fcp_core::storage::{CredentialStore, DeviceStore, RegistrationStore, SiteLocationStore};
 use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,18 @@ pub struct CreateDeviceRequest {
 
 fn default_tenant_id() -> TenantId {
     TenantId::nil()
+}
+
+fn ensure_device_in_tenant(
+    device: Device,
+    tenant_id: &TenantId,
+    id: &DeviceId,
+) -> Result<Device, ApiError> {
+    if &device.tenant_id == tenant_id {
+        Ok(device)
+    } else {
+        Err(ApiError::NotFound(format!("Device {} not found", id)))
+    }
 }
 
 /// Update device request.
@@ -282,6 +294,7 @@ fn extract_ip_from_contact(contact: &str) -> String {
 /// Get device by ID.
 pub async fn get_device(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<DeviceResponse>, ApiError> {
     let storage = require_storage!(state);
@@ -293,7 +306,8 @@ pub async fn get_device(
         .get_device(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
+        .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
 
     Ok(Json(device.into()))
 }
@@ -301,20 +315,31 @@ pub async fn get_device(
 /// Create device.
 pub async fn create_device(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreateDeviceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
     let device_type = parse_device_type(&req.device_type)?;
 
-    let mut device = Device::new(req.name, device_type, req.tenant_id);
+    let mut device = Device::new(req.name, device_type, tenant.0.clone());
 
     // Set optional fields
     if let Some(owner_id_str) = req.owner_user_id {
-        device.owner_user_id = Some(
-            UserId::from_str(&owner_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?,
-        );
+        let owner_user_id = UserId::from_str(&owner_id_str)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?;
+        let owner = storage
+            .get_user_by_id(&owner_user_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get owner user: {}", e)))?
+            .ok_or_else(|| ApiError::BadRequest(format!("User {} not found", owner_user_id)))?;
+        if owner.tenant_id != tenant.0 {
+            return Err(ApiError::BadRequest(format!(
+                "User {} is not in the authenticated tenant",
+                owner_user_id
+            )));
+        }
+        device.owner_user_id = Some(owner_user_id);
     }
 
     device.mac_address = req.mac_address;
@@ -333,10 +358,20 @@ pub async fn create_device(
 
     device.location = req.location;
     if let Some(location_id_str) = req.location_id {
-        device.location_id = Some(
-            fcp_core::LocationId::from_str(&location_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?,
-        );
+        let location_id = fcp_core::LocationId::from_str(&location_id_str)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?;
+        let location = storage
+            .get_location(&location_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
+            .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+        if location.tenant_id != tenant.0 {
+            return Err(ApiError::BadRequest(format!(
+                "Location {} is not in the authenticated tenant",
+                location_id
+            )));
+        }
+        device.location_id = Some(location_id);
     }
 
     if let Some(e911) = req.e911_override {
@@ -368,6 +403,7 @@ pub async fn create_device(
 /// Update device.
 pub async fn update_device(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateDeviceRequest>,
 ) -> Result<Json<DeviceResponse>, ApiError> {
@@ -381,7 +417,8 @@ pub async fn update_device(
         .get_device(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
+        .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
 
     // Update fields if provided
     if let Some(name) = req.name {
@@ -389,10 +426,20 @@ pub async fn update_device(
     }
 
     if let Some(owner_id_str) = req.owner_user_id {
-        device.owner_user_id = Some(
-            UserId::from_str(&owner_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?,
-        );
+        let owner_user_id = UserId::from_str(&owner_id_str)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?;
+        let owner = storage
+            .get_user_by_id(&owner_user_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get owner user: {}", e)))?
+            .ok_or_else(|| ApiError::BadRequest(format!("User {} not found", owner_user_id)))?;
+        if owner.tenant_id != tenant.0 {
+            return Err(ApiError::BadRequest(format!(
+                "User {} is not in the authenticated tenant",
+                owner_user_id
+            )));
+        }
+        device.owner_user_id = Some(owner_user_id);
     }
 
     if req.mac_address.is_some() {
@@ -431,8 +478,20 @@ pub async fn update_device(
         device.location_id = if location_id_str.is_empty() {
             None
         } else {
-            Some(fcp_core::LocationId::from_str(&location_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?)
+            let location_id = fcp_core::LocationId::from_str(&location_id_str)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?;
+            let location = storage
+                .get_location(&location_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+            if location.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Location {} is not in the authenticated tenant",
+                    location_id
+                )));
+            }
+            Some(location_id)
         };
     }
 
@@ -480,6 +539,7 @@ pub async fn update_device(
 /// Delete device.
 pub async fn delete_device(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -492,7 +552,8 @@ pub async fn delete_device(
         .get_device(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Device {} not found", id)))
+        .and_then(|device| ensure_device_in_tenant(device, &tenant.0, &id))?;
 
     storage
         .delete_device(&id)

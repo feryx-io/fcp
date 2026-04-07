@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::LineBindingStore;
+use fcp_core::storage::{CredentialStore, DeviceStore, LineBindingStore, PhoneNumberStore};
 use fcp_core::{
     BindingType, DeviceBinding, DeviceId, LineBinding, LineBindingId, PhoneNumberId, RingStrategy,
     TenantId, UserId,
@@ -125,6 +125,18 @@ fn default_tenant_id() -> TenantId {
     TenantId::nil()
 }
 
+fn ensure_line_binding_in_tenant(
+    binding: LineBinding,
+    tenant_id: &TenantId,
+    id: &LineBindingId,
+) -> Result<LineBinding, ApiError> {
+    if &binding.tenant_id == tenant_id {
+        Ok(binding)
+    } else {
+        Err(ApiError::NotFound(format!("Line binding {} not found", id)))
+    }
+}
+
 /// Update line binding request.
 #[derive(Debug, Deserialize)]
 pub struct UpdateLineBindingRequest {
@@ -162,6 +174,7 @@ pub async fn list_line_bindings(
 /// Get line binding by ID.
 pub async fn get_line_binding(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<LineBindingResponse>, ApiError> {
     let storage = require_storage!(state);
@@ -173,7 +186,8 @@ pub async fn get_line_binding(
         .get_line_binding(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get line binding: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", id)))
+        .and_then(|binding| ensure_line_binding_in_tenant(binding, &tenant.0, &id))?;
 
     Ok(Json(binding.into()))
 }
@@ -188,12 +202,33 @@ pub async fn create_line_binding(
 
     let phone_number_id = PhoneNumberId::from_str(&req.phone_number_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid phone number ID: {}", e)))?;
+    let phone_number = storage
+        .get_phone_number(&phone_number_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get phone number: {}", e)))?
+        .ok_or_else(|| ApiError::BadRequest(format!("Phone number {} not found", phone_number_id)))?;
+    if phone_number.tenant_id != tenant.0 {
+        return Err(ApiError::BadRequest(format!(
+            "Phone number {} is not in the authenticated tenant",
+            phone_number_id
+        )));
+    }
 
     let owner_user_id = if let Some(user_id_str) = req.owner_user_id {
-        Some(
-            UserId::from_str(&user_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?,
-        )
+        let user_id = UserId::from_str(&user_id_str)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid user ID: {}", e)))?;
+        let user = storage
+            .get_user_by_id(&user_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get user: {}", e)))?
+            .ok_or_else(|| ApiError::BadRequest(format!("User {} not found", user_id)))?;
+        if user.tenant_id != tenant.0 {
+            return Err(ApiError::BadRequest(format!(
+                "User {} is not in the authenticated tenant",
+                user_id
+            )));
+        }
+        Some(user_id)
     } else {
         None
     };
@@ -201,11 +236,29 @@ pub async fn create_line_binding(
     let binding_type = parse_binding_type(&req.binding_type)?;
 
     // SECURITY: Use authenticated tenant, not request body tenant_id
-    let mut binding = LineBinding::new(phone_number_id, owner_user_id, binding_type, tenant.0);
+    let mut binding =
+        LineBinding::new(phone_number_id, owner_user_id, binding_type, tenant.0.clone());
 
     // Set optional fields
     if let Some(devices) = req.devices {
-        binding.devices = devices.into_iter().map(|d| d.into()).collect();
+        let mut validated_devices = Vec::with_capacity(devices.len());
+        for device in devices {
+            let device_id = DeviceId::from_str(&device.device_id)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {}", e)))?;
+            let stored_device = storage
+                .get_device(&device_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Device {} not found", device_id)))?;
+            if stored_device.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Device {} is not in the authenticated tenant",
+                    device_id
+                )));
+            }
+            validated_devices.push(device.into());
+        }
+        binding.devices = validated_devices;
     }
 
     if let Some(strategy) = req.ring_strategy {
@@ -241,6 +294,7 @@ pub async fn create_line_binding(
 /// Update line binding.
 pub async fn update_line_binding(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateLineBindingRequest>,
 ) -> Result<Json<LineBindingResponse>, ApiError> {
@@ -254,11 +308,29 @@ pub async fn update_line_binding(
         .get_line_binding(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get line binding: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", id)))
+        .and_then(|binding| ensure_line_binding_in_tenant(binding, &tenant.0, &id))?;
 
     // Update fields if provided
     if let Some(devices) = req.devices {
-        binding.devices = devices.into_iter().map(|d| d.into()).collect();
+        let mut validated_devices = Vec::with_capacity(devices.len());
+        for device in devices {
+            let device_id = DeviceId::from_str(&device.device_id)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {}", e)))?;
+            let stored_device = storage
+                .get_device(&device_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to get device: {}", e)))?
+                .ok_or_else(|| ApiError::BadRequest(format!("Device {} not found", device_id)))?;
+            if stored_device.tenant_id != tenant.0 {
+                return Err(ApiError::BadRequest(format!(
+                    "Device {} is not in the authenticated tenant",
+                    device_id
+                )));
+            }
+            validated_devices.push(device.into());
+        }
+        binding.devices = validated_devices;
     }
 
     if let Some(strategy) = req.ring_strategy {
@@ -313,6 +385,7 @@ pub async fn update_line_binding(
 /// Delete line binding.
 pub async fn delete_line_binding(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -320,8 +393,15 @@ pub async fn delete_line_binding(
     let id = LineBindingId::from_str(&id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid line binding ID: {}", e)))?;
 
+    let binding = storage
+        .get_line_binding(&id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get line binding: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", id)))
+        .and_then(|binding| ensure_line_binding_in_tenant(binding, &tenant.0, &id))?;
+
     storage
-        .delete_line_binding(&id)
+        .delete_line_binding(&binding.id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to delete line binding: {}", e)))?;
 

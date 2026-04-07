@@ -254,6 +254,7 @@ pub async fn list_trunks(
 /// Get a single trunk.
 pub async fn get_trunk(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -264,6 +265,9 @@ pub async fn get_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+    if trunk.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("Trunk not found".to_string()));
+    }
 
     Ok(Json(TrunkResponse::from(trunk).with_health(&state.trunk_health)))
 }
@@ -335,6 +339,7 @@ pub async fn create_trunk(
 /// Update an existing trunk.
 pub async fn update_trunk(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateTrunkRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -346,6 +351,9 @@ pub async fn update_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+    if trunk.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("Trunk not found".to_string()));
+    }
 
     if let Some(name) = req.name { trunk.name = name; }
     if let Some(enabled) = req.enabled { trunk.enabled = enabled; }
@@ -399,6 +407,7 @@ pub async fn update_trunk(
 /// Delete a trunk.
 pub async fn delete_trunk(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -410,6 +419,9 @@ pub async fn delete_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+    if trunk.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("Trunk not found".to_string()));
+    }
 
     info!(trunk_name = %trunk.name, trunk_id = %trunk.id, "Deleting SIP trunk");
 
@@ -424,6 +436,7 @@ pub async fn delete_trunk(
 /// Test trunk connectivity by sending an OPTIONS probe.
 pub async fn test_trunk(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -434,6 +447,9 @@ pub async fn test_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+    if trunk.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("Trunk not found".to_string()));
+    }
 
     if trunk.hosts.is_empty() {
         return Err(ApiError::BadRequest("Trunk has no hosts configured".to_string()));
@@ -464,10 +480,14 @@ pub async fn clone_trunk(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+    if source.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("Trunk not found".to_string()));
+    }
 
     let mut clone = source.clone();
     clone.id = fcp_core::TrunkId::new();
     clone.name = format!("{} (copy)", clone.name);
+    clone.tenant_id = tenant.0;
     clone.enabled = false; // Disable clone by default
     let now = SystemTime::now();
     clone.created_at = now;
@@ -486,6 +506,7 @@ pub async fn clone_trunk(
 /// Get trunk stats (ASR, ACD, PDD, hourly volume) from CDRs.
 pub async fn get_trunk_stats(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -496,6 +517,9 @@ pub async fn get_trunk_stats(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get trunk: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Trunk not found".to_string()))?;
+    if trunk.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("Trunk not found".to_string()));
+    }
 
     let stats = storage
         .get_trunk_stats(&trunk.name)

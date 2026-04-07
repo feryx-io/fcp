@@ -103,6 +103,18 @@ fn default_tenant_id() -> TenantId {
     TenantId::nil()
 }
 
+fn ensure_location_in_tenant(
+    location: SiteLocation,
+    tenant_id: &TenantId,
+    id: &LocationId,
+) -> Result<SiteLocation, ApiError> {
+    if &location.tenant_id == tenant_id {
+        Ok(location)
+    } else {
+        Err(ApiError::NotFound(format!("Location {} not found", id)))
+    }
+}
+
 /// Update location request.
 #[derive(Debug, Deserialize)]
 pub struct UpdateLocationRequest {
@@ -147,6 +159,7 @@ pub async fn list_locations(
 /// Get location by ID.
 pub async fn get_location(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<LocationResponse>, ApiError> {
     let storage = require_storage!(state);
@@ -158,7 +171,8 @@ pub async fn get_location(
         .get_location(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))
+        .and_then(|location| ensure_location_in_tenant(location, &tenant.0, &id))?;
 
     Ok(Json(location.into()))
 }
@@ -166,11 +180,12 @@ pub async fn get_location(
 /// Create location.
 pub async fn create_location(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreateLocationRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    let mut location = SiteLocation::new(req.name, req.tenant_id);
+    let mut location = SiteLocation::new(req.name, tenant.0.clone());
 
     location.description = req.description;
     location.address_line1 = req.address_line1;
@@ -213,6 +228,7 @@ pub async fn create_location(
 /// Update location.
 pub async fn update_location(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateLocationRequest>,
 ) -> Result<Json<LocationResponse>, ApiError> {
@@ -226,7 +242,8 @@ pub async fn update_location(
         .get_location(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))
+        .and_then(|location| ensure_location_in_tenant(location, &tenant.0, &id))?;
 
     // Update fields if provided
     if let Some(name) = req.name {
@@ -306,6 +323,7 @@ pub async fn update_location(
 /// Delete location.
 pub async fn delete_location(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -318,7 +336,8 @@ pub async fn delete_location(
         .get_location(&id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Location {} not found", id)))
+        .and_then(|location| ensure_location_in_tenant(location, &tenant.0, &id))?;
 
     storage
         .delete_location(&id)

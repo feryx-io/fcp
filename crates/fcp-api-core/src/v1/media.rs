@@ -244,6 +244,7 @@ pub struct OriginateCallResponse {
 /// Returns immediately with a call ID — poll GET /v1/calls/:id for status.
 pub async fn originate_call(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<OriginateCallRequest>,
 ) -> Result<Json<OriginateCallResponse>, ApiError> {
     if req.from.is_empty() {
@@ -253,12 +254,7 @@ pub async fn originate_call(
         return Err(ApiError::BadRequest("'to' is required".into()));
     }
 
-    let tenant_id = if let Some(tid) = &req.tenant_id {
-        fcp_core::TenantId::from_str(tid)
-            .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?
-    } else {
-        state.default_tenant_id.clone()
-    };
+    let tenant_id = tenant.0;
 
     let call_id = state
         .handler

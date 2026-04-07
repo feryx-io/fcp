@@ -8,7 +8,8 @@ use axum::{
     Json,
 };
 use fcp_core::{
-    storage::VoicemailStore, CredentialStore, GreetingType, LineBindingId, MessageStatus, TenantId,
+    storage::{LineBindingStore, VoicemailStore},
+    CredentialStore, GreetingType, LineBindingId, MessageStatus, TenantId,
     UserId, VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
 };
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,47 @@ fn default_max_messages() -> u32 {
     100
 }
 
+fn ensure_mailbox_in_tenant(
+    mailbox: VoicemailMailbox,
+    tenant_id: &TenantId,
+    id: &str,
+) -> Result<VoicemailMailbox, ApiError> {
+    if &mailbox.tenant_id == tenant_id {
+        Ok(mailbox)
+    } else {
+        Err(ApiError::NotFound(format!("Mailbox {} not found", id)))
+    }
+}
+
+async fn get_mailbox_for_tenant(
+    state: &ApiState,
+    id: &str,
+    tenant_id: &TenantId,
+) -> Result<VoicemailMailbox, ApiError> {
+    let storage = require_storage!(state);
+    storage
+        .get_mailbox(id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))
+        .and_then(|mailbox| ensure_mailbox_in_tenant(mailbox, tenant_id, id))
+}
+
+async fn get_message_for_tenant(
+    state: &ApiState,
+    id: &str,
+    tenant_id: &TenantId,
+) -> Result<(VoicemailMessage, VoicemailMailbox), ApiError> {
+    let storage = require_storage!(state);
+    let message = storage
+        .get_message(id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Message {} not found", id)))?;
+    let mailbox = get_mailbox_for_tenant(state, &message.mailbox_id, tenant_id).await?;
+    Ok((message, mailbox))
+}
+
 /// List all mailboxes for a tenant.
 pub async fn list_mailboxes(
     State(state): State<ApiState>,
@@ -178,15 +220,10 @@ pub async fn list_mailboxes(
 /// Get a specific mailbox by ID.
 pub async fn get_mailbox(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = require_storage!(state);
-
-    let mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     Ok(Json(MailboxResponse::from(mailbox)))
 }
@@ -212,14 +249,13 @@ fn validate_mailbox_controls(
 /// Create a new voicemail mailbox.
 pub async fn create_mailbox(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreateMailboxRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
     validate_mailbox_controls(req.max_message_duration, req.max_messages)?;
 
-    let tenant_id = TenantId::from_str(&req.tenant_id)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?;
     let user_id = UserId::from_str(&req.user_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid user_id: {}", e)))?;
     let line_binding_id = LineBindingId::from_str(&req.line_binding_id)
@@ -231,9 +267,26 @@ pub async fn create_mailbox(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("User {} not found", req.user_id)))?;
+    if user.tenant_id != tenant.0 {
+        return Err(ApiError::BadRequest(format!(
+            "User {} is not in the authenticated tenant",
+            req.user_id
+        )));
+    }
+    let line_binding = storage
+        .get_line_binding(&line_binding_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", req.line_binding_id)))?;
+    if line_binding.tenant_id != tenant.0 {
+        return Err(ApiError::BadRequest(format!(
+            "Line binding {} is not in the authenticated tenant",
+            req.line_binding_id
+        )));
+    }
 
     let mut mailbox = VoicemailMailbox::new(
-        tenant_id,
+        tenant.0.clone(),
         user_id,
         line_binding_id,
         user.username.clone(),
@@ -264,7 +317,7 @@ pub async fn create_mailbox(
             mailbox_id: mailbox.id.clone(),
             user_id: req.user_id.clone(),
             extension: user.username.clone(),
-            tenant_id: req.tenant_id.clone(),
+            tenant_id: tenant.0.to_string(),
             timestamp: SystemTime::now(),
         },
     )).await;
@@ -336,16 +389,13 @@ pub async fn create_mailbox(
 /// Update an existing mailbox.
 pub async fn update_mailbox(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateMailboxRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    let mut mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     // Validate limits if provided
     if let Some(max_duration) = req.max_message_duration {
@@ -425,9 +475,12 @@ pub async fn update_mailbox(
 /// Delete a mailbox.
 pub async fn delete_mailbox(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+
+    get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     storage
         .delete_mailbox(&id)
@@ -450,9 +503,12 @@ pub async fn delete_mailbox(
 /// List messages for a mailbox.
 pub async fn list_messages(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(mailbox_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+
+    get_mailbox_for_tenant(&state, &mailbox_id, &tenant.0).await?;
 
     let messages = storage
         .list_messages(&mailbox_id)
@@ -467,15 +523,10 @@ pub async fn list_messages(
 /// Get a specific message.
 pub async fn get_message(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = require_storage!(state);
-
-    let message = storage
-        .get_message(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Message {} not found", id)))?;
+    let (message, _) = get_message_for_tenant(&state, &id, &tenant.0).await?;
 
     Ok(Json(MessageResponse::from(message)))
 }
@@ -483,16 +534,13 @@ pub async fn get_message(
 /// Update a message (typically to mark as heard/saved).
 pub async fn update_message(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateMessageRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    let mut message = storage
-        .get_message(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Message {} not found", id)))?;
+    let (mut message, _) = get_message_for_tenant(&state, &id, &tenant.0).await?;
 
     if let Some(status_str) = req.status {
         let status = match status_str.as_str() {
@@ -524,9 +572,12 @@ pub async fn update_message(
 /// Delete a message.
 pub async fn delete_message(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+
+    get_message_for_tenant(&state, &id, &tenant.0).await?;
 
     storage
         .delete_message(&id)
@@ -541,15 +592,12 @@ pub async fn delete_message(
 /// Enable a mailbox.
 pub async fn enable_mailbox(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    let mut mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     mailbox.enabled = true;
     mailbox.updated_at = SystemTime::now();
@@ -567,15 +615,12 @@ pub async fn enable_mailbox(
 /// Disable a mailbox.
 pub async fn disable_mailbox(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    let mut mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     mailbox.enabled = false;
     mailbox.updated_at = SystemTime::now();
@@ -605,16 +650,12 @@ pub struct MailboxStatsResponse {
 /// Get mailbox statistics.
 pub async fn get_mailbox_stats(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    // Verify mailbox exists
-    let _mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let _mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     let stats = storage
         .get_mailbox_stats(&id)
@@ -688,15 +729,10 @@ fn require_greetings_dir(state: &ApiState) -> Result<&PathBuf, ApiError> {
 /// List all greetings for a mailbox.
 pub async fn list_greetings(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = require_storage!(state);
-
-    let mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     let responses: Vec<GreetingResponse> =
         mailbox.greetings.into_iter().map(GreetingResponse::from).collect();
@@ -707,6 +743,7 @@ pub async fn list_greetings(
 /// Upload a greeting (multipart: greeting_type + audio file).
 pub async fn upload_greeting(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -753,11 +790,7 @@ pub async fn upload_greeting(
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
     // Load mailbox
-    let mut mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     // Create directory for this mailbox's greetings
     let mailbox_dir = greetings_dir.join(&id);
@@ -792,17 +825,14 @@ pub async fn upload_greeting(
 /// Delete a greeting.
 pub async fn delete_greeting(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path((id, greeting_type_str)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
-    let mut mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     // Find and remove the greeting
     let had_greeting = mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type);
@@ -844,6 +874,7 @@ pub struct SetGreetingActiveRequest {
 /// Set the active state of a greeting.
 pub async fn set_greeting_active(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path((id, greeting_type_str)): Path<(String, String)>,
     Json(req): Json<SetGreetingActiveRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -851,11 +882,7 @@ pub async fn set_greeting_active(
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
-    let mut mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     if !mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type) {
         return Err(ApiError::NotFound(format!(
@@ -888,17 +915,12 @@ pub async fn set_greeting_active(
 /// Download a greeting audio file.
 pub async fn download_greeting_audio(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path((id, greeting_type_str)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = require_storage!(state);
-
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
-    let mailbox = storage
-        .get_mailbox(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Mailbox {} not found", id)))?;
+    let mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     let greeting = mailbox
         .greetings

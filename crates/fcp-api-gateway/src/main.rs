@@ -276,17 +276,14 @@ async fn main() -> Result<()> {
             rate_limiter_state,
             rate_limit::rate_limit_middleware,
         ))
-        .layer(
-            if config.gateway.compression_enabled {
-                Some(CompressionLayer::new())
-            } else {
-                None
-            }
-            .unwrap_or_else(|| CompressionLayer::new()),
-        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(proxy_state.clone());
+    let app = if config.gateway.compression_enabled {
+        app.layer(CompressionLayer::new())
+    } else {
+        app
+    };
 
     // Start server
     let bind_addr = config.gateway.bind_address;
@@ -302,7 +299,13 @@ async fn main() -> Result<()> {
     info!("API Gateway listening on {}", bind_addr);
 
     // Spawn server task
-    let server_handle = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server_handle = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
 
     // Wait for shutdown signal
     info!("FCP API Gateway running. Press Ctrl+C to shutdown.");
