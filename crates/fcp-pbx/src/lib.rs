@@ -254,9 +254,15 @@ mod tests {
             },
         );
 
+        let mut feature_codes = FeatureCodeConfig::default();
+        feature_codes.group_pickup = "*8".to_string();
+        feature_codes.directed_pickup = "*9".to_string();
+        feature_codes.intercom_oneway = "*80".to_string();
+        feature_codes.intercom_twoway = "*81".to_string();
+
         PbxConfig {
             enabled: true,
-            feature_codes: FeatureCodeConfig::default(),
+            feature_codes,
             hunt_groups,
             parking: ParkingConfig {
                 enabled: true,

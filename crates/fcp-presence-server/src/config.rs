@@ -140,16 +140,20 @@ fn default_cleanup_interval() -> u64 {
 pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
+
+    /// Bearer token required for non-health HTTP API endpoints.
+    pub api_token: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
-    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 8080)
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8080)
 }
 
 impl Default for HttpSection {
     fn default() -> Self {
         Self {
             bind_address: default_http_bind(),
+            api_token: None,
         }
     }
 }
@@ -314,7 +318,26 @@ pub fn load_config(config_path: Option<&Path>) -> Result<PresenceServerConfig> {
 }
 
 /// Validate configuration for logical consistency.
-pub fn validate_config(_config: &PresenceServerConfig) -> Result<()> {
+pub fn validate_config(config: &PresenceServerConfig) -> Result<()> {
+    validate_http_config(&config.http)?;
+    Ok(())
+}
+
+fn validate_http_config(http: &HttpSection) -> Result<()> {
+    let public_bind = !http.bind_address.ip().is_loopback();
+    let has_token = http
+        .api_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if public_bind && !has_token {
+        anyhow::bail!(
+            "http.api_token must be set when binding the presence HTTP API to a non-loopback address ({})",
+            http.bind_address
+        );
+    }
+
     Ok(())
 }
 
@@ -326,7 +349,8 @@ mod tests {
     fn test_default_config() {
         let config = PresenceServerConfig::default();
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
-        assert_eq!(config.http.bind_address.port(), 8080);
+        assert_eq!(config.http.bind_address, "127.0.0.1:8080".parse().unwrap());
+        assert!(config.http.api_token.is_none());
     }
 
     #[test]
@@ -340,6 +364,7 @@ database_url = "postgresql://localhost/fcp"
 
 [http]
 bind_address = "0.0.0.0:9090"
+api_token = "secret"
 
 [presence]
 max_subscriptions = 5000
@@ -353,5 +378,21 @@ format = "compact"
         assert_eq!(config.service.node_id, "pres-01");
         assert_eq!(config.presence.max_subscriptions, 5000);
         assert_eq!(config.http.bind_address.port(), 9090);
+        assert_eq!(config.http.api_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn test_public_http_bind_requires_token() {
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8080".parse().unwrap(),
+            api_token: None,
+        };
+        assert!(validate_http_config(&http).is_err());
+
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8080".parse().unwrap(),
+            api_token: Some("secret".to_string()),
+        };
+        assert!(validate_http_config(&http).is_ok());
     }
 }

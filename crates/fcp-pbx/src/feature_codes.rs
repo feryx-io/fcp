@@ -55,32 +55,44 @@ fn extract_user_part(dialed: &str) -> &str {
 /// Prefixes are matched longest-first to avoid ambiguity (e.g., `*81` before `*8`).
 pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeAction> {
     let user = extract_user_part(dialed);
+    let is_enabled = |code: &str| !code.trim().is_empty();
 
     // Build prefix→action mapping, sorted longest-first
     #[allow(clippy::type_complexity)]
-    let mut prefixes: Vec<(&str, fn(&str) -> FeatureCodeAction)> = vec![
-        (&config.intercom_twoway, |suffix| {
+    let mut prefixes: Vec<(&str, fn(&str) -> FeatureCodeAction)> = Vec::new();
+    if is_enabled(&config.intercom_twoway) {
+        prefixes.push((&config.intercom_twoway, |suffix| {
             FeatureCodeAction::IntercomTwoWay {
                 extension: suffix.to_string(),
             }
-        }),
-        (&config.intercom_oneway, |suffix| {
+        }));
+    }
+    if is_enabled(&config.intercom_oneway) {
+        prefixes.push((&config.intercom_oneway, |suffix| {
             FeatureCodeAction::IntercomOneWay {
                 extension: suffix.to_string(),
             }
-        }),
-        (&config.retrieve, |suffix| {
+        }));
+    }
+    if is_enabled(&config.retrieve) {
+        prefixes.push((&config.retrieve, |suffix| {
             FeatureCodeAction::RetrieveParkedCall {
                 orbit: suffix.parse().unwrap_or(0),
             }
-        }),
-        (&config.park, |_| FeatureCodeAction::ParkCall),
-        (&config.directed_pickup, |suffix| {
+        }));
+    }
+    if is_enabled(&config.park) {
+        prefixes.push((&config.park, |_| FeatureCodeAction::ParkCall));
+    }
+    if is_enabled(&config.directed_pickup) {
+        prefixes.push((&config.directed_pickup, |suffix| {
             FeatureCodeAction::DirectedPickup {
                 extension: suffix.to_string(),
             }
-        }),
-        (&config.voicemail_access, |suffix| {
+        }));
+    }
+    if is_enabled(&config.voicemail_access) {
+        prefixes.push((&config.voicemail_access, |suffix| {
             FeatureCodeAction::VoicemailAccess {
                 mailbox: if suffix.is_empty() {
                     None
@@ -88,8 +100,8 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
                     Some(suffix.to_string())
                 },
             }
-        }),
-    ];
+        }));
+    }
 
     // Sort by prefix length descending so longer prefixes match first
     prefixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
@@ -108,13 +120,13 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     }
 
     // Exact-match codes (no suffix)
-    if user == config.group_pickup {
+    if is_enabled(&config.group_pickup) && user == config.group_pickup {
         return Some(FeatureCodeAction::GroupPickup);
     }
-    if user == config.agent_login {
+    if is_enabled(&config.agent_login) && user == config.agent_login {
         return Some(FeatureCodeAction::AgentLogin);
     }
-    if user == config.agent_logout {
+    if is_enabled(&config.agent_logout) && user == config.agent_logout {
         return Some(FeatureCodeAction::AgentLogout);
     }
 
@@ -131,7 +143,8 @@ mod tests {
 
     #[test]
     fn test_group_pickup() {
-        let cfg = default_config();
+        let mut cfg = default_config();
+        cfg.group_pickup = "*8".to_string();
         assert_eq!(parse("*8", &cfg), Some(FeatureCodeAction::GroupPickup));
         assert_eq!(
             parse("sip:*8@10.0.0.1", &cfg),
@@ -141,7 +154,8 @@ mod tests {
 
     #[test]
     fn test_directed_pickup() {
-        let cfg = default_config();
+        let mut cfg = default_config();
+        cfg.directed_pickup = "*9".to_string();
         assert_eq!(
             parse("*91001", &cfg),
             Some(FeatureCodeAction::DirectedPickup {
@@ -177,7 +191,9 @@ mod tests {
 
     #[test]
     fn test_intercom_twoway_before_oneway() {
-        let cfg = default_config();
+        let mut cfg = default_config();
+        cfg.intercom_oneway = "*80".to_string();
+        cfg.intercom_twoway = "*81".to_string();
         // *81 must match intercom_twoway, not intercom_oneway + "1..."
         assert_eq!(
             parse("*811001", &cfg),
@@ -198,6 +214,15 @@ mod tests {
         let cfg = default_config();
         assert_eq!(parse("1001", &cfg), None);
         assert_eq!(parse("sip:1001@10.0.0.1", &cfg), None);
+    }
+
+    #[test]
+    fn test_disabled_feature_codes_do_not_match() {
+        let cfg = default_config();
+        assert_eq!(parse("*8", &cfg), None);
+        assert_eq!(parse("*91001", &cfg), None);
+        assert_eq!(parse("*801001", &cfg), None);
+        assert_eq!(parse("*811001", &cfg), None);
     }
 
     #[test]

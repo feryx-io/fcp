@@ -1,8 +1,9 @@
 //! HTTP REST API for the standalone presence server.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{delete, get, put},
     Json, Router,
@@ -20,6 +21,7 @@ pub struct AppState {
     pub manager: PresenceManager,
     pub sip_handler: Option<Arc<SipPresenceHandler>>,
     pub start_time: Instant,
+    pub api_token: Option<String>,
     pub resource_list_store: Arc<dyn fcp_core::storage::ResourceListStore>,
     pub default_tenant_id: fcp_core::TenantId,
     pub history_store: Option<Arc<dyn fcp_core::storage::PresenceHistoryStore>>,
@@ -31,9 +33,11 @@ pub struct AppState {
 ///
 /// If `xcap_root` is provided, the XCAP server routes are nested under that path.
 pub fn router(state: Arc<AppState>, xcap_root: Option<&str>) -> Router {
-    let mut app = Router::new()
+    let public = Router::new()
         .route("/health", get(health))
-        .route("/v1/health", get(health))
+        .route("/v1/health", get(health));
+
+    let mut protected = Router::new()
         .route("/v1/metrics", get(metrics))
         .route("/v1/presence/{aor}", get(get_presence))
         .route("/v1/presence/{aor}", put(update_presence))
@@ -51,19 +55,51 @@ pub fn router(state: Arc<AppState>, xcap_root: Option<&str>) -> Router {
 
     #[cfg(feature = "webhook")]
     {
-        app = app
+        protected = protected
             .route("/v1/webhooks", axum::routing::post(create_webhook))
             .route("/v1/webhooks", get(list_webhooks))
             .route("/v1/webhooks/{id}", delete(delete_webhook));
     }
 
-    let _ = &app; // suppress unused warning when webhook feature is off
+    let _ = &protected; // suppress unused warning when webhook feature is off
 
     if let Some(root) = xcap_root {
-        app = app.nest(root, crate::xcap_server::xcap_router());
+        protected = protected.nest(root, crate::xcap_server::xcap_router());
     }
 
-    app.with_state(state)
+    protected = protected.route_layer(middleware::from_fn_with_state(
+        Arc::clone(&state),
+        require_api_token,
+    ));
+
+    public.merge(protected).with_state(state)
+}
+
+async fn require_api_token(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> impl IntoResponse {
+    let Some(expected_token) = state.api_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+
+    if !token.is_empty() && token == expected_token {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+        )
+            .into_response()
+    }
 }
 
 // ============================================================================

@@ -24,10 +24,12 @@ pub struct IvrState {
     pub api_token: Option<String>,
 }
 
-/// Create the IVR health/status router.
-pub fn ivr_router() -> Router<Arc<IvrState>> {
+fn public_router() -> Router<Arc<IvrState>> {
+    Router::new().route("/health", get(health_handler))
+}
+
+fn protected_router() -> Router<Arc<IvrState>> {
     Router::new()
-        .route("/health", get(health_handler))
         .route("/status", get(status_handler))
         .route("/flows/routes", get(list_routes_handler))
         .route("/flows/routes", post(add_route_handler))
@@ -35,23 +37,19 @@ pub fn ivr_router() -> Router<Arc<IvrState>> {
         .route("/flows/active", get(active_flows_handler))
 }
 
+/// Create the IVR health router.
+pub fn ivr_router() -> Router<Arc<IvrState>> {
+    public_router()
+}
+
 /// Run the HTTP health/status/flows server.
 pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<IvrState>) -> anyhow::Result<()> {
-    let protected = Router::new()
-        .route("/status", get(status_handler))
-        .route("/flows/routes", get(list_routes_handler))
-        .route("/flows/routes", post(add_route_handler))
-        .route("/flows/routes/{did}", delete(remove_route_handler))
-        .route("/flows/active", get(active_flows_handler))
-        .route_layer(middleware::from_fn_with_state(
-            Arc::clone(&state),
-            require_api_token,
-        ));
+    let protected = protected_router().route_layer(middleware::from_fn_with_state(
+        Arc::clone(&state),
+        require_api_token,
+    ));
 
-    let app = Router::new()
-        .route("/health", get(health_handler))
-        .merge(protected)
-        .with_state(state);
+    let app = public_router().merge(protected).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");

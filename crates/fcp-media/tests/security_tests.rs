@@ -206,7 +206,10 @@ fn test_valid_remote_backend_config() {
         max_retries: 5,
     };
     // Remote backend is deliberately rejected until production-ready
-    assert!(config.validate().is_err(), "Remote backend should be rejected as not production-ready");
+    assert!(
+        config.validate().is_err(),
+        "Remote backend should be rejected as not production-ready"
+    );
 }
 
 // Session configuration tests

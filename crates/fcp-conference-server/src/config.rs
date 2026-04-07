@@ -256,7 +256,7 @@ pub struct HttpSection {
 }
 
 fn default_http_bind() -> SocketAddr {
-    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 8090)
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 8090)
 }
 
 fn default_max_body_size_kb() -> usize {
@@ -801,9 +801,37 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
         }
     }
 
-    // Auth enabled requires a token
-    if config.http.auth_enabled && config.http.auth_token.is_none() {
-        anyhow::bail!("http.auth_enabled is true but no auth_token is configured — either set auth_token or disable auth");
+    validate_http_config(&config.http)?;
+
+    Ok(())
+}
+
+fn validate_http_config(http: &HttpSection) -> Result<()> {
+    let public_bind = !http.bind_address.ip().is_loopback();
+    let has_token = http
+        .auth_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if http.auth_enabled && !has_token {
+        anyhow::bail!(
+            "http.auth_enabled is true but no auth_token is configured — either set auth_token or disable auth"
+        );
+    }
+
+    if public_bind && !http.auth_enabled {
+        anyhow::bail!(
+            "http.auth_enabled must be true when binding the conference HTTP API to a non-loopback address ({})",
+            http.bind_address
+        );
+    }
+
+    if public_bind && !has_token {
+        anyhow::bail!(
+            "http.auth_token must be set when binding the conference HTTP API to a non-loopback address ({})",
+            http.bind_address
+        );
     }
 
     Ok(())
@@ -858,7 +886,7 @@ mod tests {
         assert_eq!(config.service.service_type, "conference");
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
-        assert_eq!(config.http.bind_address.port(), 8090);
+        assert_eq!(config.http.bind_address, "127.0.0.1:8090".parse().unwrap());
         assert_eq!(config.conference.sample_rate, 8000);
         assert_eq!(config.conference.frame_size, 160);
         assert!(config.conference.enable_vad);
@@ -904,5 +932,35 @@ max_pin_attempts = 5
         assert_eq!(config.conference.default_max_participants, 100);
         assert_eq!(config.conference.pin_timeout_secs, 15);
         assert_eq!(config.conference.max_pin_attempts, 5);
+    }
+
+    #[test]
+    fn test_public_http_bind_requires_auth() {
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8090".parse().unwrap(),
+            auth_enabled: false,
+            auth_token: None,
+            rate_limit_rps: None,
+            max_body_size_kb: default_max_body_size_kb(),
+        };
+        assert!(validate_http_config(&http).is_err());
+
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8090".parse().unwrap(),
+            auth_enabled: true,
+            auth_token: None,
+            rate_limit_rps: None,
+            max_body_size_kb: default_max_body_size_kb(),
+        };
+        assert!(validate_http_config(&http).is_err());
+
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8090".parse().unwrap(),
+            auth_enabled: true,
+            auth_token: Some("secret".to_string()),
+            rate_limit_rps: None,
+            max_body_size_kb: default_max_body_size_kb(),
+        };
+        assert!(validate_http_config(&http).is_ok());
     }
 }

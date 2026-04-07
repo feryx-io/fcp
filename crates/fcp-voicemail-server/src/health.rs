@@ -27,9 +27,12 @@ pub struct VoicemailState {
     pub api_token: Option<String>,
 }
 
-/// Create the voicemail health/status router.
-pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
-    let protected = Router::new()
+fn public_router() -> Router<Arc<VoicemailState>> {
+    Router::new().route("/health", get(health_handler))
+}
+
+fn protected_router() -> Router<Arc<VoicemailState>> {
+    Router::new()
         .route("/status", get(status_handler))
         .route("/voicemail/routes", get(list_routes_handler))
         .route("/voicemail/routes", post(add_route_handler))
@@ -56,11 +59,12 @@ pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
         .route(
             "/voicemail/mailboxes/{id}/greetings/{greeting_type}/active",
             axum::routing::put(set_greeting_active_handler),
-        );
+        )
+}
 
-    Router::new()
-        .route("/health", get(health_handler))
-        .merge(protected)
+/// Create the voicemail health router.
+pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
+    public_router()
 }
 
 /// Run the HTTP health/status/voicemail server.
@@ -68,43 +72,12 @@ pub async fn run_http_server(
     bind_addr: SocketAddr,
     state: Arc<VoicemailState>,
 ) -> anyhow::Result<()> {
-    let protected = Router::new()
-        .route("/status", get(status_handler))
-        .route("/voicemail/routes", get(list_routes_handler))
-        .route("/voicemail/routes", post(add_route_handler))
-        .route("/voicemail/routes/{did}", delete(remove_route_handler))
-        .route("/voicemail/mailboxes", get(list_mailboxes_handler))
-        .route("/voicemail/mailboxes/{id}", get(get_mailbox_handler))
-        .route(
-            "/voicemail/mailboxes/{id}/messages",
-            get(list_messages_handler),
-        )
-        .route("/voicemail/mailboxes/{id}/mwi", get(get_mwi_handler))
-        .route(
-            "/voicemail/mailboxes/{id}/greetings",
-            get(list_greetings_handler),
-        )
-        .route(
-            "/voicemail/mailboxes/{id}/greetings",
-            post(upload_greeting_handler),
-        )
-        .route(
-            "/voicemail/mailboxes/{id}/greetings/{greeting_type}",
-            delete(delete_greeting_handler),
-        )
-        .route(
-            "/voicemail/mailboxes/{id}/greetings/{greeting_type}/active",
-            axum::routing::put(set_greeting_active_handler),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            Arc::clone(&state),
-            require_api_token,
-        ));
+    let protected = protected_router().route_layer(middleware::from_fn_with_state(
+        Arc::clone(&state),
+        require_api_token,
+    ));
 
-    let app = Router::new()
-        .route("/health", get(health_handler))
-        .merge(protected)
-        .with_state(state);
+    let app = public_router().merge(protected).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");

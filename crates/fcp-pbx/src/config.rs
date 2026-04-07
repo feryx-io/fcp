@@ -56,11 +56,11 @@ impl Default for PbxConfig {
 /// Feature code (star code) prefix mappings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeatureCodeConfig {
-    /// Group pickup prefix (e.g., "*8").
+    /// Group pickup prefix (e.g., "*8"). Disabled by default until runtime support is complete.
     #[serde(default = "default_group_pickup")]
     pub group_pickup: String,
 
-    /// Directed pickup prefix (e.g., "*9" followed by extension).
+    /// Directed pickup prefix (e.g., "*9" followed by extension). Disabled by default until runtime support is complete.
     #[serde(default = "default_directed_pickup")]
     pub directed_pickup: String,
 
@@ -72,11 +72,11 @@ pub struct FeatureCodeConfig {
     #[serde(default = "default_retrieve")]
     pub retrieve: String,
 
-    /// One-way intercom prefix (e.g., "*80" followed by extension).
+    /// One-way intercom prefix (e.g., "*80" followed by extension). Disabled by default until runtime support is complete.
     #[serde(default = "default_intercom_oneway")]
     pub intercom_oneway: String,
 
-    /// Two-way intercom prefix (e.g., "*81" followed by extension).
+    /// Two-way intercom prefix (e.g., "*81" followed by extension). Disabled by default until runtime support is complete.
     #[serde(default = "default_intercom_twoway")]
     pub intercom_twoway: String,
 
@@ -95,10 +95,10 @@ pub struct FeatureCodeConfig {
 }
 
 fn default_group_pickup() -> String {
-    "*8".to_string()
+    String::new()
 }
 fn default_directed_pickup() -> String {
-    "*9".to_string()
+    String::new()
 }
 fn default_park() -> String {
     "*70".to_string()
@@ -107,10 +107,10 @@ fn default_retrieve() -> String {
     "*71".to_string()
 }
 fn default_intercom_oneway() -> String {
-    "*80".to_string()
+    String::new()
 }
 fn default_intercom_twoway() -> String {
-    "*81".to_string()
+    String::new()
 }
 fn default_agent_login() -> String {
     "*50".to_string()
@@ -304,12 +304,12 @@ mod tests {
     #[test]
     fn test_feature_code_defaults() {
         let cfg = FeatureCodeConfig::default();
-        assert_eq!(cfg.group_pickup, "*8");
-        assert_eq!(cfg.directed_pickup, "*9");
+        assert_eq!(cfg.group_pickup, "");
+        assert_eq!(cfg.directed_pickup, "");
         assert_eq!(cfg.park, "*70");
         assert_eq!(cfg.retrieve, "*71");
-        assert_eq!(cfg.intercom_oneway, "*80");
-        assert_eq!(cfg.intercom_twoway, "*81");
+        assert_eq!(cfg.intercom_oneway, "");
+        assert_eq!(cfg.intercom_twoway, "");
     }
 
     #[test]

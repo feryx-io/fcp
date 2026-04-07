@@ -2696,7 +2696,10 @@ impl SipMessageHandler {
                                             .next()
                                             .unwrap_or(destination_aor);
                                         let meeting_result = match storage
-                                            .get_meeting_by_room_number(&line_binding.tenant_id, room_number)
+                                            .get_meeting_by_room_number(
+                                                &line_binding.tenant_id,
+                                                room_number,
+                                            )
                                             .await
                                         {
                                             Ok(Some(m)) => Ok(Some(m)),
@@ -2719,13 +2722,17 @@ impl SipMessageHandler {
                                                         .read()
                                                         .unwrap();
                                                     guard.clone().or_else(|| {
-                                                        self.b2bua_config.conference_server_uri.clone()
+                                                        self.b2bua_config
+                                                            .conference_server_uri
+                                                            .clone()
                                                     })
                                                 };
                                                 if let Some(ref server_uri) = conf_uri {
                                                     let host = server_uri
                                                         .strip_prefix("sip:")
-                                                        .or_else(|| server_uri.strip_prefix("sips:"))
+                                                        .or_else(|| {
+                                                            server_uri.strip_prefix("sips:")
+                                                        })
                                                         .unwrap_or(server_uri)
                                                         .split('@')
                                                         .last()
@@ -2749,11 +2756,12 @@ impl SipMessageHandler {
                                                         }
                                                         Err(e) => {
                                                             warn!(call_id = %call_id, error = %e, "Failed to create conference binding");
-                                                            let response = self.create_simple_response(
-                                                                request,
-                                                                500,
-                                                                "Internal Server Error",
-                                                            );
+                                                            let response = self
+                                                                .create_simple_response(
+                                                                    request,
+                                                                    500,
+                                                                    "Internal Server Error",
+                                                                );
                                                             a_leg_handle.send_final(response).await;
                                                             let _ = self.call_manager.terminate_call(
                                                                 &call_id,
@@ -2845,7 +2853,10 @@ impl SipMessageHandler {
                                                 a_leg_handle.send_final(response).await;
                                                 let _ = self.call_manager.terminate_call(
                                                     &call_id,
-                                                    Some(format!("Voicemail routing failed: {}", e)),
+                                                    Some(format!(
+                                                        "Voicemail routing failed: {}",
+                                                        e
+                                                    )),
                                                 );
                                                 return Ok(());
                                             }
@@ -3524,7 +3535,10 @@ impl SipMessageHandler {
                                                 a_leg_handle.send_final(response).await;
                                                 let _ = self.call_manager.terminate_call(
                                                     &call_id,
-                                                    Some(format!("Voicemail routing failed: {}", e)),
+                                                    Some(format!(
+                                                        "Voicemail routing failed: {}",
+                                                        e
+                                                    )),
                                                 );
                                                 return Ok(());
                                             }

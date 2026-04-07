@@ -156,7 +156,9 @@ async fn main() -> Result<()> {
                             }
                         }
                         "events" => {
-                            if let Ok(mut v) = serde_json::from_value::<config::EventsSection>(entry.value) {
+                            if let Ok(mut v) =
+                                serde_json::from_value::<config::EventsSection>(entry.value)
+                            {
                                 // Preserve auth_token from TOML — it should not be overridden by DB config
                                 if v.auth_token.is_none() {
                                     v.auth_token = config.events.auth_token.clone();
