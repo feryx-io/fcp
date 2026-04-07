@@ -282,7 +282,7 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
         resource_list_store: Arc::clone(dyn_storage.resource_list_store()),
-        default_tenant_id: fcp_core::TenantId::default(),
+        default_tenant_id: config.service.default_tenant_id,
         history_store: Some(Arc::clone(&history_store)),
         #[cfg(feature = "webhook")]
         webhook_dispatcher,

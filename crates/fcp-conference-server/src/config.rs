@@ -136,6 +136,9 @@ pub struct ServiceSection {
     #[serde(default = "default_node_id")]
     pub node_id: String,
 
+    #[serde(default = "default_tenant_id")]
+    pub default_tenant_id: fcp_core::TenantId,
+
     /// Maximum time (seconds) to wait for graceful shutdown before force-closing sessions.
     /// Default: 30. Set 0 for unlimited (not recommended).
     #[serde(default = "default_shutdown_timeout_secs")]
@@ -162,11 +165,16 @@ fn default_node_id() -> String {
     format!("conference-{}", uuid::Uuid::new_v4())
 }
 
+fn default_tenant_id() -> fcp_core::TenantId {
+    fcp_core::TenantId::nil()
+}
+
 impl Default for ServiceSection {
     fn default() -> Self {
         Self {
             service_type: default_service_type(),
             node_id: default_node_id(),
+            default_tenant_id: default_tenant_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
             config_reload_interval_secs: default_config_reload_interval_secs(),
         }
@@ -854,6 +862,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<ConferenceServerConfig>
 
     info!(
         node_id = %config.service.node_id,
+        default_tenant_id = %config.service.default_tenant_id,
         udp_bind = %config.sip.udp_bind,
         tcp_bind = %config.sip.tcp_bind,
         http_bind = %config.http.bind_address,
@@ -884,6 +893,7 @@ mod tests {
     fn test_default_config() {
         let config = ConferenceServerConfig::default();
         assert_eq!(config.service.service_type, "conference");
+        assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address, "127.0.0.1:8090".parse().unwrap());
@@ -900,6 +910,7 @@ mod tests {
 [service]
 service_type = "conference"
 node_id = "conf-test-01"
+default_tenant_id = "00000000-0000-0000-0000-000000000123"
 
 [sip]
 udp_bind = "0.0.0.0:5060"
@@ -929,6 +940,10 @@ max_pin_attempts = 5
 "#;
         let config: ConferenceServerConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.service.node_id, "conf-test-01");
+        assert_eq!(
+            config.service.default_tenant_id,
+            "00000000-0000-0000-0000-000000000123".parse().unwrap()
+        );
         assert_eq!(config.conference.default_max_participants, 100);
         assert_eq!(config.conference.pin_timeout_secs, 15);
         assert_eq!(config.conference.max_pin_attempts, 5);

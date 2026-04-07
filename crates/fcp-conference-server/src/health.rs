@@ -36,6 +36,7 @@ pub struct ConferenceState {
     pub conference_handler: Arc<ConferenceCallHandler>,
     pub call_manager: Arc<CallManager>,
     pub event_bus: Arc<dyn EventPublisher>,
+    pub default_tenant_id: TenantId,
     pub start_time: Instant,
     pub auth_enabled: bool,
     pub auth_token: Option<String>,
@@ -228,7 +229,11 @@ async fn health_handler(
         .clone();
 
     // Check database connectivity (use nil tenant for a lightweight probe)
-    let db_ok = state.storage.list_meetings(&TenantId::nil()).await.is_ok();
+    let db_ok = state
+        .storage
+        .list_meetings(&state.default_tenant_id)
+        .await
+        .is_ok();
     checks.insert(
         "database".into(),
         serde_json::json!(if db_ok { "ok" } else { "error" }),
@@ -450,12 +455,12 @@ fn default_page_limit() -> usize {
 
 async fn list_meetings_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Query(pagination): Query<PaginationParams>,
 ) -> Json<serde_json::Value> {
     use fcp_core::storage::ConferenceStore;
 
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
     match state.storage.list_meetings(&tenant_id).await {
         Ok(meetings) => {
             let total = meetings.len();
@@ -480,12 +485,12 @@ async fn list_meetings_handler(
 
 async fn create_meeting_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Json(payload): Json<CreateMeetingRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     use fcp_core::storage::ConferenceStore;
 
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
 
     // Validate room number
     if !crate::conference_handler::validate_room_number(&payload.room_number) {
@@ -605,7 +610,7 @@ async fn get_meeting_handler(
         }
     };
 
-    let expected_tenant = extract_tenant_id(&HeaderMap::new());
+    let expected_tenant = extract_tenant_id(&state);
     match state.storage.get_meeting(&meeting_id).await {
         Ok(Some(meeting)) if meeting.tenant_id == expected_tenant => {
             (StatusCode::OK, Json(meeting_to_json(&meeting)))
@@ -665,9 +670,10 @@ async fn update_meeting_handler(
         }
     };
 
+    let expected_tenant = extract_tenant_id(&state);
     let mut meeting = match state.storage.get_meeting(&meeting_id).await {
-        Ok(Some(m)) => m,
-        Ok(None) => {
+        Ok(Some(m)) if m.tenant_id == expected_tenant => m,
+        Ok(Some(_)) | Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({ "error": "Meeting not found" })),
@@ -816,8 +822,24 @@ async fn delete_meeting_handler(
         }
     };
 
-    // Fetch meeting details before deletion for the event
-    let meeting_info = state.storage.get_meeting(&meeting_id).await.ok().flatten();
+    let expected_tenant = extract_tenant_id(&state);
+    let meeting_info = match state.storage.get_meeting(&meeting_id).await {
+        Ok(Some(meeting)) if meeting.tenant_id == expected_tenant => Some(meeting),
+        Ok(Some(_)) | Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": "Meeting not found" })),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to get meeting: {}", e)
+                })),
+            );
+        }
+    };
 
     match state.storage.delete_meeting(&meeting_id).await {
         Ok(()) => {
@@ -973,7 +995,7 @@ struct DialOutRequest {
 
 async fn dial_out_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Path(room_number): Path<String>,
     Json(payload): Json<DialOutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -1001,7 +1023,7 @@ async fn dial_out_handler(
         format!("sip:{}@{}", raw, domain)
     };
 
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
 
     match state
         .conference_handler
@@ -1113,10 +1135,10 @@ async fn unmute_participant_handler(
 
 async fn lock_room_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.lock();
@@ -1143,10 +1165,10 @@ async fn lock_room_handler(
 
 async fn unlock_room_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.unlock();
@@ -1173,10 +1195,10 @@ async fn unlock_room_handler(
 
 async fn start_recording_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             let recording_path = format!(
@@ -1220,10 +1242,10 @@ async fn start_recording_handler(
 
 async fn stop_recording_handler(
     State(state): State<Arc<ConferenceState>>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&headers);
+    let tenant_id = extract_tenant_id(&state);
     match state.bridge.get_room(&room_number) {
         Ok(room) => match room.stop_recording() {
             Ok(()) => {
@@ -1890,10 +1912,9 @@ fn is_valid_identifier(id: &str) -> bool {
 }
 
 /// Extract tenant ID.
-/// SECURITY: Does NOT trust X-Tenant-ID header. Always uses server default (nil).
-/// Multi-tenant deployments should derive tenant from authenticated session claims.
-fn extract_tenant_id(_headers: &HeaderMap) -> TenantId {
-    TenantId::nil()
+/// SECURITY: Does NOT trust X-Tenant-ID header. Uses the server-configured tenant.
+fn extract_tenant_id(state: &ConferenceState) -> TenantId {
+    state.default_tenant_id
 }
 
 fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {

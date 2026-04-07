@@ -227,7 +227,7 @@ async fn main() -> Result<()> {
     //     in the Audio Prompts page. The actual WAV files are generated
     //     when the admin calls POST /prompts/{id}/synthesize (Kokoro TTS).
     if let Some(prompt_store) = dyn_storage.prompt_store() {
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = config.service.default_tenant_id;
         let default_prompts = vec![
             (
                 "conf_pin_prompt",
@@ -532,6 +532,7 @@ async fn main() -> Result<()> {
     let mut conference_handler = ConferenceCallHandler::new(
         Arc::clone(&bridge),
         Arc::clone(&dyn_storage),
+        config.service.default_tenant_id,
         config.conference.clone(),
         local_uri.as_str().to_string(),
         local_addr.clone(),
@@ -610,7 +611,7 @@ async fn main() -> Result<()> {
     // Auto-synthesize any conference prompts that are missing audio files.
     // This runs once at startup so callers hear prompts on the first call.
     if let (Some(ref tts), Some(prompt_store)) = (&tts_service, dyn_storage.prompt_store()) {
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = config.service.default_tenant_id;
         let prompts_dir = std::path::PathBuf::from(&config.tts.cache_dir);
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
         for name in &[
@@ -690,7 +691,7 @@ async fn main() -> Result<()> {
 
     // Load pre-synthesized mute/unmute audio samples for DTMF feedback
     if let Some(prompt_store) = dyn_storage.prompt_store() {
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = config.service.default_tenant_id;
         let player = forge_conference::AudioFeedbackPlayer::new(config.conference.sample_rate);
         for (prompt_name, field_setter) in [
             ("conf_muted", "muted" as &str),
@@ -906,6 +907,7 @@ async fn main() -> Result<()> {
         conference_handler: Arc::clone(&conference_handler),
         call_manager: Arc::clone(&call_manager),
         event_bus: Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>,
+        default_tenant_id: config.service.default_tenant_id,
         start_time: Instant::now(),
         auth_enabled: config.http.auth_enabled,
         auth_token: config.http.auth_token.clone(),
@@ -1012,7 +1014,7 @@ async fn main() -> Result<()> {
                             tokio::spawn(async move {
                                 info!(room = %rn, destination = %dest, "Processing DTMF dial-out request");
                                 match handler
-                                    .dial_out(&rn, &dest, fcp_core::TenantId::nil(), None, None)
+                                    .dial_out(&rn, &dest, handler.default_tenant_id, None, None)
                                     .await
                                 {
                                     Ok(pid) => {
@@ -1037,6 +1039,7 @@ async fn main() -> Result<()> {
         let max_bytes = config.conference.max_recording_size_mb * 1024 * 1024;
         let recordings_dir = config.conference.recordings_dir.clone();
         let monitor_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>;
+        let monitor_default_tenant_id = config.service.default_tenant_id;
         let size_check_interval =
             Duration::from_secs(config.conference.recording_size_check_interval_secs);
         tokio::spawn(supervise_task("recording-size-monitor", async move {
@@ -1087,7 +1090,7 @@ async fn main() -> Result<()> {
                                 let event = fcp_events::PlatformEvent::Conference(
                                     fcp_events::ConferenceEvent::RecordingStopped {
                                         room_number: room_id.to_string(),
-                                        tenant_id: fcp_core::TenantId::nil(),
+                                        tenant_id: monitor_default_tenant_id,
                                         timestamp: std::time::SystemTime::now(),
                                     },
                                 );

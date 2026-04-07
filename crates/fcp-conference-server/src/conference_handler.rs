@@ -128,6 +128,7 @@ pub struct ParticipantSession {
 pub struct ConferenceCallHandler {
     pub bridge: Arc<ConferenceBridge>,
     pub storage: Arc<DynStorage>,
+    pub default_tenant_id: TenantId,
     pub conference_config: RwLock<ConferenceSection>,
     sessions: DashMap<String, ParticipantSession>,
     #[allow(dead_code)]
@@ -525,6 +526,7 @@ impl ConferenceCallHandler {
     pub fn new(
         bridge: Arc<ConferenceBridge>,
         storage: Arc<DynStorage>,
+        default_tenant_id: TenantId,
         conference_config: ConferenceSection,
         local_uri: String,
         local_addr: String,
@@ -546,6 +548,7 @@ impl ConferenceCallHandler {
         Self {
             bridge,
             storage,
+            default_tenant_id,
             conference_config: RwLock::new(conference_config),
             sessions: DashMap::new(),
             local_uri,
@@ -1332,7 +1335,7 @@ impl ConferenceCallHandler {
             // Priority: greeting_prompt (WAV from prompt store) > greeting_tts > meeting default > none
             if let Some(prompt_name) = greeting_prompt {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = fcp_core::TenantId::nil();
+                    let tid = self.default_tenant_id;
                     if let Ok(Some(prompt)) =
                         prompt_store.get_prompt_by_name(&tid, prompt_name).await
                     {
@@ -1368,7 +1371,7 @@ impl ConferenceCallHandler {
             // Fall back to a default dial-out greeting from the prompt store
             if greeting_samples.is_none() && greeting_tts.is_none() && greeting_prompt.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = fcp_core::TenantId::nil();
+                    let tid = self.default_tenant_id;
                     if let Ok(Some(prompt)) = prompt_store
                         .get_prompt_by_name(&tid, "conf_dialout_greeting")
                         .await
@@ -1599,7 +1602,7 @@ impl ConferenceCallHandler {
         // Publish RoomDestroyed event (use nil tenant since we don't know which tenant)
         self.publish_event(ConferenceEvent::RoomDestroyed {
             room_number: room_number.to_string(),
-            tenant_id: TenantId::nil(),
+            tenant_id: self.default_tenant_id,
             timestamp: SystemTime::now(),
         });
 
@@ -2264,7 +2267,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             None => return false,
         };
 
-        let tenant_id = extract_tenant(request);
+        let tenant_id = self.default_tenant_id;
         match self.lookup_meeting(&tenant_id, &room_number).await {
             Ok(Some(meeting)) => meeting.enabled,
             _ => false,
@@ -2314,7 +2317,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .context("Failed to extract room number from Request-URI")?;
 
         // 2. Extract tenant and look up meeting
-        let tenant_id = extract_tenant(request);
+        let tenant_id = self.default_tenant_id;
         let meeting = self
             .lookup_meeting(&tenant_id, &room_number)
             .await?
@@ -2569,7 +2572,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Audio Prompts page using Kokoro TTS.
             if pin_prompt_samples.is_none() || invalid_pin_samples.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tenant_id = fcp_core::TenantId::nil();
+                    let tenant_id = self.default_tenant_id;
                     let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
                     if pin_prompt_samples.is_none() {
                         if let Ok(Some(prompt)) = prompt_store
@@ -2898,7 +2901,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Load announcement sound (short TTS message like "Please wait...")
             let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
             if let Some(prompt_store) = self.storage.prompt_store() {
-                let tenant_id = fcp_core::TenantId::nil();
+                let tenant_id = self.default_tenant_id;
                 if let Ok(Some(prompt)) = prompt_store
                     .get_prompt_by_name(&tenant_id, "conf_wait_announcement")
                     .await
@@ -2919,7 +2922,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 room.get_sounds().and_then(|s| s.moh_sound.clone());
             if music_samples.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tenant_id = fcp_core::TenantId::nil();
+                    let tenant_id = self.default_tenant_id;
                     if let Ok(Some(prompt)) = prompt_store
                         .get_prompt_by_name(&tenant_id, "conf_moh_music")
                         .await
@@ -3364,7 +3367,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Fallback: static prompt from the Prompt store
             if !welcome_played {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = fcp_core::TenantId::nil();
+                    let tid = self.default_tenant_id;
                     if let Ok(Some(prompt)) =
                         prompt_store.get_prompt_by_name(&tid, "conf_welcome").await
                     {
@@ -3930,7 +3933,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Verify room exists (either active or configured)
         let room_active = self.bridge.get_room(&room_number).is_ok();
-        let tenant_id = extract_tenant(request);
+        let tenant_id = self.default_tenant_id;
         let meeting_exists = self
             .lookup_meeting(&tenant_id, &room_number)
             .await?
@@ -4253,13 +4256,6 @@ pub fn validate_room_number(room: &str) -> bool {
         && room
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_.+*#".contains(c))
-}
-
-/// Extract tenant ID from the SIP request.
-/// SECURITY: Does NOT trust X-Tenant-ID header from external sources.
-/// Uses server default (nil). Multi-tenant should derive from authenticated context.
-fn extract_tenant(_request: &sip_core::Request) -> TenantId {
-    TenantId::nil()
 }
 
 /// Extract source IP from the top Via header's sent-by address.

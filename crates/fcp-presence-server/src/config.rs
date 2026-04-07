@@ -45,6 +45,9 @@ pub struct ServiceSection {
     #[serde(default = "default_node_id")]
     pub node_id: String,
 
+    #[serde(default = "default_tenant_id")]
+    pub default_tenant_id: fcp_core::TenantId,
+
     #[serde(default = "default_shutdown_timeout_secs")]
     pub shutdown_timeout_secs: u64,
 }
@@ -57,6 +60,10 @@ fn default_node_id() -> String {
     format!("presence-{}", uuid::Uuid::new_v4())
 }
 
+fn default_tenant_id() -> fcp_core::TenantId {
+    fcp_core::TenantId::nil()
+}
+
 fn default_shutdown_timeout_secs() -> u64 {
     10
 }
@@ -66,6 +73,7 @@ impl Default for ServiceSection {
         Self {
             service_type: default_service_type(),
             node_id: default_node_id(),
+            default_tenant_id: default_tenant_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
         }
     }
@@ -309,6 +317,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<PresenceServerConfig> {
 
     info!(
         node_id = %config.service.node_id,
+        default_tenant_id = %config.service.default_tenant_id,
         database_url = %config.storage.database_url,
         http_bind = %config.http.bind_address,
         "Configuration loaded"
@@ -348,6 +357,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = PresenceServerConfig::default();
+        assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address, "127.0.0.1:8080".parse().unwrap());
         assert!(config.http.api_token.is_none());
@@ -358,6 +368,7 @@ mod tests {
         let toml_str = r#"
 [service]
 node_id = "pres-01"
+default_tenant_id = "00000000-0000-0000-0000-000000000456"
 
 [storage]
 database_url = "postgresql://localhost/fcp"
@@ -376,6 +387,10 @@ format = "compact"
 "#;
         let config: PresenceServerConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.service.node_id, "pres-01");
+        assert_eq!(
+            config.service.default_tenant_id,
+            "00000000-0000-0000-0000-000000000456".parse().unwrap()
+        );
         assert_eq!(config.presence.max_subscriptions, 5000);
         assert_eq!(config.http.bind_address.port(), 9090);
         assert_eq!(config.http.api_token.as_deref(), Some("secret"));
