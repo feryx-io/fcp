@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(config.gateway.bind_address.port(), 8000);
         assert_eq!(config.redis.url, "redis://127.0.0.1:6379");
         assert!(config.rate_limit.enabled);
-        assert!(config.cache.enabled);
+        assert!(!config.cache.enabled); // Cache disabled by default for security
     }
 
     #[test]

@@ -656,8 +656,8 @@ mod tests {
         assert!(config.events.server_url.is_none());
         assert!(config.events.webhooks.is_empty());
         assert!(config.trunks.is_empty());
-        // PBX defaults
-        assert!(!config.pbx.enabled);
+        // PBX defaults (enabled by default)
+        assert!(config.pbx.enabled);
         assert!(config.pbx.hunt_groups.is_empty());
         // Queue defaults
         assert!(!config.queue.enabled);

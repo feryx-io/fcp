@@ -32,7 +32,7 @@ fn test_minimal_config_defaults() {
     assert_eq!(config.conference.pin_timeout_secs, 10);
     assert_eq!(config.conference.jitter_buffer_ms, 40);
     assert!(config.conference.dtmf_enabled);
-    assert_eq!(config.conference.cache_ttl_secs, 60);
+    assert_eq!(config.conference.cache_ttl_secs, 5);
     assert!(config.conference.recording_retention_days.is_none());
     assert!(config.conference.allowed_codecs.is_none());
     assert!(!config.conference.enable_srtp);
