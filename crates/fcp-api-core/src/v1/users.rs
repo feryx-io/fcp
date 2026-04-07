@@ -160,12 +160,12 @@ fn parse_user_role(role_str: Option<&str>) -> Result<UserRole, ApiError> {
 
             // Fallback to manual matching for backward compatibility
             match s.to_lowercase().as_str() {
-                "superadmin" | "super_admin" => Ok(UserRole::SuperAdmin),
+                "superadmin" | "super_admin" | "admin" => Ok(UserRole::SuperAdmin),
                 "telecomadmin" | "telecom_admin" => Ok(UserRole::TelecomAdmin),
                 "useradmin" | "user_admin" => Ok(UserRole::UserAdmin),
                 "departmentadmin" | "department_admin" => Ok(UserRole::DepartmentAdmin),
                 "readonly" | "read_only" => Ok(UserRole::ReadOnly),
-                "enduser" | "end_user" => Ok(UserRole::EndUser),
+                "enduser" | "end_user" | "user" => Ok(UserRole::EndUser),
                 _ => Err(ApiError::BadRequest(format!("Invalid role: {}", s))),
             }
         }

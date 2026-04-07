@@ -347,7 +347,7 @@ function CreateUserDialog({
     formState: { errors },
   } = useForm<CreateUserForm>({
     resolver: zodResolver(createUserSchema),
-    defaultValues: { role: 'user' },
+    defaultValues: { role: 'end_user' },
   })
 
   const onSubmit = (data: CreateUserForm) => {
