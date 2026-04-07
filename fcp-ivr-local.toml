@@ -22,6 +22,7 @@ public_ip = "192.168.1.225"
 
 [events]
 server_url = "http://localhost:8081/ingest"
+auth_token = "events-local-secret"
 
 [logging]
 level = "info"

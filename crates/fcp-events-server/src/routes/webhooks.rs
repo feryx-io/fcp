@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use fcp_core::{TenantId, WebhookId};
 use fcp_webhooks::WebhookDispatcher;
@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::warn;
+
+use crate::AuthPrincipal;
 
 /// Shared state for webhook routes.
 #[derive(Clone)]
@@ -115,20 +117,50 @@ impl From<fcp_core::storage::WebhookEndpoint> for EndpointResponse {
     }
 }
 
+fn json_error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
+    (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
+}
+
+fn scoped_tenant(
+    principal: &AuthPrincipal,
+    requested_tenant: &str,
+) -> Result<TenantId, axum::response::Response> {
+    let tenant_id: TenantId = requested_tenant
+        .parse()
+        .map_err(|_| json_error(StatusCode::BAD_REQUEST, "Invalid tenant_id"))?;
+
+    if let Some(scope) = principal.tenant_scope() {
+        if scope != &tenant_id {
+            return Err(json_error(
+                StatusCode::FORBIDDEN,
+                "Tenant scope does not match authenticated principal",
+            ));
+        }
+    }
+
+    Ok(tenant_id)
+}
+
+fn authorize_endpoint_access(
+    principal: &AuthPrincipal,
+    endpoint_tenant_id: &TenantId,
+) -> Result<(), axum::response::Response> {
+    match principal.tenant_scope() {
+        None => Ok(()),
+        Some(scope) if scope == endpoint_tenant_id => Ok(()),
+        Some(_) => Err(json_error(StatusCode::NOT_FOUND, "Endpoint not found")),
+    }
+}
+
 /// POST /v1/webhooks - Create a new webhook endpoint
 async fn create_endpoint(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Json(req): Json<CreateEndpointRequest>,
 ) -> impl IntoResponse {
-    let tenant_id: TenantId = match req.tenant_id.parse() {
+    let tenant_id = match scoped_tenant(&principal, &req.tenant_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid tenant_id"})),
-            )
-                .into_response()
-        }
+        Err(response) => return response,
     };
 
     let now = SystemTime::now();
@@ -166,17 +198,12 @@ async fn create_endpoint(
 /// GET /v1/webhooks?tenant_id=... - List webhook endpoints for a tenant
 async fn list_endpoints(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Query(query): Query<ListEndpointsQuery>,
 ) -> impl IntoResponse {
-    let tenant_id: TenantId = match query.tenant_id.parse() {
+    let tenant_id = match scoped_tenant(&principal, &query.tenant_id) {
         Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Invalid tenant_id"})),
-            )
-                .into_response()
-        }
+        Err(response) => return response,
     };
 
     match state.dispatcher.store().list_endpoints(&tenant_id).await {
@@ -203,6 +230,7 @@ async fn list_endpoints(
 /// GET /v1/webhooks/:id - Get a webhook endpoint by ID
 async fn get_endpoint(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
@@ -218,6 +246,9 @@ async fn get_endpoint(
 
     match state.dispatcher.store().get_endpoint(&webhook_id).await {
         Ok(Some(ep)) => {
+            if let Err(response) = authorize_endpoint_access(&principal, &ep.tenant_id) {
+                return response;
+            }
             Json(serde_json::to_value(EndpointResponse::from(ep)).unwrap()).into_response()
         }
         Ok(None) => (
@@ -239,6 +270,7 @@ async fn get_endpoint(
 /// PUT /v1/webhooks/:id - Update a webhook endpoint
 async fn update_endpoint(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Path(id): Path<String>,
     Json(req): Json<UpdateEndpointRequest>,
 ) -> impl IntoResponse {
@@ -271,6 +303,10 @@ async fn update_endpoint(
         }
     };
 
+    if let Err(response) = authorize_endpoint_access(&principal, &existing.tenant_id) {
+        return response;
+    }
+
     let updated = fcp_core::storage::WebhookEndpoint {
         url: req.url.unwrap_or(existing.url),
         secret: req.secret.unwrap_or(existing.secret),
@@ -299,6 +335,7 @@ async fn update_endpoint(
 /// DELETE /v1/webhooks/:id - Delete a webhook endpoint
 async fn delete_endpoint_handler(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
@@ -311,6 +348,16 @@ async fn delete_endpoint_handler(
                 .into_response()
         }
     };
+
+    let existing = match state.dispatcher.store().get_endpoint(&webhook_id).await {
+        Ok(Some(ep)) => ep,
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "Endpoint not found"),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    if let Err(response) = authorize_endpoint_access(&principal, &existing.tenant_id) {
+        return response;
+    }
 
     match state.dispatcher.store().delete_endpoint(&webhook_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -328,6 +375,7 @@ async fn delete_endpoint_handler(
 /// POST /v1/webhooks/:id/test - Send a test event to a webhook endpoint
 async fn test_endpoint(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
@@ -358,6 +406,10 @@ async fn test_endpoint(
                 .into_response()
         }
     };
+
+    if let Err(response) = authorize_endpoint_access(&principal, &endpoint.tenant_id) {
+        return response;
+    }
 
     // Build a test payload
     let payload = fcp_webhooks::WebhookPayload {
@@ -413,6 +465,7 @@ async fn test_endpoint(
 /// GET /v1/webhooks/:id/deliveries - List recent delivery logs
 async fn list_deliveries(
     State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
     Path(id): Path<String>,
     Query(query): Query<ListDeliveriesQuery>,
 ) -> impl IntoResponse {
@@ -426,6 +479,16 @@ async fn list_deliveries(
                 .into_response()
         }
     };
+
+    let endpoint = match state.dispatcher.store().get_endpoint(&webhook_id).await {
+        Ok(Some(ep)) => ep,
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "Endpoint not found"),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    if let Err(response) = authorize_endpoint_access(&principal, &endpoint.tenant_id) {
+        return response;
+    }
 
     match state
         .dispatcher

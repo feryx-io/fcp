@@ -24,6 +24,7 @@ codecs = ["PCMU", "PCMA"]
 
 [events]
 server_url = "http://localhost:8081/ingest"
+auth_token = "events-local-secret"
 
 [conference]
 sample_rate = 8000

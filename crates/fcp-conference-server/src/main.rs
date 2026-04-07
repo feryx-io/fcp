@@ -161,9 +161,13 @@ async fn main() -> Result<()> {
                             }
                         }
                         "events" => {
-                            if let Ok(mut v) = serde_json::from_value::<config::EventsSection>(entry.value) {
+                            if let Ok(mut v) =
+                                serde_json::from_value::<config::EventsSection>(entry.value)
+                            {
                                 // Preserve auth_token from TOML
-                                if v.auth_token.is_none() { v.auth_token = config.events.auth_token.clone(); }
+                                if v.auth_token.is_none() {
+                                    v.auth_token = config.events.auth_token.clone();
+                                }
                                 config.events = v;
                             }
                         }
@@ -1508,6 +1512,10 @@ async fn run_event_forwarder(
     // Concurrency limiter
     let semaphore = Arc::new(tokio::sync::Semaphore::new(events_config.max_concurrent));
     let max_retries = events_config.max_retries;
+    let auth_header = events_config
+        .auth_token
+        .as_deref()
+        .map(|token| format!("Bearer {}", token));
 
     let mut delivered_events: u64 = 0;
 
@@ -1544,13 +1552,22 @@ async fn run_event_forwarder(
                 let cb_opened_at = Arc::clone(&circuit_opened_at);
                 let permit = Arc::clone(&semaphore);
                 let drop_counter = Arc::clone(&dropped_metric);
+                let auth_header = auth_header.clone();
                 tokio::spawn(async move {
                     // Acquire semaphore permit to bound concurrency
                     let _permit = match permit.acquire().await {
                         Ok(p) => p,
                         Err(_) => return, // Semaphore closed (shutdown)
                     };
-                    if forward_event_with_retry(&client, &url, &event, max_retries).await {
+                    if forward_event_with_retry(
+                        &client,
+                        &url,
+                        &event,
+                        auth_header.as_deref(),
+                        max_retries,
+                    )
+                    .await
+                    {
                         // Success — reset failure counter
                         failures.store(0, std::sync::atomic::Ordering::Relaxed);
                     } else {
@@ -1600,6 +1617,7 @@ async fn forward_event_with_retry(
     client: &reqwest::Client,
     url: &str,
     event: &fcp_events::PlatformEvent,
+    auth_header: Option<&str>,
     max_retries: u32,
 ) -> bool {
     let mut delay = Duration::from_millis(200);
@@ -1613,13 +1631,15 @@ async fn forward_event_with_retry(
     };
 
     for attempt in 1..=max_retries {
-        match client
+        let mut request = client
             .post(url)
             .header("content-type", "application/json")
-            .body(json_body.clone())
-            .send()
-            .await
-        {
+            .body(json_body.clone());
+        if let Some(auth_header) = auth_header {
+            request = request.header("Authorization", auth_header);
+        }
+
+        match request.send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
                     return true;

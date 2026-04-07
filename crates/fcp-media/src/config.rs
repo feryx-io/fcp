@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 const MAX_RTP_PORT_SPAN: u16 = 10_000;
-const MAX_TIMEOUT_MS: u64 = 120_000;
-const MAX_MAX_RETRIES: u32 = 10;
 
 /// Media subsystem configuration
 #[derive(Clone, Serialize, Deserialize)]
@@ -202,33 +200,15 @@ impl MediaConfig {
         match &self.backend {
             BackendType::Embedded => {}
             BackendType::Remote {
-                endpoint,
-                auth_token,
-                timeout_ms,
-                retry_enabled,
-                max_retries,
+                endpoint: _,
+                auth_token: _,
+                timeout_ms: _,
+                retry_enabled: _,
+                max_retries: _,
             } => {
-                reject_crlf("backend.endpoint", endpoint)?;
-                if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
-                    return Err(Error::Config(
-                        "backend.endpoint must start with http:// or https://".to_string(),
-                    ));
-                }
-                if let Some(token) = auth_token {
-                    reject_crlf("backend.auth_token", token)?;
-                }
-                if *timeout_ms == 0 || *timeout_ms > MAX_TIMEOUT_MS {
-                    return Err(Error::Config(format!(
-                        "backend.timeout_ms must be between 1 and {}",
-                        MAX_TIMEOUT_MS
-                    )));
-                }
-                if *retry_enabled && (*max_retries == 0 || *max_retries > MAX_MAX_RETRIES) {
-                    return Err(Error::Config(format!(
-                        "backend.max_retries must be between 1 and {} when retry_enabled",
-                        MAX_MAX_RETRIES
-                    )));
-                }
+                return Err(Error::Config(
+                    "backend.type = \"remote\" is not production-ready yet; use the embedded media backend".to_string(),
+                ));
             }
         }
 
@@ -326,6 +306,22 @@ mod tests {
         let mut config = MediaConfig::default();
         config.rtp_port_start = 5000;
         config.rtp_port_end = 4000;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_remote_backend_rejected() {
+        let config = MediaConfig {
+            backend: BackendType::Remote {
+                endpoint: "http://forge:8080".into(),
+                auth_token: Some("secret".into()),
+                timeout_ms: 5000,
+                retry_enabled: true,
+                max_retries: 3,
+            },
+            ..Default::default()
+        };
+
         assert!(config.validate().is_err());
     }
 

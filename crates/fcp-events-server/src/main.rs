@@ -25,12 +25,15 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
-use fcp_core::TenantId;
+use fcp_core::storage::{ApiTokenStore, CredentialStore};
+use fcp_core::{AccountStatus, TenantId};
 use fcp_events::{
     CallEvent, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent, SystemEvent,
 };
 use fcp_webhooks::{WebhookDispatcher, WebhookDispatcherConfig};
-use serde::Deserialize;
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -49,6 +52,7 @@ use crate::state::{CallStateStore, RegistrationStateStore};
 #[derive(Clone)]
 struct AppState {
     config: EventsConfig,
+    auth: EventsAuthState,
     manager: Arc<ConnectionManager>,
     event_bus: Arc<InMemoryEventBus>,
     call_store: Arc<CallStateStore>,
@@ -56,6 +60,67 @@ struct AppState {
     node_registry: Arc<NodeRegistry>,
     #[allow(dead_code)]
     webhook_dispatcher: Option<Arc<WebhookDispatcher>>,
+}
+
+#[derive(Clone)]
+struct EventsAuthState {
+    expected_token: Option<String>,
+    api_token_store: Option<Arc<dyn ApiTokenStore>>,
+    credential_store: Option<Arc<dyn CredentialStore>>,
+    jwt_secret: Option<Vec<u8>>,
+}
+
+impl EventsAuthState {
+    fn auth_enabled(&self) -> bool {
+        self.expected_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .is_some()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum AuthPrincipal {
+    StaticAdmin,
+    ApiToken {
+        tenant_id: TenantId,
+        permissions: Vec<String>,
+    },
+    Session {
+        _username: String,
+        role: String,
+        tenant_id: TenantId,
+    },
+}
+
+impl AuthPrincipal {
+    fn has_operator_access(&self) -> bool {
+        match self {
+            Self::StaticAdmin => true,
+            Self::ApiToken { permissions, .. } => {
+                permissions.iter().any(|p| p == "admin" || p == "*")
+            }
+            Self::Session { role, .. } => role != "end_user",
+        }
+    }
+
+    pub(crate) fn tenant_scope(&self) -> Option<&TenantId> {
+        match self {
+            Self::StaticAdmin => None,
+            Self::ApiToken { tenant_id, .. } | Self::Session { tenant_id, .. } => Some(tenant_id),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SessionClaims {
+    sub: String,
+    role: String,
+    tenant_id: String,
+    display_name: Option<String>,
+    exp: usize,
+    iat: usize,
 }
 
 #[tokio::main]
@@ -204,6 +269,9 @@ async fn main() -> Result<()> {
         info!("Operational config loading complete (DB primary, TOML seed)");
     }
 
+    validate_listener_auth(&config)?;
+    let auth = build_auth_state(&config, storage_result.as_ref());
+
     // Create event bus
     let event_bus = Arc::new(InMemoryEventBus::new());
 
@@ -308,6 +376,7 @@ async fn main() -> Result<()> {
     // Create application state
     let state = AppState {
         config: config.clone(),
+        auth,
         manager: manager.clone(),
         event_bus: event_bus.clone(),
         call_store: call_store.clone(),
@@ -530,6 +599,35 @@ fn validate_listener_auth(config: &EventsConfig) -> Result<()> {
     Ok(())
 }
 
+fn build_auth_state(
+    config: &EventsConfig,
+    storage_result: Option<&storage::StorageResult>,
+) -> EventsAuthState {
+    let expected_token = config
+        .auth
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned);
+
+    let api_token_store = storage_result.map(|storage| {
+        Arc::new(fcp_storage_postgres::api_token::PostgresApiTokenStore::new(
+            storage.pg_storage.pool().clone(),
+        )) as Arc<dyn ApiTokenStore>
+    });
+    let credential_store =
+        storage_result.map(|storage| storage.pg_storage.clone() as Arc<dyn CredentialStore>);
+    let jwt_secret = expected_token.as_deref().map(derive_jwt_secret_from_token);
+
+    EventsAuthState {
+        expected_token,
+        api_token_store,
+        credential_store,
+        jwt_secret,
+    }
+}
+
 fn extract_bearer_token(header_value: &str) -> Option<&str> {
     header_value
         .strip_prefix("Bearer ")
@@ -548,36 +646,178 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
         == 0
 }
 
-fn is_valid_api_token(headers: &axum::http::HeaderMap, expected: &str) -> bool {
+fn derive_jwt_secret_from_token(auth_token: &str) -> Vec<u8> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(b"fcp-jwt-key-derivation")
+        .expect("HMAC accepts any key length");
+    mac.update(auth_token.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
+fn extract_token_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(extract_bearer_token)
-        .map(|provided| constant_time_compare(provided, expected))
-        .unwrap_or(false)
+        .map(ToOwned::to_owned)
 }
 
-fn is_valid_query_token(uri: &axum::http::Uri, expected: &str) -> bool {
+fn extract_query_token(uri: &axum::http::Uri) -> Option<String> {
     let Some(query) = uri.query() else {
-        return false;
+        return None;
     };
 
     url::form_urlencoded::parse(query.as_bytes())
-        .any(|(key, value)| key == "token" && constant_time_compare(value.as_ref(), expected))
+        .find(|(key, _)| key == "token")
+        .map(|(_, value)| value.into_owned())
+}
+
+async fn authenticate_presented_token(
+    auth: &EventsAuthState,
+    token: &str,
+) -> Option<AuthPrincipal> {
+    if let Some(expected_token) = auth.expected_token.as_deref() {
+        if constant_time_compare(token, expected_token) {
+            return Some(AuthPrincipal::StaticAdmin);
+        }
+    }
+
+    if token.starts_with("fcp_") {
+        if let Some(store) = auth.api_token_store.as_ref() {
+            let mut hasher = Sha256::new();
+            hasher.update(token.as_bytes());
+            let token_hash = format!("{:x}", hasher.finalize());
+            let api_token = match store.get_api_token_by_hash(&token_hash).await {
+                Ok(Some(token)) => token,
+                Ok(None) => return None,
+                Err(error) => {
+                    warn!(error = %error, "Failed to validate API token");
+                    return None;
+                }
+            };
+
+            if let Some(expires_at) = api_token.expires_at {
+                if std::time::SystemTime::now() > expires_at {
+                    return None;
+                }
+            }
+
+            let store = Arc::clone(store);
+            let token_id = api_token.id.clone();
+            tokio::spawn(async move {
+                if let Err(error) = store.update_last_used(&token_id).await {
+                    debug!(error = %error, "Failed to update API token last_used_at");
+                }
+            });
+
+            return Some(AuthPrincipal::ApiToken {
+                tenant_id: api_token.tenant_id,
+                permissions: api_token.permissions,
+            });
+        }
+    }
+
+    validate_session_token(auth, token).await
+}
+
+async fn authenticate_request_token(
+    auth: &EventsAuthState,
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+) -> Option<AuthPrincipal> {
+    let token = extract_token_from_headers(headers).or_else(|| extract_query_token(uri))?;
+    authenticate_presented_token(auth, &token).await
+}
+
+async fn validate_session_token(auth: &EventsAuthState, token: &str) -> Option<AuthPrincipal> {
+    let secret = auth.jwt_secret.as_deref()?;
+    let claims = decode_jwt(token, secret).ok()?;
+
+    if let Some(store) = auth.credential_store.as_ref() {
+        match store.get_user(&claims.sub).await {
+            Ok(Some(user)) => {
+                if !user.enabled
+                    || user.account_status == AccountStatus::Locked
+                    || user.account_status == AccountStatus::Suspended
+                {
+                    debug!(
+                        username = %claims.sub,
+                        status = ?user.account_status,
+                        enabled = user.enabled,
+                        "JWT rejected: user account inactive"
+                    );
+                    return None;
+                }
+            }
+            Ok(None) => {
+                debug!(username = %claims.sub, "JWT rejected: user deleted");
+                return None;
+            }
+            Err(error) => {
+                warn!(error = %error, "JWT user status check failed");
+                return None;
+            }
+        }
+    }
+
+    let tenant_id = claims.tenant_id.parse::<TenantId>().ok()?;
+    Some(AuthPrincipal::Session {
+        _username: claims.sub,
+        role: claims.role,
+        tenant_id,
+    })
+}
+
+fn decode_jwt(token: &str, secret: &[u8]) -> Result<SessionClaims> {
+    use base64::Engine;
+
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        anyhow::bail!("invalid token format");
+    }
+
+    let message = format!("{}.{}", parts[0], parts[1]);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)?;
+    mac.update(message.as_bytes());
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[2])?;
+    mac.verify_slice(&signature)
+        .map_err(|_| anyhow::anyhow!("invalid token signature"))?;
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1])?;
+    let claims: SessionClaims = serde_json::from_slice(&payload)?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as usize;
+    if claims.exp < now {
+        anyhow::bail!("token expired");
+    }
+
+    Ok(claims)
 }
 
 async fn require_api_token(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(expected_token) = state.config.auth.token.as_deref() else {
+    if !state.auth.auth_enabled() {
+        request.extensions_mut().insert(AuthPrincipal::StaticAdmin);
         return next.run(request).await;
-    };
+    }
 
-    if is_valid_api_token(request.headers(), expected_token)
-        || is_valid_query_token(request.uri(), expected_token)
+    if let Some(principal) =
+        authenticate_request_token(&state.auth, request.headers(), request.uri()).await
     {
+        if !principal.has_operator_access() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Operator access required"})),
+            )
+                .into_response();
+        }
+
+        request.extensions_mut().insert(principal);
         return next.run(request).await;
     }
 
@@ -633,17 +873,29 @@ async fn websocket_handler(
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    if let Some(expected_token) = state.config.auth.token.as_deref() {
-        let provided_token = headers
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(extract_bearer_token)
-            .map(|value| value.to_string())
-            .or(query.token);
-
+    if state.auth.auth_enabled() {
+        let provided_token = extract_token_from_headers(&headers).or(query.token);
         match provided_token {
-            Some(token) if constant_time_compare(&token, expected_token) => {}
-            _ => {
+            Some(token) => {
+                match authenticate_presented_token(&state.auth, &token).await {
+                    Some(principal) if principal.has_operator_access() => {}
+                    Some(_) => {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(serde_json::json!({"error": "Operator access required"})),
+                        )
+                            .into_response();
+                    }
+                    None => {
+                        return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+                    )
+                        .into_response();
+                    }
+                }
+            }
+            None => {
                 return (
                     StatusCode::UNAUTHORIZED,
                     Json(serde_json::json!({"error": "Invalid or missing authentication token"})),

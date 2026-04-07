@@ -8,9 +8,7 @@ use axum::{
     Json,
 };
 use fcp_core::storage::ExtensionStore;
-use fcp_core::{
-    DeviceId, Extension, ExtensionTarget, LocationId, PhoneNumberId, ServiceId, TenantId, UserId,
-};
+use fcp_core::{DeviceId, Extension, ExtensionTarget, LocationId, PhoneNumberId, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -84,11 +82,9 @@ impl ExtensionTargetResponse {
                     .map_err(|e| ApiError::BadRequest(format!("Invalid device ID: {}", e)))?;
                 Ok(ExtensionTarget::Device(device_id))
             }
-            ExtensionTargetResponse::Service(id) => {
-                let service_id = ServiceId::from_str(id)
-                    .map_err(|e| ApiError::BadRequest(format!("Invalid service ID: {}", e)))?;
-                Ok(ExtensionTarget::Service(service_id))
-            }
+            ExtensionTargetResponse::Service(_id) => Err(ApiError::BadRequest(
+                "Service-backed extensions are not supported by the SIP runtime yet".to_string(),
+            )),
         }
     }
 }

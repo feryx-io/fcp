@@ -2,6 +2,9 @@
 service_type = "events"
 node_id = "events-local"
 
+[auth]
+token = "events-local-secret"
+
 [websocket]
 bind_address = "0.0.0.0:8081"
 heartbeat_interval = 30
