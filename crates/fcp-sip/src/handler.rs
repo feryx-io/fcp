@@ -2137,6 +2137,8 @@ impl SipMessageHandler {
         call_id: fcp_b2bua_core::CallId,
         uac: Arc<SipUserAgentClient>,
     ) -> Result<()> {
+        let a_leg_handle_arc = Arc::new(a_leg_handle.clone());
+
         // Extract To header to get destination AOR
         let to = sip_parse::header(request.headers(), "To")
             .ok_or_else(|| anyhow::anyhow!("Missing To header"))?;
@@ -2670,9 +2672,187 @@ impl SipMessageHandler {
                                             return Ok(());
                                         }
                                     }
+                                    fcp_core::BindingType::Queue => {
+                                        let response = self.create_simple_response(
+                                            request,
+                                            404,
+                                            "Queue Route Not Found",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(
+                                                "Queue binding present but no matching queue extension is configured"
+                                                    .to_string(),
+                                            ),
+                                        );
+                                        return Ok(());
+                                    }
+                                    fcp_core::BindingType::ConferenceBridge => {
+                                        use fcp_core::storage::ConferenceStore;
+
+                                        let room_number = destination_aor
+                                            .split('@')
+                                            .next()
+                                            .unwrap_or(destination_aor);
+                                        let meeting_result = match storage
+                                            .get_meeting_by_room_number(&line_binding.tenant_id, room_number)
+                                            .await
+                                        {
+                                            Ok(Some(m)) => Ok(Some(m)),
+                                            Ok(None) if !line_binding.tenant_id.is_nil() => {
+                                                storage
+                                                    .get_meeting_by_room_number(
+                                                        &fcp_core::TenantId::nil(),
+                                                        room_number,
+                                                    )
+                                                    .await
+                                            }
+                                            other => other,
+                                        };
+
+                                        match meeting_result {
+                                            Ok(Some(meeting)) if meeting.enabled => {
+                                                let conf_uri = {
+                                                    let guard = self
+                                                        .conference_server_uri_override
+                                                        .read()
+                                                        .unwrap();
+                                                    guard.clone().or_else(|| {
+                                                        self.b2bua_config.conference_server_uri.clone()
+                                                    })
+                                                };
+                                                if let Some(ref server_uri) = conf_uri {
+                                                    let host = server_uri
+                                                        .strip_prefix("sip:")
+                                                        .or_else(|| server_uri.strip_prefix("sips:"))
+                                                        .unwrap_or(server_uri)
+                                                        .split('@')
+                                                        .last()
+                                                        .unwrap_or(server_uri);
+                                                    let target_uri =
+                                                        format!("sip:{}@{}", room_number, host);
+                                                    match sip_registrar::Binding::new(
+                                                        SmolStr::new(destination_aor),
+                                                        SmolStr::new(&target_uri),
+                                                        std::time::Duration::from_secs(3600),
+                                                    ) {
+                                                        Ok(binding) => {
+                                                            info!(
+                                                                call_id = %call_id,
+                                                                room_number = %room_number,
+                                                                meeting_name = %meeting.name,
+                                                                target_uri = %target_uri,
+                                                                "Routing conference line binding to conference server"
+                                                            );
+                                                            vec![binding]
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(call_id = %call_id, error = %e, "Failed to create conference binding");
+                                                            let response = self.create_simple_response(
+                                                                request,
+                                                                500,
+                                                                "Internal Server Error",
+                                                            );
+                                                            a_leg_handle.send_final(response).await;
+                                                            let _ = self.call_manager.terminate_call(
+                                                                &call_id,
+                                                                Some(format!(
+                                                                    "Failed to create conference binding: {}",
+                                                                    e
+                                                                )),
+                                                            );
+                                                            return Ok(());
+                                                        }
+                                                    }
+                                                } else {
+                                                    let response = self.create_simple_response(
+                                                        request,
+                                                        503,
+                                                        "Conference Service Unavailable",
+                                                    );
+                                                    a_leg_handle.send_final(response).await;
+                                                    let _ = self.call_manager.terminate_call(
+                                                        &call_id,
+                                                        Some(
+                                                            "Conference room found but conference_server_uri is not configured"
+                                                                .to_string(),
+                                                        ),
+                                                    );
+                                                    return Ok(());
+                                                }
+                                            }
+                                            Ok(Some(_)) | Ok(None) => {
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    404,
+                                                    "Conference Room Not Found",
+                                                );
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some(format!(
+                                                        "No enabled conference room found for {}",
+                                                        room_number
+                                                    )),
+                                                );
+                                                return Ok(());
+                                            }
+                                            Err(e) => {
+                                                error!(call_id = %call_id, room_number = %room_number, error = %e, "Failed to look up conference room");
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    500,
+                                                    "Internal Server Error",
+                                                );
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some(format!(
+                                                        "Failed to look up conference room: {}",
+                                                        e
+                                                    )),
+                                                );
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                    fcp_core::BindingType::Voicemail => {
+                                        info!(
+                                            call_id = %call_id,
+                                            binding_type = %line_binding.binding_type,
+                                            "Routing voicemail line binding to voicemail server"
+                                        );
+                                        match self
+                                            .route_cfna(
+                                                request,
+                                                &a_leg_handle_arc,
+                                                call_id,
+                                                "voicemail",
+                                                Some(destination_aor),
+                                                None,
+                                            )
+                                            .await
+                                        {
+                                            Ok(()) => return Ok(()),
+                                            Err(e) => {
+                                                error!(call_id = %call_id, error = %e, "Voicemail routing failed");
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    480,
+                                                    "Temporarily Unavailable",
+                                                );
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some(format!("Voicemail routing failed: {}", e)),
+                                                );
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
                                     _ => {
-                                        // Other binding types not yet implemented
-                                        info!(call_id = %call_id, binding_type = %line_binding.binding_type, "Binding type not yet supported");
+                                        info!(call_id = %call_id, binding_type = %line_binding.binding_type, "Binding type not supported");
                                         let response = self.create_simple_response(
                                             request,
                                             501,
@@ -3307,29 +3487,185 @@ impl SipMessageHandler {
                                 }
                             }
                             fcp_core::ExtensionTarget::Service(service_id) => {
-                                info!(
-                                    call_id = %call_id,
-                                    service_id = %service_id,
-                                    "Extension routes to service (IVR/Queue/Voicemail) - not yet implemented"
-                                );
-                                // TODO: Phase 2 - Implement service routing
-                                // Services include: IVR, call queues, voicemail, conferencing, etc.
-                                // This will require integration with fcp-flow for IVR flows,
-                                // fcp-queue for ACD queues, and fcp-voicemail for voicemail.
-                                let response = self.create_simple_response(
-                                    request,
-                                    501,
-                                    "Service Routing Not Implemented",
-                                );
-                                a_leg_handle.send_final(response).await;
-                                let _ = self.call_manager.terminate_call(
-                                    &call_id,
-                                    Some(format!(
-                                        "Service routing not implemented (service_id: {})",
-                                        service_id
-                                    )),
-                                );
-                                return Ok(());
+                                info!(call_id = %call_id, service_id = %service_id, extension = %extension_number, "Resolving legacy service-backed extension");
+
+                                use fcp_core::storage::{ConferenceStore, VoicemailStore};
+
+                                match storage
+                                    .get_mailbox_by_extension(&tenant_id, extension_number)
+                                    .await
+                                {
+                                    Ok(Some(mailbox)) if mailbox.enabled => {
+                                        info!(
+                                            call_id = %call_id,
+                                            extension = %extension_number,
+                                            mailbox_id = %mailbox.id,
+                                            "Routing service-backed extension to voicemail server"
+                                        );
+                                        match self
+                                            .route_cfna(
+                                                request,
+                                                &a_leg_handle_arc,
+                                                call_id,
+                                                "voicemail",
+                                                Some(extension_number),
+                                                None,
+                                            )
+                                            .await
+                                        {
+                                            Ok(()) => return Ok(()),
+                                            Err(e) => {
+                                                error!(call_id = %call_id, error = %e, "Voicemail routing failed");
+                                                let response = self.create_simple_response(
+                                                    request,
+                                                    480,
+                                                    "Temporarily Unavailable",
+                                                );
+                                                a_leg_handle.send_final(response).await;
+                                                let _ = self.call_manager.terminate_call(
+                                                    &call_id,
+                                                    Some(format!("Voicemail routing failed: {}", e)),
+                                                );
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                    Ok(Some(_)) | Ok(None) => {}
+                                    Err(e) => {
+                                        error!(call_id = %call_id, extension = %extension_number, error = %e, "Failed to look up mailbox for service-backed extension");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            500,
+                                            "Internal Server Error",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(format!("Failed to look up mailbox: {}", e)),
+                                        );
+                                        return Ok(());
+                                    }
+                                }
+
+                                let meeting_result = match storage
+                                    .get_meeting_by_room_number(&tenant_id, extension_number)
+                                    .await
+                                {
+                                    Ok(Some(m)) => Ok(Some(m)),
+                                    Ok(None) if !tenant_id.is_nil() => {
+                                        storage
+                                            .get_meeting_by_room_number(
+                                                &fcp_core::TenantId::nil(),
+                                                extension_number,
+                                            )
+                                            .await
+                                    }
+                                    other => other,
+                                };
+
+                                match meeting_result {
+                                    Ok(Some(meeting)) if meeting.enabled => {
+                                        let conf_uri = {
+                                            let guard =
+                                                self.conference_server_uri_override.read().unwrap();
+                                            guard.clone().or_else(|| {
+                                                self.b2bua_config.conference_server_uri.clone()
+                                            })
+                                        };
+                                        if let Some(ref server_uri) = conf_uri {
+                                            let host = server_uri
+                                                .strip_prefix("sip:")
+                                                .or_else(|| server_uri.strip_prefix("sips:"))
+                                                .unwrap_or(server_uri)
+                                                .split('@')
+                                                .last()
+                                                .unwrap_or(server_uri);
+                                            let target_uri =
+                                                format!("sip:{}@{}", extension_number, host);
+                                            info!(
+                                                call_id = %call_id,
+                                                room_number = %extension_number,
+                                                meeting_name = %meeting.name,
+                                                target_uri = %target_uri,
+                                                "Routing service-backed extension to conference server"
+                                            );
+                                            match sip_registrar::Binding::new(
+                                                SmolStr::new(destination_aor),
+                                                SmolStr::new(&target_uri),
+                                                std::time::Duration::from_secs(3600),
+                                            ) {
+                                                Ok(binding) => {
+                                                    extension_contacts = vec![binding];
+                                                }
+                                                Err(e) => {
+                                                    warn!(call_id = %call_id, error = %e, "Failed to create conference binding");
+                                                    let response = self.create_simple_response(
+                                                        request,
+                                                        500,
+                                                        "Internal Server Error",
+                                                    );
+                                                    a_leg_handle.send_final(response).await;
+                                                    let _ = self.call_manager.terminate_call(
+                                                        &call_id,
+                                                        Some(format!(
+                                                            "Failed to create conference binding: {}",
+                                                            e
+                                                        )),
+                                                    );
+                                                    return Ok(());
+                                                }
+                                            }
+                                        } else {
+                                            let response = self.create_simple_response(
+                                                request,
+                                                503,
+                                                "Conference Service Unavailable",
+                                            );
+                                            a_leg_handle.send_final(response).await;
+                                            let _ = self.call_manager.terminate_call(
+                                                &call_id,
+                                                Some(
+                                                    "Conference room found but conference_server_uri is not configured"
+                                                        .to_string(),
+                                                ),
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
+                                    Ok(Some(_)) | Ok(None) => {
+                                        let response = self.create_simple_response(
+                                            request,
+                                            404,
+                                            "Service Route Not Found",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(format!(
+                                                "Service-backed extension {} has no routable queue, mailbox, or conference target (service_id: {})",
+                                                extension_number, service_id
+                                            )),
+                                        );
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        warn!(call_id = %call_id, extension = %extension_number, error = %e, "Failed to look up conference target for service-backed extension");
+                                        let response = self.create_simple_response(
+                                            request,
+                                            500,
+                                            "Internal Server Error",
+                                        );
+                                        a_leg_handle.send_final(response).await;
+                                        let _ = self.call_manager.terminate_call(
+                                            &call_id,
+                                            Some(format!(
+                                                "Failed to look up service-backed conference target: {}",
+                                                e
+                                            )),
+                                        );
+                                        return Ok(());
+                                    }
+                                }
                             }
                         }
                     }
@@ -3638,7 +3974,7 @@ impl SipMessageHandler {
         // Parallel forking: Extract URIs and flow tokens from all contacts
         let target_contacts: Vec<TargetContact> = destination_contacts
             .iter()
-            .map(|contact| {
+            .map(|contact: &sip_registrar::Binding| {
                 let contact_str = contact.contact();
                 // Extract URI from Contact header (strip angle brackets if present)
                 // Contact format: <sip:user@host> or sip:user@host
@@ -3658,7 +3994,7 @@ impl SipMessageHandler {
                 };
                 TargetContact {
                     uri,
-                    flow_token: contact.flow_token().map(|s| s.to_string()),
+                    flow_token: contact.flow_token().map(|s: &str| s.to_string()),
                 }
             })
             .collect();

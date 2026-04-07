@@ -27,7 +27,8 @@ connection_string = "sqlite://data/fcp-voicemail.db"
 
 # HTTP health/status/voicemail API
 [http]
-bind_address = "0.0.0.0:8087"
+bind_address = "127.0.0.1:8087"
+# api_token = "replace-me-for-non-loopback-binds"
 
 # Logging
 [logging]

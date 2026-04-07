@@ -507,6 +507,7 @@ async fn main() -> Result<()> {
         call_manager: Arc::clone(&call_manager),
         flow_handler: Arc::clone(&flow_handler),
         start_time: Instant::now(),
+        api_token: config.http.api_token.clone(),
     });
     let http_bind = config.http.bind_address;
     tokio::spawn(async move {

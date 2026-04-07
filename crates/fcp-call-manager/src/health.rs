@@ -3,9 +3,10 @@
 use crate::queue_handler::{QueueCallHandler, SupervisorMode};
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -42,8 +43,7 @@ pub struct AppState {
 
 /// Run the HTTP health/status/calls server.
 pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> anyhow::Result<()> {
-    let app = Router::new()
-        .route("/health", get(health_handler))
+    let protected = Router::new()
         .route("/status", get(status_handler))
         .route("/calls", get(calls_handler))
         .route("/registrations", get(registrations_handler))
@@ -78,8 +78,6 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // Callback endpoints
         .route("/callbacks", get(list_callbacks_handler))
         .route("/callbacks/{call_id}", delete(cancel_callback_handler))
-        // WebSocket wallboard (real-time queue stats)
-        .route("/ws/wallboard", get(wallboard_ws_handler))
         // Campaign / predictive dialer endpoints
         .route(
             "/campaigns/{queue}/numbers",
@@ -113,12 +111,48 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/internal/hangup", post(internal_hangup_handler))
         .route("/internal/supervisor", post(internal_supervisor_handler))
         .route("/internal/unpark", post(internal_unpark_handler))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            require_api_token,
+        ));
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        // Callback endpoints
+        // WebSocket wallboard (real-time queue stats)
+        .route("/ws/wallboard", get(wallboard_ws_handler))
+        .merge(protected)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn require_api_token(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected_token) = state.api_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let provided_token = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(extract_bearer_token);
+
+    match provided_token {
+        Some(token) if constant_time_compare(token, expected_token) => next.run(request).await,
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+        )
+            .into_response(),
+    }
 }
 
 async fn health_handler() -> Json<serde_json::Value> {

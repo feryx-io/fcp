@@ -271,15 +271,15 @@ pub struct HttpSection {
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
 
-    /// Optional bearer token for authenticating WebSocket wallboard connections.
-    /// Supports `Authorization: Bearer <token>` header and `?token=<token>` query param.
-    /// When None, wallboard connections require no authentication.
+    /// Optional bearer token for authenticating the HTTP control API.
+    /// Also supports `?token=<token>` for the wallboard WebSocket endpoint.
+    /// Public binds require this to be set.
     #[serde(default)]
     pub api_token: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
-    "0.0.0.0:8084".parse().unwrap()
+    "127.0.0.1:8084".parse().unwrap()
 }
 
 impl Default for HttpSection {
@@ -606,6 +606,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
         }
     };
 
+    validate_http_config(&config.http)?;
+
     info!(
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
@@ -621,6 +623,24 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
     );
 
     Ok(config)
+}
+
+fn validate_http_config(http: &HttpSection) -> Result<()> {
+    let public_bind = !http.bind_address.ip().is_loopback();
+    let has_token = http
+        .api_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if public_bind && !has_token {
+        anyhow::bail!(
+            "http.api_token must be set when binding the call-manager HTTP API to a non-loopback address ({})",
+            http.bind_address
+        );
+    }
+
+    Ok(())
 }
 
 fn load_config_from_file(path: &Path) -> Result<CallManagerConfig> {
@@ -649,7 +669,8 @@ mod tests {
         assert_eq!(config.registrar.realm, "fcp.local");
         assert_eq!(config.registrar.default_expires, 3600);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
-        assert_eq!(config.http.bind_address.port(), 8084);
+        assert_eq!(config.http.bind_address, "127.0.0.1:8084".parse().unwrap());
+        assert!(config.http.api_token.is_none());
         assert_eq!(config.calls.max_concurrent_calls, 1000);
         assert_eq!(config.calls.call_timeout_seconds, 60);
         assert!(config.calls.enable_sdp);
@@ -668,6 +689,21 @@ mod tests {
         // Queue defaults
         assert!(!config.queue.enabled);
         assert!(config.queue.queues.is_empty());
+    }
+
+    #[test]
+    fn test_public_http_bind_requires_token() {
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8084".parse().unwrap(),
+            api_token: None,
+        };
+        assert!(validate_http_config(&http).is_err());
+
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8084".parse().unwrap(),
+            api_token: Some("secret".to_string()),
+        };
+        assert!(validate_http_config(&http).is_ok());
     }
 
     #[test]

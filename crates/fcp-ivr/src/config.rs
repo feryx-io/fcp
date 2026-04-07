@@ -155,16 +155,22 @@ pub struct HttpSection {
     /// Bind address for health/status/flows endpoint
     #[serde(default = "default_http_bind")]
     pub bind_address: SocketAddr,
+
+    /// Optional bearer token for the HTTP control API.
+    /// Public binds require this to be set.
+    #[serde(default)]
+    pub api_token: Option<String>,
 }
 
 fn default_http_bind() -> SocketAddr {
-    "0.0.0.0:8086".parse().unwrap()
+    "127.0.0.1:8086".parse().unwrap()
 }
 
 impl Default for HttpSection {
     fn default() -> Self {
         Self {
             bind_address: default_http_bind(),
+            api_token: None,
         }
     }
 }
@@ -374,6 +380,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<IvrConfig> {
         }
     };
 
+    validate_http_config(&config.http)?;
+
     info!(
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
@@ -388,6 +396,24 @@ pub fn load_config(config_path: Option<&Path>) -> Result<IvrConfig> {
     );
 
     Ok(config)
+}
+
+fn validate_http_config(http: &HttpSection) -> Result<()> {
+    let public_bind = !http.bind_address.ip().is_loopback();
+    let has_token = http
+        .api_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if public_bind && !has_token {
+        anyhow::bail!(
+            "http.api_token must be set when binding the IVR HTTP API to a non-loopback address ({})",
+            http.bind_address
+        );
+    }
+
+    Ok(())
 }
 
 fn load_config_from_file(path: &Path) -> Result<IvrConfig> {
@@ -412,7 +438,8 @@ mod tests {
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
-        assert_eq!(config.http.bind_address.port(), 8086);
+        assert_eq!(config.http.bind_address, "127.0.0.1:8086".parse().unwrap());
+        assert!(config.http.api_token.is_none());
         assert_eq!(config.media.rtp_port_start, 10000);
         assert_eq!(config.media.rtp_port_end, 20000);
         assert!(config.events.server_url.is_none());
@@ -444,6 +471,7 @@ database_url = "postgresql://localhost/fcp"
 
 [http]
 bind_address = "0.0.0.0:8086"
+api_token = "secret"
 
 [media]
 rtp_port_start = 20000
@@ -496,5 +524,20 @@ flow_id = "support-queue"
             config.flows.audio_path.as_deref(),
             Some("/var/lib/fcp/audio")
         );
+    }
+
+    #[test]
+    fn test_public_http_bind_requires_token() {
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8086".parse().unwrap(),
+            api_token: None,
+        };
+        assert!(validate_http_config(&http).is_err());
+
+        let http = HttpSection {
+            bind_address: "0.0.0.0:8086".parse().unwrap(),
+            api_token: Some("secret".to_string()),
+        };
+        assert!(validate_http_config(&http).is_ok());
     }
 }

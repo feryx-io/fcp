@@ -1,7 +1,10 @@
 //! HTTP health/status/flow-routes API for fcp-ivr.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -18,6 +21,7 @@ pub struct IvrState {
     pub call_manager: Arc<CallManager>,
     pub flow_handler: Arc<FlowCallHandler>,
     pub start_time: Instant,
+    pub api_token: Option<String>,
 }
 
 /// Create the IVR health/status router.
@@ -33,7 +37,21 @@ pub fn ivr_router() -> Router<Arc<IvrState>> {
 
 /// Run the HTTP health/status/flows server.
 pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<IvrState>) -> anyhow::Result<()> {
-    let app = ivr_router().with_state(state);
+    let protected = Router::new()
+        .route("/status", get(status_handler))
+        .route("/flows/routes", get(list_routes_handler))
+        .route("/flows/routes", post(add_route_handler))
+        .route("/flows/routes/{did}", delete(remove_route_handler))
+        .route("/flows/active", get(active_flows_handler))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            require_api_token,
+        ));
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .merge(protected)
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
@@ -45,6 +63,33 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<IvrState>) -> any
 #[allow(dead_code)]
 pub fn merge_with_api(api_router: Router<Arc<IvrState>>) -> Router<Arc<IvrState>> {
     ivr_router().merge(api_router)
+}
+
+async fn require_api_token(
+    State(state): State<Arc<IvrState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected_token) = state.api_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+
+    if !token.is_empty() && token == expected_token {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+        )
+            .into_response()
+    }
 }
 
 async fn health_handler() -> Json<serde_json::Value> {

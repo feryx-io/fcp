@@ -212,6 +212,29 @@ impl MediaConfig {
             }
         }
 
+        if let Some(tts) = &self.tts {
+            match &tts.provider {
+                crate::tts::TtsProviderConfig::GoogleCloud { .. }
+                | crate::tts::TtsProviderConfig::OpenAi { .. }
+                | crate::tts::TtsProviderConfig::Local { .. } => {}
+                crate::tts::TtsProviderConfig::AwsPolly { .. } => {
+                    return Err(Error::Config(
+                        "tts.provider.type = \"aws_polly\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
+                    ));
+                }
+                crate::tts::TtsProviderConfig::Azure { .. } => {
+                    return Err(Error::Config(
+                        "tts.provider.type = \"azure\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
+                    ));
+                }
+                crate::tts::TtsProviderConfig::ElevenLabs { .. } => {
+                    return Err(Error::Config(
+                        "tts.provider.type = \"elevenlabs\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -319,6 +342,26 @@ mod tests {
                 retry_enabled: true,
                 max_retries: 3,
             },
+            ..Default::default()
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_stub_tts_provider_is_rejected() {
+        let config = MediaConfig {
+            tts: Some(crate::tts::TtsConfig {
+                provider: crate::tts::TtsProviderConfig::AwsPolly {
+                    region: "us-east-1".to_string(),
+                    access_key_id: "key".to_string(),
+                    secret_access_key: "secret".to_string(),
+                },
+                cache_dir: "/tmp/tts".into(),
+                cache_max_size_mb: 100,
+                default_language: "en-US".to_string(),
+                default_voice: None,
+            }),
             ..Default::default()
         };
 

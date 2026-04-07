@@ -34,7 +34,8 @@ connection_string = "sqlite://data/fcp-ivr.db"
 # HTTP health/status/flow-routes API
 # -----------------------------------------------------------------------------
 [http]
-bind_address = "0.0.0.0:8086"
+bind_address = "127.0.0.1:8086"
+# api_token = "replace-me-for-non-loopback-binds"
 
 # Endpoints:
 #   GET  /health         → service health check

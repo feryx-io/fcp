@@ -1,15 +1,19 @@
 //! HTTP health/status/voicemail API for fcp-voicemail-server.
 
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, Request, State},
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
 use fcp_b2bua_core::CallManager;
-use fcp_core::DynStorage;
+use fcp_core::{DynStorage, TenantId};
 use fcp_sip::flow_handler::FlowCallHandler;
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -20,12 +24,51 @@ pub struct VoicemailState {
     pub flow_handler: Arc<FlowCallHandler>,
     pub dyn_storage: Arc<DynStorage>,
     pub start_time: Instant,
+    pub api_token: Option<String>,
 }
 
 /// Create the voicemail health/status router.
 pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
+    let protected = Router::new()
+        .route("/status", get(status_handler))
+        .route("/voicemail/routes", get(list_routes_handler))
+        .route("/voicemail/routes", post(add_route_handler))
+        .route("/voicemail/routes/{did}", delete(remove_route_handler))
+        .route("/voicemail/mailboxes", get(list_mailboxes_handler))
+        .route("/voicemail/mailboxes/{id}", get(get_mailbox_handler))
+        .route(
+            "/voicemail/mailboxes/{id}/messages",
+            get(list_messages_handler),
+        )
+        .route("/voicemail/mailboxes/{id}/mwi", get(get_mwi_handler))
+        .route(
+            "/voicemail/mailboxes/{id}/greetings",
+            get(list_greetings_handler),
+        )
+        .route(
+            "/voicemail/mailboxes/{id}/greetings",
+            post(upload_greeting_handler),
+        )
+        .route(
+            "/voicemail/mailboxes/{id}/greetings/{greeting_type}",
+            delete(delete_greeting_handler),
+        )
+        .route(
+            "/voicemail/mailboxes/{id}/greetings/{greeting_type}/active",
+            axum::routing::put(set_greeting_active_handler),
+        );
+
     Router::new()
         .route("/health", get(health_handler))
+        .merge(protected)
+}
+
+/// Run the HTTP health/status/voicemail server.
+pub async fn run_http_server(
+    bind_addr: SocketAddr,
+    state: Arc<VoicemailState>,
+) -> anyhow::Result<()> {
+    let protected = Router::new()
         .route("/status", get(status_handler))
         .route("/voicemail/routes", get(list_routes_handler))
         .route("/voicemail/routes", post(add_route_handler))
@@ -53,14 +96,15 @@ pub fn voicemail_router() -> Router<Arc<VoicemailState>> {
             "/voicemail/mailboxes/{id}/greetings/{greeting_type}/active",
             axum::routing::put(set_greeting_active_handler),
         )
-}
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            require_api_token,
+        ));
 
-/// Run the HTTP health/status/voicemail server.
-pub async fn run_http_server(
-    bind_addr: SocketAddr,
-    state: Arc<VoicemailState>,
-) -> anyhow::Result<()> {
-    let app = voicemail_router().with_state(state);
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .merge(protected)
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     info!(%bind_addr, "HTTP API server started");
@@ -146,11 +190,19 @@ async fn remove_route_handler(
 
 async fn list_mailboxes_handler(
     State(state): State<Arc<VoicemailState>>,
+    Query(query): Query<ListMailboxesQuery>,
 ) -> Json<serde_json::Value> {
     use fcp_core::storage::VoicemailStore;
 
-    // Use a default tenant ID for listing; in production this would come from auth context
-    let tenant_id = fcp_core::TenantId::new();
+    let tenant_id = match TenantId::from_str(&query.tenant_id) {
+        Ok(tenant_id) => tenant_id,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("Invalid tenant_id: {}", e)
+            }));
+        }
+    };
+
     match state.dyn_storage.list_mailboxes(&tenant_id).await {
         Ok(mailboxes) => {
             let mailbox_list: Vec<serde_json::Value> = mailboxes
@@ -170,6 +222,38 @@ async fn list_mailboxes_handler(
         Err(e) => Json(serde_json::json!({
             "error": format!("Failed to list mailboxes: {}", e)
         })),
+    }
+}
+
+#[derive(Deserialize)]
+struct ListMailboxesQuery {
+    tenant_id: String,
+}
+
+async fn require_api_token(
+    State(state): State<Arc<VoicemailState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected_token) = state.api_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or(auth_header);
+
+    if !token.is_empty() && token == expected_token {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+        )
+            .into_response()
     }
 }
 
