@@ -65,9 +65,12 @@ impl JobQueue {
         Ok(())
     }
 
-    /// Dequeue the highest priority job
+    /// Dequeue the highest priority job that is ready to run.
+    ///
+    /// Jobs scheduled for future retry (score > now) are left in the queue.
     pub async fn dequeue(&self) -> Result<Option<Job>> {
         let mut conn = self.connection_manager.clone();
+        let now_score = chrono::Utc::now().timestamp() as f64;
 
         // Try each priority level from highest to lowest
         for priority in [
@@ -78,17 +81,38 @@ impl JobQueue {
         ] {
             let queue_key = self.queue_key_for_priority(priority);
 
-            // Get the oldest job from this priority queue
-            let result: Vec<String> = conn
-                .zpopmin(&queue_key, 1)
+            // Peek at the lowest-score job without removing it
+            let peek: Vec<(String, f64)> = redis::cmd("ZRANGEBYSCORE")
+                .arg(&queue_key)
+                .arg("-inf")
+                .arg(now_score)
+                .arg("WITHSCORES")
+                .arg("LIMIT")
+                .arg(0i64)
+                .arg(1i64)
+                .query_async(&mut conn)
                 .await
-                .context("Failed to pop from queue")?;
+                .context("Failed to peek queue")?;
 
-            if result.is_empty() {
+            if peek.is_empty() {
                 continue;
             }
 
-            let job_id_str = &result[0];
+            let (job_id_str, _score) = &peek[0];
+
+            // Remove it atomically
+            let removed: i64 = redis::cmd("ZREM")
+                .arg(&queue_key)
+                .arg(job_id_str.as_str())
+                .query_async(&mut conn)
+                .await
+                .context("Failed to remove job from queue")?;
+
+            if removed == 0 {
+                // Another worker grabbed it
+                continue;
+            }
+
             let job_key = format!("{}:job:{}", self.queue_prefix, job_id_str);
 
             // Get job data
@@ -110,7 +134,7 @@ impl JobQueue {
                 job.mark_running();
 
                 // Update job status in Redis
-                let _ = self.update_job(&job).await;
+                self.update_job(&job).await?;
 
                 return Ok(Some(job));
             }

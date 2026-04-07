@@ -313,81 +313,67 @@ impl Worker {
         }
     }
 
-    /// Process recording job
+    /// Process recording job — not yet implemented, fails honestly.
     async fn process_recording(&self, job: &Job) -> Result<JobResult> {
-        info!(job_id = %job.id, "Processing recording");
-
-        // TODO: Implement recording processing logic
-        // - Transcode audio/video
-        // - Upload to storage (S3, etc.)
-        // - Generate thumbnails
-        // - Update database
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        Ok(JobResult::success_with_data(serde_json::json!({
-            "recording_processed": true,
-            "recording_id": job.payload.get("recording_id")
-        })))
+        warn!(job_id = %job.id, "Recording processing not implemented");
+        Ok(JobResult::failure("Recording processing not yet implemented"))
     }
 
-    /// Process webhook job
+    /// Process webhook job — delivers HTTP POST to the configured URL.
     async fn process_webhook(&self, job: &Job) -> Result<JobResult> {
-        info!(job_id = %job.id, "Delivering webhook");
+        let url = match job.payload.get("url").and_then(|v| v.as_str()) {
+            Some(u) => u,
+            None => return Ok(JobResult::failure("Missing webhook URL in payload")),
+        };
+        let payload = match job.payload.get("payload") {
+            Some(p) => p.to_string(),
+            None => return Ok(JobResult::failure("Missing webhook payload")),
+        };
 
-        // TODO: Implement webhook delivery logic
-        // - Extract webhook URL and payload
-        // - Make HTTP POST request
-        // - Handle response
-        // - Retry on failure
+        info!(job_id = %job.id, url = %url, "Delivering webhook");
 
-        let url = job.payload.get("url").and_then(|v| v.as_str());
-        let payload = job.payload.get("payload");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {}", e))?;
 
-        if url.is_none() || payload.is_none() {
-            return Ok(JobResult::failure("Missing URL or payload"));
+        match client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "FCP-Webhook/1.0")
+            .body(payload)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
+                info!(job_id = %job.id, status = %resp.status(), "Webhook delivered");
+                Ok(JobResult::success_with_data(serde_json::json!({
+                    "webhook_delivered": true,
+                    "url": url,
+                    "status": resp.status().as_u16(),
+                })))
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                warn!(job_id = %job.id, status, "Webhook delivery failed");
+                Ok(JobResult::retry(format!("Webhook returned HTTP {}", status)))
+            }
+            Err(e) => {
+                warn!(job_id = %job.id, error = %e, "Webhook delivery error");
+                Ok(JobResult::retry(format!("Webhook error: {}", e)))
+            }
         }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Simulate occasional failures for retry testing
-        if job.retry_count < 2 && rand::random::<f32>() < 0.3 {
-            return Ok(JobResult::retry("Webhook delivery failed, will retry"));
-        }
-
-        Ok(JobResult::success_with_data(serde_json::json!({
-            "webhook_delivered": true,
-            "url": url
-        })))
     }
 
-    /// Process cleanup job
+    /// Process cleanup job — not yet implemented, fails honestly.
     async fn process_cleanup(&self, job: &Job) -> Result<JobResult> {
-        info!(job_id = %job.id, "Running cleanup task");
-
-        // TODO: Implement cleanup logic
-        // - Delete old CDRs
-        // - Delete old recordings
-        // - Clean up temporary files
-        // - Vacuum database
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        Ok(JobResult::success_with_data(serde_json::json!({
-            "cleanup_completed": true,
-            "items_removed": 42
-        })))
+        warn!(job_id = %job.id, "Cleanup job not implemented");
+        Ok(JobResult::failure("Cleanup processing not yet implemented"))
     }
 
-    /// Process custom job
+    /// Process custom job — not yet implemented, fails honestly.
     async fn process_custom(&self, job: &Job) -> Result<JobResult> {
-        info!(job_id = %job.id, "Processing custom job");
-
-        // TODO: Implement custom job processing
-        // - Route to custom handlers based on payload
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        Ok(JobResult::success())
+        warn!(job_id = %job.id, "Custom job type not implemented");
+        Ok(JobResult::failure("Custom job processing not yet implemented"))
     }
 }

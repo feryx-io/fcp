@@ -27,7 +27,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 mod cache;
 mod cli;
@@ -217,42 +217,47 @@ async fn main() -> Result<()> {
     let rate_limiter_state = rate_limit::RateLimiterState::new(config.rate_limit.clone());
 
     // Configure CORS
+    let allowed_methods = [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+    ];
     let cors = if config.cors.enabled {
         if config.cors.allow_all_origins {
             CorsLayer::new()
                 .allow_origin(Any)
-                .allow_methods([
-                    Method::GET,
-                    Method::POST,
-                    Method::PUT,
-                    Method::DELETE,
-                    Method::PATCH,
-                ])
+                .allow_methods(allowed_methods)
                 .allow_headers(Any)
-        } else {
-            // TODO: Implement specific origin handling
+        } else if !config.cors.allowed_origins.is_empty() {
+            // Parse configured origins into HeaderValues
+            let origins: Vec<axum::http::HeaderValue> = config
+                .cors
+                .allowed_origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
             CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods([
-                    Method::GET,
-                    Method::POST,
-                    Method::PUT,
-                    Method::DELETE,
-                    Method::PATCH,
+                .allow_origin(origins)
+                .allow_methods(allowed_methods)
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
                 ])
-                .allow_headers(Any)
+        } else {
+            // No origins configured and allow_all_origins is false — deny all cross-origin
+            warn!("CORS enabled but no origins configured and allow_all_origins=false; cross-origin requests will be rejected");
+            CorsLayer::new()
+                .allow_methods(allowed_methods)
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                ])
         }
     } else {
+        // CORS disabled — no CORS headers at all (browser same-origin policy enforced)
         CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods([
-                Method::GET,
-                Method::POST,
-                Method::PUT,
-                Method::DELETE,
-                Method::PATCH,
-            ])
-            .allow_headers(Any)
     };
 
     // Build router with middleware stack

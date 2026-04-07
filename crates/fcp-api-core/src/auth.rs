@@ -300,11 +300,11 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
     result == 0
 }
 
-/// Tenant context extracted from request headers.
+/// Tenant context extracted from the authenticated session.
 ///
-/// Checks the `X-Tenant-Id` header first, then falls back to the
-/// default tenant configured in [`crate::state::ApiState`].
-/// Forward-compatible with Phase 2 JWT-based tenant extraction.
+/// SECURITY: Does NOT trust the raw X-Tenant-Id header. In a
+/// single-tenant deployment, always uses the server's default tenant.
+/// Multi-tenant deployments should extract tenant from JWT claims.
 pub struct TenantContext(pub fcp_core::TenantId);
 
 #[axum::async_trait]
@@ -312,19 +312,12 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
+        _parts: &mut axum::http::request::Parts,
         state: &crate::state::ApiState,
     ) -> Result<Self, Self::Rejection> {
-        // Try X-Tenant-Id header first
-        if let Some(value) = parts.headers.get("X-Tenant-Id") {
-            if let Ok(s) = value.to_str() {
-                if let Ok(tid) = s.parse::<fcp_core::TenantId>() {
-                    return Ok(TenantContext(tid));
-                }
-            }
-        }
-
-        // Fall back to default tenant
+        // SECURITY: Use server-configured default tenant only.
+        // X-Tenant-Id header is NOT trusted — tenant must come from
+        // authenticated session context (JWT claims in multi-tenant mode).
         Ok(TenantContext(state.default_tenant_id.clone()))
     }
 }

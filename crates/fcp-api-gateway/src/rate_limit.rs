@@ -1,64 +1,96 @@
-//! Rate limiting middleware using token bucket algorithm.
+//! Per-client rate limiting middleware using token bucket algorithm.
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{Request, StatusCode},
     middleware::Next,
     response::Response,
 };
+use dashmap::DashMap;
 use governor::{
     clock::DefaultClock,
     state::{InMemoryState, NotKeyed},
     Quota, RateLimiter,
 };
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tracing::warn;
 
 use crate::config::RateLimitConfig;
 
-/// Rate limiter state
+/// Per-client rate limiter state.
+///
+/// Each unique client IP gets its own token bucket, preventing one noisy
+/// client from exhausting the quota for everyone else.
 #[derive(Clone)]
 pub struct RateLimiterState {
-    /// Global rate limiter (applies to all requests)
-    limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
+    /// Per-IP rate limiters
+    per_ip: Arc<DashMap<IpAddr, Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>>,
 
     /// Configuration
-    config: RateLimitConfig,
+    pub config: RateLimitConfig,
 }
 
 impl RateLimiterState {
-    /// Create a new rate limiter
+    /// Create a new per-client rate limiter.
     pub fn new(config: RateLimitConfig) -> Self {
-        // Create quota: requests_per_minute requests per 60 seconds with burst
-        let quota = Quota::per_minute(NonZeroU32::new(config.default_requests_per_minute).unwrap())
-            .allow_burst(NonZeroU32::new(config.burst_size).unwrap());
-
-        let limiter = Arc::new(RateLimiter::direct(quota));
-
-        Self { limiter, config }
+        Self {
+            per_ip: Arc::new(DashMap::new()),
+            config,
+        }
     }
 
-    /// Check if request is allowed
-    pub fn check(&self) -> bool {
+    /// Check if a request from the given IP is allowed.
+    pub fn check_ip(&self, ip: IpAddr) -> bool {
         if !self.config.enabled {
             return true;
         }
 
-        self.limiter.check().is_ok()
+        let limiter = self
+            .per_ip
+            .entry(ip)
+            .or_insert_with(|| {
+                let quota =
+                    Quota::per_minute(NonZeroU32::new(self.config.default_requests_per_minute).unwrap())
+                        .allow_burst(NonZeroU32::new(self.config.burst_size).unwrap());
+                Arc::new(RateLimiter::direct(quota))
+            })
+            .clone();
+
+        limiter.check().is_ok()
     }
 }
 
-/// Rate limiting middleware
+/// Rate limiting middleware — per-client IP.
 pub async fn rate_limit_middleware(
     State(rate_limiter): State<RateLimiterState>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Check rate limit
-    if !rate_limiter.check() {
+    // Extract client IP from ConnectInfo, X-Forwarded-For, or X-Real-IP
+    let client_ip = connect_info
+        .map(|ci| ci.0.ip())
+        .or_else(|| {
+            req.headers()
+                .get("X-Forwarded-For")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        })
+        .or_else(|| {
+            req.headers()
+                .get("X-Real-IP")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<IpAddr>().ok())
+        })
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+
+    if !rate_limiter.check_ip(client_ip) {
         warn!(
+            client_ip = %client_ip,
             path = %req.uri().path(),
             method = %req.method(),
             "Rate limit exceeded"
@@ -66,6 +98,5 @@ pub async fn rate_limit_middleware(
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
-    // Continue to next middleware/handler
     Ok(next.run(req).await)
 }

@@ -179,13 +179,15 @@ pub async fn get_extension(
 /// Create extension.
 pub async fn create_extension(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Json(req): Json<CreateExtensionRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
     let target = req.target.to_extension_target()?;
 
-    let mut extension = Extension::new(req.number.clone(), target, req.tenant_id)
+    // SECURITY: Use authenticated tenant, not request body tenant_id
+    let mut extension = Extension::new(req.number.clone(), target, tenant.0)
         .map_err(|e| ApiError::BadRequest(format!("Invalid extension: {}", e)))?;
 
     if let Some(desc) = req.description {

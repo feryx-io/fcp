@@ -272,8 +272,8 @@ impl Default for RateLimitConfig {
 /// Cache configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CacheConfig {
-    /// Enable caching
-    #[serde(default = "default_true")]
+    /// Enable caching (disabled by default for security — enable explicitly)
+    #[serde(default)]
     pub enabled: bool,
 
     /// Default TTL for cached responses (seconds)
@@ -292,7 +292,7 @@ fn default_cache_ttl_secs() -> Duration {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false, // Disabled by default — must be explicitly enabled
             default_ttl: default_cache_ttl_secs(),
             get_only: true,
         }

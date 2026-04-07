@@ -86,18 +86,48 @@ impl CacheState {
         }
     }
 
-    /// Generate cache key from request
+    /// Generate cache key from request, incorporating auth context to prevent cross-user leakage.
     fn cache_key(&self, req: &Request<Body>) -> String {
+        // Include Authorization header hash in cache key for tenant/user isolation
+        let auth_hash = req
+            .headers()
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|auth| {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                auth.hash(&mut hasher);
+                format!(":{:x}", hasher.finish())
+            })
+            .unwrap_or_default();
+
+        // Include X-Tenant-Id if present
+        let tenant = req
+            .headers()
+            .get("X-Tenant-Id")
+            .and_then(|v| v.to_str().ok())
+            .map(|t| format!(":t={}", t))
+            .unwrap_or_default();
+
         format!(
-            "gateway:cache:{}{}",
+            "gateway:cache:{}{}{}{}",
             req.uri().path(),
             req.uri()
                 .query()
                 .map(|q| format!("?{}", q))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            auth_hash,
+            tenant,
         )
     }
 }
+
+/// Paths that must NEVER be cached (user-specific or sensitive).
+const UNCACHEABLE_PREFIXES: &[&str] = &[
+    "/api/v1/auth/",
+    "/api/v1/me/",
+    "/api/v1/events",
+];
 
 /// Cache middleware
 pub async fn cache_middleware(
@@ -110,7 +140,13 @@ pub async fn cache_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Generate cache key
+    // Never cache auth/user-specific endpoints
+    let path = req.uri().path();
+    if UNCACHEABLE_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) {
+        return Ok(next.run(req).await);
+    }
+
+    // Generate cache key (includes auth + tenant context)
     let cache_key = cache.cache_key(&req);
 
     // Check cache
@@ -119,6 +155,7 @@ pub async fn cache_middleware(
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("X-Cache", "HIT")
+            .header("Content-Type", "application/json")
             .body(Body::from(cached_data))
             .unwrap());
     }
