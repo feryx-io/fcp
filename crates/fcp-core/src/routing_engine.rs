@@ -106,7 +106,35 @@ impl DefaultRoutingEngine {
             return Err(RoutingError::NoDevicesAvailable);
         }
 
-        Ok(targets)
+        match line_binding.ring_strategy {
+            RingStrategy::RoundRobin => {
+                let device_ids: Vec<_> = targets.iter().map(|target| target.device_id).collect();
+                let selected = self
+                    .call_state_manager
+                    .get_next_round_robin_device(&line_binding.id, &device_ids)
+                    .await
+                    .ok_or(RoutingError::NoDevicesAvailable)?;
+
+                Ok(targets
+                    .into_iter()
+                    .filter(|target| target.device_id == selected)
+                    .collect())
+            }
+            RingStrategy::LongestIdle => {
+                let device_ids: Vec<_> = targets.iter().map(|target| target.device_id).collect();
+                let selected = self
+                    .call_state_manager
+                    .get_longest_idle_device(&device_ids)
+                    .await
+                    .unwrap_or(device_ids[0]);
+
+                Ok(targets
+                    .into_iter()
+                    .filter(|target| target.device_id == selected)
+                    .collect())
+            }
+            _ => Ok(targets),
+        }
     }
 }
 

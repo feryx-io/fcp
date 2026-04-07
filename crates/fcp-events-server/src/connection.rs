@@ -32,16 +32,22 @@ impl std::fmt::Display for ConnectionId {
 pub struct Connection {
     pub id: ConnectionId,
     pub tenant_id: TenantId,
+    pub allow_all_tenants: bool,
     pub subscriptions: Vec<EventFilter>,
     pub last_activity: Instant,
     pub sender: mpsc::UnboundedSender<PlatformEvent>,
 }
 
 impl Connection {
-    pub fn new(tenant_id: TenantId, sender: mpsc::UnboundedSender<PlatformEvent>) -> Self {
+    pub fn new(
+        tenant_id: TenantId,
+        allow_all_tenants: bool,
+        sender: mpsc::UnboundedSender<PlatformEvent>,
+    ) -> Self {
         Self {
             id: ConnectionId::new(),
             tenant_id,
+            allow_all_tenants,
             subscriptions: Vec::new(),
             last_activity: Instant::now(),
             sender,
@@ -49,7 +55,14 @@ impl Connection {
     }
 
     /// Check if this connection is interested in an event
-    pub fn matches_event(&self, event: &PlatformEvent) -> bool {
+    pub fn matches_event(&self, event: &PlatformEvent, event_tenant: Option<&TenantId>) -> bool {
+        if !self.allow_all_tenants {
+            match event_tenant {
+                Some(tenant_id) if tenant_id == &self.tenant_id => {}
+                _ => return false,
+            }
+        }
+
         // If no subscriptions, receive all events
         if self.subscriptions.is_empty() {
             return true;
@@ -103,6 +116,7 @@ impl ConnectionManager {
     pub fn register(
         &self,
         tenant_id: TenantId,
+        allow_all_tenants: bool,
         sender: mpsc::UnboundedSender<PlatformEvent>,
     ) -> Result<ConnectionId, String> {
         // Check global connection limit
@@ -124,7 +138,7 @@ impl ConnectionManager {
             ));
         }
 
-        let conn = Connection::new(tenant_id.clone(), sender);
+        let conn = Connection::new(tenant_id.clone(), allow_all_tenants, sender);
         let conn_id = conn.id;
 
         info!(
@@ -182,13 +196,13 @@ impl ConnectionManager {
     }
 
     /// Publish event to all matching connections
-    pub fn publish(&self, event: PlatformEvent) {
+    pub fn publish(&self, event: PlatformEvent, event_tenant: Option<&TenantId>) {
         let mut send_count = 0;
         let mut error_count = 0;
 
         for conn_ref in self.connections.iter() {
             let conn = conn_ref.value();
-            if conn.matches_event(&event) {
+            if conn.matches_event(&event, event_tenant) {
                 match conn.sender.send(event.clone()) {
                     Ok(_) => send_count += 1,
                     Err(e) => {
@@ -240,6 +254,51 @@ impl ConnectionManager {
 
     pub fn heartbeat_interval(&self) -> Duration {
         self.heartbeat_interval
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fcp_events::{CallDirection, CallEvent};
+    use std::time::SystemTime;
+
+    fn initiated_event(tenant_id: TenantId) -> PlatformEvent {
+        PlatformEvent::Call(CallEvent::Initiated {
+            call_id: fcp_core::CallId::new(),
+            tenant_id,
+            from: "alice@example.com".to_string(),
+            to: "bob@example.com".to_string(),
+            direction: CallDirection::Inbound,
+            timestamp: SystemTime::now(),
+            trunk_name: None,
+            node_id: None,
+        })
+    }
+
+    #[test]
+    fn test_tenant_scoped_connection_only_matches_own_tenant() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tenant_id = TenantId::new();
+        let other_tenant = TenantId::new();
+        let conn = Connection::new(tenant_id.clone(), false, tx);
+
+        let own_event = initiated_event(tenant_id.clone());
+        let other_event = initiated_event(other_tenant.clone());
+
+        assert!(conn.matches_event(&own_event, Some(&tenant_id)));
+        assert!(!conn.matches_event(&other_event, Some(&other_tenant)));
+    }
+
+    #[test]
+    fn test_admin_connection_can_match_any_tenant() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tenant_id = TenantId::new();
+        let other_tenant = TenantId::new();
+        let conn = Connection::new(tenant_id, true, tx);
+        let other_event = initiated_event(other_tenant.clone());
+
+        assert!(conn.matches_event(&other_event, Some(&other_tenant)));
     }
 }
 

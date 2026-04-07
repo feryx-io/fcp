@@ -62,6 +62,14 @@ impl EventFilter {
 
     /// Check if an event matches this filter.
     pub fn matches(&self, event: &PlatformEvent) -> bool {
+        // Filter by tenant ID if specified
+        if let Some(filter_tenant_id) = &self.tenant_id {
+            match event.tenant_id() {
+                Some(event_tenant_id) if event_tenant_id == filter_tenant_id => {}
+                _ => return false,
+            }
+        }
+
         // Filter by call ID if specified
         if let Some(filter_call_id) = &self.call_id {
             if let Some(event_call_id) = event.call_id() {
@@ -178,5 +186,36 @@ mod tests {
 
         assert!(filter.matches(&call_event));
         assert!(!filter.matches(&system_event));
+    }
+
+    #[test]
+    fn test_filter_by_tenant_id() {
+        let tenant_id = TenantId::new();
+        let other_tenant = TenantId::new();
+        let filter = EventFilter::new().tenant(tenant_id);
+
+        let matching_event = PlatformEvent::Call(CallEvent::Initiated {
+            call_id: CallId::new(),
+            tenant_id,
+            from: "alice@example.com".to_string(),
+            to: "bob@example.com".to_string(),
+            direction: CallDirection::Inbound,
+            timestamp: SystemTime::now(),
+            trunk_name: None,
+            node_id: None,
+        });
+        let non_matching_event = PlatformEvent::Call(CallEvent::Initiated {
+            call_id: CallId::new(),
+            tenant_id: other_tenant,
+            from: "alice@example.com".to_string(),
+            to: "bob@example.com".to_string(),
+            direction: CallDirection::Inbound,
+            timestamp: SystemTime::now(),
+            trunk_name: None,
+            node_id: None,
+        });
+
+        assert!(filter.matches(&matching_event));
+        assert!(!filter.matches(&non_matching_event));
     }
 }

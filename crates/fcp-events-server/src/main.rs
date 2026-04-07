@@ -476,8 +476,9 @@ async fn main() -> Result<()> {
 
     let event_bus_clone = event_bus.clone();
     let manager_clone = manager.clone();
+    let call_store_broadcast = call_store.clone();
     tokio::spawn(async move {
-        event_broadcast_task(event_bus_clone, manager_clone).await;
+        event_broadcast_task(event_bus_clone, manager_clone, call_store_broadcast).await;
     });
 
     // Spawn stale cleanup task
@@ -873,12 +874,33 @@ async fn websocket_handler(
     headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    let tenant_id = match tenant_id_str.parse::<TenantId>() {
+        Ok(id) => id,
+        Err(e) => {
+            error!(tenant_id = %tenant_id_str, error = %e, "Invalid tenant ID");
+            return (StatusCode::BAD_REQUEST, "Invalid tenant ID").into_response();
+        }
+    };
+
+    let mut allow_all_tenants = false;
     if state.auth.auth_enabled() {
         let provided_token = extract_token_from_headers(&headers).or(query.token);
         match provided_token {
             Some(token) => {
                 match authenticate_presented_token(&state.auth, &token).await {
-                    Some(principal) if principal.has_operator_access() => {}
+                    Some(principal) if principal.has_operator_access() => {
+                        if let Some(scope) = principal.tenant_scope() {
+                            if scope != &tenant_id {
+                                return (
+                                    StatusCode::FORBIDDEN,
+                                    Json(serde_json::json!({"error": "Tenant scope mismatch"})),
+                                )
+                                    .into_response();
+                            }
+                        } else {
+                            allow_all_tenants = true;
+                        }
+                    }
                     Some(_) => {
                         return (
                             StatusCode::FORBIDDEN,
@@ -905,22 +927,16 @@ async fn websocket_handler(
         }
     }
 
-    // Parse tenant ID
-    let tenant_id = match tenant_id_str.parse::<TenantId>() {
-        Ok(id) => id,
-        Err(e) => {
-            error!(tenant_id = %tenant_id_str, error = %e, "Invalid tenant ID");
-            return (StatusCode::BAD_REQUEST, "Invalid tenant ID").into_response();
-        }
-    };
-
     info!(tenant_id = %tenant_id, "WebSocket upgrade request");
 
     // Create event channel for this connection
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
     // Register connection
-    let conn_id = match state.manager.register(tenant_id.clone(), event_tx) {
+    let conn_id = match state
+        .manager
+        .register(tenant_id.clone(), allow_all_tenants, event_tx)
+    {
         Ok(id) => id,
         Err(e) => {
             error!(tenant_id = %tenant_id, error = %e, "Failed to register connection");
@@ -1163,7 +1179,11 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
 }
 
 /// Background task to broadcast events from event bus to connections
-async fn event_broadcast_task(event_bus: Arc<InMemoryEventBus>, manager: Arc<ConnectionManager>) {
+async fn event_broadcast_task(
+    event_bus: Arc<InMemoryEventBus>,
+    manager: Arc<ConnectionManager>,
+    call_store: Arc<CallStateStore>,
+) {
     use fcp_events::{EventFilter, EventSubscriber};
 
     // Subscribe to all events
@@ -1180,9 +1200,10 @@ async fn event_broadcast_task(event_bus: Arc<InMemoryEventBus>, manager: Arc<Con
     loop {
         match stream.next().await {
             Some(event) => {
+                let event_tenant = resolve_event_tenant_id(&event, &call_store);
                 // Broadcast to WebSocket connections
                 // (State tracking is done in ingest_handler to avoid double-processing)
-                manager.publish(event);
+                manager.publish(event, event_tenant.as_ref());
             }
             None => {
                 error!("Event stream ended unexpectedly");
@@ -1190,6 +1211,17 @@ async fn event_broadcast_task(event_bus: Arc<InMemoryEventBus>, manager: Arc<Con
             }
         }
     }
+}
+
+fn resolve_event_tenant_id(event: &PlatformEvent, call_store: &CallStateStore) -> Option<TenantId> {
+    if let Some(tenant_id) = event.tenant_id() {
+        return Some(tenant_id.clone());
+    }
+
+    let call_id = event.call_id()?;
+    call_store
+        .get_call(&call_id.to_string())
+        .and_then(|call| call.tenant_id.parse::<TenantId>().ok())
 }
 
 /// Background task to clean up stale calls, expired registrations, and check node health.

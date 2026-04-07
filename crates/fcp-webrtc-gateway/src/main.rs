@@ -11,9 +11,13 @@
 //! - `/health`, `/v1/sessions`, `/v1/metrics` — from forge-api
 
 use anyhow::{Context, Result};
+use axum::middleware as axum_middleware;
+use axum::Extension;
+use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
 use fcp_sip::prelude::*;
 use fcp_sip::transport::ConnectionPool;
+use forge_api::middleware::{self, auth::AuthConfig, RateLimiter};
 use forge_api::routes;
 use forge_api::routes::prometheus::MetricsHandle;
 use forge_api::routes::sessions::AppState;
@@ -21,6 +25,8 @@ use forge_engine::{SessionManager, SessionManagerConfig};
 use forge_rtp::PortPoolConfig;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
+use tower::ServiceBuilder;
 use tracing::info;
 
 mod call_bridge;
@@ -267,6 +273,32 @@ async fn main() -> Result<()> {
         .merge(call_router)
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024));
 
+    let auth_config = AuthConfig::new(config.auth.tokens.clone());
+    let rate_limiter = RateLimiter::new(
+        config.http.rate_limit_requests,
+        Duration::from_secs(config.http.rate_limit_window_secs),
+        Vec::new(),
+    );
+    let middleware_stack = ServiceBuilder::new()
+        .layer(Extension(rate_limiter))
+        .layer(Extension(auth_config))
+        .layer(axum_middleware::from_fn(middleware::auth::auth_middleware))
+        .layer(axum_middleware::from_fn(
+            middleware::rate_limit::rate_limit_middleware,
+        ))
+        .layer(middleware::tracing_layer());
+    let mut app = combined_router.layer(middleware_stack);
+
+    if config.http.enable_cors {
+        if config.http.allowed_origins.is_empty() {
+            info!(
+                "CORS enabled with empty allowlist; browser cross-origin requests will be blocked"
+            );
+        } else {
+            app = app.layer(middleware::cors_layer(&config.http.allowed_origins));
+        }
+    }
+
     info!(
         http = %config.http.bind_address,
         sip = %config.sip.udp_bind,
@@ -282,38 +314,71 @@ async fn main() -> Result<()> {
 
     // 11. Serve with graceful shutdown
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
-    let shutdown_signal = async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("Failed to register SIGTERM handler");
+    let shutdown_notify = Arc::new(Notify::new());
+    let shutdown_task = {
+        let shutdown_notify = Arc::clone(&shutdown_notify);
+        tokio::spawn(async move {
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("Failed to register SIGTERM handler");
 
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received SIGINT (Ctrl+C), initiating graceful shutdown...");
+                }
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, initiating graceful shutdown...");
+                }
             }
-            _ = sigterm.recv() => {
-                info!("Received SIGTERM, initiating graceful shutdown...");
-            }
-        }
 
-        if !shutdown_timeout.is_zero() {
-            info!(
-                timeout_secs = shutdown_timeout.as_secs(),
-                "Draining connections..."
-            );
-        }
+            if !shutdown_timeout.is_zero() {
+                info!(
+                    timeout_secs = shutdown_timeout.as_secs(),
+                    "Draining connections..."
+                );
+            }
+
+            shutdown_notify.notify_waiters();
+        })
     };
 
-    let listener = tokio::net::TcpListener::bind(config.http.bind_address)
-        .await
-        .context("Failed to bind HTTP listener")?;
+    let server_result = if config.tls.enabled {
+        let tls = tls_config(&config).await?;
+        let https_addr = config.http.bind_address;
+        info!("HTTPS API listening on {}", https_addr);
 
-    axum::serve(
-        listener,
-        combined_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal)
-    .await
-    .context("HTTP server error")?;
+        let https_service = app
+            .clone()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let https_shutdown = Arc::clone(&shutdown_notify);
+        let https_server = async move {
+            tokio::select! {
+                res = axum_server::bind_rustls(https_addr, tls).serve(https_service) => {
+                    res.map_err(|e| anyhow::anyhow!("HTTPS server error: {}", e))
+                }
+                _ = https_shutdown.notified() => Ok(())
+            }
+        };
+
+        https_server.await
+    } else {
+        let listener = tokio::net::TcpListener::bind(config.http.bind_address)
+            .await
+            .context("Failed to bind HTTP listener")?;
+        let http_service = app
+            .clone()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>();
+        let http_shutdown = Arc::clone(&shutdown_notify);
+        axum::serve(listener, http_service)
+            .with_graceful_shutdown(async move {
+                http_shutdown.notified().await;
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP server error: {}", e))
+    };
+
+    shutdown_task.abort();
+    server_result?;
 
     // Shutdown cluster manager
     #[cfg(feature = "storage-redis")]
@@ -323,6 +388,23 @@ async fn main() -> Result<()> {
 
     info!("Shutdown complete");
     Ok(())
+}
+
+async fn tls_config(config: &GatewayConfig) -> Result<RustlsConfig> {
+    let cert = config
+        .tls
+        .cert
+        .clone()
+        .context("tls.enabled is true but tls.cert is not configured")?;
+    let key = config
+        .tls
+        .key
+        .clone()
+        .context("tls.enabled is true but tls.key is not configured")?;
+
+    RustlsConfig::from_pem_file(cert, key)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to load TLS config: {}", e))
 }
 
 fn init_tracing(config: &GatewayConfig) {

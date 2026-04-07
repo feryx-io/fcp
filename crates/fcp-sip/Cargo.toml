@@ -57,8 +57,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 md5 = "0.7"
 rand = "0.8"
 
-# TLS support (optional) - must match sip-transport's rustls version (0.22)
-tokio-rustls = { version = "0.25", optional = true }
+# TLS support (optional) - must match sip-transport's rustls version
+tokio-rustls = { version = "0.26", optional = true }
 rustls-native-certs = { version = "0.7", optional = true }
 regex = "1"
 serde_json = "1"

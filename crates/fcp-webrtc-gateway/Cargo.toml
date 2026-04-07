@@ -40,6 +40,8 @@ sip-sdp = { path = "../../external/siphon-rs/crates/sip-sdp" }
 
 # HTTP API
 axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower = "0.5"
 
 # CLI and configuration
 clap = { version = "4", features = ["derive", "env"] }
