@@ -531,7 +531,10 @@ mod tests {
         let result = ctrl.try_admit_or_queue();
         let rx = match result {
             AdmitResult::Queued(rx) => rx,
-            other => panic!("expected Queued, got {:?}", matches!(other, AdmitResult::Admitted)),
+            other => panic!(
+                "expected Queued, got {:?}",
+                matches!(other, AdmitResult::Admitted)
+            ),
         };
 
         // End a call — drain_queue should admit the queued call

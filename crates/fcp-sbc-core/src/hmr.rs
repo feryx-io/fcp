@@ -138,7 +138,9 @@ impl HeaderManipulationConfig {
         for (i, rule) in self.rules.iter().enumerate() {
             // Rule name validation
             if rule.name.is_empty() {
-                return Err(format!("header_manipulation.rules[{i}]: name must not be empty"));
+                return Err(format!(
+                    "header_manipulation.rules[{i}]: name must not be empty"
+                ));
             }
             if rule.name.contains('\r') || rule.name.contains('\n') {
                 return Err(format!(

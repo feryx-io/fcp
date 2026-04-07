@@ -78,6 +78,9 @@ pub struct ApiState {
     /// cluster-wide queries (active calls, etc.)
     pub events_server_url: Option<String>,
 
+    /// Optional bearer token for authenticating to fcp-events-server.
+    pub events_server_auth_token: Option<String>,
+
     /// Config store for database-backed configuration management (optional)
     pub config_store: Option<Arc<dyn ConfigStore>>,
 
@@ -142,6 +145,7 @@ impl ApiState {
             default_tenant_id,
             start_time: std::time::Instant::now(),
             events_server_url: None,
+            events_server_auth_token: None,
             config_store: None,
             voicemail_greetings_dir: None,
             voicemail_recordings_dir: None,
@@ -158,6 +162,12 @@ impl ApiState {
     /// Set the events server URL for proxying cluster-wide queries.
     pub fn with_events_server_url(mut self, url: Option<String>) -> Self {
         self.events_server_url = url;
+        self
+    }
+
+    /// Set the events server bearer token for cluster-wide queries.
+    pub fn with_events_server_auth_token(mut self, token: Option<String>) -> Self {
+        self.events_server_auth_token = token;
         self
     }
 
@@ -241,15 +251,18 @@ impl ApiState {
         if let Some(ref base_url) = self.events_server_url {
             let ingest_url = format!("{}/ingest", base_url);
             let event_clone = event;
+            let auth_token = self.events_server_auth_token.clone();
             tokio::spawn(async move {
                 let client = reqwest::Client::new();
-                if let Err(e) = client
+                let mut request = client
                     .post(&ingest_url)
                     .json(&event_clone)
-                    .timeout(std::time::Duration::from_secs(5))
-                    .send()
-                    .await
-                {
+                    .timeout(std::time::Duration::from_secs(5));
+                if let Some(token) = auth_token.as_deref() {
+                    request = request.bearer_auth(token);
+                }
+
+                if let Err(e) = request.send().await {
                     tracing::warn!(%e, "Failed to forward event to events server");
                 }
             });

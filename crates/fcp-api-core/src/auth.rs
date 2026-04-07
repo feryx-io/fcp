@@ -17,14 +17,9 @@ pub enum AuthIdentity {
     /// Static config token — full admin access.
     StaticToken,
     /// Database API token with stored permissions.
-    ApiToken {
-        permissions: Vec<String>,
-    },
+    ApiToken { permissions: Vec<String> },
     /// JWT session token with role from claims.
-    Session {
-        username: String,
-        role: String,
-    },
+    Session { username: String, role: String },
 }
 
 impl AuthIdentity {
@@ -37,9 +32,7 @@ impl AuthIdentity {
     pub fn is_admin(&self) -> bool {
         match self {
             Self::StaticToken => true,
-            Self::ApiToken { permissions } => {
-                permissions.iter().any(|p| p == "admin" || p == "*")
-            }
+            Self::ApiToken { permissions } => permissions.iter().any(|p| p == "admin" || p == "*"),
             Self::Session { role, .. } => role != "end_user",
         }
     }
@@ -52,9 +45,9 @@ impl AuthIdentity {
     pub fn has_permission(&self, permission: &str) -> bool {
         match self {
             Self::StaticToken | Self::Session { .. } => true,
-            Self::ApiToken { permissions } => {
-                permissions.iter().any(|p| p == permission || p == "admin" || p == "*")
-            }
+            Self::ApiToken { permissions } => permissions
+                .iter()
+                .any(|p| p == permission || p == "admin" || p == "*"),
         }
     }
 }
@@ -222,16 +215,10 @@ pub async fn validate_bearer_token(
 ///
 /// When no `AuthIdentity` is present (e.g. auth is disabled), the request
 /// is allowed through.
-pub async fn require_admin(
-    req: Request,
-    next: Next,
-) -> Result<Response, (StatusCode, String)> {
+pub async fn require_admin(req: Request, next: Next) -> Result<Response, (StatusCode, String)> {
     if let Some(identity) = req.extensions().get::<AuthIdentity>() {
         if !identity.is_admin() {
-            return Err((
-                StatusCode::FORBIDDEN,
-                "Admin access required".to_string(),
-            ));
+            return Err((StatusCode::FORBIDDEN, "Admin access required".to_string()));
         }
     }
     Ok(next.run(req).await)
@@ -241,10 +228,7 @@ pub async fn require_admin(
 ///
 /// Returns the caller's identity if the token is valid (exists, not expired).
 /// On success, spawns a background task to update `last_used_at`.
-async fn validate_api_token(
-    token: &str,
-    store: &Arc<dyn ApiTokenStore>,
-) -> Option<AuthIdentity> {
+async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Option<AuthIdentity> {
     use sha2::{Digest, Sha256};
 
     // Hash the presented token
@@ -392,8 +376,15 @@ mod tests {
         async fn list_api_tokens(&self, _tenant_id: &TenantId) -> anyhow::Result<Vec<ApiToken>> {
             Ok(self.tokens.clone())
         }
-        async fn get_api_token_by_hash(&self, token_hash: &str) -> anyhow::Result<Option<ApiToken>> {
-            Ok(self.tokens.iter().find(|t| t.token_hash == token_hash).cloned())
+        async fn get_api_token_by_hash(
+            &self,
+            token_hash: &str,
+        ) -> anyhow::Result<Option<ApiToken>> {
+            Ok(self
+                .tokens
+                .iter()
+                .find(|t| t.token_hash == token_hash)
+                .cloned())
         }
         async fn delete_api_token(&self, _id: &ApiTokenId) -> anyhow::Result<()> {
             Ok(())
@@ -494,8 +485,7 @@ mod tests {
         let token = make_token(secret, None);
         let store = Arc::new(MockApiTokenStore::new(vec![token]));
 
-        let auth = AuthConfig::new("static-secret".into())
-            .with_api_token_store(store.clone());
+        let auth = AuthConfig::new("static-secret".into()).with_api_token_store(store.clone());
 
         let app = test_app(auth);
         let resp = app
@@ -520,8 +510,7 @@ mod tests {
     async fn unknown_api_token_rejected() {
         let store = Arc::new(MockApiTokenStore::new(vec![])); // empty store
 
-        let auth = AuthConfig::new("static-secret".into())
-            .with_api_token_store(store);
+        let auth = AuthConfig::new("static-secret".into()).with_api_token_store(store);
 
         let app = test_app(auth);
         let resp = app
@@ -544,8 +533,7 @@ mod tests {
         let token = make_token(secret, Some(expired));
         let store = Arc::new(MockApiTokenStore::new(vec![token]));
 
-        let auth = AuthConfig::new("static-secret".into())
-            .with_api_token_store(store.clone());
+        let auth = AuthConfig::new("static-secret".into()).with_api_token_store(store.clone());
 
         let app = test_app(auth);
         let resp = app
@@ -563,7 +551,10 @@ mod tests {
         // update_last_used should NOT have been called
         tokio::time::sleep(Duration::from_millis(50)).await;
         let calls = store.last_used_calls.lock().unwrap();
-        assert!(calls.is_empty(), "expired token should not update last_used");
+        assert!(
+            calls.is_empty(),
+            "expired token should not update last_used"
+        );
     }
 
     #[tokio::test]
@@ -574,8 +565,7 @@ mod tests {
         let token = make_token(secret, None);
         let store = Arc::new(MockApiTokenStore::new(vec![token]));
 
-        let auth = AuthConfig::new("static-secret".into())
-            .with_api_token_store(store);
+        let auth = AuthConfig::new("static-secret".into()).with_api_token_store(store);
 
         let app = test_app(auth);
         let resp = app
@@ -598,8 +588,7 @@ mod tests {
         let token = make_token(secret, Some(future));
         let store = Arc::new(MockApiTokenStore::new(vec![token]));
 
-        let auth = AuthConfig::new("static-secret".into())
-            .with_api_token_store(store);
+        let auth = AuthConfig::new("static-secret".into()).with_api_token_store(store);
 
         let app = test_app(auth);
         let resp = app

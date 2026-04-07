@@ -63,10 +63,7 @@ impl FlowTraceStore for PostgresFlowTraceStore {
         Ok(())
     }
 
-    async fn get_flow_traces_by_call(
-        &self,
-        call_id: &str,
-    ) -> anyhow::Result<Vec<FlowTraceEntry>> {
+    async fn get_flow_traces_by_call(&self, call_id: &str) -> anyhow::Result<Vec<FlowTraceEntry>> {
         let rows = sqlx::query(
             "SELECT id, call_id, flow_id, flow_name, node_id, event_type,
                     timestamp, detail, flow_version, elapsed_ms
@@ -129,7 +126,9 @@ impl FlowTraceStore for PostgresFlowTraceStore {
              FROM flow_execution_traces {}
              ORDER BY timestamp DESC, id DESC
              LIMIT ${} OFFSET ${}",
-            where_clause, param_idx, param_idx + 1
+            where_clause,
+            param_idx,
+            param_idx + 1
         );
 
         // Build and execute count query
@@ -171,12 +170,11 @@ impl FlowTraceStore for PostgresFlowTraceStore {
     }
 
     async fn delete_flow_traces_older_than(&self, days: u32) -> anyhow::Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM flow_execution_traces WHERE timestamp < NOW() - $1::interval",
-        )
-        .bind(format!("{} days", days))
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM flow_execution_traces WHERE timestamp < NOW() - $1::interval")
+                .bind(format!("{} days", days))
+                .execute(&self.pool)
+                .await?;
         Ok(result.rows_affected())
     }
 }

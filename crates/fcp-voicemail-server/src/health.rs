@@ -91,9 +91,7 @@ async fn status_handler(State(state): State<Arc<VoicemailState>>) -> Json<serde_
     }))
 }
 
-async fn list_routes_handler(
-    State(state): State<Arc<VoicemailState>>,
-) -> Json<serde_json::Value> {
+async fn list_routes_handler(State(state): State<Arc<VoicemailState>>) -> Json<serde_json::Value> {
     let routes = state.flow_handler.get_all_routes().await;
     let route_list: Vec<serde_json::Value> = routes
         .iter()
@@ -390,9 +388,13 @@ async fn upload_greeting_handler(
     // Update mailbox with new greeting
     let greeting = if greeting_type == fcp_core::GreetingType::Temporary {
         if let Some(hours) = expires_in_hours {
-            let expires_at = std::time::SystemTime::now()
-                + std::time::Duration::from_secs(hours * 3600);
-            fcp_core::VoicemailGreeting::with_expiration(greeting_type, audio_path.clone(), expires_at)
+            let expires_at =
+                std::time::SystemTime::now() + std::time::Duration::from_secs(hours * 3600);
+            fcp_core::VoicemailGreeting::with_expiration(
+                greeting_type,
+                audio_path.clone(),
+                expires_at,
+            )
         } else {
             fcp_core::VoicemailGreeting::new(greeting_type, audio_path.clone())
         }

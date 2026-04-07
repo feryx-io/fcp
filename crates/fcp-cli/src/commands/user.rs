@@ -26,7 +26,13 @@ pub async fn handle(
                     table
                         .load_preset(UTF8_FULL)
                         .set_content_arrangement(ContentArrangement::Dynamic)
-                        .set_header(vec!["Username", "Display Name", "Role", "Tenant", "Enabled"]);
+                        .set_header(vec![
+                            "Username",
+                            "Display Name",
+                            "Role",
+                            "Tenant",
+                            "Enabled",
+                        ]);
 
                     for user in &users {
                         table.add_row(vec![

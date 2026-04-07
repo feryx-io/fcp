@@ -214,7 +214,10 @@ mod tests {
     fn test_retrieve_out_of_range() {
         let mgr = ParkingManager::new(test_config());
         let result = mgr.retrieve(999);
-        assert!(matches!(result, Err(PbxError::OrbitOutOfRange(999, 701, 703))));
+        assert!(matches!(
+            result,
+            Err(PbxError::OrbitOutOfRange(999, 701, 703))
+        ));
     }
 
     #[test]

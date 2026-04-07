@@ -202,9 +202,9 @@ impl QueueManager {
                 .queues
                 .get_mut(from_queue)
                 .ok_or_else(|| anyhow::anyhow!("Source queue '{}' not found", from_queue))?;
-            source
-                .remove_call(call_id)
-                .ok_or_else(|| anyhow::anyhow!("Call '{}' not found in queue '{}'", call_id, from_queue))?
+            source.remove_call(call_id).ok_or_else(|| {
+                anyhow::anyhow!("Call '{}' not found in queue '{}'", call_id, from_queue)
+            })?
         };
 
         // Reset for new queue
@@ -361,7 +361,11 @@ impl QueueManager {
             }
         }
 
-        let mut agent = Agent::new(agent_id.to_string(), extension.to_string(), tenant_id.clone());
+        let mut agent = Agent::new(
+            agent_id.to_string(),
+            extension.to_string(),
+            tenant_id.clone(),
+        );
         agent.queues = queues.to_vec();
         agent.skills = skills;
         agent.state = AgentState::Available;
@@ -446,8 +450,15 @@ impl QueueManager {
 
         debug!(agent_id = %agent_id, old_state = %old_state, new_state = %new_state, "Agent state changed");
 
-        events::agent_state_changed(&self.events, agent_id, &old_state, &new_state, None, &tenant_id)
-            .await;
+        events::agent_state_changed(
+            &self.events,
+            agent_id,
+            &old_state,
+            &new_state,
+            None,
+            &tenant_id,
+        )
+        .await;
 
         self.persist_agent_change(&tenant_id);
 
@@ -512,7 +523,8 @@ impl QueueManager {
 
                 // Create new cancellation token and spawn timer
                 let token = CancellationToken::new();
-                self.wrap_up_cancels.insert(agent_id.to_string(), token.clone());
+                self.wrap_up_cancels
+                    .insert(agent_id.to_string(), token.clone());
                 self.spawn_wrap_up_timer(agent_id, wrap_up_secs, token);
             } else {
                 drop(agent);
@@ -590,7 +602,11 @@ impl QueueManager {
             .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))?;
 
         if agent.state != AgentState::WrapUp {
-            bail!("Agent '{}' is not in wrap-up (state: {})", agent_id, agent.state);
+            bail!(
+                "Agent '{}' is not in wrap-up (state: {})",
+                agent_id,
+                agent.state
+            );
         }
 
         if agent.wrap_up_extensions_used >= max_extensions {
@@ -614,7 +630,8 @@ impl QueueManager {
 
         // Create new cancellation token and spawn a new timer
         let token = CancellationToken::new();
-        self.wrap_up_cancels.insert(agent_id.to_string(), token.clone());
+        self.wrap_up_cancels
+            .insert(agent_id.to_string(), token.clone());
         self.spawn_wrap_up_timer(agent_id, extension_secs, token);
 
         info!(
@@ -662,7 +679,12 @@ impl QueueManager {
     }
 
     /// Record the outcome of a campaign call.
-    pub fn campaign_call_result(&self, queue_name: &str, destination: &str, outcome: CampaignCallOutcome) {
+    pub fn campaign_call_result(
+        &self,
+        queue_name: &str,
+        destination: &str,
+        outcome: CampaignCallOutcome,
+    ) {
         // Remove from active dials
         if let Some(mut active) = self.campaign_active_dials.get_mut(queue_name) {
             active.remove(destination);
@@ -684,7 +706,8 @@ impl QueueManager {
 
     /// Start the campaign for a queue.
     pub fn set_campaign_running(&self, queue_name: &str, running: bool) {
-        self.campaign_running.insert(queue_name.to_string(), running);
+        self.campaign_running
+            .insert(queue_name.to_string(), running);
         if let Some(mut stats) = self.campaign_stats.get_mut(queue_name) {
             stats.running = running;
         }
@@ -755,7 +778,10 @@ impl QueueManager {
 
         // Check if queue is draining
         if self.is_queue_draining(&queue_name) {
-            bail!("Queue '{}' is draining — not accepting new calls", queue_name);
+            bail!(
+                "Queue '{}' is draining — not accepting new calls",
+                queue_name
+            );
         }
 
         let mut queue = self
@@ -921,8 +947,16 @@ impl QueueManager {
 
         // Sort by per-queue priority (lower = higher priority), then by ID for deterministic order
         available_agents.sort_by(|a, b| {
-            let a_prio = a.queue_priorities.get(queue_name).copied().unwrap_or(a.priority);
-            let b_prio = b.queue_priorities.get(queue_name).copied().unwrap_or(b.priority);
+            let a_prio = a
+                .queue_priorities
+                .get(queue_name)
+                .copied()
+                .unwrap_or(a.priority);
+            let b_prio = b
+                .queue_priorities
+                .get(queue_name)
+                .copied()
+                .unwrap_or(b.priority);
             a_prio.cmp(&b_prio).then(a.id.cmp(&b.id))
         });
 
@@ -934,8 +968,14 @@ impl QueueManager {
             .map(|c| c.load(Ordering::Relaxed))
             .unwrap_or(0);
 
-        let (plan, new_rr) =
-            distribution::select_agent_weighted(strategy, &refs, rr_index, ring_timeout, &required_skills, &agent_weights)?;
+        let (plan, new_rr) = distribution::select_agent_weighted(
+            strategy,
+            &refs,
+            rr_index,
+            ring_timeout,
+            &required_skills,
+            &agent_weights,
+        )?;
 
         // Update round-robin counter
         if let Some(counter) = self.round_robin_counters.get(queue_name) {
@@ -1060,7 +1100,11 @@ impl QueueManager {
         // The call should still be in the queue (not dequeued yet for no-answer).
         // Increment its attempt counter.
         for mut queue in self.queues.iter_mut() {
-            if let Some(call) = queue.waiting_calls.iter_mut().find(|c| c.call_id == call_id) {
+            if let Some(call) = queue
+                .waiting_calls
+                .iter_mut()
+                .find(|c| c.call_id == call_id)
+            {
                 call.attempts += 1;
                 let queue_name = queue.name.clone();
                 let retry = queue.config.retry_on_no_answer;
@@ -1077,11 +1121,7 @@ impl QueueManager {
                     // Remove and overflow
                     if let Some(mut q) = self.queues.get_mut(&queue_name) {
                         if let Some(removed) = q.remove_call(call_id) {
-                            let dest = q
-                                .config
-                                .overflow_destination
-                                .clone()
-                                .unwrap_or_default();
+                            let dest = q.config.overflow_destination.clone().unwrap_or_default();
                             drop(q);
 
                             warn!(
@@ -1126,11 +1166,14 @@ impl QueueManager {
         agent.state_changed_at = Instant::now();
         agent.pause_reason = reason.clone();
 
-        let effective_duration = duration_secs
-            .or_else(|| {
-                let d = self.config.read().auto_pause_resume_secs;
-                if d > 0 { Some(d) } else { None }
-            });
+        let effective_duration = duration_secs.or_else(|| {
+            let d = self.config.read().auto_pause_resume_secs;
+            if d > 0 {
+                Some(d)
+            } else {
+                None
+            }
+        });
 
         if let Some(secs) = effective_duration {
             agent.pause_resume_at = Some(Instant::now() + Duration::from_secs(secs as u64));
@@ -1143,8 +1186,15 @@ impl QueueManager {
 
         info!(agent_id = %agent_id, duration_secs = ?effective_duration, "Agent paused");
 
-        events::agent_state_changed(&self.events, agent_id, &old_state, "paused", reason.as_deref(), &tenant_id)
-            .await;
+        events::agent_state_changed(
+            &self.events,
+            agent_id,
+            &old_state,
+            "paused",
+            reason.as_deref(),
+            &tenant_id,
+        )
+        .await;
         self.persist_agent_change(&tenant_id);
 
         // Spawn auto-resume task if duration was provided
@@ -1188,7 +1238,11 @@ impl QueueManager {
             .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found", agent_id))?;
 
         if agent.state != AgentState::Paused {
-            bail!("Agent '{}' is not paused (state: {})", agent_id, agent.state);
+            bail!(
+                "Agent '{}' is not paused (state: {})",
+                agent_id,
+                agent.state
+            );
         }
 
         agent.state = AgentState::Available;
@@ -1201,8 +1255,15 @@ impl QueueManager {
 
         info!(agent_id = %agent_id, "Agent unpaused");
 
-        events::agent_state_changed(&self.events, agent_id, "paused", "available", None, &tenant_id)
-            .await;
+        events::agent_state_changed(
+            &self.events,
+            agent_id,
+            "paused",
+            "available",
+            None,
+            &tenant_id,
+        )
+        .await;
         self.persist_agent_change(&tenant_id);
 
         Ok(())
@@ -1384,7 +1445,10 @@ impl QueueManager {
 
     /// List all configured queue names.
     pub fn list_queue_names(&self) -> Vec<String> {
-        self.queues.iter().map(|entry| entry.key().clone()).collect()
+        self.queues
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     /// Get the configuration for a specific queue.
@@ -1459,7 +1523,8 @@ impl QueueManager {
 
         for entry in self.agents.iter() {
             let agent = entry.value();
-            if agent.queues.contains(&queue_name.to_string()) && agent.state != AgentState::LoggedOut
+            if agent.queues.contains(&queue_name.to_string())
+                && agent.state != AgentState::LoggedOut
             {
                 agents_total += 1;
                 match agent.state {
@@ -1702,8 +1767,7 @@ impl QueueManager {
     ) -> tokio::task::JoinHandle<()> {
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
                 interval.tick().await;
                 let stats = this.all_queue_stats();
@@ -1762,7 +1826,11 @@ impl QueueManager {
     /// but will be handled as an outbound callback when an agent becomes available.
     pub fn mark_callback(&self, call_id: &str, callback_uri: &str) -> bool {
         for mut queue in self.queues.iter_mut() {
-            if let Some(call) = queue.waiting_calls.iter_mut().find(|c| c.call_id == call_id) {
+            if let Some(call) = queue
+                .waiting_calls
+                .iter_mut()
+                .find(|c| c.call_id == call_id)
+            {
                 call.is_callback = true;
                 call.callback_uri = Some(callback_uri.to_string());
                 return true;
@@ -1820,7 +1888,11 @@ impl QueueManager {
     /// Returns the new attempt count, or None if call not found.
     pub fn increment_callback_attempts(&self, call_id: &str) -> Option<u32> {
         for mut queue in self.queues.iter_mut() {
-            if let Some(call) = queue.waiting_calls.iter_mut().find(|c| c.call_id == call_id) {
+            if let Some(call) = queue
+                .waiting_calls
+                .iter_mut()
+                .find(|c| c.call_id == call_id)
+            {
                 call.callback_attempts += 1;
                 call.last_callback_attempt = Some(Instant::now());
                 return Some(call.callback_attempts);
@@ -1861,9 +1933,7 @@ impl QueueManager {
                             callback_uri: uri.clone(),
                             caller_display: call.caller_display.clone(),
                             attempts: call.callback_attempts,
-                            enqueued_at_secs_ago: now
-                                .duration_since(call.enqueued_at)
-                                .as_secs(),
+                            enqueued_at_secs_ago: now.duration_since(call.enqueued_at).as_secs(),
                             last_attempt_secs_ago: call
                                 .last_callback_attempt
                                 .map(|t| now.duration_since(t).as_secs()),
@@ -2074,7 +2144,10 @@ mod tests {
     fn test_queue_manager_creation() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         assert!(manager.is_enabled());
-        assert_eq!(manager.get_queue_for_extension("6000"), Some("sales".to_string()));
+        assert_eq!(
+            manager.get_queue_for_extension("6000"),
+            Some("sales".to_string())
+        );
         assert_eq!(manager.get_queue_for_extension("9999"), None);
     }
 
@@ -2085,7 +2158,13 @@ mod tests {
 
         // Login
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2105,7 +2184,13 @@ mod tests {
     async fn test_agent_login_invalid_queue() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
         let result = manager
-            .agent_login("100", "100", &["nonexistent".to_string()], test_tenant(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["nonexistent".to_string()],
+                test_tenant(),
+                Vec::new(),
+            )
             .await;
         assert!(result.is_err());
     }
@@ -2151,11 +2236,23 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
         manager
-            .agent_login("101", "101", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "101",
+                "101",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2197,7 +2294,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2299,9 +2402,21 @@ mod tests {
 
         // Load numbers
         let numbers = vec![
-            CampaignNumber { destination: "15551001".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "15551002".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "15551003".to_string(), caller_id: None, metadata: None },
+            CampaignNumber {
+                destination: "15551001".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "15551002".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "15551003".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
         ];
         manager.load_campaign_numbers("sales", numbers);
 
@@ -2336,11 +2451,31 @@ mod tests {
         let manager = QueueManager::new(test_config(), None, test_tenant());
 
         let numbers = vec![
-            CampaignNumber { destination: "1".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "2".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "3".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "4".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "5".to_string(), caller_id: None, metadata: None },
+            CampaignNumber {
+                destination: "1".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "2".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "3".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "4".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "5".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
         ];
         manager.load_campaign_numbers("sales", numbers);
         manager.set_campaign_running("sales", true);
@@ -2374,8 +2509,16 @@ mod tests {
         let manager = QueueManager::new(test_config(), None, test_tenant());
 
         let numbers = vec![
-            CampaignNumber { destination: "a".to_string(), caller_id: None, metadata: None },
-            CampaignNumber { destination: "b".to_string(), caller_id: None, metadata: None },
+            CampaignNumber {
+                destination: "a".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
+            CampaignNumber {
+                destination: "b".to_string(),
+                caller_id: None,
+                metadata: None,
+            },
         ];
         manager.load_campaign_numbers("sales", numbers);
 
@@ -2389,9 +2532,11 @@ mod tests {
     fn test_campaign_not_running_blocks_dials() {
         let manager = QueueManager::new(test_config(), None, test_tenant());
 
-        let numbers = vec![
-            CampaignNumber { destination: "x".to_string(), caller_id: None, metadata: None },
-        ];
+        let numbers = vec![CampaignNumber {
+            destination: "x".to_string(),
+            caller_id: None,
+            metadata: None,
+        }];
         manager.load_campaign_numbers("sales", numbers);
 
         // Campaign is not started — is_campaign_running should be false
@@ -2409,7 +2554,9 @@ mod tests {
         let call = test_queued_call("call-t1", "sales");
         manager.enqueue_call(call).await.unwrap();
 
-        let result = manager.transfer_to_queue("call-t1", "sales", "nonexistent").await;
+        let result = manager
+            .transfer_to_queue("call-t1", "sales", "nonexistent")
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -2418,7 +2565,9 @@ mod tests {
     async fn test_transfer_call_not_found() {
         let manager = QueueManager::new(test_config_two_queues(), None, test_tenant());
 
-        let result = manager.transfer_to_queue("no-such-call", "sales", "support").await;
+        let result = manager
+            .transfer_to_queue("no-such-call", "sales", "support")
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -2438,7 +2587,9 @@ mod tests {
         manager.enqueue_call(call).await.unwrap();
 
         // Transfer should fail because support is full
-        let result = manager.transfer_to_queue("call-xfer", "sales", "support").await;
+        let result = manager
+            .transfer_to_queue("call-xfer", "sales", "support")
+            .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("full"));
     }
@@ -2451,7 +2602,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2478,7 +2635,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2512,7 +2675,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2530,7 +2699,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2549,7 +2724,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 
@@ -2604,7 +2785,13 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login("100", "100", &["sales".to_string()], tenant.clone(), Vec::new())
+            .agent_login(
+                "100",
+                "100",
+                &["sales".to_string()],
+                tenant.clone(),
+                Vec::new(),
+            )
             .await
             .unwrap();
 

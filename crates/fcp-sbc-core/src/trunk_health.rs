@@ -3,9 +3,9 @@
 //! Tracks per-trunk failure counts, success/failure timestamps, and health
 //! status transitions. Optionally runs periodic OPTIONS probe health checks.
 
-use dashmap::{DashMap, DashSet};
 use crate::metrics::TrunkHealthStatus;
 use crate::trunk::TrunkConfig;
+use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -137,9 +137,9 @@ impl TrunkHealthMonitor {
         if self.state.is_empty() {
             return true;
         }
-        self.state.iter().any(|e| {
-            e.status != TrunkHealthStatus::Down && !self.admin_disabled.contains(e.key())
-        })
+        self.state
+            .iter()
+            .any(|e| e.status != TrunkHealthStatus::Down && !self.admin_disabled.contains(e.key()))
     }
 
     /// Administratively disable a trunk. Returns `false` if the trunk name is unknown.
@@ -493,10 +493,7 @@ mod tests {
         // recovery_interval_secs=0 means recover immediately
         let recovered = monitor.check_degraded_recovery();
         assert_eq!(recovered, vec!["trunk-a".to_string()]);
-        assert_eq!(
-            monitor.status("trunk-a"),
-            Some(TrunkHealthStatus::Healthy)
-        );
+        assert_eq!(monitor.status("trunk-a"), Some(TrunkHealthStatus::Healthy));
     }
 
     #[test]

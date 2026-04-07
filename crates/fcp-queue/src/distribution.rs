@@ -102,10 +102,7 @@ pub fn select_agent_weighted(
         }
 
         DistributionStrategy::FewestCalls => {
-            let agent = eligible
-                .iter()
-                .min_by_key(|a| a.calls_handled)
-                .copied()?;
+            let agent = eligible.iter().min_by_key(|a| a.calls_handled).copied()?;
             (agent, round_robin_index)
         }
 
@@ -183,20 +180,24 @@ mod tests {
         ];
         let refs: Vec<&Agent> = agents.iter().collect();
 
-        let (plan, idx) = select_agent(DistributionStrategy::RoundRobin, &refs, 0, 20, &[]).unwrap();
+        let (plan, idx) =
+            select_agent(DistributionStrategy::RoundRobin, &refs, 0, 20, &[]).unwrap();
         assert_eq!(plan.agent_id, "100");
         assert_eq!(idx, 1);
 
-        let (plan, idx) = select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
+        let (plan, idx) =
+            select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
         assert_eq!(plan.agent_id, "101");
         assert_eq!(idx, 2);
 
-        let (plan, idx) = select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
+        let (plan, idx) =
+            select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
         assert_eq!(plan.agent_id, "102");
         assert_eq!(idx, 3);
 
         // Wraps around
-        let (plan, _) = select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
+        let (plan, _) =
+            select_agent(DistributionStrategy::RoundRobin, &refs, idx, 20, &[]).unwrap();
         assert_eq!(plan.agent_id, "100");
     }
 
@@ -271,15 +272,31 @@ mod tests {
     #[test]
     fn test_skills_based_selects_matching_agent() {
         let agents = vec![
-            make_agent_with_skills("100", 0, Some(Duration::from_secs(60)), vec!["english".to_string()]),
-            make_agent_with_skills("101", 0, Some(Duration::from_secs(30)), vec!["english".to_string(), "spanish".to_string()]),
-            make_agent_with_skills("102", 0, Some(Duration::from_secs(10)), vec!["spanish".to_string()]),
+            make_agent_with_skills(
+                "100",
+                0,
+                Some(Duration::from_secs(60)),
+                vec!["english".to_string()],
+            ),
+            make_agent_with_skills(
+                "101",
+                0,
+                Some(Duration::from_secs(30)),
+                vec!["english".to_string(), "spanish".to_string()],
+            ),
+            make_agent_with_skills(
+                "102",
+                0,
+                Some(Duration::from_secs(10)),
+                vec!["spanish".to_string()],
+            ),
         ];
         let refs: Vec<&Agent> = agents.iter().collect();
 
         // Require both english and spanish — only agent 101 qualifies
         let required = vec!["english".to_string(), "spanish".to_string()];
-        let (plan, _) = select_agent(DistributionStrategy::SkillsBased, &refs, 0, 20, &required).unwrap();
+        let (plan, _) =
+            select_agent(DistributionStrategy::SkillsBased, &refs, 0, 20, &required).unwrap();
         assert_eq!(plan.agent_id, "101");
     }
 
@@ -312,10 +329,7 @@ mod tests {
 
     #[test]
     fn test_weighted_distribution() {
-        let agents = vec![
-            make_agent("100", 0, None),
-            make_agent("101", 0, None),
-        ];
+        let agents = vec![make_agent("100", 0, None), make_agent("101", 0, None)];
         let refs: Vec<&Agent> = agents.iter().collect();
 
         // Agent 100 has weight 3, agent 101 has weight 1 → 4 slots total
@@ -340,10 +354,7 @@ mod tests {
 
     #[test]
     fn test_weighted_default_weight() {
-        let agents = vec![
-            make_agent("100", 0, None),
-            make_agent("101", 0, None),
-        ];
+        let agents = vec![make_agent("100", 0, None), make_agent("101", 0, None)];
         let refs: Vec<&Agent> = agents.iter().collect();
 
         // No weights configured — all default to 1, so equal distribution like round-robin

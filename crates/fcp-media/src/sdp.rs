@@ -2,8 +2,8 @@
 //!
 //! Converts between sip-sdp and forge-media SDP formats
 
-use base64::{engine::general_purpose, Engine as _};
 use crate::{Error, Result};
+use base64::{engine::general_purpose, Engine as _};
 use forge_rtp::srtp::SrtpProfile;
 use std::collections::HashMap;
 
@@ -141,7 +141,10 @@ fn parse_sdp_codecs_manual(sdp_body: &str) -> Vec<SdpCodecInfo> {
             if let Some((pt, codec_info)) = rtpmap_data.split_once(' ') {
                 let parts: Vec<&str> = codec_info.split('/').collect();
                 let codec_name = parts[0];
-                let clock_rate = parts.get(1).and_then(|s| s.parse::<u32>().ok()).unwrap_or(8000);
+                let clock_rate = parts
+                    .get(1)
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(8000);
                 rtpmap_info.insert(pt.to_string(), (codec_name.to_string(), clock_rate));
             }
         }
@@ -259,7 +262,9 @@ pub fn decode_sdes_key_params(
     if decoded.len() != expected {
         return Err(Error::Sdp(format!(
             "SDES key material length mismatch for {}: expected {} bytes, got {}",
-            suite, expected, decoded.len()
+            suite,
+            expected,
+            decoded.len()
         )));
     }
 
@@ -483,7 +488,11 @@ pub fn construct_answer_for_a_leg(
     sdp.push_str("t=0 0\r\n");
 
     // Build m= line with preferred codec and telephone-event
-    let protocol = if srtp.is_some() { "RTP/SAVP" } else { "RTP/AVP" };
+    let protocol = if srtp.is_some() {
+        "RTP/SAVP"
+    } else {
+        "RTP/AVP"
+    };
     sdp.push_str(&format!("m=audio {} {}", rtp_port, protocol));
     if let Some(codec) = preferred {
         sdp.push_str(&format!(" {}", codec.payload_type));
@@ -1240,23 +1249,30 @@ a=rtpmap:0 PCMU/8000
     }
 }
 
-    #[test]
-    fn test_polycom_filter_preserves_telephone_event() {
-        let polycom_sdp = "v=0\r\no=- 1774033578 1774033578 IN IP4 192.168.1.12\r\ns=Polycom IP Phone\r\nc=IN IP4 192.168.1.12\r\nt=0 0\r\na=sendrecv\r\nm=audio 2236 RTP/AVP 0 9 102 8 18 127\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:102 G7221/16000\r\na=fmtp:102 bitrate=32000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\na=rtpmap:127 telephone-event/8000\r\n";
+#[test]
+fn test_polycom_filter_preserves_telephone_event() {
+    let polycom_sdp = "v=0\r\no=- 1774033578 1774033578 IN IP4 192.168.1.12\r\ns=Polycom IP Phone\r\nc=IN IP4 192.168.1.12\r\nt=0 0\r\na=sendrecv\r\nm=audio 2236 RTP/AVP 0 9 102 8 18 127\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:102 G7221/16000\r\na=fmtp:102 bitrate=32000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\na=rtpmap:127 telephone-event/8000\r\n";
 
-        // Step 1: Filter as call manager does
-        let filtered = filter_sdp_codecs(polycom_sdp, &["PCMU", "PCMA"]);
-        eprintln!("Filtered SDP:\n{}", filtered);
+    // Step 1: Filter as call manager does
+    let filtered = filter_sdp_codecs(polycom_sdp, &["PCMU", "PCMA"]);
+    eprintln!("Filtered SDP:\n{}", filtered);
 
-        // Verify telephone-event survived filtering
-        let te_after_filter = extract_telephone_event_pt(&filtered);
-        assert_eq!(te_after_filter, Some(127), "telephone-event lost during filtering");
+    // Verify telephone-event survived filtering
+    let te_after_filter = extract_telephone_event_pt(&filtered);
+    assert_eq!(
+        te_after_filter,
+        Some(127),
+        "telephone-event lost during filtering"
+    );
 
-        // Step 2: Construct answer as conference server does
-        let answer = construct_answer_for_a_leg(&filtered, "192.168.1.225", 26708, None);
-        eprintln!("Answer SDP:\n{}", answer);
+    // Step 2: Construct answer as conference server does
+    let answer = construct_answer_for_a_leg(&filtered, "192.168.1.225", 26708, None);
+    eprintln!("Answer SDP:\n{}", answer);
 
-        // Verify answer includes telephone-event
-        assert!(answer.contains("127"), "answer m= line missing PT 127");
-        assert!(answer.contains("telephone-event"), "answer missing telephone-event rtpmap");
-    }
+    // Verify answer includes telephone-event
+    assert!(answer.contains("127"), "answer m= line missing PT 127");
+    assert!(
+        answer.contains("telephone-event"),
+        "answer missing telephone-event rtpmap"
+    );
+}

@@ -14,9 +14,10 @@ use tracing::info;
 /// Helper macro to get queue_manager or return 404.
 macro_rules! require_queue_manager {
     ($state:expr) => {
-        $state.queue_manager.as_ref().ok_or_else(|| {
-            ApiError::NotFound("Queue system is not configured".to_string())
-        })?
+        $state
+            .queue_manager
+            .as_ref()
+            .ok_or_else(|| ApiError::NotFound("Queue system is not configured".to_string()))?
     };
 }
 
@@ -82,9 +83,7 @@ pub struct UpdateAgentStateRequest {
 // ---- Handlers ----
 
 /// GET /queues — List all configured queues.
-pub async fn list_queues(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_queues(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
     let queue_names = qm.list_queue_names();
@@ -227,9 +226,15 @@ pub async fn agent_login(
 
     let tenant_id = state.default_tenant_id.clone();
 
-    qm.agent_login(&req.agent_id, &req.extension, &[name.clone()], tenant_id, req.skills.clone())
-        .await
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    qm.agent_login(
+        &req.agent_id,
+        &req.extension,
+        &[name.clone()],
+        tenant_id,
+        req.skills.clone(),
+    )
+    .await
+    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     info!(
         agent_id = %req.agent_id,

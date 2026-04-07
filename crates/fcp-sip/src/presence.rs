@@ -139,9 +139,9 @@ use anyhow::{bail, Context};
 use sip_core::SipUri;
 use tracing::{debug, info, warn};
 
+use crate::uac::SipUserAgentClient;
 use fcp_core::TenantId;
 use fcp_presence::{PresenceManager, Watcher};
-use crate::uac::SipUserAgentClient;
 
 /// SIP presence handler that bridges SIP signaling with PresenceManager.
 pub struct SipPresenceHandler {
@@ -242,13 +242,19 @@ impl SipPresenceHandler {
     fn extract_event(request: &sip_core::Request) -> Option<String> {
         let event = sip_parse::header(request.headers(), "Event")?;
         // Event header may have parameters: "presence;id=xxx" — take just the package
-        Some(event.split(';').next().unwrap_or(&event).trim().to_lowercase())
+        Some(
+            event
+                .split(';')
+                .next()
+                .unwrap_or(&event)
+                .trim()
+                .to_lowercase(),
+        )
     }
 
     /// Extract the Expires header value.
     fn extract_expires(request: &sip_core::Request) -> Option<u32> {
-        sip_parse::header(request.headers(), "Expires")
-            .and_then(|v| v.parse::<u32>().ok())
+        sip_parse::header(request.headers(), "Expires").and_then(|v| v.parse::<u32>().ok())
     }
 
     /// Extract SIP-If-Match header value.
@@ -301,7 +307,8 @@ impl SipPresenceHandler {
             // Try to extract "received" parameter first
             if let Some(pos) = via.find("received=") {
                 let rest = &via[pos + 9..];
-                let end = rest.find(|c: char| c == ';' || c == ',' || c.is_whitespace())
+                let end = rest
+                    .find(|c: char| c == ';' || c == ',' || c.is_whitespace())
                     .unwrap_or(rest.len());
                 return rest[..end].to_string();
             }
@@ -309,7 +316,8 @@ impl SipPresenceHandler {
             // Via: SIP/2.0/UDP 192.168.1.100:5060;branch=...
             if let Some(host_start) = via.rfind(' ') {
                 let host_part = &via[host_start + 1..];
-                let end = host_part.find(|c: char| c == ';' || c == ',')
+                let end = host_part
+                    .find(|c: char| c == ';' || c == ',')
                     .unwrap_or(host_part.len());
                 let host_port = &host_part[..end];
                 // Strip port
@@ -368,8 +376,8 @@ impl SipPresenceHandler {
                         );
                     } else {
                         // Re-enqueue with exponential backoff
-                        let delay_ms = (base_delay_ms * 2u64.pow(next_attempt - 1))
-                            .min(max_delay_ms);
+                        let delay_ms =
+                            (base_delay_ms * 2u64.pow(next_attempt - 1)).min(max_delay_ms);
                         let retry = fcp_presence::NotifyRetryEntry {
                             watcher: entry.watcher,
                             subscription_state: entry.subscription_state,
@@ -505,8 +513,8 @@ impl SipPresenceHandler {
         content_type: &str,
         body: &str,
     ) -> Result<()> {
-        let target_uri = SipUri::parse(&watcher.contact_uri)
-            .context("Failed to parse watcher contact URI")?;
+        let target_uri =
+            SipUri::parse(&watcher.contact_uri).context("Failed to parse watcher contact URI")?;
 
         let (base_delay_ms, _, _) = self.presence.retry_config();
 
@@ -530,11 +538,11 @@ impl SipPresenceHandler {
                         sub_state = %subscription_state,
                         "Presence NOTIFY accepted"
                     );
-                    self.presence.metrics().inc_counter("fcp_presence_notify_success_total", &[]);
-                    self.presence.remove_retry(
-                        &watcher.subscription_id,
-                        &watcher.presentity_aor,
-                    );
+                    self.presence
+                        .metrics()
+                        .inc_counter("fcp_presence_notify_success_total", &[]);
+                    self.presence
+                        .remove_retry(&watcher.subscription_id, &watcher.presentity_aor);
                 } else {
                     warn!(
                         watcher = %watcher.watcher_aor,
@@ -542,7 +550,9 @@ impl SipPresenceHandler {
                         code = response.code(),
                         "Presence NOTIFY rejected"
                     );
-                    self.presence.metrics().inc_counter("fcp_presence_notify_failure_total", &[]);
+                    self.presence
+                        .metrics()
+                        .inc_counter("fcp_presence_notify_failure_total", &[]);
                     let retry = fcp_presence::NotifyRetryEntry {
                         watcher: watcher.clone(),
                         subscription_state: subscription_state.to_string(),
@@ -560,7 +570,9 @@ impl SipPresenceHandler {
                     error = %e,
                     "Failed to send presence NOTIFY"
                 );
-                self.presence.metrics().inc_counter("fcp_presence_notify_failure_total", &[]);
+                self.presence
+                    .metrics()
+                    .inc_counter("fcp_presence_notify_failure_total", &[]);
                 let retry = fcp_presence::NotifyRetryEntry {
                     watcher: watcher.clone(),
                     subscription_state: subscription_state.to_string(),
@@ -577,8 +589,8 @@ impl SipPresenceHandler {
 
     /// Parse SUBSCRIBE request into a context struct.
     fn parse_subscribe_context(&self, request: &sip_core::Request) -> Result<SubscribeContext> {
-        let event = Self::extract_event(request)
-            .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
+        let event =
+            Self::extract_event(request).ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
 
         if event != "presence" && event != "dialog" && event != "presence.winfo" {
             bail!("Not a presence/dialog/winfo subscription (event: {event})");
@@ -587,8 +599,8 @@ impl SipPresenceHandler {
         let presentity_aor = Self::extract_presentity_aor(request)
             .ok_or_else(|| anyhow::anyhow!("Cannot extract presentity AOR from Request-URI"))?;
 
-        let watcher_aor = Self::extract_watcher_aor(request)
-            .unwrap_or_else(|| "unknown".to_string());
+        let watcher_aor =
+            Self::extract_watcher_aor(request).unwrap_or_else(|| "unknown".to_string());
 
         let contact_uri = Self::extract_contact_uri(request)
             .ok_or_else(|| anyhow::anyhow!("Missing Contact header in SUBSCRIBE"))?;
@@ -621,8 +633,7 @@ impl SipPresenceHandler {
                 presentity = %ctx.presentity_aor,
                 "SUBSCRIBE rejected by auth policy"
             );
-            let response =
-                sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
+            let response = sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
             handle.send_final(response).await;
             return Ok(false);
         }
@@ -797,14 +808,12 @@ impl SipPresenceHandler {
         let subscription_id = uuid::Uuid::new_v4().to_string();
 
         // Extract SIP dialog context from SUBSCRIBE for in-dialog NOTIFYs
-        let sip_call_id = sip_parse::header(request.headers(), "Call-ID")
-            .map(|v| v.trim().to_string());
-        let sip_from_tag = sip_parse::header(request.headers(), "From")
-            .and_then(|from| {
-                from.rsplit_once("tag=").map(|(_, tag)| {
-                    tag.split(';').next().unwrap_or(tag).trim().to_string()
-                })
-            });
+        let sip_call_id =
+            sip_parse::header(request.headers(), "Call-ID").map(|v| v.trim().to_string());
+        let sip_from_tag = sip_parse::header(request.headers(), "From").and_then(|from| {
+            from.rsplit_once("tag=")
+                .map(|(_, tag)| tag.split(';').next().unwrap_or(tag).trim().to_string())
+        });
         // Generate a To-tag for our 200 OK response
         let sip_to_tag = Some(uuid::Uuid::new_v4().simple().to_string());
 
@@ -823,8 +832,7 @@ impl SipPresenceHandler {
 
         if let Err(e) = self.presence.add_watcher(watcher.clone()).await {
             warn!(error = %e, "Failed to add presence watcher");
-            let response =
-                sip_uas::UserAgentServer::create_response(request, 500, "Server Error");
+            let response = sip_uas::UserAgentServer::create_response(request, 500, "Server Error");
             handle.send_final(response).await;
             return Ok(());
         }
@@ -879,7 +887,9 @@ impl PresenceHandler for SipPresenceHandler {
                 presentity = %ctx.presentity_aor,
                 "SUBSCRIBE rate limited"
             );
-            self.presence.metrics().inc_counter("fcp_presence_rate_limited_total", &[("type", "subscribe")]);
+            self.presence
+                .metrics()
+                .inc_counter("fcp_presence_rate_limited_total", &[("type", "subscribe")]);
             let mut response =
                 sip_uas::UserAgentServer::create_response(request, 503, "Service Unavailable");
             let _ = response.headers_mut().push(
@@ -901,8 +911,7 @@ impl PresenceHandler for SipPresenceHandler {
         // Watcher-info event package (RFC 3857/3858)
         if ctx.event == "presence.winfo" {
             if !self.presence.is_winfo_enabled() {
-                let response =
-                    sip_uas::UserAgentServer::create_response(request, 489, "Bad Event");
+                let response = sip_uas::UserAgentServer::create_response(request, 489, "Bad Event");
                 handle.send_final(response).await;
                 return Ok(());
             }
@@ -921,7 +930,9 @@ impl PresenceHandler for SipPresenceHandler {
             self.presence
                 .find_existing_watcher(&ctx.watcher_aor, &ctx.presentity_aor, &ctx.event)
         {
-            return self.handle_subscribe_refresh(&ctx, &existing_sub_id, request, handle).await;
+            return self
+                .handle_subscribe_refresh(&ctx, &existing_sub_id, request, handle)
+                .await;
         }
 
         self.handle_new_subscription(&ctx, request, handle).await
@@ -933,8 +944,8 @@ impl PresenceHandler for SipPresenceHandler {
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
         // Check Event header — only handle "presence"
-        let event = Self::extract_event(request)
-            .ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
+        let event =
+            Self::extract_event(request).ok_or_else(|| anyhow::anyhow!("Missing Event header"))?;
 
         if event != "presence" {
             bail!("Not a presence PUBLISH (event: {event})");
@@ -942,8 +953,7 @@ impl PresenceHandler for SipPresenceHandler {
 
         // Rate limiting: check both per-IP and per-AOR
         let source_ip = Self::extract_source_ip(request);
-        let presentity_aor = Self::extract_presentity_aor(request)
-            .unwrap_or_default();
+        let presentity_aor = Self::extract_presentity_aor(request).unwrap_or_default();
         let aor_key = format!("aor:{presentity_aor}");
         if !self.publish_limiter.check_rate_limit(&source_ip)
             || !self.publish_limiter.check_rate_limit(&aor_key)
@@ -953,7 +963,9 @@ impl PresenceHandler for SipPresenceHandler {
                 presentity = %presentity_aor,
                 "PUBLISH rate limited"
             );
-            self.presence.metrics().inc_counter("fcp_presence_rate_limited_total", &[("type", "publish")]);
+            self.presence
+                .metrics()
+                .inc_counter("fcp_presence_rate_limited_total", &[("type", "publish")]);
             let mut response =
                 sip_uas::UserAgentServer::create_response(request, 503, "Service Unavailable");
             let _ = response.headers_mut().push(
@@ -967,8 +979,8 @@ impl PresenceHandler for SipPresenceHandler {
         let if_match = Self::extract_sip_if_match(request);
         let expires = Self::extract_expires(request).unwrap_or(3600);
         let expires = self.presence.cap_publish_expiry(expires);
-        let body = std::str::from_utf8(request.body())
-            .context("PUBLISH body is not valid UTF-8")?;
+        let body =
+            std::str::from_utf8(request.body()).context("PUBLISH body is not valid UTF-8")?;
         let has_body = !body.is_empty();
 
         match (has_body, &if_match) {
@@ -985,13 +997,16 @@ impl PresenceHandler for SipPresenceHandler {
                     "Handling initial PUBLISH"
                 );
 
-                let etag = self.presence.store_publish(
-                    &update.aor,
-                    update.state,
-                    update.note.clone(),
-                    &self.tenant_id,
-                    expires,
-                ).await;
+                let etag = self
+                    .presence
+                    .store_publish(
+                        &update.aor,
+                        update.state,
+                        update.note.clone(),
+                        &self.tenant_id,
+                        expires,
+                    )
+                    .await;
 
                 // Update aggregated presence state (if composition is disabled,
                 // this is the primary update; if enabled, store_publish already recomposed)
@@ -1069,12 +1084,11 @@ impl PresenceHandler for SipPresenceHandler {
                     "Handling modify PUBLISH"
                 );
 
-                match self.presence.modify_publish(
-                    old_etag,
-                    update.state,
-                    update.note.clone(),
-                    expires,
-                ).await {
+                match self
+                    .presence
+                    .modify_publish(old_etag, update.state, update.note.clone(), expires)
+                    .await
+                {
                     Ok(new_etag) => {
                         let info = self
                             .presence
@@ -1106,11 +1120,8 @@ impl PresenceHandler for SipPresenceHandler {
 
             // No body, no SIP-If-Match → meaningless per RFC 3903
             (false, None) => {
-                let response = sip_uas::UserAgentServer::create_response(
-                    request,
-                    400,
-                    "Bad Request",
-                );
+                let response =
+                    sip_uas::UserAgentServer::create_response(request, 400, "Bad Request");
                 handle.send_final(response).await;
             }
         }
@@ -1134,12 +1145,7 @@ impl PresenceHandler for SipPresenceHandler {
         // Pre-generate XML bodies once per event package to avoid redundant
         // regeneration across N watchers for the same AOR.
         let pidf_body = self.presence.generate_pidf(aor).unwrap_or_else(|| {
-            fcp_presence::pidf::generate_pidf(
-                aor,
-                &fcp_presence::PresenceState::Closed,
-                None,
-                None,
-            )
+            fcp_presence::pidf::generate_pidf(aor, &fcp_presence::PresenceState::Closed, None, None)
         });
         let dialog_body = self.presence.generate_dialog_info(aor);
         let winfo_body = self
@@ -1154,11 +1160,7 @@ impl PresenceHandler for SipPresenceHandler {
             let sub_state = Self::subscription_state_active(watcher);
             let (event, content_type, body) = match watcher.event_package.as_str() {
                 "dialog" => ("dialog", "application/dialog-info+xml", &dialog_body),
-                "presence.winfo" => (
-                    "presence.winfo",
-                    "application/watcherinfo+xml",
-                    &winfo_body,
-                ),
+                "presence.winfo" => ("presence.winfo", "application/watcherinfo+xml", &winfo_body),
                 _ => ("presence", "application/pidf+xml", &pidf_body),
             };
             if let Err(e) = self

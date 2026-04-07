@@ -1,7 +1,7 @@
 //! SRTP policy enforcement for the SBC.
 
-use fcp_sbc_core::trunk::{SrtpMode, TrunkSrtpConfig};
 use fcp_media::sdp::parse_sdes_crypto;
+use fcp_sbc_core::trunk::{SrtpMode, TrunkSrtpConfig};
 
 /// Result of SRTP policy enforcement
 #[derive(Debug)]
@@ -21,16 +21,15 @@ pub enum SrtpPolicyResult {
 
 /// Enforce SRTP policy for an incoming SDP based on trunk configuration.
 #[allow(dead_code)]
-pub fn enforce_srtp_policy(
-    trunk_srtp: &TrunkSrtpConfig,
-    sdp_body: &str,
-) -> SrtpPolicyResult {
+pub fn enforce_srtp_policy(trunk_srtp: &TrunkSrtpConfig, sdp_body: &str) -> SrtpPolicyResult {
     let crypto_lines = parse_sdes_crypto(sdp_body);
     let has_crypto = !crypto_lines.is_empty();
 
     match trunk_srtp.mode {
         SrtpMode::Disabled => SrtpPolicyResult::Allow { enable_srtp: false },
-        SrtpMode::Preferred => SrtpPolicyResult::Allow { enable_srtp: has_crypto },
+        SrtpMode::Preferred => SrtpPolicyResult::Allow {
+            enable_srtp: has_crypto,
+        },
         SrtpMode::Required => {
             if has_crypto {
                 SrtpPolicyResult::Allow { enable_srtp: true }

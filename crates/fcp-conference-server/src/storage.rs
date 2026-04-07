@@ -37,8 +37,7 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
         dyn_storage: Arc::new(
-            DynStorage::from_all_in_one(storage.clone())
-                .with_prompt_store(prompt_store),
+            DynStorage::from_all_in_one(storage.clone()).with_prompt_store(prompt_store),
         ),
         config_store: storage,
     })

@@ -88,8 +88,8 @@ impl StirVerifier {
         }
 
         // 5. Extract attestation level
-        let attestation =
-            AttestationLevel::from_passport_str(&parsed.payload.attest).unwrap_or(AttestationLevel::C);
+        let attestation = AttestationLevel::from_passport_str(&parsed.payload.attest)
+            .unwrap_or(AttestationLevel::C);
 
         VerificationResult::Verified { attestation }
     }
@@ -414,13 +414,9 @@ impl TransportDispatcher for StirTransportDispatcher {
                         .unwrap_or_default();
 
                     if !from_tn.is_empty() && !to_tn.is_empty() {
-                        match self
-                            .signer
-                            .sign(&from_tn, &to_tn, trunk_config.attestation)
-                        {
+                        match self.signer.sign(&from_tn, &to_tn, trunk_config.attestation) {
                             Ok(identity_value) => {
-                                if let Ok(()) =
-                                    req.headers_mut().push("Identity", &identity_value)
+                                if let Ok(()) = req.headers_mut().push("Identity", &identity_value)
                                 {
                                     let rewritten = sip_parse::serialize_request(&req);
                                     self.metrics.record_signing_success();
@@ -514,11 +510,7 @@ mod tests {
     use fcp_sbc_core::stir_shaken::{PassportHeader, PassportPayload, PassportTnField};
 
     /// Helper: build a valid ParsedIdentity with configurable TNs and iat.
-    fn make_parsed_identity(
-        orig_tn: &str,
-        dest_tn: &str,
-        iat: u64,
-    ) -> ParsedIdentity {
+    fn make_parsed_identity(orig_tn: &str, dest_tn: &str, iat: u64) -> ParsedIdentity {
         let header = PassportHeader {
             alg: "ES256".into(),
             ppt: "shaken".into(),
@@ -749,7 +741,10 @@ mod tests {
         let config = StirShakenConfig::default();
         let verifier = StirVerifier::new(&config);
         let result = verifier.verify_signature(&parsed, &verifying_key);
-        assert!(result.is_ok(), "roundtrip signature verification should succeed");
+        assert!(
+            result.is_ok(),
+            "roundtrip signature verification should succeed"
+        );
     }
 
     // ── StirTransportDispatcher test ─────────────────────────────────────
@@ -765,7 +760,11 @@ mod tests {
 
         #[async_trait::async_trait]
         impl TransportDispatcher for MockDispatcher {
-            async fn dispatch(&self, _ctx: &TransportContext, payload: Bytes) -> anyhow::Result<()> {
+            async fn dispatch(
+                &self,
+                _ctx: &TransportContext,
+                payload: Bytes,
+            ) -> anyhow::Result<()> {
                 self.payloads.lock().await.push(payload);
                 Ok(())
             }
@@ -802,12 +801,11 @@ mod tests {
              \r\n",
         );
 
-        let ctx = TransportContext::new(
-            TransportKind::Udp,
-            "10.0.0.1:5060".parse().unwrap(),
-            None,
-        );
-        dispatcher.dispatch(&ctx, options_payload.clone()).await.unwrap();
+        let ctx = TransportContext::new(TransportKind::Udp, "10.0.0.1:5060".parse().unwrap(), None);
+        dispatcher
+            .dispatch(&ctx, options_payload.clone())
+            .await
+            .unwrap();
 
         // Payload should pass through unchanged
         let recorded = mock.payloads.lock().await;

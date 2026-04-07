@@ -12,7 +12,9 @@ fn system_time_to_datetime(st: SystemTime) -> DateTime<Utc> {
 }
 
 fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(dt.timestamp() as u64) + Duration::from_nanos(dt.timestamp_subsec_nanos() as u64)
+    UNIX_EPOCH
+        + Duration::from_secs(dt.timestamp() as u64)
+        + Duration::from_nanos(dt.timestamp_subsec_nanos() as u64)
 }
 
 /// PostgreSQL-backed SIP trace store.
@@ -132,12 +134,11 @@ impl SipTraceStore for PostgresSipTraceStore {
     }
 
     async fn delete_sip_traces_older_than(&self, days: u32) -> anyhow::Result<u64> {
-        let result = sqlx::query(
-            "DELETE FROM sip_trace_messages WHERE timestamp < NOW() - $1::interval",
-        )
-        .bind(format!("{} days", days))
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM sip_trace_messages WHERE timestamp < NOW() - $1::interval")
+                .bind(format!("{} days", days))
+                .execute(&self.pool)
+                .await?;
         Ok(result.rows_affected())
     }
 }

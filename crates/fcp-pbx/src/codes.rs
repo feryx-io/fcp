@@ -169,7 +169,10 @@ mod tests {
 
     #[test]
     fn test_sip_uri_extraction() {
-        assert!(matches_pattern("011*", "sip:01144207946@gateway.example.com"));
+        assert!(matches_pattern(
+            "011*",
+            "sip:01144207946@gateway.example.com"
+        ));
     }
 
     #[test]

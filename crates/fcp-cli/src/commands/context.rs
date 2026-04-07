@@ -43,7 +43,12 @@ pub async fn handle(cmd: crate::ContextCommands, output_format: OutputFormat) ->
                 println!("No current context");
             }
         }
-        crate::ContextCommands::Add { name, url, token, events_url } => {
+        crate::ContextCommands::Add {
+            name,
+            url,
+            token,
+            events_url,
+        } => {
             config.add_context(Context {
                 name: name.clone(),
                 url,

@@ -217,10 +217,22 @@ impl PresenceConfig {
 
         // Rate limits must be > 0
         for (name, val) in [
-            ("subscribe_rate_limit_per_ip", &mut self.subscribe_rate_limit_per_ip),
-            ("subscribe_rate_limit_per_aor", &mut self.subscribe_rate_limit_per_aor),
-            ("publish_rate_limit_per_ip", &mut self.publish_rate_limit_per_ip),
-            ("publish_rate_limit_per_aor", &mut self.publish_rate_limit_per_aor),
+            (
+                "subscribe_rate_limit_per_ip",
+                &mut self.subscribe_rate_limit_per_ip,
+            ),
+            (
+                "subscribe_rate_limit_per_aor",
+                &mut self.subscribe_rate_limit_per_aor,
+            ),
+            (
+                "publish_rate_limit_per_ip",
+                &mut self.publish_rate_limit_per_ip,
+            ),
+            (
+                "publish_rate_limit_per_aor",
+                &mut self.publish_rate_limit_per_aor,
+            ),
         ] {
             if *val == 0 {
                 warnings.push(format!("{name} is 0, setting to 1"));
@@ -319,7 +331,9 @@ mod tests {
             ..Default::default()
         };
         let warnings = config.validate();
-        assert!(warnings.iter().any(|w| w.contains("default_subscription_expiry")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("default_subscription_expiry")));
         assert_eq!(config.default_subscription_expiry_secs, 200);
 
         // Below min
@@ -358,7 +372,9 @@ mod tests {
             ..Default::default()
         };
         let warnings = config.validate();
-        assert!(warnings.iter().any(|w| w.contains("notify_retry_base_delay_ms")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("notify_retry_base_delay_ms")));
         assert_eq!(config.notify_retry_base_delay_ms, 1000);
         assert_eq!(config.notify_retry_max_delay_ms, 30000);
     }
@@ -378,6 +394,10 @@ mod tests {
     fn test_validate_valid_config_no_warnings() {
         let mut config = PresenceConfig::default();
         let warnings = config.validate();
-        assert!(warnings.is_empty(), "Default config should have no warnings: {:?}", warnings);
+        assert!(
+            warnings.is_empty(),
+            "Default config should have no warnings: {:?}",
+            warnings
+        );
     }
 }

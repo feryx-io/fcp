@@ -234,13 +234,14 @@ impl SbcConfig {
         ];
         let tls_count = tls_fields.iter().filter(|&&v| v).count();
         if tls_count > 0 && tls_count < 3 {
-            return Err(
-                "TLS requires all three fields: tls_bind, tls_cert, and tls_key".into(),
-            );
+            return Err("TLS requires all three fields: tls_bind, tls_cert, and tls_key".into());
         }
         if let Some(ref bind) = self.tls_bind {
             if bind.parse::<SocketAddr>().is_err() {
-                return Err(format!("tls_bind is not a valid socket address: {:?}", bind));
+                return Err(format!(
+                    "tls_bind is not a valid socket address: {:?}",
+                    bind
+                ));
             }
         }
 

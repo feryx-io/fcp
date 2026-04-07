@@ -9,8 +9,8 @@ use axum::{
 };
 use fcp_core::{
     storage::{LineBindingStore, VoicemailStore},
-    CredentialStore, GreetingType, LineBindingId, MessageStatus, TenantId,
-    UserId, VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
+    CredentialStore, GreetingType, LineBindingId, MessageStatus, TenantId, UserId,
+    VoicemailGreeting, VoicemailMailbox, VoicemailMessage,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -212,7 +212,8 @@ pub async fn list_mailboxes(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let responses: Vec<MailboxResponse> = mailboxes.into_iter().map(MailboxResponse::from).collect();
+    let responses: Vec<MailboxResponse> =
+        mailboxes.into_iter().map(MailboxResponse::from).collect();
 
     Ok(Json(responses))
 }
@@ -229,10 +230,7 @@ pub async fn get_mailbox(
 }
 
 /// Validate mailbox control fields.
-fn validate_mailbox_controls(
-    max_message_duration: u32,
-    max_messages: u32,
-) -> Result<(), ApiError> {
+fn validate_mailbox_controls(max_message_duration: u32, max_messages: u32) -> Result<(), ApiError> {
     if max_message_duration == 0 || max_message_duration > 3600 {
         return Err(ApiError::BadRequest(
             "max_message_duration must be between 1 and 3600 seconds".to_string(),
@@ -277,7 +275,9 @@ pub async fn create_mailbox(
         .get_line_binding(&line_binding_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Line binding {} not found", req.line_binding_id)))?;
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("Line binding {} not found", req.line_binding_id))
+        })?;
     if line_binding.tenant_id != tenant.0 {
         return Err(ApiError::BadRequest(format!(
             "Line binding {} is not in the authenticated tenant",
@@ -312,26 +312,26 @@ pub async fn create_mailbox(
     );
 
     // Publish mailbox created event so voicemail server can register routes
-    state.publish_event(fcp_events::PlatformEvent::Voicemail(
-        fcp_events::VoicemailEvent::MailboxCreated {
-            mailbox_id: mailbox.id.clone(),
-            user_id: req.user_id.clone(),
-            extension: user.username.clone(),
-            tenant_id: tenant.0.to_string(),
-            timestamp: SystemTime::now(),
-        },
-    )).await;
+    state
+        .publish_event(fcp_events::PlatformEvent::Voicemail(
+            fcp_events::VoicemailEvent::MailboxCreated {
+                mailbox_id: mailbox.id.clone(),
+                user_id: req.user_id.clone(),
+                extension: user.username.clone(),
+                tenant_id: tenant.0.to_string(),
+                timestamp: SystemTime::now(),
+            },
+        ))
+        .await;
 
     // Generate TTS default greeting in the background so the API returns immediately
-    if let (Some(tts_service), Some(greetings_dir)) =
-        (state.tts_service.clone(), state.voicemail_greetings_dir.clone())
-    {
+    if let (Some(tts_service), Some(greetings_dir)) = (
+        state.tts_service.clone(),
+        state.voicemail_greetings_dir.clone(),
+    ) {
         let storage = storage.clone();
         let mailbox_id = mailbox.id.clone();
-        let display_name = user
-            .display_name
-            .unwrap_or(user.username)
-            .clone();
+        let display_name = user.display_name.unwrap_or(user.username).clone();
 
         tokio::spawn(async move {
             let greeting_text = format!(
@@ -462,12 +462,14 @@ pub async fn update_mailbox(
     info!(mailbox_id = %id, "Updated voicemail mailbox");
 
     // Publish mailbox updated event
-    state.publish_event(fcp_events::PlatformEvent::Voicemail(
-        fcp_events::VoicemailEvent::MailboxUpdated {
-            mailbox_id: id.clone(),
-            timestamp: SystemTime::now(),
-        },
-    )).await;
+    state
+        .publish_event(fcp_events::PlatformEvent::Voicemail(
+            fcp_events::VoicemailEvent::MailboxUpdated {
+                mailbox_id: id.clone(),
+                timestamp: SystemTime::now(),
+            },
+        ))
+        .await;
 
     Ok(Json(MailboxResponse::from(mailbox)))
 }
@@ -490,12 +492,14 @@ pub async fn delete_mailbox(
     info!(mailbox_id = %id, "Deleted voicemail mailbox");
 
     // Publish mailbox deleted event so voicemail server can remove routes
-    state.publish_event(fcp_events::PlatformEvent::Voicemail(
-        fcp_events::VoicemailEvent::MailboxDeleted {
-            mailbox_id: id.clone(),
-            timestamp: SystemTime::now(),
-        },
-    )).await;
+    state
+        .publish_event(fcp_events::PlatformEvent::Voicemail(
+            fcp_events::VoicemailEvent::MailboxDeleted {
+                mailbox_id: id.clone(),
+                timestamp: SystemTime::now(),
+            },
+        ))
+        .await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -734,8 +738,11 @@ pub async fn list_greetings(
 ) -> Result<impl IntoResponse, ApiError> {
     let mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
-    let responses: Vec<GreetingResponse> =
-        mailbox.greetings.into_iter().map(GreetingResponse::from).collect();
+    let responses: Vec<GreetingResponse> = mailbox
+        .greetings
+        .into_iter()
+        .map(GreetingResponse::from)
+        .collect();
 
     Ok(Json(responses))
 }
@@ -762,17 +769,15 @@ pub async fn upload_greeting(
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "greeting_type" => {
-                let text = field
-                    .text()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(format!("Failed to read greeting_type: {}", e)))?;
+                let text = field.text().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read greeting_type: {}", e))
+                })?;
                 greeting_type_str = Some(text);
             }
             "audio" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(format!("Failed to read audio data: {}", e)))?;
+                let bytes = field.bytes().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read audio data: {}", e))
+                })?;
                 audio_data = Some(bytes.to_vec());
             }
             _ => {} // ignore unknown fields
@@ -781,8 +786,8 @@ pub async fn upload_greeting(
 
     let greeting_type_str = greeting_type_str
         .ok_or_else(|| ApiError::BadRequest("Missing 'greeting_type' field".to_string()))?;
-    let audio_data = audio_data
-        .ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
+    let audio_data =
+        audio_data.ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
     if audio_data.is_empty() {
         return Err(ApiError::BadRequest("Audio file is empty".to_string()));
     }
@@ -835,7 +840,10 @@ pub async fn delete_greeting(
     let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
     // Find and remove the greeting
-    let had_greeting = mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type);
+    let had_greeting = mailbox
+        .greetings
+        .iter()
+        .any(|g| g.greeting_type == greeting_type);
     if !had_greeting {
         return Err(ApiError::NotFound(format!(
             "Greeting '{}' not found for mailbox {}",
@@ -844,11 +852,17 @@ pub async fn delete_greeting(
     }
 
     // Try to remove the audio file (best-effort)
-    if let Some(g) = mailbox.greetings.iter().find(|g| g.greeting_type == greeting_type) {
+    if let Some(g) = mailbox
+        .greetings
+        .iter()
+        .find(|g| g.greeting_type == greeting_type)
+    {
         let _ = tokio::fs::remove_file(&g.audio_path).await;
     }
 
-    mailbox.greetings.retain(|g| g.greeting_type != greeting_type);
+    mailbox
+        .greetings
+        .retain(|g| g.greeting_type != greeting_type);
     mailbox.updated_at = SystemTime::now();
 
     storage
@@ -884,7 +898,11 @@ pub async fn set_greeting_active(
 
     let mut mailbox = get_mailbox_for_tenant(&state, &id, &tenant.0).await?;
 
-    if !mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type) {
+    if !mailbox
+        .greetings
+        .iter()
+        .any(|g| g.greeting_type == greeting_type)
+    {
         return Err(ApiError::NotFound(format!(
             "Greeting '{}' not found for mailbox {}",
             greeting_type_str, id
@@ -941,10 +959,7 @@ pub async fn download_greeting_audio(
         StatusCode::OK,
         [
             (axum::http::header::CONTENT_TYPE, "audio/wav"),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                "inline",
-            ),
+            (axum::http::header::CONTENT_DISPOSITION, "inline"),
         ],
         data,
     ))

@@ -223,42 +223,78 @@ async fn main() -> Result<()> {
     if let Some(prompt_store) = dyn_storage.prompt_store() {
         let tenant_id = fcp_core::TenantId::nil();
         let default_prompts = vec![
-            ("conf_pin_prompt", "Conference PIN Prompt",
-             "Please enter your conference PIN, followed by the pound key.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_invalid_pin", "Conference Invalid PIN",
-             "Invalid PIN. Please try again.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_wait_announcement", "Conference Wait for Moderator Announcement",
-             "Please wait. The conference will begin when the moderator joins.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_welcome", "Conference Welcome",
-             "You have joined the conference.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_dialout_greeting", "Conference Dial-Out Greeting",
-             "Please hold while we connect you to the conference.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_join_tone", "Conference Join Tone (generated beep)",
-             "",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_exit_tone", "Conference Exit Tone (generated beep)",
-             "",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_muted", "Conference Muted Notification",
-             "Muted.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_unmuted", "Conference Unmuted Notification",
-             "Unmuted.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_locked", "Conference Locked Notification",
-             "Conference locked.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_ending", "Conference Ending Notification",
-             "The moderator has ended this conference. Goodbye.",
-             fcp_core::prompt::PromptCategory::System),
-            ("conf_unlocked", "Conference Unlocked Notification",
-             "Conference unlocked.",
-             fcp_core::prompt::PromptCategory::System),
+            (
+                "conf_pin_prompt",
+                "Conference PIN Prompt",
+                "Please enter your conference PIN, followed by the pound key.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_invalid_pin",
+                "Conference Invalid PIN",
+                "Invalid PIN. Please try again.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_wait_announcement",
+                "Conference Wait for Moderator Announcement",
+                "Please wait. The conference will begin when the moderator joins.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_welcome",
+                "Conference Welcome",
+                "You have joined the conference.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_dialout_greeting",
+                "Conference Dial-Out Greeting",
+                "Please hold while we connect you to the conference.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_join_tone",
+                "Conference Join Tone (generated beep)",
+                "",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_exit_tone",
+                "Conference Exit Tone (generated beep)",
+                "",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_muted",
+                "Conference Muted Notification",
+                "Muted.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_unmuted",
+                "Conference Unmuted Notification",
+                "Unmuted.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_locked",
+                "Conference Locked Notification",
+                "Conference locked.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_ending",
+                "Conference Ending Notification",
+                "The moderator has ended this conference. Goodbye.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
+            (
+                "conf_unlocked",
+                "Conference Unlocked Notification",
+                "Conference unlocked.",
+                fcp_core::prompt::PromptCategory::System,
+            ),
         ];
         for (name, description, tts_text, category) in default_prompts {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
@@ -267,11 +303,7 @@ async fn main() -> Result<()> {
                 }
                 Ok(None) => {
                     let mut prompt = fcp_core::prompt::Prompt::new_tts(
-                        tenant_id,
-                        name,
-                        category,
-                        "en-US",
-                        tts_text,
+                        tenant_id, name, category, "en-US", tts_text,
                     );
                     prompt.description = Some(description.to_string());
                     prompt.tts_voice = Some("af_heart".to_string());
@@ -508,15 +540,39 @@ async fn main() -> Result<()> {
         let provider = match config.tts.provider.as_str() {
             "local" | "kokoro" => Some(fcp_media::TtsProviderConfig::Local {
                 engine: config.tts.engine.clone(),
-                executable_path: config.tts.python_path.as_ref().map(std::path::PathBuf::from),
+                executable_path: config
+                    .tts
+                    .python_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
             }),
-            "openai" => config.tts.api_key.as_ref().map(|key| {
-                fcp_media::TtsProviderConfig::OpenAi { api_key: key.clone(), model: "tts-1".to_string() }
-            }).or_else(|| { warn!("OpenAI TTS requires api_key"); None }),
-            "google_cloud" => config.tts.api_key.as_ref().map(|key| {
-                fcp_media::TtsProviderConfig::GoogleCloud { api_key: key.clone() }
-            }).or_else(|| { warn!("Google Cloud TTS requires api_key"); None }),
-            other => { warn!(provider = %other, "Unknown TTS provider"); None }
+            "openai" => config
+                .tts
+                .api_key
+                .as_ref()
+                .map(|key| fcp_media::TtsProviderConfig::OpenAi {
+                    api_key: key.clone(),
+                    model: "tts-1".to_string(),
+                })
+                .or_else(|| {
+                    warn!("OpenAI TTS requires api_key");
+                    None
+                }),
+            "google_cloud" => config
+                .tts
+                .api_key
+                .as_ref()
+                .map(|key| fcp_media::TtsProviderConfig::GoogleCloud {
+                    api_key: key.clone(),
+                })
+                .or_else(|| {
+                    warn!("Google Cloud TTS requires api_key");
+                    None
+                }),
+            other => {
+                warn!(provider = %other, "Unknown TTS provider");
+                None
+            }
         };
         if let Some(provider) = provider {
             let tts_config = fcp_media::TtsConfig {
@@ -533,20 +589,38 @@ async fn main() -> Result<()> {
                     conference_handler.set_tts_service(Arc::clone(&tts));
                     Some(tts)
                 }
-                Err(e) => { warn!(error = %e, "TTS init failed"); None }
+                Err(e) => {
+                    warn!(error = %e, "TTS init failed");
+                    None
+                }
             }
-        } else { None }
-    } else { None };
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Auto-synthesize any conference prompts that are missing audio files.
     // This runs once at startup so callers hear prompts on the first call.
     if let (Some(ref tts), Some(prompt_store)) = (&tts_service, dyn_storage.prompt_store()) {
         let tenant_id = fcp_core::TenantId::nil();
-        let prompts_dir = std::path::PathBuf::from(
-            &config.tts.cache_dir,
-        );
+        let prompts_dir = std::path::PathBuf::from(&config.tts.cache_dir);
         let _ = tokio::fs::create_dir_all(&prompts_dir).await;
-        for name in &["conf_pin_prompt", "conf_invalid_pin", "conf_wait_announcement", "conf_welcome", "conf_dialout_greeting", "conf_join_tone", "conf_exit_tone", "conf_muted", "conf_unmuted", "conf_locked", "conf_unlocked", "conf_ending"] {
+        for name in &[
+            "conf_pin_prompt",
+            "conf_invalid_pin",
+            "conf_wait_announcement",
+            "conf_welcome",
+            "conf_dialout_greeting",
+            "conf_join_tone",
+            "conf_exit_tone",
+            "conf_muted",
+            "conf_unmuted",
+            "conf_locked",
+            "conf_unlocked",
+            "conf_ending",
+        ] {
             match prompt_store.get_prompt_by_name(&tenant_id, name).await {
                 Ok(Some(mut prompt)) if prompt.audio_path.is_none() => {
                     if let Some(ref text) = prompt.tts_text {
@@ -555,8 +629,13 @@ async fn main() -> Result<()> {
                             Ok(cached_path) => {
                                 // Copy to permanent location
                                 let dest = prompts_dir.join(format!("{}.wav", prompt.id));
-                                if let Ok(()) = tokio::fs::copy(&cached_path, &dest).await.map(|_| ()) {
-                                    let size = tokio::fs::metadata(&dest).await.map(|m| m.len()).unwrap_or(0);
+                                if let Ok(()) =
+                                    tokio::fs::copy(&cached_path, &dest).await.map(|_| ())
+                                {
+                                    let size = tokio::fs::metadata(&dest)
+                                        .await
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
                                     prompt.audio_path = Some(dest);
                                     prompt.audio_format = Some("wav".to_string());
                                     prompt.file_size = Some(size);
@@ -597,7 +676,10 @@ async fn main() -> Result<()> {
                 Err(e) => warn!(error = %e, text, "Failed to pre-synthesize welcome variant"),
             }
         }
-        info!("Pre-synthesized {} welcome message variants", welcome_variants.len());
+        info!(
+            "Pre-synthesized {} welcome message variants",
+            welcome_variants.len()
+        );
     }
 
     // Load pre-synthesized mute/unmute audio samples for DTMF feedback
@@ -611,15 +693,28 @@ async fn main() -> Result<()> {
             ("conf_unlocked", "unlocked"),
             ("conf_ending", "ending"),
         ] {
-            if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, prompt_name).await {
+            if let Ok(Some(prompt)) = prompt_store
+                .get_prompt_by_name(&tenant_id, prompt_name)
+                .await
+            {
                 if let Some(ref path) = prompt.audio_path {
                     if let Some(samples) = player.load_audio_file(path) {
                         match field_setter {
-                            "muted" => conference_handler.dtmf_muted_samples = Some(Arc::new(samples)),
-                            "unmuted" => conference_handler.dtmf_unmuted_samples = Some(Arc::new(samples)),
-                            "locked" => conference_handler.dtmf_locked_samples = Some(Arc::new(samples)),
-                            "unlocked" => conference_handler.dtmf_unlocked_samples = Some(Arc::new(samples)),
-                            "ending" => conference_handler.dtmf_ending_samples = Some(Arc::new(samples)),
+                            "muted" => {
+                                conference_handler.dtmf_muted_samples = Some(Arc::new(samples))
+                            }
+                            "unmuted" => {
+                                conference_handler.dtmf_unmuted_samples = Some(Arc::new(samples))
+                            }
+                            "locked" => {
+                                conference_handler.dtmf_locked_samples = Some(Arc::new(samples))
+                            }
+                            "unlocked" => {
+                                conference_handler.dtmf_unlocked_samples = Some(Arc::new(samples))
+                            }
+                            "ending" => {
+                                conference_handler.dtmf_ending_samples = Some(Arc::new(samples))
+                            }
                             _ => {}
                         }
                         info!(prompt = prompt_name, "Loaded DTMF feedback audio");
@@ -653,7 +748,8 @@ async fn main() -> Result<()> {
                     } else {
                         1.0
                     };
-                    let val = (12000.0 * envelope * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16;
+                    let val =
+                        (12000.0 * envelope * (2.0 * std::f64::consts::PI * freq * t).sin()) as i16;
                     samples.push(val);
                 }
             }
@@ -890,8 +986,12 @@ async fn main() -> Result<()> {
                                 }
                                 // Now send BYE to all
                                 match handler.destroy_conference(&rn).await {
-                                    Ok(n) => info!(room = %rn, kicked = n, "Conference ended by host"),
-                                    Err(e) => warn!(room = %rn, error = %e, "Failed to end conference"),
+                                    Ok(n) => {
+                                        info!(room = %rn, kicked = n, "Conference ended by host")
+                                    }
+                                    Err(e) => {
+                                        warn!(room = %rn, error = %e, "Failed to end conference")
+                                    }
                                 }
                             });
                             continue;
@@ -905,9 +1005,16 @@ async fn main() -> Result<()> {
                             let dest = destination.clone();
                             tokio::spawn(async move {
                                 info!(room = %rn, destination = %dest, "Processing DTMF dial-out request");
-                                match handler.dial_out(&rn, &dest, fcp_core::TenantId::nil(), None, None).await {
-                                    Ok(pid) => info!(room = %rn, destination = %dest, participant = %pid, "DTMF dial-out connected"),
-                                    Err(e) => warn!(room = %rn, destination = %dest, error = %e, "DTMF dial-out failed"),
+                                match handler
+                                    .dial_out(&rn, &dest, fcp_core::TenantId::nil(), None, None)
+                                    .await
+                                {
+                                    Ok(pid) => {
+                                        info!(room = %rn, destination = %dest, participant = %pid, "DTMF dial-out connected")
+                                    }
+                                    Err(e) => {
+                                        warn!(room = %rn, destination = %dest, error = %e, "DTMF dial-out failed")
+                                    }
                                 }
                             });
                         }

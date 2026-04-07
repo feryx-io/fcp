@@ -146,10 +146,8 @@ pub async fn list_queue_configs(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list queue configs: {}", e)))?;
 
-    let response: Vec<QueueConfigResponse> = configs
-        .into_iter()
-        .map(QueueConfigResponse::from)
-        .collect();
+    let response: Vec<QueueConfigResponse> =
+        configs.into_iter().map(QueueConfigResponse::from).collect();
     Ok(Json(response))
 }
 
@@ -183,25 +181,53 @@ pub async fn create_queue_config(
         return Err(ApiError::BadRequest("Queue name is required".to_string()));
     }
     if req.extension.trim().is_empty() {
-        return Err(ApiError::BadRequest("Queue extension is required".to_string()));
+        return Err(ApiError::BadRequest(
+            "Queue extension is required".to_string(),
+        ));
     }
 
     let mut config = QueueConfigRecord::new(req.name, req.extension, tenant_id);
-    if let Some(strategy) = req.strategy { config.strategy = strategy; }
-    if let Some(v) = req.max_wait_time_secs { config.max_wait_time_secs = v; }
-    if let Some(v) = req.max_queue_depth { config.max_queue_depth = v; }
+    if let Some(strategy) = req.strategy {
+        config.strategy = strategy;
+    }
+    if let Some(v) = req.max_wait_time_secs {
+        config.max_wait_time_secs = v;
+    }
+    if let Some(v) = req.max_queue_depth {
+        config.max_queue_depth = v;
+    }
     config.overflow_destination = req.overflow_destination;
     config.moh_class = req.moh_class;
-    if let Some(v) = req.announce_position { config.announce_position = v; }
-    if let Some(v) = req.announce_interval_secs { config.announce_interval_secs = v; }
-    if let Some(v) = req.retry_on_no_answer { config.retry_on_no_answer = v; }
-    if let Some(agents) = req.agents { config.agents = agents; }
-    if let Some(v) = req.priority { config.priority = v; }
-    if let Some(skills) = req.required_skills { config.required_skills = skills; }
-    if let Some(v) = req.record_calls { config.record_calls = v; }
-    if let Some(v) = req.callback_enabled { config.callback_enabled = v; }
-    if let Some(tz) = req.timezone { config.timezone = tz; }
-    if let Some(v) = req.enabled { config.enabled = v; }
+    if let Some(v) = req.announce_position {
+        config.announce_position = v;
+    }
+    if let Some(v) = req.announce_interval_secs {
+        config.announce_interval_secs = v;
+    }
+    if let Some(v) = req.retry_on_no_answer {
+        config.retry_on_no_answer = v;
+    }
+    if let Some(agents) = req.agents {
+        config.agents = agents;
+    }
+    if let Some(v) = req.priority {
+        config.priority = v;
+    }
+    if let Some(skills) = req.required_skills {
+        config.required_skills = skills;
+    }
+    if let Some(v) = req.record_calls {
+        config.record_calls = v;
+    }
+    if let Some(v) = req.callback_enabled {
+        config.callback_enabled = v;
+    }
+    if let Some(tz) = req.timezone {
+        config.timezone = tz;
+    }
+    if let Some(v) = req.enabled {
+        config.enabled = v;
+    }
 
     info!(queue_name = %config.name, queue_id = %config.id, "Creating queue config");
 
@@ -228,23 +254,57 @@ pub async fn update_queue_config(
         .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?;
 
-    if let Some(name) = req.name { config.name = name; }
-    if let Some(ext) = req.extension { config.extension = ext; }
-    if let Some(strategy) = req.strategy { config.strategy = strategy; }
-    if let Some(v) = req.max_wait_time_secs { config.max_wait_time_secs = v; }
-    if let Some(v) = req.max_queue_depth { config.max_queue_depth = v; }
-    if let Some(dest) = req.overflow_destination { config.overflow_destination = Some(dest); }
-    if let Some(moh) = req.moh_class { config.moh_class = Some(moh); }
-    if let Some(v) = req.announce_position { config.announce_position = v; }
-    if let Some(v) = req.announce_interval_secs { config.announce_interval_secs = v; }
-    if let Some(v) = req.retry_on_no_answer { config.retry_on_no_answer = v; }
-    if let Some(agents) = req.agents { config.agents = agents; }
-    if let Some(v) = req.priority { config.priority = v; }
-    if let Some(skills) = req.required_skills { config.required_skills = skills; }
-    if let Some(v) = req.record_calls { config.record_calls = v; }
-    if let Some(v) = req.callback_enabled { config.callback_enabled = v; }
-    if let Some(tz) = req.timezone { config.timezone = tz; }
-    if let Some(v) = req.enabled { config.enabled = v; }
+    if let Some(name) = req.name {
+        config.name = name;
+    }
+    if let Some(ext) = req.extension {
+        config.extension = ext;
+    }
+    if let Some(strategy) = req.strategy {
+        config.strategy = strategy;
+    }
+    if let Some(v) = req.max_wait_time_secs {
+        config.max_wait_time_secs = v;
+    }
+    if let Some(v) = req.max_queue_depth {
+        config.max_queue_depth = v;
+    }
+    if let Some(dest) = req.overflow_destination {
+        config.overflow_destination = Some(dest);
+    }
+    if let Some(moh) = req.moh_class {
+        config.moh_class = Some(moh);
+    }
+    if let Some(v) = req.announce_position {
+        config.announce_position = v;
+    }
+    if let Some(v) = req.announce_interval_secs {
+        config.announce_interval_secs = v;
+    }
+    if let Some(v) = req.retry_on_no_answer {
+        config.retry_on_no_answer = v;
+    }
+    if let Some(agents) = req.agents {
+        config.agents = agents;
+    }
+    if let Some(v) = req.priority {
+        config.priority = v;
+    }
+    if let Some(skills) = req.required_skills {
+        config.required_skills = skills;
+    }
+    if let Some(v) = req.record_calls {
+        config.record_calls = v;
+    }
+    if let Some(v) = req.callback_enabled {
+        config.callback_enabled = v;
+    }
+    if let Some(tz) = req.timezone {
+        config.timezone = tz;
+    }
+    if let Some(v) = req.enabled {
+        config.enabled = v;
+    }
 
     config.updated_at = SystemTime::now();
 

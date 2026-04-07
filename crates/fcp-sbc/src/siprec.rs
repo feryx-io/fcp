@@ -201,11 +201,8 @@ impl SiprecRecorder {
         let sdp = build_recording_sdp(&session_id, a_leg_sdp, b_leg_sdp);
 
         // Build RFC 7865 metadata XML
-        let metadata = generate_metadata_xml(
-            &recording_id,
-            &pending.caller_aor,
-            &pending.callee_aor,
-        );
+        let metadata =
+            generate_metadata_xml(&recording_id, &pending.caller_aor, &pending.callee_aor);
 
         // Build multipart/mixed body
         let body = build_multipart_body(&boundary, &sdp, &metadata);
@@ -334,7 +331,10 @@ fn extract_first_codec(sdp_text: &str) -> Option<(String, u8, u32)> {
             let pt: u8 = pt_str.parse().ok()?;
             let mut codec_parts = codec_part.split('/');
             let name = codec_parts.next()?;
-            let rate: u32 = codec_parts.next().and_then(|r| r.parse().ok()).unwrap_or(8000);
+            let rate: u32 = codec_parts
+                .next()
+                .and_then(|r| r.parse().ok())
+                .unwrap_or(8000);
             return Some((name.to_string(), pt, rate));
         }
     }

@@ -96,10 +96,18 @@ pub struct CreateRoutingRuleRequest {
     pub reason: Option<String>,
 }
 
-fn default_priority() -> i32 { 100 }
-fn default_true() -> bool { true }
-fn default_tz() -> String { "UTC".to_string() }
-fn default_action() -> String { "allow".to_string() }
+fn default_priority() -> i32 {
+    100
+}
+fn default_true() -> bool {
+    true
+}
+fn default_tz() -> String {
+    "UTC".to_string()
+}
+fn default_action() -> String {
+    "allow".to_string()
+}
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateRoutingRuleRequest {
@@ -129,7 +137,8 @@ pub async fn list_routing_rules(
         .list_routing_rules(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list routing rules: {}", e)))?;
-    let response: Vec<RoutingRuleResponse> = rules.into_iter().map(RoutingRuleResponse::from).collect();
+    let response: Vec<RoutingRuleResponse> =
+        rules.into_iter().map(RoutingRuleResponse::from).collect();
     Ok(Json(response))
 }
 
@@ -159,13 +168,17 @@ pub async fn create_routing_rule(
 
     // Validate regex patterns
     if let Some(ref pat) = req.destination_pattern {
-        regex::Regex::new(pat).map_err(|e| ApiError::BadRequest(format!("Invalid destination pattern: {}", e)))?;
+        regex::Regex::new(pat)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid destination pattern: {}", e)))?;
     }
     if let Some(ref pat) = req.source_pattern {
-        regex::Regex::new(pat).map_err(|e| ApiError::BadRequest(format!("Invalid source pattern: {}", e)))?;
+        regex::Regex::new(pat)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid source pattern: {}", e)))?;
     }
 
-    let action = req.action.parse::<RoutingAction>()
+    let action = req
+        .action
+        .parse::<RoutingAction>()
         .map_err(|e| ApiError::BadRequest(e))?;
 
     let mut rule = RoutingRule::new(req.name, tenant.0);
@@ -208,33 +221,61 @@ pub async fn update_routing_rule(
         .map_err(|e| ApiError::Internal(format!("Failed to get routing rule: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Routing rule not found".to_string()))?;
 
-    if let Some(name) = req.name { rule.name = name; }
-    if let Some(desc) = req.description { rule.description = Some(desc); }
-    if let Some(pri) = req.priority { rule.priority = pri; }
-    if let Some(en) = req.enabled { rule.enabled = en; }
+    if let Some(name) = req.name {
+        rule.name = name;
+    }
+    if let Some(desc) = req.description {
+        rule.description = Some(desc);
+    }
+    if let Some(pri) = req.priority {
+        rule.priority = pri;
+    }
+    if let Some(en) = req.enabled {
+        rule.enabled = en;
+    }
     if let Some(pat) = req.destination_pattern {
         if !pat.is_empty() {
-            regex::Regex::new(&pat).map_err(|e| ApiError::BadRequest(format!("Invalid destination pattern: {}", e)))?;
+            regex::Regex::new(&pat)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid destination pattern: {}", e)))?;
         }
         rule.destination_pattern = Some(pat).filter(|s| !s.is_empty());
     }
     if let Some(pat) = req.source_pattern {
         if !pat.is_empty() {
-            regex::Regex::new(&pat).map_err(|e| ApiError::BadRequest(format!("Invalid source pattern: {}", e)))?;
+            regex::Regex::new(&pat)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid source pattern: {}", e)))?;
         }
         rule.source_pattern = Some(pat).filter(|s| !s.is_empty());
     }
-    if let Some(ips) = req.source_ip_ranges { rule.source_ip_ranges = ips; }
-    if let Some(days) = req.time_window_days { rule.time_window_days = days; }
-    if let Some(start) = req.time_window_start { rule.time_window_start = Some(start).filter(|s| !s.is_empty()); }
-    if let Some(end) = req.time_window_end { rule.time_window_end = Some(end).filter(|s| !s.is_empty()); }
-    if let Some(tz) = req.time_window_timezone { rule.time_window_timezone = tz; }
-    if let Some(action) = req.action {
-        rule.action = action.parse::<RoutingAction>().map_err(|e| ApiError::BadRequest(e))?;
+    if let Some(ips) = req.source_ip_ranges {
+        rule.source_ip_ranges = ips;
     }
-    if let Some(tid) = req.target_trunk_id { rule.target_trunk_id = Some(tid).filter(|s| !s.is_empty()); }
-    if let Some(tg) = req.target_trunk_group { rule.target_trunk_group = Some(tg).filter(|s| !s.is_empty()); }
-    if let Some(reason) = req.reason { rule.reason = Some(reason).filter(|s| !s.is_empty()); }
+    if let Some(days) = req.time_window_days {
+        rule.time_window_days = days;
+    }
+    if let Some(start) = req.time_window_start {
+        rule.time_window_start = Some(start).filter(|s| !s.is_empty());
+    }
+    if let Some(end) = req.time_window_end {
+        rule.time_window_end = Some(end).filter(|s| !s.is_empty());
+    }
+    if let Some(tz) = req.time_window_timezone {
+        rule.time_window_timezone = tz;
+    }
+    if let Some(action) = req.action {
+        rule.action = action
+            .parse::<RoutingAction>()
+            .map_err(|e| ApiError::BadRequest(e))?;
+    }
+    if let Some(tid) = req.target_trunk_id {
+        rule.target_trunk_id = Some(tid).filter(|s| !s.is_empty());
+    }
+    if let Some(tg) = req.target_trunk_group {
+        rule.target_trunk_group = Some(tg).filter(|s| !s.is_empty());
+    }
+    if let Some(reason) = req.reason {
+        rule.reason = Some(reason).filter(|s| !s.is_empty());
+    }
 
     rule.updated_at = SystemTime::now();
 

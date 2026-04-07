@@ -87,10 +87,7 @@ impl NodeClient {
     }
 
     /// Attach tracing and node ID headers to an outgoing request.
-    fn inject_headers(
-        &self,
-        builder: reqwest::RequestBuilder,
-    ) -> reqwest::RequestBuilder {
+    fn inject_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         let builder = builder.header("x-fcp-node-id", &self.node_id);
         if let Some(tp) = traceparent_header() {
             builder.header("traceparent", tp)
@@ -100,11 +97,7 @@ impl NodeClient {
     }
 
     /// Unpark a call from a remote node.
-    pub async fn unpark(
-        &self,
-        node: &ClusterMember,
-        orbit: u16,
-    ) -> Result<UnparkResult> {
+    pub async fn unpark(&self, node: &ClusterMember, orbit: u16) -> Result<UnparkResult> {
         let url = self.internal_url(node, "/unpark");
 
         debug!(url = %url, orbit = orbit, "Sending unpark request to remote node");
@@ -159,11 +152,7 @@ impl NodeClient {
     }
 
     /// Inject a supervisor (monitor/whisper/barge) into a call on a remote node.
-    pub async fn supervisor(
-        &self,
-        node: &ClusterMember,
-        request: SupervisorRequest,
-    ) -> Result<()> {
+    pub async fn supervisor(&self, node: &ClusterMember, request: SupervisorRequest) -> Result<()> {
         let url = self.internal_url(node, "/supervisor");
 
         debug!(

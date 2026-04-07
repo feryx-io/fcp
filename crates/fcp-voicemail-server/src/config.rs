@@ -245,11 +245,18 @@ impl Default for MediaSection {
 pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional)
     pub server_url: Option<String>,
+
+    /// Optional bearer token for authenticating to fcp-events-server.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 impl Default for EventsSection {
     fn default() -> Self {
-        Self { server_url: None }
+        Self {
+            server_url: None,
+            auth_token: None,
+        }
     }
 }
 
@@ -356,8 +363,12 @@ pub struct ClusterSection {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5 }
-fn default_heartbeat_ttl() -> u64 { 15 }
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {
@@ -433,8 +444,14 @@ mod tests {
         assert!(config.events.server_url.is_none());
         assert!(config.trunks.is_empty());
         // Voicemail-specific defaults
-        assert_eq!(config.voicemail.recordings_dir, "/var/fcp/voicemail/recordings");
-        assert_eq!(config.voicemail.greetings_dir, "/var/fcp/voicemail/greetings");
+        assert_eq!(
+            config.voicemail.recordings_dir,
+            "/var/fcp/voicemail/recordings"
+        );
+        assert_eq!(
+            config.voicemail.greetings_dir,
+            "/var/fcp/voicemail/greetings"
+        );
         assert_eq!(config.voicemail.max_message_duration, 300);
         assert_eq!(config.voicemail.max_messages_per_mailbox, 100);
         assert!(config.voicemail.play_beep);

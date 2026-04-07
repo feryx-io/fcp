@@ -165,15 +165,8 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             warn!(%peer, len = payload.len(), max = self.security.max_message_size, "SBC: message too large");
             self.metrics.record_security_rejection();
             self.metrics.record_per_ip_security(peer_ip);
-            self.send_rejection(
-                transport,
-                peer,
-                &payload,
-                &stream,
-                513,
-                "Message Too Large",
-            )
-            .await;
+            self.send_rejection(transport, peer, &payload, &stream, 513, "Message Too Large")
+                .await;
             return Ok(());
         }
 
@@ -183,15 +176,8 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             debug!(%peer, "SBC: rate limited (connections)");
             self.metrics.record_rate_limit_rejection();
             self.metrics.record_per_ip_rate_limit(peer_ip);
-            self.send_rejection(
-                transport,
-                peer,
-                &payload,
-                &stream,
-                429,
-                "Too Many Requests",
-            )
-            .await;
+            self.send_rejection(transport, peer, &payload, &stream, 429, "Too Many Requests")
+                .await;
             return Ok(());
         }
 
@@ -231,15 +217,8 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                 debug!(%peer, method, "SBC: rate limited (method)");
                 self.metrics.record_rate_limit_rejection();
                 self.metrics.record_per_ip_rate_limit(peer_ip);
-                self.send_rejection(
-                    transport,
-                    peer,
-                    &payload,
-                    &stream,
-                    429,
-                    "Too Many Requests",
-                )
-                .await;
+                self.send_rejection(transport, peer, &payload, &stream, 429, "Too Many Requests")
+                    .await;
                 return Ok(());
             }
 
@@ -266,8 +245,7 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                     }
                     crate::admission::AdmitResult::Queued(rx) => {
                         let cfg = self.admission.config_snapshot();
-                        let timeout_dur =
-                            std::time::Duration::from_secs(cfg.queue_timeout_secs);
+                        let timeout_dur = std::time::Duration::from_secs(cfg.queue_timeout_secs);
                         match tokio::time::timeout(timeout_dur, rx).await {
                             Ok(Ok(true)) => {
                                 // Admitted from queue
@@ -331,16 +309,14 @@ impl InboundMessageHandler for SbcEnforcementHandler {
             if let Some(method) = extract_method_from_payload(&payload) {
                 if method == "INVITE" {
                     let trunk_name = self.identify_trunk_by_peer(peer);
-                    let trunk_config = trunk_name
-                        .and_then(|name| self.trunk_stir_configs.get(name));
+                    let trunk_config =
+                        trunk_name.and_then(|name| self.trunk_stir_configs.get(name));
                     let verify_mode = trunk_config
                         .map(|c| c.verify_mode)
                         .unwrap_or(StirVerifyMode::Disabled);
 
                     if verify_mode != StirVerifyMode::Disabled {
-                        let max_iat_age = trunk_config
-                            .map(|c| c.max_iat_age_secs)
-                            .unwrap_or(60);
+                        let max_iat_age = trunk_config.map(|c| c.max_iat_age_secs).unwrap_or(60);
 
                         let identity = fcp_sbc_core::stir_shaken::extract_header_from_payload(
                             &payload, "Identity",
@@ -352,13 +328,14 @@ impl InboundMessageHandler for SbcEnforcementHandler {
                             fcp_sbc_core::stir_shaken::extract_header_from_payload(&payload, "f")
                         })
                         .unwrap_or_default();
-                        let to = fcp_sbc_core::stir_shaken::extract_header_from_payload(
-                            &payload, "To",
-                        )
-                        .or_else(|| {
-                            fcp_sbc_core::stir_shaken::extract_header_from_payload(&payload, "t")
-                        })
-                        .unwrap_or_default();
+                        let to =
+                            fcp_sbc_core::stir_shaken::extract_header_from_payload(&payload, "To")
+                                .or_else(|| {
+                                    fcp_sbc_core::stir_shaken::extract_header_from_payload(
+                                        &payload, "t",
+                                    )
+                                })
+                                .unwrap_or_default();
 
                         if let Some(identity_value) = identity {
                             let result = verifier
@@ -452,9 +429,7 @@ fn build_rejection_response(payload: &[u8], code: u16, reason: &str) -> Option<B
             from = Some(trimmed);
         } else if to.is_none() && (lower.starts_with("to:") || lower.starts_with("t:")) {
             to = Some(trimmed);
-        } else if call_id.is_none()
-            && (lower.starts_with("call-id:") || lower.starts_with("i:"))
-        {
+        } else if call_id.is_none() && (lower.starts_with("call-id:") || lower.starts_with("i:")) {
             call_id = Some(trimmed);
         } else if cseq.is_none() && lower.starts_with("cseq:") {
             cseq = Some(trimmed);
@@ -464,13 +439,7 @@ fn build_rejection_response(payload: &[u8], code: u16, reason: &str) -> Option<B
     // All five headers are mandatory for a valid response
     let response = format!(
         "SIP/2.0 {} {}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\nContent-Length: 0\r\n\r\n",
-        code,
-        reason,
-        via?,
-        from?,
-        to?,
-        call_id?,
-        cseq?
+        code, reason, via?, from?, to?, call_id?, cseq?
     );
 
     Some(Bytes::from(response))
@@ -784,9 +753,17 @@ mod tests {
     }
 
     impl MockInnerHandler {
-        fn new() -> (Self, Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>) {
+        fn new() -> (
+            Self,
+            Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>,
+        ) {
             let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-            (Self { calls: Arc::clone(&calls) }, calls)
+            (
+                Self {
+                    calls: Arc::clone(&calls),
+                },
+                calls,
+            )
         }
     }
 
@@ -1303,8 +1280,7 @@ mod tests {
         assert!(identity.is_some());
         assert!(identity.unwrap().starts_with("token"));
 
-        let missing =
-            fcp_sbc_core::stir_shaken::extract_header_from_payload(payload, "X-Missing");
+        let missing = fcp_sbc_core::stir_shaken::extract_header_from_payload(payload, "X-Missing");
         assert!(missing.is_none());
     }
 

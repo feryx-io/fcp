@@ -561,10 +561,14 @@ impl ApiClient {
         }
 
         // Get body text first for better error messages
-        let body = resp.text().await.map_err(|e| ApiError::Network(e.to_string()))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
 
         serde_json::from_str(&body).map_err(|e| {
-            ApiError::Deserialization(format!("{} (body: {})", e, &body[..body.len().min(200)])).into()
+            ApiError::Deserialization(format!("{} (body: {})", e, &body[..body.len().min(200)]))
+                .into()
         })
     }
 
@@ -579,7 +583,8 @@ impl ApiClient {
             Some(id) => format!("/calls?node_id={}", urlencoding::encode(id)),
             None => "/calls".to_string(),
         };
-        let response: AggregatedCallsResponse = self.events_request(events_url, Method::GET, &path).await?;
+        let response: AggregatedCallsResponse =
+            self.events_request(events_url, Method::GET, &path).await?;
         Ok(response.calls)
     }
 
@@ -612,8 +617,9 @@ impl ApiClient {
         &self,
         events_url: &str,
     ) -> Result<Vec<AggregatedRegistrationResponse>> {
-        let response: AggregatedRegistrationsResponse =
-            self.events_request(events_url, Method::GET, "/registrations").await?;
+        let response: AggregatedRegistrationsResponse = self
+            .events_request(events_url, Method::GET, "/registrations")
+            .await?;
         Ok(response.registrations)
     }
 }

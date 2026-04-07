@@ -152,8 +152,16 @@ fn render_calls_table(
 
             if has_node_info {
                 // Show node ID (short form)
-                let node = call.node_id.as_ref()
-                    .map(|n| if n.len() > 12 { format!("{}...", &n[..12]) } else { n.clone() })
+                let node = call
+                    .node_id
+                    .as_ref()
+                    .map(|n| {
+                        if n.len() > 12 {
+                            format!("{}...", &n[..12])
+                        } else {
+                            n.clone()
+                        }
+                    })
                     .unwrap_or_else(|| "-".to_string());
                 Row::new(vec![
                     Cell::from(short_id),
@@ -482,4 +490,3 @@ pub async fn fetch_data(
 
     state.loading = false;
 }
-

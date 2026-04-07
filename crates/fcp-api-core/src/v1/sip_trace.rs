@@ -9,9 +9,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use fcp_core::CdrStore;
 use serde::{Deserialize, Serialize};
 use std::time::UNIX_EPOCH;
-use fcp_core::CdrStore;
 use tracing::{debug, warn};
 
 /// Response model for a single SIP trace message.
@@ -85,13 +85,16 @@ pub async fn get_sip_messages(
         ApiError::NotFound("SIP trace access requires storage to be enabled".to_string())
     })?;
 
-    let sip_trace_store = storage.sip_trace_store().ok_or_else(|| {
-        ApiError::NotFound("SIP trace store is not configured".to_string())
-    })?;
+    let sip_trace_store = storage
+        .sip_trace_store()
+        .ok_or_else(|| ApiError::NotFound("SIP trace store is not configured".to_string()))?;
 
     // Normalize call_id: strip "call-" prefix if present (CDR uses fcp_core::CallId
     // format "call-{uuid}" but traces store fcp_b2bua_core::CallId format "{uuid}")
-    let normalized_call_id = call_id.strip_prefix("call-").unwrap_or(&call_id).to_string();
+    let normalized_call_id = call_id
+        .strip_prefix("call-")
+        .unwrap_or(&call_id)
+        .to_string();
 
     debug!(call_id = %normalized_call_id, sip_call_id = ?params.sip_call_id, "Retrieving SIP trace messages");
 
@@ -142,7 +145,8 @@ pub async fn get_sip_messages(
         traces
     };
 
-    let responses: Vec<SipTraceResponse> = messages.into_iter().map(SipTraceResponse::from).collect();
+    let responses: Vec<SipTraceResponse> =
+        messages.into_iter().map(SipTraceResponse::from).collect();
 
     Ok(Json(SipTraceListResponse {
         call_id: normalized_call_id,

@@ -71,10 +71,7 @@ impl RedisEventBus {
     /// them to the local event bus.
     ///
     /// Returns a `JoinHandle` for the background task.
-    pub fn start_subscriber(
-        &self,
-        local_bus: Arc<InMemoryEventBus>,
-    ) -> JoinHandle<()> {
+    pub fn start_subscriber(&self, local_bus: Arc<InMemoryEventBus>) -> JoinHandle<()> {
         let node_id = self.node_id.clone();
         let channel = self.channel.clone();
         let client = self.storage.client().clone();
@@ -87,9 +84,7 @@ impl RedisEventBus {
             loop {
                 let start = std::time::Instant::now();
 
-                if let Err(e) =
-                    run_subscriber_loop(&client, &channel, &node_id, &local_bus).await
-                {
+                if let Err(e) = run_subscriber_loop(&client, &channel, &node_id, &local_bus).await {
                     attempt += 1;
                     // Reset backoff if connection was healthy (lasted >30s)
                     if start.elapsed() > std::time::Duration::from_secs(30) {
@@ -140,7 +135,7 @@ impl EventPublisher for RedisEventBus {
             .arg("MAXLEN")
             .arg("~")
             .arg(10000) // Keep ~10k events in the stream
-            .arg("*")   // Auto-generate ID
+            .arg("*") // Auto-generate ID
             .arg("data")
             .arg(&json)
             .query_async(&mut conn)

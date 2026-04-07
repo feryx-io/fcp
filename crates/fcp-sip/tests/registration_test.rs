@@ -6,7 +6,9 @@ use fcp_core::RegistrationStore;
 #[tokio::test]
 async fn test_register_success() {
     let harness = TestHarness::builder().with_registrar().build().await;
-    let response = harness.register_device("alice@example.com", "alice@127.0.0.1:5060").await;
+    let response = harness
+        .register_device("alice@example.com", "alice@127.0.0.1:5060")
+        .await;
 
     assert_eq!(response.start_line().code(), 200);
     assert_eq!(response.start_line().reason(), "OK");
@@ -77,7 +79,10 @@ async fn test_deregister_with_expires_zero() {
             smol_str::SmolStr::new("To"),
             smol_str::SmolStr::new(format!("<sip:{}>", aor)),
         );
-        let _ = headers.push(smol_str::SmolStr::new("Call-ID"), smol_str::SmolStr::new(&call_id));
+        let _ = headers.push(
+            smol_str::SmolStr::new("Call-ID"),
+            smol_str::SmolStr::new(&call_id),
+        );
         let _ = headers.push(
             smol_str::SmolStr::new("CSeq"),
             smol_str::SmolStr::new("2 REGISTER"),
@@ -197,7 +202,10 @@ async fn test_register_missing_contact_header() {
         smol_str::SmolStr::new("To"),
         smol_str::SmolStr::new("<sip:nocontact@example.com>"),
     );
-    let _ = headers.push(smol_str::SmolStr::new("Call-ID"), smol_str::SmolStr::new(&call_id));
+    let _ = headers.push(
+        smol_str::SmolStr::new("Call-ID"),
+        smol_str::SmolStr::new(&call_id),
+    );
     let _ = headers.push(
         smol_str::SmolStr::new("CSeq"),
         smol_str::SmolStr::new("1 REGISTER"),

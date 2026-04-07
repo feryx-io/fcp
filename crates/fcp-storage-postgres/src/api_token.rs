@@ -114,9 +114,7 @@ fn row_to_api_token(row: &sqlx::postgres::PgRow) -> ApiToken {
         token_hash: row.get("token_hash"),
         prefix: row.get("prefix"),
         user_id: row.get("user_id"),
-        tenant_id: tenant_str
-            .parse()
-            .unwrap_or_else(|_| TenantId::nil()),
+        tenant_id: tenant_str.parse().unwrap_or_else(|_| TenantId::nil()),
         permissions,
         expires_at: expires_at.map(datetime_to_system_time),
         created_at: datetime_to_system_time(created_at),

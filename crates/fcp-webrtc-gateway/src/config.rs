@@ -275,8 +275,12 @@ pub struct ClusterSection {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5 }
-fn default_heartbeat_ttl() -> u64 { 15 }
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {
@@ -428,10 +432,7 @@ format = "compact"
         assert_eq!(config.http.bind_address.port(), 9090);
         assert_eq!(config.media.rtp_port_start, 15000);
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5080");
-        assert_eq!(
-            config.sip.local_uri.as_deref(),
-            Some("sip:gw@example.com")
-        );
+        assert_eq!(config.sip.local_uri.as_deref(), Some("sip:gw@example.com"));
         assert_eq!(config.webrtc.stun_servers.len(), 2);
         assert!(config.auth.disable_auth);
     }

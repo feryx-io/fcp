@@ -3,8 +3,8 @@
 //! Maps realm strings to (username, password) pairs so the `IntegratedUAC`
 //! can automatically retry on 401/407 challenges from upstream trunks.
 
-use async_trait::async_trait;
 use crate::trunk::TrunkConfig;
+use async_trait::async_trait;
 use sip_uac::CredentialProvider;
 use std::collections::HashMap;
 
@@ -37,7 +37,9 @@ impl TrunkCredentialProvider {
                 // the trunk's domain is used as the digest realm).
                 // entry() ensures explicit realm takes precedence on collision.
                 for host in &trunk.hosts {
-                    credentials.entry(host.clone()).or_insert_with(|| pair.clone());
+                    credentials
+                        .entry(host.clone())
+                        .or_insert_with(|| pair.clone());
                 }
             }
         }

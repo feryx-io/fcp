@@ -146,8 +146,9 @@ impl TestHarnessBuilder {
 
     pub async fn build(self) -> TestHarness {
         let dispatcher = Arc::new(TestDispatcher::default());
-        let transaction_manager =
-            Arc::new(TransactionManager::new(dispatcher.clone() as Arc<dyn TransportDispatcher>));
+        let transaction_manager = Arc::new(TransactionManager::new(
+            dispatcher.clone() as Arc<dyn TransportDispatcher>
+        ));
         let dialog_manager = Arc::new(DialogManager::new());
         let local_uri = SipUri::parse("sip:test@127.0.0.1").unwrap();
         let call_manager = Arc::new(CallManager::new());
@@ -170,32 +171,35 @@ impl TestHarnessBuilder {
             temp_dir = Some(td);
         }
 
-        let pbx_handler = self.pbx_config.map(|cfg| Arc::new(fcp_pbx::PbxHandler::new(cfg)));
+        let pbx_handler = self
+            .pbx_config
+            .map(|cfg| Arc::new(fcp_pbx::PbxHandler::new(cfg)));
 
         let handler = SipMessageHandler::new(
             transaction_manager,
             dialog_manager,
             local_uri,
-            None,                      // media_profile
-            "127.0.0.1".to_string(),   // local_addr
-            10000,                     // rtp_port
-            registrar,                 // registrar
-            None,                      // routing_service
-            call_manager.clone(),      // call_manager
-            None,                      // uac
-            None,                      // storage (DynStorage, not FileBackedStorage)
-            None,                      // media_manager
-            None,                      // media_config
-            None,                      // flow_handler
-            B2buaConfig::default(),    // b2bua_config
-            None,                      // outbound_route_provider
-            pbx_handler,               // pbx_handler
-            None,                      // conference_handler
-            None,                      // queue_handler
-            None,                      // presence_handler
-            None,                      // cluster_parking
-            String::new(),             // node_id
-        ).expect("Failed to create SipMessageHandler");
+            None,                    // media_profile
+            "127.0.0.1".to_string(), // local_addr
+            10000,                   // rtp_port
+            registrar,               // registrar
+            None,                    // routing_service
+            call_manager.clone(),    // call_manager
+            None,                    // uac
+            None,                    // storage (DynStorage, not FileBackedStorage)
+            None,                    // media_manager
+            None,                    // media_config
+            None,                    // flow_handler
+            B2buaConfig::default(),  // b2bua_config
+            None,                    // outbound_route_provider
+            pbx_handler,             // pbx_handler
+            None,                    // conference_handler
+            None,                    // queue_handler
+            None,                    // presence_handler
+            None,                    // cluster_parking
+            String::new(),           // node_id
+        )
+        .expect("Failed to create SipMessageHandler");
 
         TestHarness {
             handler,
@@ -226,10 +230,7 @@ pub fn build_register_request(aor: &str, contact: &str) -> Request {
         SmolStr::new("From"),
         SmolStr::new(format!("<sip:{}>;tag={}", aor, tag)),
     );
-    let _ = headers.push(
-        SmolStr::new("To"),
-        SmolStr::new(format!("<sip:{}>", aor)),
-    );
+    let _ = headers.push(SmolStr::new("To"), SmolStr::new(format!("<sip:{}>", aor)));
     let _ = headers.push(SmolStr::new("Call-ID"), SmolStr::new(&call_id));
     let _ = headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"));
     let _ = headers.push(SmolStr::new("Max-Forwards"), SmolStr::new("70"));
@@ -273,10 +274,7 @@ pub fn build_invite_with_sdp(from: &str, to: &str, sdp: Option<&str>) -> Request
         SmolStr::new("From"),
         SmolStr::new(format!("<sip:{}>;tag={}", from, tag)),
     );
-    let _ = headers.push(
-        SmolStr::new("To"),
-        SmolStr::new(format!("<sip:{}>", to)),
-    );
+    let _ = headers.push(SmolStr::new("To"), SmolStr::new(format!("<sip:{}>", to)));
     let _ = headers.push(SmolStr::new("Call-ID"), SmolStr::new(&call_id));
     let _ = headers.push(SmolStr::new("CSeq"), SmolStr::new("1 INVITE"));
     let _ = headers.push(SmolStr::new("Max-Forwards"), SmolStr::new("70"));
@@ -361,17 +359,11 @@ pub fn build_bye_request(call_id: &str, from_tag: &str, to_tag: &str) -> Request
     );
     let _ = headers.push(
         SmolStr::new("From"),
-        SmolStr::new(format!(
-            "<sip:alice@example.com>;tag={}",
-            from_tag
-        )),
+        SmolStr::new(format!("<sip:alice@example.com>;tag={}", from_tag)),
     );
     let _ = headers.push(
         SmolStr::new("To"),
-        SmolStr::new(format!(
-            "<sip:bob@example.com>;tag={}",
-            to_tag
-        )),
+        SmolStr::new(format!("<sip:bob@example.com>;tag={}", to_tag)),
     );
     let _ = headers.push(SmolStr::new("Call-ID"), SmolStr::new(call_id));
     let _ = headers.push(SmolStr::new("CSeq"), SmolStr::new("2 BYE"));
@@ -379,10 +371,7 @@ pub fn build_bye_request(call_id: &str, from_tag: &str, to_tag: &str) -> Request
     let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
     Request::new(
-        RequestLine::new(
-            Method::Bye,
-            SipUri::parse("sip:bob@example.com").unwrap(),
-        ),
+        RequestLine::new(Method::Bye, SipUri::parse("sip:bob@example.com").unwrap()),
         headers,
         Bytes::new(),
     )

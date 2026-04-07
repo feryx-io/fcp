@@ -1045,8 +1045,14 @@ pub trait TrunkStore: Send + Sync {
 /// Routing rule storage operations.
 #[async_trait::async_trait]
 pub trait RoutingRuleStore: Send + Sync {
-    async fn get_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<Option<crate::RoutingRule>>;
-    async fn list_routing_rules(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::RoutingRule>>;
+    async fn get_routing_rule(
+        &self,
+        id: &crate::RoutingRuleId,
+    ) -> Result<Option<crate::RoutingRule>>;
+    async fn list_routing_rules(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::RoutingRule>>;
     async fn put_routing_rule(&self, rule: crate::RoutingRule) -> Result<()>;
     async fn delete_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<()>;
 }
@@ -1055,10 +1061,16 @@ pub trait RoutingRuleStore: Send + Sync {
 #[async_trait::async_trait]
 pub trait QueueConfigStore: Send + Sync {
     /// Get a queue config by ID
-    async fn get_queue_config(&self, id: &crate::QueueConfigId) -> Result<Option<crate::QueueConfigRecord>>;
+    async fn get_queue_config(
+        &self,
+        id: &crate::QueueConfigId,
+    ) -> Result<Option<crate::QueueConfigRecord>>;
 
     /// List all queue configs for a tenant
-    async fn list_queue_configs(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::QueueConfigRecord>>;
+    async fn list_queue_configs(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::QueueConfigRecord>>;
 
     /// Create or update a queue config
     async fn put_queue_config(&self, config: crate::QueueConfigRecord) -> Result<()>;
@@ -1074,7 +1086,8 @@ pub trait SiteLocationStore: Send + Sync {
     async fn get_location(&self, id: &crate::LocationId) -> Result<Option<crate::SiteLocation>>;
 
     /// List all locations for a tenant
-    async fn list_locations(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::SiteLocation>>;
+    async fn list_locations(&self, tenant_id: &crate::TenantId)
+        -> Result<Vec<crate::SiteLocation>>;
 
     /// Create or update a location
     async fn put_location(&self, location: crate::SiteLocation) -> Result<()>;
@@ -1229,8 +1242,11 @@ pub struct StoredQueueSnapshot {
 #[async_trait]
 pub trait QueueStore: Send + Sync {
     /// Save all logged-in agents for a tenant.
-    async fn save_agents(&self, tenant_id: &crate::TenantId, agents: Vec<StoredAgent>)
-        -> Result<()>;
+    async fn save_agents(
+        &self,
+        tenant_id: &crate::TenantId,
+        agents: Vec<StoredAgent>,
+    ) -> Result<()>;
 
     /// Load all agents for a tenant.
     async fn load_agents(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAgent>>;
@@ -1405,7 +1421,10 @@ pub trait PresenceStore: Send + Sync {
     }
 
     /// Load all auth policies for a tenant.
-    async fn load_auth_policies(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAuthPolicy>> {
+    async fn load_auth_policies(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredAuthPolicy>> {
         let _ = tenant_id;
         Ok(vec![])
     }
@@ -2217,7 +2236,10 @@ impl DynStorage {
     }
 
     /// Replace the flow trace store with a specific implementation.
-    pub fn with_flow_trace_store(mut self, store: Arc<dyn crate::flow_trace::FlowTraceStore>) -> Self {
+    pub fn with_flow_trace_store(
+        mut self,
+        store: Arc<dyn crate::flow_trace::FlowTraceStore>,
+    ) -> Self {
         self.flow_trace_store = Some(store);
         self
     }
@@ -2470,10 +2492,16 @@ impl TrunkStore for DynStorage {
 
 #[async_trait]
 impl RoutingRuleStore for DynStorage {
-    async fn get_routing_rule(&self, id: &crate::RoutingRuleId) -> Result<Option<crate::RoutingRule>> {
+    async fn get_routing_rule(
+        &self,
+        id: &crate::RoutingRuleId,
+    ) -> Result<Option<crate::RoutingRule>> {
         self.routing_rule_store.get_routing_rule(id).await
     }
-    async fn list_routing_rules(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::RoutingRule>> {
+    async fn list_routing_rules(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::RoutingRule>> {
         self.routing_rule_store.list_routing_rules(tenant_id).await
     }
     async fn put_routing_rule(&self, rule: crate::RoutingRule) -> Result<()> {
@@ -2486,10 +2514,16 @@ impl RoutingRuleStore for DynStorage {
 
 #[async_trait]
 impl QueueConfigStore for DynStorage {
-    async fn get_queue_config(&self, id: &crate::QueueConfigId) -> Result<Option<crate::QueueConfigRecord>> {
+    async fn get_queue_config(
+        &self,
+        id: &crate::QueueConfigId,
+    ) -> Result<Option<crate::QueueConfigRecord>> {
         self.queue_config_store.get_queue_config(id).await
     }
-    async fn list_queue_configs(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::QueueConfigRecord>> {
+    async fn list_queue_configs(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::QueueConfigRecord>> {
         self.queue_config_store.list_queue_configs(tenant_id).await
     }
     async fn put_queue_config(&self, config: crate::QueueConfigRecord) -> Result<()> {
@@ -2506,7 +2540,10 @@ impl SiteLocationStore for DynStorage {
         self.site_location_store.get_location(id).await
     }
 
-    async fn list_locations(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::SiteLocation>> {
+    async fn list_locations(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::SiteLocation>> {
         self.site_location_store.list_locations(tenant_id).await
     }
 
@@ -2739,7 +2776,9 @@ impl ConferenceStore for DynStorage {
         tenant_id: &crate::TenantId,
         owner_id: &str,
     ) -> Result<Vec<crate::Meeting>> {
-        self.conference_store.list_meetings_by_owner(tenant_id, owner_id).await
+        self.conference_store
+            .list_meetings_by_owner(tenant_id, owner_id)
+            .await
     }
 
     async fn put_meeting(&self, meeting: crate::Meeting) -> Result<()> {
@@ -2811,7 +2850,9 @@ impl PresenceStore for DynStorage {
     }
 
     async fn remove_subscription(&self, subscription_id: &str) -> Result<()> {
-        self.presence_store.remove_subscription(subscription_id).await
+        self.presence_store
+            .remove_subscription(subscription_id)
+            .await
     }
 
     async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
@@ -2843,7 +2884,10 @@ impl PresenceStore for DynStorage {
         self.presence_store.save_auth_policy(policy).await
     }
 
-    async fn load_auth_policies(&self, tenant_id: &crate::TenantId) -> Result<Vec<StoredAuthPolicy>> {
+    async fn load_auth_policies(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<StoredAuthPolicy>> {
         self.presence_store.load_auth_policies(tenant_id).await
     }
 

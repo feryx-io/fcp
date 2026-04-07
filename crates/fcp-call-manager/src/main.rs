@@ -13,16 +13,19 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_core::storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore};
-use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
 use fcp_events::filter::EventType;
+use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
 use fcp_media::{BackendType, MediaConfig};
 use fcp_routing::{RoutingService, YamlRoutingStore};
-use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
+use fcp_sbc_core::{
+    CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar,
+    TrunkRouter,
+};
 use fcp_sip::flow_handler::FlowCallHandler;
 use fcp_sip::prelude::*;
-use fcp_voicemail::{VoicemailConfig, VoicemailService};
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
+use fcp_voicemail::{VoicemailConfig, VoicemailService};
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -171,7 +174,11 @@ async fn main() -> Result<()> {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
                 http_address: config.http.bind_address,
-                sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_address: config
+                    .sip
+                    .udp_bind
+                    .parse()
+                    .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                 capabilities: vec!["registrar".to_string(), "b2bua".to_string()],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
@@ -181,9 +188,15 @@ async fn main() -> Result<()> {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             };
 
-            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
-                .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
-                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+            let cm =
+                fcp_cluster::ClusterManager::new(redis.clone(), member)
+                    .with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    )
+                    .with_event_publisher(
+                        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
+                    );
             let _handle = cm.start();
             info!("Cluster membership started");
 
@@ -206,10 +219,8 @@ async fn main() -> Result<()> {
     let cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>> =
         if let Some(ref redis) = redis_storage {
             let parking_timeout = config.pbx.parking.timeout_seconds;
-            let store = fcp_storage_redis::parking::RedisParkingStore::new(
-                redis.clone(),
-                parking_timeout,
-            );
+            let store =
+                fcp_storage_redis::parking::RedisParkingStore::new(redis.clone(), parking_timeout);
             info!("Cluster parking store initialized (Redis)");
             Some(Arc::new(store) as Arc<dyn fcp_core::ClusterParkingStore>)
         } else {
@@ -229,15 +240,39 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("registrar", serde_json::to_value(&config.registrar).unwrap_or_default()),
-            ("calls", serde_json::to_value(&config.calls).unwrap_or_default()),
-            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
-            ("routing", serde_json::to_value(&config.routing).unwrap_or_default()),
-            ("events", serde_json::to_value(&config.events).unwrap_or_default()),
-            ("b2bua", serde_json::to_value(&config.b2bua).unwrap_or_default()),
+            (
+                "registrar",
+                serde_json::to_value(&config.registrar).unwrap_or_default(),
+            ),
+            (
+                "calls",
+                serde_json::to_value(&config.calls).unwrap_or_default(),
+            ),
+            (
+                "media",
+                serde_json::to_value(&config.media).unwrap_or_default(),
+            ),
+            (
+                "routing",
+                serde_json::to_value(&config.routing).unwrap_or_default(),
+            ),
+            (
+                "events",
+                serde_json::to_value(&config.events).unwrap_or_default(),
+            ),
+            (
+                "b2bua",
+                serde_json::to_value(&config.b2bua).unwrap_or_default(),
+            ),
             ("pbx", serde_json::to_value(&config.pbx).unwrap_or_default()),
-            ("queue", serde_json::to_value(&config.queue).unwrap_or_default()),
-            ("presence", serde_json::to_value(&config.presence).unwrap_or_default()),
+            (
+                "queue",
+                serde_json::to_value(&config.queue).unwrap_or_default(),
+            ),
+            (
+                "presence",
+                serde_json::to_value(&config.presence).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
@@ -246,24 +281,73 @@ async fn main() -> Result<()> {
                 Ok(Some(entry)) => {
                     // DB has it — use DB version to override local config
                     match section {
-                        "registrar" => if let Ok(v) = serde_json::from_value(entry.value) { config.registrar = v; },
-                        "calls" => if let Ok(v) = serde_json::from_value(entry.value) { config.calls = v; },
-                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
-                        "routing" => if let Ok(v) = serde_json::from_value(entry.value) { config.routing = v; },
-                        "events" => if let Ok(v) = serde_json::from_value(entry.value) { config.events = v; },
-                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { config.b2bua = v; },
-                        "pbx" => if let Ok(v) = serde_json::from_value(entry.value) { config.pbx = v; },
-                        "queue" => if let Ok(v) = serde_json::from_value(entry.value) { config.queue = v; },
-                        "presence" => if let Ok(v) = serde_json::from_value(entry.value) { config.presence = v; },
+                        "registrar" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.registrar = v;
+                            }
+                        }
+                        "calls" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.calls = v;
+                            }
+                        }
+                        "media" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.media = v;
+                            }
+                        }
+                        "routing" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.routing = v;
+                            }
+                        }
+                        "events" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.events = v;
+                            }
+                        }
+                        "b2bua" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.b2bua = v;
+                            }
+                        }
+                        "pbx" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.pbx = v;
+                            }
+                        }
+                        "queue" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.queue = v;
+                            }
+                        }
+                        "presence" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.presence = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
                     // Seed from TOML
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -277,11 +361,15 @@ async fn main() -> Result<()> {
         {
             let toml_b2bua = &toml_b2bua;
             let mut patched = false;
-            if config.b2bua.conference_server_uri.is_none() && toml_b2bua.conference_server_uri.is_some() {
+            if config.b2bua.conference_server_uri.is_none()
+                && toml_b2bua.conference_server_uri.is_some()
+            {
                 config.b2bua.conference_server_uri = toml_b2bua.conference_server_uri.clone();
                 patched = true;
             }
-            if config.b2bua.voicemail_server_uri.is_none() && toml_b2bua.voicemail_server_uri.is_some() {
+            if config.b2bua.voicemail_server_uri.is_none()
+                && toml_b2bua.voicemail_server_uri.is_some()
+            {
                 config.b2bua.voicemail_server_uri = toml_b2bua.voicemail_server_uri.clone();
                 patched = true;
             }
@@ -345,7 +433,9 @@ async fn main() -> Result<()> {
 
     // 10. Build credential provider from trunks (if any) so UAC can handle 401/407 challenges
     let trunk_cred_provider: Option<Arc<TrunkCredentialProvider>> = if !config.trunks.is_empty() {
-        Some(Arc::new(TrunkCredentialProvider::from_trunks(&config.trunks)))
+        Some(Arc::new(TrunkCredentialProvider::from_trunks(
+            &config.trunks,
+        )))
     } else {
         None
     };
@@ -385,11 +475,12 @@ async fn main() -> Result<()> {
 
     // Choose the event publisher: Redis if available, otherwise in-memory
     #[cfg(feature = "storage-redis")]
-    let event_publisher: Arc<dyn EventPublisher> = redis_event_publisher
-        .unwrap_or_else(|| Arc::clone(&event_bus) as Arc<dyn EventPublisher>);
+    let event_publisher: Arc<dyn EventPublisher> =
+        redis_event_publisher.unwrap_or_else(|| Arc::clone(&event_bus) as Arc<dyn EventPublisher>);
 
     #[cfg(not(feature = "storage-redis"))]
-    let event_publisher: Arc<dyn EventPublisher> = Arc::clone(&event_bus) as Arc<dyn EventPublisher>;
+    let event_publisher: Arc<dyn EventPublisher> =
+        Arc::clone(&event_bus) as Arc<dyn EventPublisher>;
 
     info!("Event bus initialized");
 
@@ -535,8 +626,7 @@ async fn main() -> Result<()> {
         );
 
         // Set up queue persistence and restore agents
-        let queue_store: Arc<dyn fcp_core::storage::QueueStore> =
-            Arc::clone(&dyn_storage) as _;
+        let queue_store: Arc<dyn fcp_core::storage::QueueStore> = Arc::clone(&dyn_storage) as _;
         qm.set_queue_store(Arc::clone(&queue_store));
 
         let qm = Arc::new(qm);
@@ -569,34 +659,34 @@ async fn main() -> Result<()> {
         }
     }
 
-    let queue_call_handler: Option<Arc<queue_handler::QueueCallHandler>> =
-        if let Some(ref qm) = queue_manager {
-            let port_pool_config = forge_rtp::PortPoolConfig::new(
-                config.media.rtp_port_start,
-                config.media.rtp_port_end,
-            )
-            .context("Invalid RTP port pool configuration for queue handler")?;
-            let queue_port_pool = Arc::new(forge_rtp::PortPool::new(port_pool_config));
-            let handler = queue_handler::QueueCallHandler::new(
-                Arc::clone(qm),
-                config.queue.clone(),
-                local_uri.as_str().to_string(),
-                local_addr.clone(),
-                queue_port_pool,
-                Arc::clone(&event_publisher),
-                Arc::clone(&uac),
-                Arc::clone(&dyn_storage),
-            );
-            info!(
-                queues = config.queue.queues.len(),
-                "Queue/ACD handler enabled"
-            );
-            Some(Arc::new(handler))
-        } else {
-            None
-        };
-    let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> =
-        queue_call_handler.as_ref().map(|h| Arc::clone(h) as Arc<dyn fcp_sip::queue::QueueHandler>);
+    let queue_call_handler: Option<Arc<queue_handler::QueueCallHandler>> = if let Some(ref qm) =
+        queue_manager
+    {
+        let port_pool_config =
+            forge_rtp::PortPoolConfig::new(config.media.rtp_port_start, config.media.rtp_port_end)
+                .context("Invalid RTP port pool configuration for queue handler")?;
+        let queue_port_pool = Arc::new(forge_rtp::PortPool::new(port_pool_config));
+        let handler = queue_handler::QueueCallHandler::new(
+            Arc::clone(qm),
+            config.queue.clone(),
+            local_uri.as_str().to_string(),
+            local_addr.clone(),
+            queue_port_pool,
+            Arc::clone(&event_publisher),
+            Arc::clone(&uac),
+            Arc::clone(&dyn_storage),
+        );
+        info!(
+            queues = config.queue.queues.len(),
+            "Queue/ACD handler enabled"
+        );
+        Some(Arc::new(handler))
+    } else {
+        None
+    };
+    let queue_handler: Option<Arc<dyn fcp_sip::queue::QueueHandler>> = queue_call_handler
+        .as_ref()
+        .map(|h| Arc::clone(h) as Arc<dyn fcp_sip::queue::QueueHandler>);
 
     // 17b. Create PresenceManager (if enabled)
     let presence_manager: Option<fcp_presence::PresenceManager> = if config.presence.enabled {
@@ -622,7 +712,9 @@ async fn main() -> Result<()> {
                         pm.set_pubsub(std::sync::Arc::new(pubsub));
                         match pm.run_pubsub_listener().await {
                             Ok(_handle) => info!("Presence Redis Pub/Sub listener started"),
-                            Err(e) => warn!(error = %e, "Failed to start presence Pub/Sub listener"),
+                            Err(e) => {
+                                warn!(error = %e, "Failed to start presence Pub/Sub listener")
+                            }
                         }
                     }
                     Err(e) => warn!(error = %e, "Failed to initialize presence Redis Pub/Sub"),
@@ -632,7 +724,9 @@ async fn main() -> Result<()> {
 
         // Wire presence into queue distribution so DND/Busy agents are skipped
         if let Some(ref qm) = queue_manager {
-            let checker = Arc::new(fcp_sip::presence_checker::PresenceCheckerAdapter::new(pm.clone()));
+            let checker = Arc::new(fcp_sip::presence_checker::PresenceCheckerAdapter::new(
+                pm.clone(),
+            ));
             qm.set_presence_checker(checker);
             info!("Queue agent selection will respect presence DND state");
         }
@@ -761,7 +855,9 @@ async fn main() -> Result<()> {
                 config.media.tts_voice.as_deref(),
                 &prompts_dir,
                 &system_prompts,
-            ).await {
+            )
+            .await
+            {
                 warn!(error = %e, "Failed to pre-generate prompt audio (TTS will be used at call-time)");
             }
         }
@@ -796,7 +892,6 @@ async fn main() -> Result<()> {
         Some(Arc::clone(&dyn_storage)),
         Some(Arc::clone(&media_manager)),
         Some(fcp_core::config::MediaConfig {
-
             enabled: true,
             rtp_port_start: config.media.rtp_port_start,
             rtp_port_end: config.media.rtp_port_end,
@@ -1070,9 +1165,12 @@ async fn main() -> Result<()> {
             info!("HTTP event forwarding disabled (Redis event bus is active)");
         } else {
             let events_url = events_url.clone();
+            let events_auth_token = config.events.auth_token.clone();
             let event_bus_clone = Arc::clone(&event_bus);
             tokio::spawn(async move {
-                if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
+                if let Err(e) =
+                    run_event_forwarder(event_bus_clone, &events_url, events_auth_token).await
+                {
                     tracing::error!(%e, "Event forwarder task failed");
                 }
             });
@@ -1091,7 +1189,10 @@ async fn main() -> Result<()> {
         });
     }
     if !config.events.webhooks.is_empty() {
-        info!(count = config.events.webhooks.len(), "Webhook dispatchers started");
+        info!(
+            count = config.events.webhooks.len(),
+            "Webhook dispatchers started"
+        );
     }
 
     // 21c. Spawn dedicated queue webhook dispatcher (if configured in queue section)
@@ -1183,8 +1284,13 @@ async fn main() -> Result<()> {
         let cached_devs = Arc::clone(&cached_devs);
         let event_bus_cache = Arc::clone(&event_bus);
         tokio::spawn(async move {
-            run_cache_invalidation_listener(event_bus_cache, cached_creds, cached_exts, cached_devs)
-                .await;
+            run_cache_invalidation_listener(
+                event_bus_cache,
+                cached_creds,
+                cached_exts,
+                cached_devs,
+            )
+            .await;
         });
         info!("Cache invalidation listener started");
     }
@@ -1204,9 +1310,15 @@ async fn main() -> Result<()> {
 
     // Log operating mode
     if !config.trunks.is_empty() && !config.registrar.enabled {
-        info!(trunks = config.trunks.len(), "Operating in session-manager mode");
+        info!(
+            trunks = config.trunks.len(),
+            "Operating in session-manager mode"
+        );
     } else if !config.trunks.is_empty() {
-        info!(trunks = config.trunks.len(), "Operating in call-manager mode with trunks");
+        info!(
+            trunks = config.trunks.len(),
+            "Operating in call-manager mode with trunks"
+        );
     } else {
         info!("Operating in call-manager mode");
     }
@@ -1242,21 +1354,22 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("call-manager", "_system").await {
                     Ok(v) if v > last_version => {
-                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
 
                         // Re-read registrar config from DB and apply runtime changes
                         if let Some(ref reg) = registrar_clone {
-                            match cs
-                                .get_config("call-manager", "registrar", "_system")
-                                .await
-                            {
+                            match cs.get_config("call-manager", "registrar", "_system").await {
                                 Ok(Some(entry)) => {
-                                    if let Ok(reg_cfg) = serde_json::from_value::<
-                                        config::RegistrarSection,
-                                    >(
-                                        entry.value
-                                    ) {
+                                    if let Ok(reg_cfg) =
+                                        serde_json::from_value::<config::RegistrarSection>(
+                                            entry.value,
+                                        )
+                                    {
                                         let current = reg.is_auth_enabled();
                                         if reg_cfg.auth_enabled != current {
                                             if reg_cfg.auth_enabled {
@@ -1282,14 +1395,23 @@ async fn main() -> Result<()> {
                             Ok(Some(entry)) => {
                                 if let Ok(b2bua_cfg) = serde_json::from_value::<
                                     fcp_b2bua_core::B2buaConfig,
-                                >(entry.value) {
-                                    if let Ok(mut guard) = handler_for_poll.voicemail_server_uri_override().write() {
+                                >(entry.value)
+                                {
+                                    if let Ok(mut guard) =
+                                        handler_for_poll.voicemail_server_uri_override().write()
+                                    {
                                         *guard = b2bua_cfg.voicemail_server_uri;
-                                        tracing::debug!("config poll: updated voicemail_server_uri override");
+                                        tracing::debug!(
+                                            "config poll: updated voicemail_server_uri override"
+                                        );
                                     }
-                                    if let Ok(mut guard) = handler_for_poll.conference_server_uri_override().write() {
+                                    if let Ok(mut guard) =
+                                        handler_for_poll.conference_server_uri_override().write()
+                                    {
                                         *guard = b2bua_cfg.conference_server_uri;
-                                        tracing::debug!("config poll: updated conference_server_uri override");
+                                        tracing::debug!(
+                                            "config poll: updated conference_server_uri override"
+                                        );
                                     }
                                 }
                             }
@@ -1366,8 +1488,14 @@ async fn main() -> Result<()> {
     if let (Some(ref pm), Some(ref ph)) = (&presence_manager, &presence_handler) {
         let all_watchers = pm.get_all_watchers_including_winfo();
         if !all_watchers.is_empty() {
-            info!(count = all_watchers.len(), "Sending terminated NOTIFYs to presence watchers...");
-            if let Err(e) = ph.send_terminated_notifies(&all_watchers, "probation").await {
+            info!(
+                count = all_watchers.len(),
+                "Sending terminated NOTIFYs to presence watchers..."
+            );
+            if let Err(e) = ph
+                .send_terminated_notifies(&all_watchers, "probation")
+                .await
+            {
                 warn!(error = %e, "Failed to send some shutdown NOTIFYs");
             }
         }
@@ -1375,7 +1503,10 @@ async fn main() -> Result<()> {
         // Drain retry queue entries
         let retry_count = pm.retry_queue_len();
         if retry_count > 0 {
-            info!(count = retry_count, "Draining NOTIFY retry queue on shutdown");
+            info!(
+                count = retry_count,
+                "Draining NOTIFY retry queue on shutdown"
+            );
         }
     }
 
@@ -1462,7 +1593,10 @@ async fn create_transport_dispatcher(
                 dispatcher = dispatcher.with_tls_config(tls_config);
             }
             Err(e) => {
-                warn!("Failed to load TLS client config: {}. Outbound TLS will not work.", e);
+                warn!(
+                    "Failed to load TLS client config: {}. Outbound TLS will not work.",
+                    e
+                );
             }
         }
     }
@@ -1573,7 +1707,11 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
         let tts_config = fcp_media::TtsConfig {
             provider: fcp_media::TtsProviderConfig::Local {
                 engine: engine.clone(),
-                executable_path: config.media.tts_python.as_ref().map(std::path::PathBuf::from),
+                executable_path: config
+                    .media
+                    .tts_python
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
             },
             cache_dir: std::path::PathBuf::from(&config.media.tts_cache_dir),
             cache_max_size_mb: 500,
@@ -1663,7 +1801,10 @@ async fn pre_generate_prompt_audio(
 
     let mut generated = 0u32;
     for (name, tts_text) in &need_generation {
-        match tts_service.synthesize(tts_text, Some("en-US"), tts_voice).await {
+        match tts_service
+            .synthesize(tts_text, Some("en-US"), tts_voice)
+            .await
+        {
             Ok(cached_path) => {
                 // Copy from TTS cache to permanent prompts directory
                 let dest_path = tenant_dir.join(format!("{}.wav", name));
@@ -1695,7 +1836,11 @@ async fn pre_generate_prompt_audio(
         }
     }
 
-    info!(generated = generated, total = need_generation.len(), "Prompt audio pre-generation complete");
+    info!(
+        generated = generated,
+        total = need_generation.len(),
+        "Prompt audio pre-generation complete"
+    );
     Ok(())
 }
 
@@ -1833,23 +1978,15 @@ async fn run_webhook_dispatcher(
                         }
                     };
 
-                    let mut request = client
-                        .post(&url)
-                        .header("Content-Type", "application/json");
+                    let mut request = client.post(&url).header("Content-Type", "application/json");
 
                     // Add HMAC signature header if secret is configured
                     if let Some(ref secret) = secret {
-                        use std::fmt::Write;
-                        // Simple HMAC-like signature: hex(SHA256(secret + body))
-                        // In production, use a proper HMAC crate; for now use a
-                        // deterministic hash so webhooks can verify authenticity.
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        std::hash::Hash::hash(secret.as_bytes(), &mut hasher);
-                        std::hash::Hash::hash(&json_body, &mut hasher);
-                        let hash = std::hash::Hasher::finish(&hasher);
-                        let mut sig = String::with_capacity(16);
-                        let _ = write!(sig, "{:016x}", hash);
-                        request = request.header("X-Webhook-Signature", sig);
+                        let payload = String::from_utf8_lossy(&json_body);
+                        let sig = fcp_webhooks::compute_signature(secret, &payload);
+                        request = request
+                            .header("X-FCP-Signature", &sig)
+                            .header("X-Webhook-Signature", sig);
                     }
 
                     match request.body(json_body).send().await {
@@ -1887,7 +2024,11 @@ async fn run_webhook_dispatcher(
 }
 
 /// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
-async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str) -> Result<()> {
+async fn run_event_forwarder(
+    event_bus: Arc<InMemoryEventBus>,
+    events_url: &str,
+    auth_token: Option<String>,
+) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -1926,8 +2067,14 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 // Fire-and-forget POST to events server
                 let client = client.clone();
                 let url = events_url.to_string();
+                let auth_token = auth_token.clone();
                 tokio::spawn(async move {
-                    match client.post(&url).json(&event).send().await {
+                    let mut request = client.post(&url).json(&event);
+                    if let Some(token) = auth_token.as_deref() {
+                        request = request.bearer_auth(token);
+                    }
+
+                    match request.send().await {
                         Ok(resp) => {
                             if resp.status().is_success() {
                                 tracing::debug!(status = %resp.status(), "Event forwarded");
@@ -2046,37 +2193,46 @@ async fn resolve_extension_to_device_aors(
     );
     let mut device_aors = Vec::new();
     match &extension.target {
-        fcp_core::ExtensionTarget::Device(device_id) => {
-            match storage.get_device(device_id).await {
-                Ok(Some(device)) => {
-                    match &device.sip_uri {
-                        Some(sip_uri) => {
-                            match fcp_sip::presence::extract_aor(sip_uri) {
-                                Some(dev_aor) => {
-                                    tracing::info!(ext = %ext_number, device_id = %device_id, sip_uri = %sip_uri, dev_aor = %dev_aor, "Resolved Device target to AOR");
-                                    device_aors.push(dev_aor);
-                                }
-                                None => tracing::warn!(ext = %ext_number, device_id = %device_id, sip_uri = %sip_uri, "extract_aor returned None for device sip_uri"),
-                            }
-                        }
-                        None => tracing::warn!(ext = %ext_number, device_id = %device_id, "Device has no sip_uri"),
+        fcp_core::ExtensionTarget::Device(device_id) => match storage.get_device(device_id).await {
+            Ok(Some(device)) => match &device.sip_uri {
+                Some(sip_uri) => match fcp_sip::presence::extract_aor(sip_uri) {
+                    Some(dev_aor) => {
+                        tracing::info!(ext = %ext_number, device_id = %device_id, sip_uri = %sip_uri, dev_aor = %dev_aor, "Resolved Device target to AOR");
+                        device_aors.push(dev_aor);
                     }
+                    None => {
+                        tracing::warn!(ext = %ext_number, device_id = %device_id, sip_uri = %sip_uri, "extract_aor returned None for device sip_uri")
+                    }
+                },
+                None => {
+                    tracing::warn!(ext = %ext_number, device_id = %device_id, "Device has no sip_uri")
                 }
-                Ok(None) => tracing::warn!(ext = %ext_number, device_id = %device_id, "Device not found in storage"),
-                Err(e) => tracing::warn!(ext = %ext_number, device_id = %device_id, error = %e, "Failed to get device"),
+            },
+            Ok(None) => {
+                tracing::warn!(ext = %ext_number, device_id = %device_id, "Device not found in storage")
             }
-        }
+            Err(e) => {
+                tracing::warn!(ext = %ext_number, device_id = %device_id, error = %e, "Failed to get device")
+            }
+        },
         fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
             match storage.get_phone_number(phone_number_id).await {
                 Ok(Some(phone_number)) => {
-                    match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                    match storage
+                        .get_line_binding_by_phone_number(&phone_number.id)
+                        .await
+                    {
                         Ok(Some(line_binding)) => {
                             let enabled = line_binding.enabled_devices();
                             tracing::info!(ext = %ext_number, phone_number_id = %phone_number_id, enabled_devices = enabled.len(), "PhoneNumber target: resolving devices");
                             for device_binding in enabled {
-                                if let Ok(Some(device)) = storage.get_device(&device_binding.device_id).await {
+                                if let Ok(Some(device)) =
+                                    storage.get_device(&device_binding.device_id).await
+                                {
                                     if let Some(sip_uri) = &device.sip_uri {
-                                        if let Some(dev_aor) = fcp_sip::presence::extract_aor(sip_uri) {
+                                        if let Some(dev_aor) =
+                                            fcp_sip::presence::extract_aor(sip_uri)
+                                        {
                                             tracing::info!(ext = %ext_number, device_id = %device_binding.device_id, dev_aor = %dev_aor, "Resolved PhoneNumber device to AOR");
                                             device_aors.push(dev_aor);
                                         }
@@ -2086,12 +2242,20 @@ async fn resolve_extension_to_device_aors(
                                 }
                             }
                         }
-                        Ok(None) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, "No line binding for phone number"),
-                        Err(e) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, error = %e, "Failed to get line binding"),
+                        Ok(None) => {
+                            tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, "No line binding for phone number")
+                        }
+                        Err(e) => {
+                            tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, error = %e, "Failed to get line binding")
+                        }
                     }
                 }
-                Ok(None) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, "Phone number not found"),
-                Err(e) => tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, error = %e, "Failed to get phone number"),
+                Ok(None) => {
+                    tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, "Phone number not found")
+                }
+                Err(e) => {
+                    tracing::warn!(ext = %ext_number, phone_number_id = %phone_number_id, error = %e, "Failed to get phone number")
+                }
             }
         }
         fcp_core::ExtensionTarget::User(user_id) => {
@@ -2109,7 +2273,9 @@ async fn resolve_extension_to_device_aors(
                         }
                     }
                 }
-                Err(e) => tracing::warn!(ext = %ext_number, user_id = %user_id, error = %e, "Failed to list user devices"),
+                Err(e) => {
+                    tracing::warn!(ext = %ext_number, user_id = %user_id, error = %e, "Failed to list user devices")
+                }
             }
         }
         other => {
@@ -2144,15 +2310,9 @@ async fn resolve_phone_number_to_extension_aors(
 
     // Try to find the phone number in storage by E.164 (with and without leading 1)
     let e164_candidates: Vec<String> = if user_part.starts_with('1') && user_part.len() == 11 {
-        vec![
-            format!("+{}", user_part),
-            format!("+{}", &user_part[1..]),
-        ]
+        vec![format!("+{}", user_part), format!("+{}", &user_part[1..])]
     } else {
-        vec![
-            format!("+{}", user_part),
-            format!("+1{}", user_part),
-        ]
+        vec![format!("+{}", user_part), format!("+1{}", user_part)]
     };
 
     let mut phone_number_id = None;
@@ -2276,7 +2436,11 @@ async fn resolve_device_aor_to_extension_aors(
             fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) => {
                 // Check if the device is bound to this phone number via line binding
                 if let Ok(Some(lb)) = storage.get_line_binding_by_phone_number(pn_id).await {
-                    if lb.enabled_devices().iter().any(|db| db.device_id == device.id) {
+                    if lb
+                        .enabled_devices()
+                        .iter()
+                        .any(|db| db.device_id == device.id)
+                    {
                         let ext_aor = format!("{}@{}", ext.number, host);
                         tracing::info!(
                             device_aor = %aor,
@@ -2343,7 +2507,8 @@ async fn run_presence_listener(
                                 &call_id_str,
                                 "confirmed",
                                 &tenant_id,
-                            ).await;
+                            )
+                            .await;
                             // Transition Ringing → OnThePhone for the callee
                             if let Some(info) = presence.get_presence(aor) {
                                 if info.state == fcp_presence::PresenceState::Ringing {
@@ -2360,7 +2525,12 @@ async fn run_presence_listener(
                     }
 
                     // Call initiated (inbound) → set Ringing for callee, track active call
-                    PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, call_id, .. }) => {
+                    PlatformEvent::Call(fcp_events::CallEvent::Initiated {
+                        from,
+                        to,
+                        call_id,
+                        ..
+                    }) => {
                         let call_id_str = call_id.to_string();
                         tracing::info!(%call_id, from = %from, to = %to, "Presence: CallEvent::Initiated received");
 
@@ -2375,23 +2545,29 @@ async fn run_presence_listener(
 
                             // Track active call for callee (Recipient, Early state)
                             let caller_uri = from.clone();
-                            presence.add_active_call(&callee_aor, fcp_presence::ActiveCallInfo {
-                                call_id: call_id_str.clone(),
-                                remote_uri: caller_uri.clone(),
-                                remote_display_name: None,
-                                direction: fcp_presence::CallDirection::Recipient,
-                                dialog_state: fcp_presence::DialogState::Early,
-                            });
+                            presence.add_active_call(
+                                &callee_aor,
+                                fcp_presence::ActiveCallInfo {
+                                    call_id: call_id_str.clone(),
+                                    remote_uri: caller_uri.clone(),
+                                    remote_display_name: None,
+                                    direction: fcp_presence::CallDirection::Recipient,
+                                    dialog_state: fcp_presence::DialogState::Early,
+                                },
+                            );
                             fcp_presence::events::dialog_changed(
                                 presence.event_publisher(),
                                 &callee_aor,
                                 &call_id_str,
                                 "early",
                                 &tenant_id,
-                            ).await;
+                            )
+                            .await;
 
                             // Also set Ringing for device AOR(s) that the extension resolves to
-                            let device_aors = resolve_extension_to_device_aors(&callee_aor, &tenant_id, &storage).await;
+                            let device_aors =
+                                resolve_extension_to_device_aors(&callee_aor, &tenant_id, &storage)
+                                    .await;
                             for dev_aor in &device_aors {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: dev_aor.clone(),
@@ -2399,26 +2575,35 @@ async fn run_presence_listener(
                                     note: Some("Ringing".to_string()),
                                 };
                                 let _ = presence.update_presence(update, &tenant_id).await;
-                                presence.add_active_call(dev_aor, fcp_presence::ActiveCallInfo {
-                                    call_id: call_id_str.clone(),
-                                    remote_uri: caller_uri.clone(),
-                                    remote_display_name: None,
-                                    direction: fcp_presence::CallDirection::Recipient,
-                                    dialog_state: fcp_presence::DialogState::Early,
-                                });
+                                presence.add_active_call(
+                                    dev_aor,
+                                    fcp_presence::ActiveCallInfo {
+                                        call_id: call_id_str.clone(),
+                                        remote_uri: caller_uri.clone(),
+                                        remote_display_name: None,
+                                        direction: fcp_presence::CallDirection::Recipient,
+                                        dialog_state: fcp_presence::DialogState::Early,
+                                    },
+                                );
                                 fcp_presence::events::dialog_changed(
                                     presence.event_publisher(),
                                     dev_aor,
                                     &call_id_str,
                                     "early",
                                     &tenant_id,
-                                ).await;
+                                )
+                                .await;
                                 tracing::info!(ext_aor = %callee_aor, dev_aor = %dev_aor, "Mirrored Ringing to device AOR");
                             }
 
                             // If the callee AOR is a phone number, also mirror presence
                             // to the extension(s) that target this phone number.
-                            let ext_aors = resolve_phone_number_to_extension_aors(&callee_aor, &tenant_id, &storage).await;
+                            let ext_aors = resolve_phone_number_to_extension_aors(
+                                &callee_aor,
+                                &tenant_id,
+                                &storage,
+                            )
+                            .await;
                             for ext_aor in &ext_aors {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: ext_aor.clone(),
@@ -2426,24 +2611,30 @@ async fn run_presence_listener(
                                     note: Some("Ringing".to_string()),
                                 };
                                 let _ = presence.update_presence(update, &tenant_id).await;
-                                presence.add_active_call(ext_aor, fcp_presence::ActiveCallInfo {
-                                    call_id: call_id_str.clone(),
-                                    remote_uri: caller_uri.clone(),
-                                    remote_display_name: None,
-                                    direction: fcp_presence::CallDirection::Recipient,
-                                    dialog_state: fcp_presence::DialogState::Early,
-                                });
+                                presence.add_active_call(
+                                    ext_aor,
+                                    fcp_presence::ActiveCallInfo {
+                                        call_id: call_id_str.clone(),
+                                        remote_uri: caller_uri.clone(),
+                                        remote_display_name: None,
+                                        direction: fcp_presence::CallDirection::Recipient,
+                                        dialog_state: fcp_presence::DialogState::Early,
+                                    },
+                                );
                                 fcp_presence::events::dialog_changed(
                                     presence.event_publisher(),
                                     ext_aor,
                                     &call_id_str,
                                     "early",
                                     &tenant_id,
-                                ).await;
+                                )
+                                .await;
                                 tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored Ringing from phone number to extension AOR");
 
                                 // Also mirror to the extension's device AOR(s)
-                                let ext_device_aors = resolve_extension_to_device_aors(ext_aor, &tenant_id, &storage).await;
+                                let ext_device_aors =
+                                    resolve_extension_to_device_aors(ext_aor, &tenant_id, &storage)
+                                        .await;
                                 for ext_dev_aor in &ext_device_aors {
                                     let update = fcp_presence::PresenceUpdate {
                                         aor: ext_dev_aor.clone(),
@@ -2451,27 +2642,36 @@ async fn run_presence_listener(
                                         note: Some("Ringing".to_string()),
                                     };
                                     let _ = presence.update_presence(update, &tenant_id).await;
-                                    presence.add_active_call(ext_dev_aor, fcp_presence::ActiveCallInfo {
-                                        call_id: call_id_str.clone(),
-                                        remote_uri: caller_uri.clone(),
-                                        remote_display_name: None,
-                                        direction: fcp_presence::CallDirection::Recipient,
-                                        dialog_state: fcp_presence::DialogState::Early,
-                                    });
+                                    presence.add_active_call(
+                                        ext_dev_aor,
+                                        fcp_presence::ActiveCallInfo {
+                                            call_id: call_id_str.clone(),
+                                            remote_uri: caller_uri.clone(),
+                                            remote_display_name: None,
+                                            direction: fcp_presence::CallDirection::Recipient,
+                                            dialog_state: fcp_presence::DialogState::Early,
+                                        },
+                                    );
                                     fcp_presence::events::dialog_changed(
                                         presence.event_publisher(),
                                         ext_dev_aor,
                                         &call_id_str,
                                         "early",
                                         &tenant_id,
-                                    ).await;
+                                    )
+                                    .await;
                                     tracing::info!(phone_aor = %callee_aor, ext_aor = %ext_aor, dev_aor = %ext_dev_aor, "Mirrored Ringing from phone number to extension device AOR");
                                 }
                             }
 
                             // If the callee AOR is a device (non-numeric user part), resolve
                             // it to the extension(s) that target this device.
-                            let dev_ext_aors = resolve_device_aor_to_extension_aors(&callee_aor, &tenant_id, &storage).await;
+                            let dev_ext_aors = resolve_device_aor_to_extension_aors(
+                                &callee_aor,
+                                &tenant_id,
+                                &storage,
+                            )
+                            .await;
                             for ext_aor in &dev_ext_aors {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: ext_aor.clone(),
@@ -2479,20 +2679,24 @@ async fn run_presence_listener(
                                     note: Some("Ringing".to_string()),
                                 };
                                 let _ = presence.update_presence(update, &tenant_id).await;
-                                presence.add_active_call(ext_aor, fcp_presence::ActiveCallInfo {
-                                    call_id: call_id_str.clone(),
-                                    remote_uri: caller_uri.clone(),
-                                    remote_display_name: None,
-                                    direction: fcp_presence::CallDirection::Recipient,
-                                    dialog_state: fcp_presence::DialogState::Early,
-                                });
+                                presence.add_active_call(
+                                    ext_aor,
+                                    fcp_presence::ActiveCallInfo {
+                                        call_id: call_id_str.clone(),
+                                        remote_uri: caller_uri.clone(),
+                                        remote_display_name: None,
+                                        direction: fcp_presence::CallDirection::Recipient,
+                                        dialog_state: fcp_presence::DialogState::Early,
+                                    },
+                                );
                                 fcp_presence::events::dialog_changed(
                                     presence.event_publisher(),
                                     ext_aor,
                                     &call_id_str,
                                     "early",
                                     &tenant_id,
-                                ).await;
+                                )
+                                .await;
                                 tracing::info!(device_aor = %callee_aor, ext_aor = %ext_aor, "Mirrored Ringing from device AOR to extension");
                             }
                         }
@@ -2501,20 +2705,24 @@ async fn run_presence_listener(
 
                             // Track active call for caller (Initiator, Confirmed state)
                             let callee_uri = to.clone();
-                            presence.add_active_call(&caller_aor, fcp_presence::ActiveCallInfo {
-                                call_id: call_id_str.clone(),
-                                remote_uri: callee_uri,
-                                remote_display_name: None,
-                                direction: fcp_presence::CallDirection::Initiator,
-                                dialog_state: fcp_presence::DialogState::Confirmed,
-                            });
+                            presence.add_active_call(
+                                &caller_aor,
+                                fcp_presence::ActiveCallInfo {
+                                    call_id: call_id_str.clone(),
+                                    remote_uri: callee_uri,
+                                    remote_display_name: None,
+                                    direction: fcp_presence::CallDirection::Initiator,
+                                    dialog_state: fcp_presence::DialogState::Confirmed,
+                                },
+                            );
                             fcp_presence::events::dialog_changed(
                                 presence.event_publisher(),
                                 &caller_aor,
                                 &call_id_str,
                                 "confirmed",
                                 &tenant_id,
-                            ).await;
+                            )
+                            .await;
                         }
                     }
 
@@ -2535,7 +2743,8 @@ async fn run_presence_listener(
                                 &call_id_str,
                                 "terminated",
                                 &tenant_id,
-                            ).await;
+                            )
+                            .await;
                             // If this AOR has no remaining active calls, revert
                             // presence to Open (only if in a call-related state).
                             if presence.get_active_calls(aor).is_empty() {
@@ -2544,10 +2753,15 @@ async fn run_presence_listener(
                                 // Also revert if no presentity exists yet (conference
                                 // calls may set OnThePhone without creating a record
                                 // in every path).
-                                let is_call_state = presence.get_presence(aor)
-                                    .map(|p| matches!(p.state,
-                                        fcp_presence::PresenceState::OnThePhone
-                                        | fcp_presence::PresenceState::Ringing))
+                                let is_call_state = presence
+                                    .get_presence(aor)
+                                    .map(|p| {
+                                        matches!(
+                                            p.state,
+                                            fcp_presence::PresenceState::OnThePhone
+                                                | fcp_presence::PresenceState::Ringing
+                                        )
+                                    })
                                     .unwrap_or(true);
                                 if is_call_state {
                                     let update = fcp_presence::PresenceUpdate {
@@ -2563,7 +2777,10 @@ async fn run_presence_listener(
                     }
 
                     // Registration → set Open
-                    PlatformEvent::Registration(fcp_events::RegistrationEvent::Registered { aor, .. }) => {
+                    PlatformEvent::Registration(fcp_events::RegistrationEvent::Registered {
+                        aor,
+                        ..
+                    }) => {
                         if let Some(aor) = extract_aor(aor) {
                             let update = fcp_presence::PresenceUpdate {
                                 aor: aor.clone(),
@@ -2573,7 +2790,9 @@ async fn run_presence_listener(
                             let _ = presence.update_presence(update, &tenant_id).await;
 
                             // Also set Open for extension(s) this device belongs to
-                            let ext_aors = resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage).await;
+                            let ext_aors =
+                                resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage)
+                                    .await;
                             for ext_aor in &ext_aors {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: ext_aor.clone(),
@@ -2587,7 +2806,10 @@ async fn run_presence_listener(
                     }
 
                     // Unregistration → set Closed
-                    PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered { aor, .. }) => {
+                    PlatformEvent::Registration(fcp_events::RegistrationEvent::Unregistered {
+                        aor,
+                        ..
+                    }) => {
                         if let Some(aor) = extract_aor(aor) {
                             let update = fcp_presence::PresenceUpdate {
                                 aor: aor.clone(),
@@ -2597,7 +2819,9 @@ async fn run_presence_listener(
                             let _ = presence.update_presence(update, &tenant_id).await;
 
                             // Also set Closed for extension(s) this device belongs to
-                            let ext_aors = resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage).await;
+                            let ext_aors =
+                                resolve_device_aor_to_extension_aors(&aor, &tenant_id, &storage)
+                                    .await;
                             for ext_aor in &ext_aors {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: ext_aor.clone(),
@@ -2715,13 +2939,11 @@ async fn run_cache_invalidation_listener(
     loop {
         match stream.next().await {
             Some(event) => {
-                if let fcp_events::PlatformEvent::System(
-                    fcp_events::SystemEvent::ConfigChanged {
-                        entity_type,
-                        entity_id,
-                        ..
-                    },
-                ) = &event
+                if let fcp_events::PlatformEvent::System(fcp_events::SystemEvent::ConfigChanged {
+                    entity_type,
+                    entity_id,
+                    ..
+                }) = &event
                 {
                     match entity_type.as_str() {
                         "user" => {
@@ -2790,21 +3012,23 @@ async fn run_presence_notifier(
 
     loop {
         match stream.next().await {
-            Some(event) => {
-                match &event {
-                    PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { aor, .. }) => {
-                        if let Err(e) = presence_handler.notify_watchers(aor).await {
-                            warn!(aor = %aor, error = %e, "Failed to notify watchers");
-                        }
+            Some(event) => match &event {
+                PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged {
+                    aor, ..
+                }) => {
+                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                        warn!(aor = %aor, error = %e, "Failed to notify watchers");
                     }
-                    PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged { aor, .. }) => {
-                        if let Err(e) = presence_handler.notify_watchers(aor).await {
-                            warn!(aor = %aor, error = %e, "Failed to notify dialog watchers");
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged {
+                    aor, ..
+                }) => {
+                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                        warn!(aor = %aor, error = %e, "Failed to notify dialog watchers");
+                    }
+                }
+                _ => {}
+            },
             None => {
                 warn!("Presence NOTIFY stream ended, resubscribing...");
                 tokio::time::sleep(Duration::from_millis(100)).await;

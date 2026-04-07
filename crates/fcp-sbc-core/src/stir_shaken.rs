@@ -182,10 +182,7 @@ impl StirShakenConfig {
         let has_key = self.signing_key_path.is_some();
         let has_cert = self.signing_cert_path.is_some();
         let has_url = self.signing_cert_url.is_some();
-        let signing_count = [has_key, has_cert, has_url]
-            .iter()
-            .filter(|&&v| v)
-            .count();
+        let signing_count = [has_key, has_cert, has_url].iter().filter(|&&v| v).count();
         if signing_count > 0 && signing_count < 3 {
             return Err(
                 "stir_shaken: signing requires all three fields: signing_key_path, \
@@ -281,10 +278,7 @@ pub enum StirError {
     },
 
     #[error("dest TN mismatch: passport={passport_tn}, to={to_tn}")]
-    DestTnMismatch {
-        passport_tn: String,
-        to_tn: String,
-    },
+    DestTnMismatch { passport_tn: String, to_tn: String },
 
     #[error("signing error: {0}")]
     SigningError(String),
@@ -394,8 +388,8 @@ pub fn parse_identity_header(header_value: &str) -> Result<ParsedIdentity, StirE
         }
     }
 
-    let info_url = info_url
-        .ok_or_else(|| StirError::MalformedHeader("missing info parameter".into()))?;
+    let info_url =
+        info_url.ok_or_else(|| StirError::MalformedHeader("missing info parameter".into()))?;
 
     // Split JWS into three parts
     let parts: Vec<&str> = token.split('.').collect();
@@ -714,7 +708,11 @@ mod tests {
 
     #[test]
     fn test_attestation_serde() {
-        let levels = vec![AttestationLevel::A, AttestationLevel::B, AttestationLevel::C];
+        let levels = vec![
+            AttestationLevel::A,
+            AttestationLevel::B,
+            AttestationLevel::C,
+        ];
         for level in levels {
             let json = serde_json::to_string(&level).unwrap();
             let deserialized: AttestationLevel = serde_json::from_str(&json).unwrap();
@@ -790,7 +788,10 @@ mod tests {
         let payload_b64 = base64url_encode(b"{}");
         let sig_b64 = base64url_encode(b"sig");
 
-        let identity_value = format!("{}.{}.{};alg=ES256;ppt=shaken", header_b64, payload_b64, sig_b64);
+        let identity_value = format!(
+            "{}.{}.{};alg=ES256;ppt=shaken",
+            header_b64, payload_b64, sig_b64
+        );
 
         let result = parse_identity_header(&identity_value);
         assert!(result.is_err());
@@ -860,10 +861,7 @@ mod tests {
 
     #[test]
     fn test_clean_tn_angle_brackets() {
-        assert_eq!(
-            clean_tn("<sip:+15551234@host.example.com>"),
-            "+15551234"
-        );
+        assert_eq!(clean_tn("<sip:+15551234@host.example.com>"), "+15551234");
     }
 
     // --- Base64url ---

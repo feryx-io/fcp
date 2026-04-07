@@ -339,7 +339,9 @@ pub async fn create_user(
                 .get_location(&location_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("Location {} not found", location_id))
+                })?;
             if location.tenant_id != tenant.0 {
                 return Err(ApiError::BadRequest(format!(
                     "Location {} is not in the authenticated tenant",
@@ -487,7 +489,9 @@ pub async fn update_user(
                 .get_location(&location_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("Location {} not found", location_id))
+                })?;
             if location.tenant_id != tenant.0 {
                 return Err(ApiError::BadRequest(format!(
                     "Location {} is not in the authenticated tenant",

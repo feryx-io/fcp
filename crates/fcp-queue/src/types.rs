@@ -270,8 +270,11 @@ impl Queue {
             }
         }
         if changed {
-            self.waiting_calls
-                .sort_by(|a, b| a.priority.cmp(&b.priority).then(a.enqueued_at.cmp(&b.enqueued_at)));
+            self.waiting_calls.sort_by(|a, b| {
+                a.priority
+                    .cmp(&b.priority)
+                    .then(a.enqueued_at.cmp(&b.enqueued_at))
+            });
             self.recompute_positions();
         }
     }
@@ -546,7 +549,9 @@ mod tests {
             caller_display: None,
             priority,
             original_priority: priority,
-            enqueued_at: Instant::now().checked_sub(std::time::Duration::from_secs(age_secs)).unwrap(),
+            enqueued_at: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(age_secs))
+                .unwrap(),
             position: 0,
             attempts: 0,
             is_callback: false,

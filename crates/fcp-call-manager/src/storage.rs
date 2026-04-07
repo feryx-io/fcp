@@ -35,13 +35,13 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
     let storage = Arc::new(storage);
 
     // Create SIP trace store backed by the same PostgreSQL pool
-    let sip_trace_store = Arc::new(
-        fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(storage.pool().clone()),
-    );
+    let sip_trace_store = Arc::new(fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(
+        storage.pool().clone(),
+    ));
 
-    let prompt_store = Arc::new(
-        fcp_storage_postgres::prompt::PostgresPromptStore::new(storage.pool().clone()),
-    );
+    let prompt_store = Arc::new(fcp_storage_postgres::prompt::PostgresPromptStore::new(
+        storage.pool().clone(),
+    ));
 
     let flow_trace_store = Arc::new(
         fcp_storage_postgres::flow_trace::PostgresFlowTraceStore::new(storage.pool().clone()),
@@ -52,7 +52,9 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
         .with_flow_trace_store(flow_trace_store as Arc<dyn fcp_core::flow_trace::FlowTraceStore>);
 
-    info!("PostgreSQL storage initialized successfully (with SIP trace + prompt + flow trace stores)");
+    info!(
+        "PostgreSQL storage initialized successfully (with SIP trace + prompt + flow trace stores)"
+    );
     Ok(StorageResult {
         dyn_storage: Arc::new(dyn_st),
         flow_store: storage.clone() as Arc<dyn fcp_flow::FlowStore>,
@@ -145,11 +147,22 @@ pub fn apply_cached_stores(
     ));
 
     let inner = Arc::try_unwrap(dyn_storage).unwrap_or_else(|arc| (*arc).clone());
-    let new_storage = inner
-        .with_credential_store(Arc::clone(&cached_creds) as Arc<dyn fcp_core::CredentialStore>)
-        .with_extension_store(Arc::clone(&cached_exts) as Arc<dyn fcp_core::storage::ExtensionStore>)
-        .with_device_store(Arc::clone(&cached_devs) as Arc<dyn fcp_core::storage::DeviceStore>);
+    let new_storage =
+        inner
+            .with_credential_store(Arc::clone(&cached_creds) as Arc<dyn fcp_core::CredentialStore>)
+            .with_extension_store(
+                Arc::clone(&cached_exts) as Arc<dyn fcp_core::storage::ExtensionStore>
+            )
+            .with_device_store(Arc::clone(&cached_devs) as Arc<dyn fcp_core::storage::DeviceStore>);
 
-    info!("Hot-path stores wrapped with in-memory cache (TTL={}s)", cache_ttl.as_secs());
-    (Arc::new(new_storage), cached_creds, cached_exts, cached_devs)
+    info!(
+        "Hot-path stores wrapped with in-memory cache (TTL={}s)",
+        cache_ttl.as_secs()
+    );
+    (
+        Arc::new(new_storage),
+        cached_creds,
+        cached_exts,
+        cached_devs,
+    )
 }

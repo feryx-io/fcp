@@ -343,8 +343,12 @@ pub struct ClusterSection {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5 }
-fn default_heartbeat_ttl() -> u64 { 15 }
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {
@@ -402,9 +406,7 @@ pub fn validate_config(config: &MediaServerConfig) -> Result<()> {
     // TLS consistency
     if config.tls.enabled {
         if config.tls.cert.is_none() || config.tls.key.is_none() {
-            anyhow::bail!(
-                "tls.enabled is true but tls.cert and/or tls.key are not configured"
-            );
+            anyhow::bail!("tls.enabled is true but tls.cert and/or tls.key are not configured");
         }
     }
 

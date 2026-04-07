@@ -261,11 +261,7 @@ fn admin_err(status: StatusCode, msg: &str) -> (StatusCode, Json<AdminError>) {
     )
 }
 
-fn admin_err_detail(
-    status: StatusCode,
-    msg: &str,
-    detail: &str,
-) -> (StatusCode, Json<AdminError>) {
+fn admin_err_detail(status: StatusCode, msg: &str, detail: &str) -> (StatusCode, Json<AdminError>) {
     (
         status,
         Json(AdminError {
@@ -277,9 +273,7 @@ fn admin_err_detail(
 
 // ── Trunk handlers ──────────────────────────────────────────────────────────
 
-async fn list_trunks(
-    State(state): State<Arc<HealthState>>,
-) -> Json<Vec<TrunkSummary>> {
+async fn list_trunks(State(state): State<Arc<HealthState>>) -> Json<Vec<TrunkSummary>> {
     let summaries = state
         .trunk_configs
         .iter()
@@ -412,9 +406,7 @@ async fn force_register(
 
 // ── Call handlers ───────────────────────────────────────────────────────────
 
-async fn list_calls(
-    State(state): State<Arc<HealthState>>,
-) -> Json<Vec<CallSummary>> {
+async fn list_calls(State(state): State<Arc<HealthState>>) -> Json<Vec<CallSummary>> {
     let calls = state.call_manager.active_calls();
     let summaries = calls
         .into_iter()
@@ -430,9 +422,7 @@ async fn list_calls(
     Json(summaries)
 }
 
-async fn call_stats(
-    State(state): State<Arc<HealthState>>,
-) -> Json<CallStatsResponse> {
+async fn call_stats(State(state): State<Arc<HealthState>>) -> Json<CallStatsResponse> {
     let stats = state.call_manager.stats();
     Json(CallStatsResponse {
         total: stats.total,
@@ -467,7 +457,10 @@ async fn get_call(
         a_leg_remote_uri: call.a_leg.remote_uri.clone(),
         a_leg_contact: call.a_leg.contact.map(|a| a.to_string()),
         b_leg_remote_uri: call.b_leg.as_ref().map(|l| l.remote_uri.clone()),
-        b_leg_contact: call.b_leg.as_ref().and_then(|l| l.contact.map(|a| a.to_string())),
+        b_leg_contact: call
+            .b_leg
+            .as_ref()
+            .and_then(|l| l.contact.map(|a| a.to_string())),
         media_anchored: call.media_anchored,
         failure_reason: call.failure_reason.clone(),
     }))
@@ -499,10 +492,7 @@ async fn terminate_call(
 
     // Send on-wire BYE for each established dialog (best-effort, background).
     if let Some(ref uac) = state.uac {
-        let dialogs: Vec<sip_dialog::Dialog> = [a_dialog, b_dialog]
-            .into_iter()
-            .flatten()
-            .collect();
+        let dialogs: Vec<sip_dialog::Dialog> = [a_dialog, b_dialog].into_iter().flatten().collect();
         let bye_count = dialogs.len() as u32;
 
         for dialog in dialogs {
@@ -548,9 +538,7 @@ async fn terminate_call(
 
 // ── Admission handlers ──────────────────────────────────────────────────────
 
-async fn get_admission(
-    State(state): State<Arc<HealthState>>,
-) -> Json<AdmissionStatus> {
+async fn get_admission(State(state): State<Arc<HealthState>>) -> Json<AdmissionStatus> {
     let cfg = state.admission.config_snapshot();
     Json(AdmissionStatus {
         config: AdmissionConfigView {
@@ -676,9 +664,7 @@ fn recording_status_str(status: &LocalRecordingStatus) -> String {
     }
 }
 
-async fn list_recordings(
-    State(state): State<Arc<HealthState>>,
-) -> Json<Vec<RecordingSummary>> {
+async fn list_recordings(State(state): State<Arc<HealthState>>) -> Json<Vec<RecordingSummary>> {
     let recordings = match &state.recording_store {
         Some(store) => store
             .list()
@@ -809,9 +795,7 @@ async fn get_trunk_quality(
     Ok(Json(snapshot))
 }
 
-async fn list_lcr_routes(
-    State(state): State<Arc<HealthState>>,
-) -> Json<Vec<LcrRouteView>> {
+async fn list_lcr_routes(State(state): State<Arc<HealthState>>) -> Json<Vec<LcrRouteView>> {
     let routes = state
         .lcr_routes
         .iter()
@@ -846,9 +830,7 @@ pub struct StirShakenStatus {
     pub cert_cache_entries: Option<usize>,
 }
 
-async fn get_stir_shaken_status(
-    State(state): State<Arc<HealthState>>,
-) -> Json<StirShakenStatus> {
+async fn get_stir_shaken_status(State(state): State<Arc<HealthState>>) -> Json<StirShakenStatus> {
     match (&state.stir_metrics, &state.stir_verifier) {
         (Some(metrics), Some(verifier)) => Json(StirShakenStatus {
             enabled: true,
@@ -899,7 +881,9 @@ mod tests {
     }
 
     fn test_state_with_trunks(trunks: Vec<fcp_sbc_core::TrunkConfig>) -> Arc<HealthState> {
-        let admission = Arc::new(crate::admission::AdmissionController::new(Default::default()));
+        let admission = Arc::new(crate::admission::AdmissionController::new(
+            Default::default(),
+        ));
         let health_monitor = Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&trunks));
         let metrics = Arc::new(crate::metrics::SbcRuntimeMetrics::new());
         let call_manager = Arc::new(fcp_b2bua_core::CallManager::new());
@@ -926,10 +910,7 @@ mod tests {
     }
 
     async fn get_json(app: Router, path: &str) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder()
-            .uri(path)
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri(path).body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)

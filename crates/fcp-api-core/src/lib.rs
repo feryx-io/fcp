@@ -75,9 +75,7 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
         }
         // Share credential store so JWT auth can verify user is still active
         if let Some(ref storage) = state.storage {
-            auth_config = auth_config.with_credential_store(
-                storage.credential_store_arc(),
-            );
+            auth_config = auth_config.with_credential_store(storage.credential_store_arc());
         }
         // Store auth config in ApiState for WebSocket first-message auth
         state.auth_config = Some(auth_config.clone());
@@ -91,12 +89,8 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     // so they bypass bearer middleware:
     // - pre_auth: login/logout/change-expired-password (user has no token yet)
     // - ws: browsers can't set Authorization headers on WebSocket connections
-    router = router.merge(
-        Router::new().nest("/api/v1", v1::pre_auth_router()),
-    );
-    router = router.merge(
-        Router::new().nest("/api/v1", v1::ws_router()),
-    );
+    router = router.merge(Router::new().nest("/api/v1", v1::pre_auth_router()));
+    router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
 
     router
         .layer(cors)

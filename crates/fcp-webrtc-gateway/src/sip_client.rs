@@ -39,8 +39,7 @@ pub async fn create_transport_dispatcher(
 
     info!(bind = %bind_addr, "SIP UDP transport bound");
 
-    let dispatcher =
-        RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
+    let dispatcher = RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
 
     Ok(Arc::new(dispatcher))
 }
@@ -75,8 +74,7 @@ pub async fn create_uac(
         format!("{}:{}", bind_addr.ip(), port)
     };
 
-    let resolver =
-        Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
+    let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
 
     let builder = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
@@ -118,9 +116,7 @@ fn create_local_uri(config: &GatewayConfig) -> Result<SipUri> {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .unwrap_or_else(|| {
-                auto_detect_local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
-            })
+            .unwrap_or_else(|| auto_detect_local_ip().unwrap_or_else(|| "127.0.0.1".to_string()))
     } else {
         bind_addr.ip().to_string()
     };

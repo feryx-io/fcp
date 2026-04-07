@@ -116,27 +116,30 @@ async fn main() -> Result<()> {
     );
 
     // 5. Initialize config store from PostgreSQL (if database_url is configured)
-    let config_store: Option<Arc<dyn fcp_core::config_store::ConfigStore>> =
-        if let Some(ref db_url) = config.storage.database_url {
-            match fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig {
-                connection_string: db_url.clone(),
-                max_connections: config.storage.max_connections,
-                connection_timeout: Duration::from_secs(30),
-            })
-            .await
-            {
-                Ok(storage) => {
-                    info!("PostgreSQL config store initialized");
-                    Some(Arc::new(storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to initialize PostgreSQL config store, using TOML only");
-                    None
-                }
+    let config_store: Option<Arc<dyn fcp_core::config_store::ConfigStore>> = if let Some(
+        ref db_url,
+    ) =
+        config.storage.database_url
+    {
+        match fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig {
+            connection_string: db_url.clone(),
+            max_connections: config.storage.max_connections,
+            connection_timeout: Duration::from_secs(30),
+        })
+        .await
+        {
+            Ok(storage) => {
+                info!("PostgreSQL config store initialized");
+                Some(Arc::new(storage) as Arc<dyn fcp_core::config_store::ConfigStore>)
             }
-        } else {
-            None
-        };
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize PostgreSQL config store, using TOML only");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // 5b. Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, http, logging, tls, storage) stay TOML-only.
@@ -146,30 +149,75 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
-            ("recording", serde_json::to_value(&config.recording).unwrap_or_default()),
-            ("auth", serde_json::to_value(&config.auth).unwrap_or_default()),
+            (
+                "media",
+                serde_json::to_value(&config.media).unwrap_or_default(),
+            ),
+            (
+                "recording",
+                serde_json::to_value(&config.recording).unwrap_or_default(),
+            ),
+            (
+                "auth",
+                serde_json::to_value(&config.auth).unwrap_or_default(),
+            ),
             ("ai", serde_json::to_value(&config.ai).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+            (
+                "cluster",
+                serde_json::to_value(&config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
-                        "recording" => if let Ok(v) = serde_json::from_value(entry.value) { config.recording = v; },
-                        "auth" => if let Ok(v) = serde_json::from_value(entry.value) { config.auth = v; },
-                        "ai" => if let Ok(v) = serde_json::from_value(entry.value) { config.ai = v; },
-                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        "media" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.media = v;
+                            }
+                        }
+                        "recording" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.recording = v;
+                            }
+                        }
+                        "auth" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.auth = v;
+                            }
+                        }
+                        "ai" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.ai = v;
+                            }
+                        }
+                        "cluster" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.cluster = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -202,7 +250,12 @@ async fn main() -> Result<()> {
                         node_type: config.service.service_type.clone(),
                         http_address: config.http.bind_address,
                         sip_address: "0.0.0.0:0".parse().unwrap(),
-                        capabilities: vec!["media".to_string(), "rtp".to_string(), "transcoding".to_string(), "recording".to_string()],
+                        capabilities: vec![
+                            "media".to_string(),
+                            "rtp".to_string(),
+                            "transcoding".to_string(),
+                            "recording".to_string(),
+                        ],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -210,8 +263,10 @@ async fn main() -> Result<()> {
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     };
-                    let cm = fcp_cluster::ClusterManager::new(redis, member)
-                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs);
+                    let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    );
                     let _handle = cm.start();
                     info!("Cluster membership started");
                     Some(cm)
@@ -247,7 +302,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("media", "_system").await {
                     Ok(v) if v > last_version => {
-                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        tracing::info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}
@@ -262,9 +321,8 @@ async fn main() -> Result<()> {
     // 8. Serve with graceful shutdown on SIGINT/SIGTERM
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     let shutdown_signal = async move {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("Failed to register SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler");
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -277,7 +335,10 @@ async fn main() -> Result<()> {
 
         // Allow in-flight requests to complete within the timeout
         if !shutdown_timeout.is_zero() {
-            info!(timeout_secs = shutdown_timeout.as_secs(), "Draining connections...");
+            info!(
+                timeout_secs = shutdown_timeout.as_secs(),
+                "Draining connections..."
+            );
         }
     };
 

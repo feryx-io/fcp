@@ -72,10 +72,7 @@ impl WebhookDispatcher {
     }
 
     /// Dispatch a platform event to all matching webhook endpoints for the given tenant.
-    pub async fn dispatch(
-        &self,
-        event: &fcp_events::PlatformEvent,
-    ) {
+    pub async fn dispatch(&self, event: &fcp_events::PlatformEvent) {
         let event_type = event.event_type_name();
         let tenant_id = match event.tenant_id() {
             Some(tid) => tid.clone(),
@@ -372,8 +369,7 @@ impl WebhookDispatcher {
         endpoint.events.iter().any(|filter| {
             filter == "*"
                 || filter == event_type
-                || (filter.ends_with(".*")
-                    && event_type.starts_with(&filter[..filter.len() - 1]))
+                || (filter.ends_with(".*") && event_type.starts_with(&filter[..filter.len() - 1]))
         })
     }
 }
@@ -451,7 +447,10 @@ mod tests {
     fn test_matches_event_empty_matches_all() {
         let ep = make_endpoint(vec![]);
         assert!(WebhookDispatcher::matches_event(&ep, "call.initiated"));
-        assert!(WebhookDispatcher::matches_event(&ep, "voicemail.message_recorded"));
+        assert!(WebhookDispatcher::matches_event(
+            &ep,
+            "voicemail.message_recorded"
+        ));
     }
 
     #[test]
@@ -474,7 +473,10 @@ mod tests {
         let ep = make_endpoint(vec!["call.*"]);
         assert!(WebhookDispatcher::matches_event(&ep, "call.initiated"));
         assert!(WebhookDispatcher::matches_event(&ep, "call.ended"));
-        assert!(!WebhookDispatcher::matches_event(&ep, "voicemail.message_recorded"));
+        assert!(!WebhookDispatcher::matches_event(
+            &ep,
+            "voicemail.message_recorded"
+        ));
     }
 
     #[test]

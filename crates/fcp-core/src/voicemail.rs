@@ -174,7 +174,11 @@ impl VoicemailGreeting {
     }
 
     /// Creates a new greeting with an expiration time.
-    pub fn with_expiration(greeting_type: GreetingType, audio_path: PathBuf, expires_at: SystemTime) -> Self {
+    pub fn with_expiration(
+        greeting_type: GreetingType,
+        audio_path: PathBuf,
+        expires_at: SystemTime,
+    ) -> Self {
         Self {
             greeting_type,
             audio_path,
@@ -322,7 +326,10 @@ impl VoicemailMailbox {
     /// activating one automatically deactivates the other. At least one of them
     /// must always be active — deactivating one activates the other.
     pub fn set_greeting_active(&mut self, greeting_type: GreetingType, active: bool) {
-        let has_greeting = self.greetings.iter().any(|g| g.greeting_type == greeting_type);
+        let has_greeting = self
+            .greetings
+            .iter()
+            .any(|g| g.greeting_type == greeting_type);
         if !has_greeting {
             return;
         }
@@ -341,12 +348,20 @@ impl VoicemailMailbox {
                     g.is_active = false;
                 }
             }
-            if let Some(g) = self.greetings.iter_mut().find(|g| g.greeting_type == greeting_type) {
+            if let Some(g) = self
+                .greetings
+                .iter_mut()
+                .find(|g| g.greeting_type == greeting_type)
+            {
                 g.is_active = true;
             }
         } else {
             // Deactivating one activates the other (one must always be active)
-            if let Some(g) = self.greetings.iter_mut().find(|g| g.greeting_type == greeting_type) {
+            if let Some(g) = self
+                .greetings
+                .iter_mut()
+                .find(|g| g.greeting_type == greeting_type)
+            {
                 g.is_active = false;
             }
             if let Some(other) = counterpart {
@@ -592,8 +607,16 @@ mod tests {
         // Both start active; explicitly activate Temporary
         mailbox.set_greeting_active(GreetingType::Temporary, true);
 
-        let temp = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Temporary).unwrap();
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let temp = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Temporary)
+            .unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(temp.is_active);
         assert!(!unavail.is_active);
     }
@@ -611,8 +634,16 @@ mod tests {
         ));
         mailbox.set_greeting_active(GreetingType::Unavailable, true);
 
-        let temp = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Temporary).unwrap();
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let temp = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Temporary)
+            .unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(unavail.is_active);
         assert!(!temp.is_active);
     }
@@ -624,17 +655,23 @@ mod tests {
             GreetingType::Unavailable,
             PathBuf::from("/tmp/unavail.wav"),
         ));
-        let mut temp = VoicemailGreeting::new(
-            GreetingType::Temporary,
-            PathBuf::from("/tmp/temp.wav"),
-        );
+        let mut temp =
+            VoicemailGreeting::new(GreetingType::Temporary, PathBuf::from("/tmp/temp.wav"));
         temp.is_active = false;
         mailbox.greetings.push(temp);
 
         mailbox.set_greeting_active(GreetingType::Unavailable, false);
 
-        let temp = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Temporary).unwrap();
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let temp = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Temporary)
+            .unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(!unavail.is_active);
         assert!(temp.is_active);
     }
@@ -642,10 +679,8 @@ mod tests {
     #[test]
     fn test_set_greeting_active_deactivating_temporary_activates_unavailable() {
         let mut mailbox = test_mailbox();
-        let mut unavail = VoicemailGreeting::new(
-            GreetingType::Unavailable,
-            PathBuf::from("/tmp/unavail.wav"),
-        );
+        let mut unavail =
+            VoicemailGreeting::new(GreetingType::Unavailable, PathBuf::from("/tmp/unavail.wav"));
         unavail.is_active = false;
         mailbox.greetings.push(unavail);
         mailbox.add_greeting(VoicemailGreeting::new(
@@ -655,8 +690,16 @@ mod tests {
 
         mailbox.set_greeting_active(GreetingType::Temporary, false);
 
-        let temp = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Temporary).unwrap();
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let temp = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Temporary)
+            .unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(!temp.is_active);
         assert!(unavail.is_active);
     }
@@ -675,11 +718,19 @@ mod tests {
 
         // Toggling Busy should not affect Unavailable
         mailbox.set_greeting_active(GreetingType::Busy, false);
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(unavail.is_active);
 
         mailbox.set_greeting_active(GreetingType::Busy, true);
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(unavail.is_active);
     }
 
@@ -693,7 +744,11 @@ mod tests {
         // No Temporary greeting exists — should be a no-op, no panic
         mailbox.set_greeting_active(GreetingType::Temporary, true);
 
-        let unavail = mailbox.greetings.iter().find(|g| g.greeting_type == GreetingType::Unavailable).unwrap();
+        let unavail = mailbox
+            .greetings
+            .iter()
+            .find(|g| g.greeting_type == GreetingType::Unavailable)
+            .unwrap();
         assert!(unavail.is_active);
     }
 
@@ -741,7 +796,9 @@ mod tests {
             GreetingType::Unavailable,
             PathBuf::from("/tmp/unavail.wav"),
         ));
-        mailbox.greetings.push(expired_greeting(GreetingType::Temporary));
+        mailbox
+            .greetings
+            .push(expired_greeting(GreetingType::Temporary));
 
         let g = mailbox.get_greeting(false).unwrap();
         assert_eq!(g.greeting_type, GreetingType::Unavailable);
@@ -750,10 +807,8 @@ mod tests {
     #[test]
     fn test_get_greeting_inactive_unavailable_returns_none() {
         let mut mailbox = test_mailbox();
-        let mut unavail = VoicemailGreeting::new(
-            GreetingType::Unavailable,
-            PathBuf::from("/tmp/unavail.wav"),
-        );
+        let mut unavail =
+            VoicemailGreeting::new(GreetingType::Unavailable, PathBuf::from("/tmp/unavail.wav"));
         unavail.is_active = false;
         mailbox.greetings.push(unavail);
 
@@ -784,10 +839,8 @@ mod tests {
             GreetingType::Unavailable,
             PathBuf::from("/tmp/unavail.wav"),
         ));
-        let mut temp = VoicemailGreeting::new(
-            GreetingType::Temporary,
-            PathBuf::from("/tmp/temp.wav"),
-        );
+        let mut temp =
+            VoicemailGreeting::new(GreetingType::Temporary, PathBuf::from("/tmp/temp.wav"));
         temp.is_active = false;
         mailbox.greetings.push(temp);
 

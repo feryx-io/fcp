@@ -415,7 +415,6 @@ pub fn refresh_interval() -> Duration {
     Duration::from_secs(3)
 }
 
-
 /// Fetch registrations data
 /// If events_url is provided, fetches aggregated registrations from the events server.
 /// Otherwise, falls back to the local call-manager API.

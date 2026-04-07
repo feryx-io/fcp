@@ -28,9 +28,15 @@ fn main() {
             }
         }
         // No pre-built dist — create placeholder so compile doesn't fail
-        println!("cargo:warning=Skipping UI build (set FCP_BUILD_UI=1 to enable). Using placeholder.");
+        println!(
+            "cargo:warning=Skipping UI build (set FCP_BUILD_UI=1 to enable). Using placeholder."
+        );
         std::fs::create_dir_all("dist").ok();
-        std::fs::write("dist/index.html", "<!-- Admin UI not built. Set FCP_BUILD_UI=1 and rebuild. -->").ok();
+        std::fs::write(
+            "dist/index.html",
+            "<!-- Admin UI not built. Set FCP_BUILD_UI=1 and rebuild. -->",
+        )
+        .ok();
         return;
     }
 

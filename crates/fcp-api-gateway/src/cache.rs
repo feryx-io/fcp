@@ -115,14 +115,14 @@ impl CacheState {
             Ok(mut conn) => match conn.get::<_, Vec<u8>>(key).await {
                 Ok(data) => match serde_json::from_slice::<CachedResponse>(&data) {
                     Ok(entry) => {
-                    debug!(key = %key, size = data.len(), "Cache hit");
-                    Some(entry)
+                        debug!(key = %key, size = data.len(), "Cache hit");
+                        Some(entry)
                     }
                     Err(e) => {
                         warn!(key = %key, error = %e, "Failed to deserialize cached response");
                         None
                     }
-                }
+                },
                 Err(_) => None,
             },
             Err(e) => {
@@ -197,11 +197,7 @@ impl CacheState {
 }
 
 /// Paths that must NEVER be cached (user-specific or sensitive).
-const UNCACHEABLE_PREFIXES: &[&str] = &[
-    "/api/v1/auth/",
-    "/api/v1/me/",
-    "/api/v1/events",
-];
+const UNCACHEABLE_PREFIXES: &[&str] = &["/api/v1/auth/", "/api/v1/me/", "/api/v1/events"];
 
 /// Cache middleware
 pub async fn cache_middleware(
@@ -216,7 +212,10 @@ pub async fn cache_middleware(
 
     // Never cache auth/user-specific endpoints
     let path = req.uri().path();
-    if UNCACHEABLE_PREFIXES.iter().any(|prefix| path.starts_with(prefix)) {
+    if UNCACHEABLE_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+    {
         return Ok(next.run(req).await);
     }
 

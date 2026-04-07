@@ -141,7 +141,10 @@ impl NodeRegistry {
 
     /// Get all registered nodes.
     pub fn get_all_nodes(&self) -> Vec<NodeInfo> {
-        self.nodes.iter().map(|entry| entry.value().clone()).collect()
+        self.nodes
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Get a specific node by ID.
@@ -325,25 +328,32 @@ mod tests {
 
     #[test]
     fn test_stale_nodes() {
-        let registry = NodeRegistry::with_thresholds(
-            Duration::from_millis(50),
-            Duration::from_millis(100),
-        );
+        let registry =
+            NodeRegistry::with_thresholds(Duration::from_millis(50), Duration::from_millis(100));
 
         registry.register_or_update("node-1", None);
 
         // Initially healthy
-        assert_eq!(registry.get_node("node-1").unwrap().status, NodeStatus::Healthy);
+        assert_eq!(
+            registry.get_node("node-1").unwrap().status,
+            NodeStatus::Healthy
+        );
 
         // Wait and check
         std::thread::sleep(Duration::from_millis(60));
         registry.check_stale_nodes();
-        assert_eq!(registry.get_node("node-1").unwrap().status, NodeStatus::Degraded);
+        assert_eq!(
+            registry.get_node("node-1").unwrap().status,
+            NodeStatus::Degraded
+        );
 
         // Wait more
         std::thread::sleep(Duration::from_millis(50));
         registry.check_stale_nodes();
-        assert_eq!(registry.get_node("node-1").unwrap().status, NodeStatus::Offline);
+        assert_eq!(
+            registry.get_node("node-1").unwrap().status,
+            NodeStatus::Offline
+        );
     }
 
     #[test]

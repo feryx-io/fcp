@@ -174,9 +174,7 @@ pub struct UpdateMeetingRequest {
 }
 
 /// GET /conferences/meetings — List all meetings for the default tenant.
-pub async fn list_meetings(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_meetings(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let tenant_id = &state.default_tenant_id;
 

@@ -112,7 +112,14 @@ impl ClusterManager {
                 }
 
                 // Discover members
-                if let Err(e) = discover_members(&storage, &self_info.node_id, &members, event_publisher.as_ref()).await {
+                if let Err(e) = discover_members(
+                    &storage,
+                    &self_info.node_id,
+                    &members,
+                    event_publisher.as_ref(),
+                )
+                .await
+                {
                     error!(error = %e, "Failed to discover cluster members");
                 }
             }
@@ -278,14 +285,12 @@ async fn discover_members(
         let now = std::time::SystemTime::now();
 
         for member in &new_members {
-            let event = fcp_events::PlatformEvent::System(
-                fcp_events::SystemEvent::NodeJoined {
-                    node_id: member.node_id.clone(),
-                    node_type: member.node_type.clone(),
-                    address: member.http_address.to_string(),
-                    timestamp: now,
-                },
-            );
+            let event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::NodeJoined {
+                node_id: member.node_id.clone(),
+                node_type: member.node_type.clone(),
+                address: member.http_address.to_string(),
+                timestamp: now,
+            });
             info!(node_id = %member.node_id, node_type = %member.node_type, "Cluster member joined");
             if let Err(e) = publisher.publish(event).await {
                 warn!(error = %e, "Failed to publish NodeJoined event");
@@ -293,13 +298,11 @@ async fn discover_members(
         }
 
         for node_id in &departed {
-            let event = fcp_events::PlatformEvent::System(
-                fcp_events::SystemEvent::NodeLeft {
-                    node_id: node_id.clone(),
-                    reason: "heartbeat_expired".to_string(),
-                    timestamp: now,
-                },
-            );
+            let event = fcp_events::PlatformEvent::System(fcp_events::SystemEvent::NodeLeft {
+                node_id: node_id.clone(),
+                reason: "heartbeat_expired".to_string(),
+                timestamp: now,
+            });
             info!(node_id = %node_id, "Cluster member left (heartbeat expired)");
             if let Err(e) = publisher.publish(event).await {
                 warn!(error = %e, "Failed to publish NodeLeft event");

@@ -118,8 +118,8 @@ pub fn spawn_analytics_consumer(
     history_store: Arc<dyn PresenceHistoryStore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let filter = fcp_events::EventFilter::new()
-            .types(vec![fcp_events::filter::EventType::Presence]);
+        let filter =
+            fcp_events::EventFilter::new().types(vec![fcp_events::filter::EventType::Presence]);
 
         let mut stream = match event_bus.subscribe(filter).await {
             Ok(s) => s,

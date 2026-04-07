@@ -8,9 +8,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use fcp_b2bua_core::{Call, CallId, CallManager};
 use fcp_events::{EventPublisher, FlowEvent, PlatformEvent, VoicemailEvent};
-use fcp_voicemail::VoicemailService;
 use fcp_flow::{FlowContext, FlowEngine, FlowExecutionResult, FlowStore};
 use fcp_media::{AudioTarget, MediaManager};
+use fcp_voicemail::VoicemailService;
 use sip_core::{Request, Response};
 use sip_dialog::{Dialog, DialogManager};
 use sip_transaction::{
@@ -699,7 +699,9 @@ impl FlowCallHandler {
 
                 // If registrar lookup failed, try extension → phone number → device chain
                 if resolved.is_none() {
-                    if let (Some(ref storage), Some(ref registrar)) = (&self.storage, &self.registrar) {
+                    if let (Some(ref storage), Some(ref registrar)) =
+                        (&self.storage, &self.registrar)
+                    {
                         let tenant_id = self
                             .call_manager
                             .as_ref()
@@ -712,7 +714,10 @@ impl FlowCallHandler {
                             "Looking up extension via storage (extension → device chain)"
                         );
 
-                        if let Ok(Some(extension)) = storage.get_extension_by_number(&tenant_id, &destination).await {
+                        if let Ok(Some(extension)) = storage
+                            .get_extension_by_number(&tenant_id, &destination)
+                            .await
+                        {
                             info!(
                                 a_leg_call_id = %a_leg_call_id,
                                 destination = %destination,
@@ -730,7 +735,10 @@ impl FlowCallHandler {
                                                 number = %phone_number.e164,
                                                 "Resolved phone_number from extension target"
                                             );
-                                            match storage.get_line_binding_by_phone_number(&phone_number.id).await {
+                                            match storage
+                                                .get_line_binding_by_phone_number(&phone_number.id)
+                                                .await
+                                            {
                                                 Ok(Some(line_binding)) => {
                                                     let devices = line_binding.enabled_devices();
                                                     info!(
@@ -739,8 +747,13 @@ impl FlowCallHandler {
                                                         "Found line binding with enabled devices"
                                                     );
                                                     for device_binding in devices {
-                                                        if resolved.is_some() { break; }
-                                                        match storage.get_device(&device_binding.device_id).await {
+                                                        if resolved.is_some() {
+                                                            break;
+                                                        }
+                                                        match storage
+                                                            .get_device(&device_binding.device_id)
+                                                            .await
+                                                        {
                                                             Ok(Some(device)) => {
                                                                 info!(
                                                                     a_leg_call_id = %a_leg_call_id,
@@ -748,7 +761,9 @@ impl FlowCallHandler {
                                                                     device_sip_uri = ?device.sip_uri,
                                                                     "Found device in chain"
                                                                 );
-                                                                if let Some(sip_uri) = &device.sip_uri {
+                                                                if let Some(sip_uri) =
+                                                                    &device.sip_uri
+                                                                {
                                                                     match registrar.get_registrations(sip_uri).await {
                                                                         Ok(bindings) if !bindings.is_empty() => {
                                                                             if let Ok(uri) = sip_core::SipUri::parse(bindings[0].contact()) {
@@ -808,9 +823,13 @@ impl FlowCallHandler {
                                 fcp_core::ExtensionTarget::Device(device_id) => {
                                     if let Ok(Some(device)) = storage.get_device(device_id).await {
                                         if let Some(sip_uri) = &device.sip_uri {
-                                            if let Ok(bindings) = registrar.get_registrations(sip_uri).await {
+                                            if let Ok(bindings) =
+                                                registrar.get_registrations(sip_uri).await
+                                            {
                                                 if let Some(binding) = bindings.first() {
-                                                    if let Ok(uri) = sip_core::SipUri::parse(binding.contact()) {
+                                                    if let Ok(uri) =
+                                                        sip_core::SipUri::parse(binding.contact())
+                                                    {
                                                         info!(
                                                             a_leg_call_id = %a_leg_call_id,
                                                             destination = %destination,
@@ -860,9 +879,17 @@ impl FlowCallHandler {
                             match sip_core::SipUri::parse(&full_uri) {
                                 Ok(uri) => uri,
                                 Err(e2) => {
-                                    let error_msg = format!("Failed to parse fallback URI: {:?}", e2);
+                                    let error_msg =
+                                        format!("Failed to parse fallback URI: {:?}", e2);
                                     error!(a_leg_call_id = %a_leg_call_id, %error_msg);
-                                    return self.transition_to_error(a_leg_call_id, &error_msg, on_error, next).await;
+                                    return self
+                                        .transition_to_error(
+                                            a_leg_call_id,
+                                            &error_msg,
+                                            on_error,
+                                            next,
+                                        )
+                                        .await;
                                 }
                             }
                         } else {
@@ -1415,7 +1442,13 @@ impl FlowCallHandler {
 
         // Call VoicemailService::record_message
         match voicemail_service
-            .record_message(&media_call_id, &mailbox, caller.clone(), caller_name, is_busy)
+            .record_message(
+                &media_call_id,
+                &mailbox,
+                caller.clone(),
+                caller_name,
+                is_busy,
+            )
             .await
         {
             Ok(message) => {
@@ -1429,8 +1462,7 @@ impl FlowCallHandler {
                 // Set context variables
                 let mut context_guard = context.write().await;
                 context_guard.set_variable("voicemail_status".to_string(), "success".to_string());
-                context_guard
-                    .set_variable("voicemail_message_id".to_string(), message.id.clone());
+                context_guard.set_variable("voicemail_message_id".to_string(), message.id.clone());
                 context_guard.set_variable(
                     "voicemail_duration".to_string(),
                     message.duration.to_string(),
@@ -1513,7 +1545,8 @@ impl FlowCallHandler {
                 drop(context_entry);
 
                 let mut context_guard = context.write().await;
-                context_guard.set_variable("voicemail_access_status".to_string(), "error".to_string());
+                context_guard
+                    .set_variable("voicemail_access_status".to_string(), "error".to_string());
                 context_guard.current_node = next;
                 drop(context_guard);
 
@@ -1556,7 +1589,10 @@ impl FlowCallHandler {
         // Helper: start playback of a named system prompt (non-blocking).
         // Returns the playback_id so the caller can stop or wait on it.
         let prompt_service = self.prompt_service.clone();
-        let start_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, prompt_name: &str, fallback_text: String| {
+        let start_prompt = |mm: &Arc<fcp_media::MediaManager>,
+                            cid: &fcp_core::CallId,
+                            prompt_name: &str,
+                            fallback_text: String| {
             let mm = Arc::clone(mm);
             let cid = cid.clone();
             let ps = prompt_service.clone();
@@ -1565,22 +1601,42 @@ impl FlowCallHandler {
                 // 1. Try cached WAV file via PromptService
                 if let Some(ref ps) = ps {
                     if let Ok(Some(path)) = ps.resolve(&prompt_name, None).await {
-                        match mm.play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both).await {
+                        match mm
+                            .play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both)
+                            .await
+                        {
                             Ok(playback_id) => return Some(playback_id),
-                            Err(e) => { warn!(error = %e, prompt = %prompt_name, "Prompt file playback failed, trying TTS"); }
+                            Err(e) => {
+                                warn!(error = %e, prompt = %prompt_name, "Prompt file playback failed, trying TTS");
+                            }
                         }
                     }
                 }
                 // 2. TTS fallback
-                match mm.play_tts(&cid, fallback_text, "en-US".to_string(), None, AudioTarget::Both).await {
+                match mm
+                    .play_tts(
+                        &cid,
+                        fallback_text,
+                        "en-US".to_string(),
+                        None,
+                        AudioTarget::Both,
+                    )
+                    .await
+                {
                     Ok(playback_id) => Some(playback_id),
-                    Err(e) => { warn!(error = %e, prompt = %prompt_name, "TTS fallback failed — upload a WAV file via Admin UI"); None }
+                    Err(e) => {
+                        warn!(error = %e, prompt = %prompt_name, "TTS fallback failed — upload a WAV file via Admin UI");
+                        None
+                    }
                 }
             }
         };
 
         // Helper: play prompt and wait for completion (no barge-in).
-        let play_system_prompt = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId, prompt_name: &str, fallback_text: String| {
+        let play_system_prompt = |mm: &Arc<fcp_media::MediaManager>,
+                                  cid: &fcp_core::CallId,
+                                  prompt_name: &str,
+                                  fallback_text: String| {
             let mm2 = Arc::clone(mm);
             let start = start_prompt(mm, cid, prompt_name, fallback_text);
             async move {
@@ -1597,9 +1653,13 @@ impl FlowCallHandler {
         //
         // If `bargein` is false, plays to completion first then collects.
         let prompt_service2 = self.prompt_service.clone();
-        let play_and_collect = |mm: &Arc<fcp_media::MediaManager>, cid: &fcp_core::CallId,
-                                prompt_name: Option<&str>, dynamic_text: Option<String>,
-                                max: usize, finish_key: Option<char>, timeout_secs: u64| {
+        let play_and_collect = |mm: &Arc<fcp_media::MediaManager>,
+                                cid: &fcp_core::CallId,
+                                prompt_name: Option<&str>,
+                                dynamic_text: Option<String>,
+                                max: usize,
+                                finish_key: Option<char>,
+                                timeout_secs: u64| {
             let mm = Arc::clone(mm);
             let cid = cid.clone();
             let ps = prompt_service2.clone();
@@ -1614,19 +1674,43 @@ impl FlowCallHandler {
                     let mut pid = None;
                     if let Some(ref ps) = ps {
                         if let Ok(Some(path)) = ps.resolve(pn, None).await {
-                            if let Ok(id) = mm.play_file(&cid, path.to_string_lossy().to_string(), AudioTarget::Both).await {
+                            if let Ok(id) = mm
+                                .play_file(
+                                    &cid,
+                                    path.to_string_lossy().to_string(),
+                                    AudioTarget::Both,
+                                )
+                                .await
+                            {
                                 pid = Some(id);
                             }
                         }
                     }
                     if pid.is_none() {
                         if let Some(ref text) = dynamic_text {
-                            pid = mm.play_tts(&cid, text.clone(), "en-US".to_string(), None, AudioTarget::Both).await.ok();
+                            pid = mm
+                                .play_tts(
+                                    &cid,
+                                    text.clone(),
+                                    "en-US".to_string(),
+                                    None,
+                                    AudioTarget::Both,
+                                )
+                                .await
+                                .ok();
                         }
                     }
                     pid
                 } else if let Some(ref text) = dynamic_text {
-                    mm.play_tts(&cid, text.clone(), "en-US".to_string(), None, AudioTarget::Both).await.ok()
+                    mm.play_tts(
+                        &cid,
+                        text.clone(),
+                        "en-US".to_string(),
+                        None,
+                        AudioTarget::Both,
+                    )
+                    .await
+                    .ok()
                 } else {
                     None
                 };
@@ -1649,7 +1733,8 @@ impl FlowCallHandler {
             None => {
                 warn!(call_id = %call_id, "Media manager not configured - cannot run voicemail access IVR");
                 let mut context_guard = context.write().await;
-                context_guard.set_variable("voicemail_access_status".to_string(), "error".to_string());
+                context_guard
+                    .set_variable("voicemail_access_status".to_string(), "error".to_string());
                 context_guard.current_node = next;
                 drop(context_guard);
                 return Box::pin(self.execute_next_node(call_id)).await;
@@ -1661,10 +1746,15 @@ impl FlowCallHandler {
         for attempt in 1..=max_pin_attempts {
             // Play PIN prompt with barge-in — user can start typing PIN immediately
             let pin_digits = play_and_collect(
-                &mm, &media_call_id,
-                Some("vm_enter_pin"), Some("Enter your PIN followed by pound".to_string()),
-                0, Some('#'), 10,
-            ).await;
+                &mm,
+                &media_call_id,
+                Some("vm_enter_pin"),
+                Some("Enter your PIN followed by pound".to_string()),
+                0,
+                Some('#'),
+                10,
+            )
+            .await;
 
             // Strip trailing '#' from collected digits
             let pin_digits = pin_digits.trim_end_matches('#');
@@ -1675,7 +1765,10 @@ impl FlowCallHandler {
             }
 
             // Verify PIN via VoicemailService (returns resolved mailbox ID on success)
-            match voicemail_service.verify_pin(&target_mailbox, pin_digits).await {
+            match voicemail_service
+                .verify_pin(&target_mailbox, pin_digits)
+                .await
+            {
                 Ok(Some(resolved_id)) => {
                     // Update target_mailbox to the resolved mailbox ID for subsequent operations
                     target_mailbox = resolved_id;
@@ -1690,7 +1783,13 @@ impl FlowCallHandler {
                         max = max_pin_attempts,
                         "Incorrect PIN"
                     );
-                    play_system_prompt(&mm, &media_call_id, "vm_incorrect_pin", "Incorrect PIN. Please try again.".to_string()).await;
+                    play_system_prompt(
+                        &mm,
+                        &media_call_id,
+                        "vm_incorrect_pin",
+                        "Incorrect PIN. Please try again.".to_string(),
+                    )
+                    .await;
                 }
                 Err(e) => {
                     warn!(call_id = %call_id, error = %e, "PIN verification error");
@@ -1701,10 +1800,19 @@ impl FlowCallHandler {
 
         if !authenticated {
             info!(call_id = %call_id, "Voicemail access: auth failed");
-            play_system_prompt(&mm, &media_call_id, "vm_auth_failed", "Authentication failed. Goodbye.".to_string()).await;
+            play_system_prompt(
+                &mm,
+                &media_call_id,
+                "vm_auth_failed",
+                "Authentication failed. Goodbye.".to_string(),
+            )
+            .await;
 
             let mut context_guard = context.write().await;
-            context_guard.set_variable("voicemail_access_status".to_string(), "auth_failed".to_string());
+            context_guard.set_variable(
+                "voicemail_access_status".to_string(),
+                "auth_failed".to_string(),
+            );
             context_guard.current_node = on_auth_failure.unwrap_or(next);
             drop(context_guard);
 
@@ -1719,12 +1827,19 @@ impl FlowCallHandler {
                 .await
                 .unwrap_or_default();
 
-            let new_count = messages.iter().filter(|m| m.status == MessageStatus::New).count();
-            let saved_count = messages.iter().filter(|m| m.status == MessageStatus::Saved).count();
+            let new_count = messages
+                .iter()
+                .filter(|m| m.status == MessageStatus::New)
+                .count();
+            let saved_count = messages
+                .iter()
+                .filter(|m| m.status == MessageStatus::Saved)
+                .count();
 
             // Play message count and menu with barge-in
             let digit = play_and_collect(
-                &mm, &media_call_id,
+                &mm,
+                &media_call_id,
                 None,
                 Some(format!(
                     "You have {} new messages and {} saved messages. \
@@ -1732,8 +1847,11 @@ impl FlowCallHandler {
                      Press star to exit.",
                     new_count, saved_count
                 )),
-                1, None, 10,
-            ).await;
+                1,
+                None,
+                10,
+            )
+            .await;
 
             let filter_status = match digit.as_str() {
                 "1" => MessageStatus::New,
@@ -1749,7 +1867,13 @@ impl FlowCallHandler {
                 .collect();
 
             if filtered.is_empty() {
-                play_system_prompt(&mm, &media_call_id, "vm_no_messages", format!("No {} messages.", filter_status)).await;
+                play_system_prompt(
+                    &mm,
+                    &media_call_id,
+                    "vm_no_messages",
+                    format!("No {} messages.", filter_status),
+                )
+                .await;
                 continue 'main_menu;
             }
 
@@ -1758,7 +1882,8 @@ impl FlowCallHandler {
                 let msg = &filtered[msg_idx];
 
                 // Format timestamp for announcement
-                let time_str = msg.created_at
+                let time_str = msg
+                    .created_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| {
                         let secs = d.as_secs();
@@ -1784,16 +1909,25 @@ impl FlowCallHandler {
                 .await;
 
                 // Play the message audio
-                let _ = voicemail_service.play_message(&media_call_id, &msg.id).await;
+                let _ = voicemail_service
+                    .play_message(&media_call_id, &msg.id)
+                    .await;
 
                 // Post-message menu with barge-in
                 let action = play_and_collect(
-                    &mm, &media_call_id,
+                    &mm,
+                    &media_call_id,
                     Some("vm_post_message_menu"),
-                    Some("Press 1 to replay. Press 2 to save. Press 3 to delete. \
-                     Press 4 for next message. Press star for main menu.".to_string()),
-                    1, None, 10,
-                ).await;
+                    Some(
+                        "Press 1 to replay. Press 2 to save. Press 3 to delete. \
+                     Press 4 for next message. Press star for main menu."
+                            .to_string(),
+                    ),
+                    1,
+                    None,
+                    10,
+                )
+                .await;
 
                 match action.as_str() {
                     "1" => {
@@ -1804,7 +1938,13 @@ impl FlowCallHandler {
                         if let Err(e) = voicemail_service.save_message(msg).await {
                             warn!(call_id = %call_id, error = %e, "Failed to save message");
                         } else {
-                            play_system_prompt(&mm, &media_call_id, "vm_message_saved", "Message saved.".to_string()).await;
+                            play_system_prompt(
+                                &mm,
+                                &media_call_id,
+                                "vm_message_saved",
+                                "Message saved.".to_string(),
+                            )
+                            .await;
                         }
                         msg_idx += 1;
                     }
@@ -1813,7 +1953,13 @@ impl FlowCallHandler {
                         if let Err(e) = voicemail_service.delete_message(&msg.id).await {
                             warn!(call_id = %call_id, error = %e, "Failed to delete message");
                         } else {
-                            play_system_prompt(&mm, &media_call_id, "vm_message_deleted", "Message deleted.".to_string()).await;
+                            play_system_prompt(
+                                &mm,
+                                &media_call_id,
+                                "vm_message_deleted",
+                                "Message deleted.".to_string(),
+                            )
+                            .await;
                         }
                         msg_idx += 1;
                     }
@@ -1830,7 +1976,13 @@ impl FlowCallHandler {
             }
 
             // All messages played
-            play_system_prompt(&mm, &media_call_id, "vm_end_of_messages", "End of messages.".to_string()).await;
+            play_system_prompt(
+                &mm,
+                &media_call_id,
+                "vm_end_of_messages",
+                "End of messages.".to_string(),
+            )
+            .await;
         }
 
         // 5. Exit — send MWI update and set success status
@@ -1920,7 +2072,8 @@ impl FlowCallHandler {
 
                         let mut context_guard = context.write().await;
                         context_guard.set_variable("fork_winner".to_string(), winner);
-                        context_guard.set_variable("fork_status".to_string(), "answered".to_string());
+                        context_guard
+                            .set_variable("fork_status".to_string(), "answered".to_string());
                         context_guard.current_node = next;
                         drop(context_guard);
 
@@ -1969,10 +2122,7 @@ impl FlowCallHandler {
 
                 let mut context_guard = context.write().await;
                 context_guard.set_variable("fork_status".to_string(), "completed".to_string());
-                context_guard.set_variable(
-                    "fork_destinations".to_string(),
-                    destinations.join(","),
-                );
+                context_guard.set_variable("fork_destinations".to_string(), destinations.join(","));
                 context_guard.current_node = next;
                 drop(context_guard);
             }
@@ -2041,7 +2191,8 @@ impl FlowCallHandler {
             let context = Arc::clone(context_entry.value());
             drop(context_entry);
             let guard = context.read().await;
-            guard.media_session_id
+            guard
+                .media_session_id
                 .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
         };
 
@@ -2110,7 +2261,8 @@ impl FlowCallHandler {
                 let context = Arc::clone(context_entry.value());
                 drop(context_entry);
                 let guard = context.read().await;
-                guard.media_session_id
+                guard
+                    .media_session_id
                     .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()))
             };
 
@@ -2134,10 +2286,8 @@ impl FlowCallHandler {
                         drop(context_entry);
 
                         let mut context_guard = context.write().await;
-                        context_guard.set_variable(
-                            "recording_status".to_string(),
-                            "error".to_string(),
-                        );
+                        context_guard
+                            .set_variable("recording_status".to_string(), "error".to_string());
                         context_guard.current_node = error_node.clone();
                         drop(context_guard);
 
@@ -2328,7 +2478,9 @@ impl FlowCallHandler {
                         // Resolve prompt API URLs to filesystem paths.
                         // The admin UI stores URLs like "/api/v1/prompts/<prompt-id>/audio"
                         // but the media manager needs a local filesystem path.
-                        let resolved_path = self.resolve_prompt_url(&url_value).await
+                        let resolved_path = self
+                            .resolve_prompt_url(&url_value)
+                            .await
                             .unwrap_or(url_value.clone());
 
                         // Use media session ID from context (not SIP call ID)
@@ -2339,7 +2491,11 @@ impl FlowCallHandler {
                         // Start playback to ParticipantA (the caller in IVR mode)
                         // Note: Using ParticipantA instead of Both to avoid echo in IVR scenarios
                         match media_manager
-                            .play_file(&session_id, resolved_path.clone(), AudioTarget::ParticipantA)
+                            .play_file(
+                                &session_id,
+                                resolved_path.clone(),
+                                AudioTarget::ParticipantA,
+                            )
                             .await
                         {
                             Ok(playback_id) => {
@@ -2690,7 +2846,8 @@ impl FlowCallHandler {
 
                 // Create DTMF collector and play prompt
                 if let Some(media_manager) = &self.media_manager {
-                    let gather_call_id = media_session_id.unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
+                    let gather_call_id = media_session_id
+                        .unwrap_or_else(|| fcp_core::CallId::from_uuid(*call_id.as_uuid()));
 
                     info!(
                         call_id = %call_id,
@@ -2705,13 +2862,19 @@ impl FlowCallHandler {
                     );
 
                     // Create collector BEFORE playback so digits during prompt are captured
-                    let collector = media_manager.create_dtmf_collector(&gather_call_id, num_digits, finish_on_key);
+                    let collector = media_manager.create_dtmf_collector(
+                        &gather_call_id,
+                        num_digits,
+                        finish_on_key,
+                    );
 
                     // Start prompt playback if available
                     let playback_id: Option<String> = if let (Some(prompt_url), Some(session_id)) =
                         (&prompt_url, media_session_id)
                     {
-                        let resolved_url = self.resolve_prompt_url(prompt_url).await
+                        let resolved_url = self
+                            .resolve_prompt_url(prompt_url)
+                            .await
                             .unwrap_or(prompt_url.clone());
                         info!(
                             call_id = %call_id,
@@ -2730,9 +2893,8 @@ impl FlowCallHandler {
                             Ok(pid) => {
                                 if !barge_in {
                                     // No barge-in: wait for prompt to finish before collecting
-                                    if let Err(e) = media_manager
-                                        .wait_playback_completion(pid.clone())
-                                        .await
+                                    if let Err(e) =
+                                        media_manager.wait_playback_completion(pid.clone()).await
                                     {
                                         warn!(call_id = %call_id, error = %e, "Gather prompt playback failed");
                                     } else {

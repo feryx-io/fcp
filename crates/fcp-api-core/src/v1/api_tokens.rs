@@ -8,8 +8,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde::{Deserialize, Serialize};
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -77,16 +77,15 @@ pub struct CreateApiTokenResponse {
 /// List all API tokens for the default tenant.
 ///
 /// GET /api/v1/api-tokens
-pub async fn list_api_tokens(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".to_string())
-    })?;
+pub async fn list_api_tokens(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
 
-    let store = storage.api_token_store().ok_or_else(|| {
-        ApiError::Internal("API token store not configured".to_string())
-    })?;
+    let store = storage
+        .api_token_store()
+        .ok_or_else(|| ApiError::Internal("API token store not configured".to_string()))?;
 
     let tokens = store
         .list_api_tokens(&state.default_tenant_id)
@@ -110,20 +109,20 @@ pub async fn create_api_token(
         ));
     }
 
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".to_string())
-    })?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
 
-    let store = storage.api_token_store().ok_or_else(|| {
-        ApiError::Internal("API token store not configured".to_string())
-    })?;
+    let store = storage
+        .api_token_store()
+        .ok_or_else(|| ApiError::Internal("API token store not configured".to_string()))?;
 
     // Generate 32 random bytes and encode as base64url
     let mut secret_bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret_bytes);
     use base64::Engine;
-    let secret_b64 =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret_bytes);
+    let secret_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret_bytes);
     let secret = format!("fcp_{}", secret_b64);
 
     // Hash the secret with SHA-256
@@ -143,10 +142,7 @@ pub async fn create_api_token(
             let secs = dt.timestamp() as u64;
             Some(UNIX_EPOCH + std::time::Duration::from_secs(secs))
         } else if let Ok(date) = chrono::NaiveDate::parse_from_str(exp_str, "%Y-%m-%d") {
-            let dt = date
-                .and_hms_opt(23, 59, 59)
-                .unwrap()
-                .and_utc();
+            let dt = date.and_hms_opt(23, 59, 59).unwrap().and_utc();
             let secs = dt.timestamp() as u64;
             Some(UNIX_EPOCH + std::time::Duration::from_secs(secs))
         } else {
@@ -195,13 +191,14 @@ pub async fn delete_api_token(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".to_string())
-    })?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
 
-    let store = storage.api_token_store().ok_or_else(|| {
-        ApiError::Internal("API token store not configured".to_string())
-    })?;
+    let store = storage
+        .api_token_store()
+        .ok_or_else(|| ApiError::Internal("API token store not configured".to_string()))?;
 
     let token_id: fcp_core::ApiTokenId = id
         .parse()

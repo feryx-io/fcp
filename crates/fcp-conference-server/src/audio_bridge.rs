@@ -551,24 +551,44 @@ fn execute_dtmf_command(
                 }
                 Err(e) => warn!(error = %e, "Failed to get participant state for mute toggle"),
             }
-            DtmfResult { should_leave: false, feedback, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::VolumeUp => {
             info!(participant = %participant_id, "DTMF volume up");
-            DtmfResult { should_leave: false, feedback: None, gain_delta: DTMF_GAIN_STEP }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: DTMF_GAIN_STEP,
+            }
         }
         DtmfCommand::VolumeDown => {
             info!(participant = %participant_id, "DTMF volume down");
-            DtmfResult { should_leave: false, feedback: None, gain_delta: -DTMF_GAIN_STEP }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: -DTMF_GAIN_STEP,
+            }
         }
         DtmfCommand::Info => {
             let count = room.participant_count();
             info!(participant = %participant_id, participant_count = count, "DTMF info request");
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::Leave => {
             info!(participant = %participant_id, "DTMF leave requested");
-            DtmfResult { should_leave: true, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: true,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::MuteAll => {
             if is_host {
@@ -581,7 +601,11 @@ fn execute_dtmf_command(
                 }
                 info!(participant = %participant_id, "DTMF host: muted all (except host)");
             }
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::UnmuteAll => {
             if is_host {
@@ -593,7 +617,11 @@ fn execute_dtmf_command(
                 }
                 info!(participant = %participant_id, "DTMF host: unmuted all");
             }
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::LockConference => {
             let mut feedback = None;
@@ -602,7 +630,11 @@ fn execute_dtmf_command(
                 info!(participant = %participant_id, "DTMF host: locked conference");
                 feedback = Some(DtmfFeedback::Locked);
             }
-            DtmfResult { should_leave: false, feedback, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::UnlockConference => {
             let mut feedback = None;
@@ -611,18 +643,26 @@ fn execute_dtmf_command(
                 info!(participant = %participant_id, "DTMF host: unlocked conference");
                 feedback = Some(DtmfFeedback::Unlocked);
             }
-            DtmfResult { should_leave: false, feedback, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::EndConference => {
             if is_host {
                 info!(participant = %participant_id, "DTMF host: ending conference");
                 room.lock(); // Prevent new joins
-                // Don't remove participants yet — let the announcement play first.
-                // The bridge will handle removal after the announcement.
+                             // Don't remove participants yet — let the announcement play first.
+                             // The bridge will handle removal after the announcement.
             }
             DtmfResult {
                 should_leave: true,
-                feedback: if is_host { Some(DtmfFeedback::EndingAnnouncement) } else { None },
+                feedback: if is_host {
+                    Some(DtmfFeedback::EndingAnnouncement)
+                } else {
+                    None
+                },
                 gain_delta: 0.0,
             }
         }
@@ -640,7 +680,11 @@ fn execute_dtmf_command(
                     }
                 }
             }
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
         DtmfCommand::DialOut(destination) => {
             if is_host {
@@ -654,11 +698,22 @@ fn execute_dtmf_command(
                 // dial-out request channel. The handler polls this.
                 room.request_dial_out(&destination);
             }
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
-        DtmfCommand::Incomplete | DtmfCommand::InvalidCommand | DtmfCommand::EnterHostPin | DtmfCommand::EnterDialOut => {
+        DtmfCommand::Incomplete
+        | DtmfCommand::InvalidCommand
+        | DtmfCommand::EnterHostPin
+        | DtmfCommand::EnterDialOut => {
             // Internal states, no action needed
-            DtmfResult { should_leave: false, feedback: None, gain_delta: 0.0 }
+            DtmfResult {
+                should_leave: false,
+                feedback: None,
+                gain_delta: 0.0,
+            }
         }
     }
 }

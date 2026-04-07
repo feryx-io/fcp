@@ -17,9 +17,9 @@ const DIALOG_INFO_NS: &str = "urn:ietf:params:xml:ns:dialog-info";
 fn state_to_dialog_state(state: &PresenceState) -> &'static str {
     match state {
         PresenceState::Closed => "terminated",
-        PresenceState::Open => "terminated",   // No active dialog
-        PresenceState::Away => "terminated",    // No active dialog
-        PresenceState::Busy => "confirmed",     // DND treated as occupied
+        PresenceState::Open => "terminated", // No active dialog
+        PresenceState::Away => "terminated", // No active dialog
+        PresenceState::Busy => "confirmed",  // DND treated as occupied
         PresenceState::OnThePhone => "confirmed",
         PresenceState::Ringing => "early",
     }
@@ -227,7 +227,12 @@ mod tests {
 
     #[test]
     fn test_generate_dialog_info_ringing() {
-        let xml = generate_dialog_info("alice@example.com", &PresenceState::Ringing, Some("call-42"), 5);
+        let xml = generate_dialog_info(
+            "alice@example.com",
+            &PresenceState::Ringing,
+            Some("call-42"),
+            5,
+        );
         assert!(xml.contains("<dialog id=\"call-42\""));
         assert!(xml.contains("<state>early</state>"));
         assert!(xml.contains("version=\"5\""));

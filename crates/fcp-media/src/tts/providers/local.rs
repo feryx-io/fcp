@@ -200,10 +200,7 @@ impl LocalTts {
             .context("Failed to parse worker ready message")?;
 
         if ready_resp.ready != Some(true) {
-            bail!(
-                "Worker did not send ready signal: {}",
-                ready_line.trim()
-            );
+            bail!("Worker did not send ready signal: {}", ready_line.trim());
         }
 
         info!(
@@ -227,12 +224,7 @@ impl TtsProvider for LocalTts {
         format!("local_{}", self.engine)
     }
 
-    async fn synthesize(
-        &self,
-        text: &str,
-        language: &str,
-        voice: Option<&str>,
-    ) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>> {
         self.ensure_worker().await?;
 
         let voice = voice.unwrap_or(&self.default_voice);
@@ -323,7 +315,9 @@ impl TtsProvider for LocalTts {
         };
 
         if !response.ok {
-            let error_msg = response.error.unwrap_or_else(|| "Unknown error".to_string());
+            let error_msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
             bail!("Kokoro synthesis failed: {}", error_msg);
         }
 
@@ -334,9 +328,9 @@ impl TtsProvider for LocalTts {
         );
 
         // Read the generated WAV file
-        let audio_data = tokio::fs::read(&output_path)
-            .await
-            .with_context(|| format!("Failed to read generated audio: {}", output_path.display()))?;
+        let audio_data = tokio::fs::read(&output_path).await.with_context(|| {
+            format!("Failed to read generated audio: {}", output_path.display())
+        })?;
 
         // Clean up temp file
         let _ = tokio::fs::remove_file(&output_path).await;

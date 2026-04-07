@@ -1,8 +1,9 @@
 //! HTTP health/status/calls API for fcp-call-manager.
 
+use crate::queue_handler::{QueueCallHandler, SupervisorMode};
 use axum::{
-    extract::{Path, Query, State},
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
@@ -11,11 +12,10 @@ use axum::{
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
 use fcp_core::{CallId, DynStorage};
-use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus, PlatformEvent};
 use fcp_events::filter::EventType;
+use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus, PlatformEvent};
 use fcp_media::MediaManager;
 use fcp_queue::QueueManager;
-use crate::queue_handler::{QueueCallHandler, SupervisorMode};
 use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -51,9 +51,20 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         .route("/media-sessions", get(media_sessions_handler))
         .route("/transcoding", get(transcoding_handler))
         // Queue/Agent management endpoints
-        .route("/queues", get(list_queues_handler).post(create_queue_handler))
-        .route("/queues/{name}", get(get_queue_handler).put(update_queue_handler).delete(delete_queue_handler))
-        .route("/queues/{name}/drain", post(drain_queue_handler).delete(undrain_queue_handler))
+        .route(
+            "/queues",
+            get(list_queues_handler).post(create_queue_handler),
+        )
+        .route(
+            "/queues/{name}",
+            get(get_queue_handler)
+                .put(update_queue_handler)
+                .delete(delete_queue_handler),
+        )
+        .route(
+            "/queues/{name}/drain",
+            post(drain_queue_handler).delete(undrain_queue_handler),
+        )
         .route("/queues/reload", post(reload_queues_handler))
         .route("/queues/{name}/history", get(queue_history_handler))
         .route("/agents", get(list_agents_handler))
@@ -70,20 +81,32 @@ pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> any
         // WebSocket wallboard (real-time queue stats)
         .route("/ws/wallboard", get(wallboard_ws_handler))
         // Campaign / predictive dialer endpoints
-        .route("/campaigns/{queue}/numbers", post(campaign_load_numbers_handler))
+        .route(
+            "/campaigns/{queue}/numbers",
+            post(campaign_load_numbers_handler),
+        )
         .route("/campaigns/{queue}/stats", get(campaign_stats_handler))
         .route("/campaigns/{queue}/start", post(campaign_start_handler))
         .route("/campaigns/{queue}/stop", post(campaign_stop_handler))
         // Queue transfer endpoint
-        .route("/queues/{from}/transfer/{call_id}", post(transfer_call_handler))
+        .route(
+            "/queues/{from}/transfer/{call_id}",
+            post(transfer_call_handler),
+        )
         // Supervisor endpoints
         .route("/calls/{id}/monitor", post(monitor_call_handler))
         .route("/calls/{id}/whisper", post(whisper_call_handler))
         .route("/calls/{id}/barge", post(barge_call_handler))
-        .route("/calls/{id}/supervisor/leave", post(supervisor_leave_handler))
+        .route(
+            "/calls/{id}/supervisor/leave",
+            post(supervisor_leave_handler),
+        )
         // Presence endpoints
         .route("/presence", get(list_presence_handler))
-        .route("/presence/{aor}", get(get_presence_handler).put(update_presence_handler))
+        .route(
+            "/presence/{aor}",
+            get(get_presence_handler).put(update_presence_handler),
+        )
         // Prometheus metrics endpoint
         .route("/metrics", get(metrics_handler))
         // Internal cluster endpoints (authenticated via cluster secret)
@@ -402,13 +425,12 @@ async fn transcoding_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
     let sessions = state.media_manager.list_sessions().await;
 
     // Count sessions with transcoding active
-    let transcoding_sessions: Vec<&fcp_media::RtpSessionInfo> = sessions
-        .iter()
-        .filter(|s| s.transcoding_active)
-        .collect();
+    let transcoding_sessions: Vec<&fcp_media::RtpSessionInfo> =
+        sessions.iter().filter(|s| s.transcoding_active).collect();
 
     // Build codec pairs summary
-    let mut codec_pairs: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut codec_pairs: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for session in &transcoding_sessions {
         let pair = format!("{} <-> {}", session.a_leg.codec, session.b_leg.codec);
         *codec_pairs.entry(pair).or_insert(0) += 1;
@@ -598,9 +620,7 @@ async fn undrain_queue_handler(
 }
 
 /// Reload queue configuration from disk.
-async fn reload_queues_handler(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn reload_queues_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
@@ -676,7 +696,10 @@ async fn pause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.pause_agent(&id, body.duration_secs, body.reason.clone()).await {
+    match qm
+        .pause_agent(&id, body.duration_secs, body.reason.clone())
+        .await
+    {
         Ok(()) => Json(serde_json::json!({
             "status": "paused",
             "agent_id": id,
@@ -938,7 +961,14 @@ async fn monitor_call_handler(
     let Some(ref qh) = state.queue_handler else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qh.start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Monitor).await {
+    match qh
+        .start_supervisor(
+            &call_id,
+            &body.supervisor_extension,
+            SupervisorMode::Monitor,
+        )
+        .await
+    {
         Ok(()) => Json(serde_json::json!({
             "status": "monitoring",
             "call_id": call_id,
@@ -958,7 +988,14 @@ async fn whisper_call_handler(
     let Some(ref qh) = state.queue_handler else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qh.start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Whisper).await {
+    match qh
+        .start_supervisor(
+            &call_id,
+            &body.supervisor_extension,
+            SupervisorMode::Whisper,
+        )
+        .await
+    {
         Ok(()) => Json(serde_json::json!({
             "status": "whispering",
             "call_id": call_id,
@@ -978,7 +1015,10 @@ async fn barge_call_handler(
     let Some(ref qh) = state.queue_handler else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qh.start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Barge).await {
+    match qh
+        .start_supervisor(&call_id, &body.supervisor_extension, SupervisorMode::Barge)
+        .await
+    {
         Ok(()) => Json(serde_json::json!({
             "status": "barging",
             "call_id": call_id,
@@ -1199,7 +1239,9 @@ async fn wallboard_ws_session(mut socket: WebSocket, state: Arc<AppState>) {
 /// List all tracked presentities.
 async fn list_presence_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let Some(ref pm) = state.presence_manager else {
-        return Json(serde_json::json!({"error": "Presence service not enabled", "presentities": []}));
+        return Json(
+            serde_json::json!({"error": "Presence service not enabled", "presentities": []}),
+        );
     };
 
     let presences: Vec<serde_json::Value> = pm
@@ -1227,7 +1269,11 @@ async fn get_presence_handler(
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref pm) = state.presence_manager else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Presence service not enabled"}))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Presence service not enabled"})),
+        )
+            .into_response();
     };
 
     // URL-decode the AOR (@ may be encoded as %40)
@@ -1251,7 +1297,11 @@ async fn get_presence_handler(
             }))
             .into_response()
         }
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Presentity '{}' not found", aor)}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("Presentity '{}' not found", aor)})),
+        )
+            .into_response(),
     }
 }
 
@@ -1262,9 +1312,12 @@ async fn update_presence_handler(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let Some(ref pm) = state.presence_manager else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Presence service not enabled"}))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "Presence service not enabled"})),
+        )
+            .into_response();
     };
-
 
     let state_str = body["state"].as_str().unwrap_or("open");
     let presence_state = match state_str {
@@ -1275,7 +1328,11 @@ async fn update_presence_handler(
         "on_the_phone" => fcp_presence::PresenceState::OnThePhone,
         "ringing" => fcp_presence::PresenceState::Ringing,
         other => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Unknown state: {}", other)}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Unknown state: {}", other)})),
+            )
+                .into_response();
         }
     };
 
@@ -1295,7 +1352,11 @@ async fn update_presence_handler(
             "note": info.note,
         }))
         .into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -1357,9 +1418,7 @@ async fn internal_hangup_handler(
         }
     };
 
-    let _ = state
-        .call_manager
-        .terminate_call(&call_id, req.reason);
+    let _ = state.call_manager.terminate_call(&call_id, req.reason);
 
     info!(call_id = %call_id, "Internal hangup request processed");
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()

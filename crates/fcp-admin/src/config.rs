@@ -272,11 +272,18 @@ pub struct EventsConfig {
     /// Example: "http://fcp-events-server:8081/ingest"
     #[serde(default)]
     pub server_url: Option<String>,
+
+    /// Optional bearer token for authenticating to fcp-events-server.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 impl Default for EventsConfig {
     fn default() -> Self {
-        Self { server_url: None }
+        Self {
+            server_url: None,
+            auth_token: None,
+        }
     }
 }
 

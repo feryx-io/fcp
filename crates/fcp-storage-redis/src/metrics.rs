@@ -5,9 +5,7 @@
 //! in-memory cache hit/miss/eviction statistics.
 
 use lazy_static::lazy_static;
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGaugeVec, Opts};
 
 lazy_static! {
     /// Total Redis operations by operation name and result (ok/err).
@@ -126,9 +124,7 @@ pub fn update_cache_metrics(name: &str, stats: &CacheStats) {
     CACHE_EVICTIONS_TOTAL
         .with_label_values(&[name])
         .inc_by(stats.evictions);
-    CACHE_SIZE
-        .with_label_values(&[name])
-        .set(stats.size as i64);
+    CACHE_SIZE.with_label_values(&[name]).set(stats.size as i64);
 }
 
 /// Render all registered Prometheus metrics in text exposition format.

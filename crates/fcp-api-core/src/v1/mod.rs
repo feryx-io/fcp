@@ -78,7 +78,10 @@ pub fn router() -> Router<ApiState> {
         .route("/health", get(system::health))
         .route("/status", get(system::status))
         // Self-service (end-user portal)
-        .route("/me/profile", get(self_service::get_profile).put(self_service::update_profile))
+        .route(
+            "/me/profile",
+            get(self_service::get_profile).put(self_service::update_profile),
+        )
         .route(
             "/me/profile/avatar",
             get(self_service::get_avatar)
@@ -86,17 +89,31 @@ pub fn router() -> Router<ApiState> {
                 .delete(self_service::delete_avatar),
         )
         .route("/me/password", put(self_service::change_password))
-        .route("/me/voicemail", get(self_service::get_voicemail).put(self_service::update_voicemail))
-        .route("/me/voicemail/stats", get(self_service::get_voicemail_stats))
-        .route("/me/voicemail/messages", get(self_service::list_voicemail_messages))
+        .route(
+            "/me/voicemail",
+            get(self_service::get_voicemail).put(self_service::update_voicemail),
+        )
+        .route(
+            "/me/voicemail/stats",
+            get(self_service::get_voicemail_stats),
+        )
+        .route(
+            "/me/voicemail/messages",
+            get(self_service::list_voicemail_messages),
+        )
         .route(
             "/me/voicemail/messages/:id",
-            put(self_service::update_voicemail_message).delete(self_service::delete_voicemail_message),
+            put(self_service::update_voicemail_message)
+                .delete(self_service::delete_voicemail_message),
         )
-        .route("/me/voicemail/messages/:id/audio", get(self_service::get_message_audio))
+        .route(
+            "/me/voicemail/messages/:id/audio",
+            get(self_service::get_message_audio),
+        )
         .route(
             "/me/voicemail/greetings",
-            get(self_service::list_voicemail_greetings).post(self_service::upload_voicemail_greeting),
+            get(self_service::list_voicemail_greetings)
+                .post(self_service::upload_voicemail_greeting),
         )
         .route(
             "/me/voicemail/greetings/synthesize",
@@ -119,8 +136,7 @@ pub fn router() -> Router<ApiState> {
         .route("/me/conferences", get(self_service::list_my_conferences))
         .route(
             "/me/conferences/:id",
-            get(self_service::get_my_conference)
-                .patch(self_service::update_my_conference),
+            get(self_service::get_my_conference).patch(self_service::update_my_conference),
         );
 
     // Admin-only routes — EndUser JWTs are rejected with 403 by require_admin.
@@ -193,7 +209,10 @@ pub fn router() -> Router<ApiState> {
         .route("/cdrs/:call_id", get(cdrs::get_cdr))
         // Flow execution traces
         .route("/flow-traces", get(flow_traces::list_flow_traces))
-        .route("/flow-traces/:call_id", get(flow_traces::get_call_flow_traces))
+        .route(
+            "/flow-traces/:call_id",
+            get(flow_traces::get_call_flow_traces),
+        )
         // Flows
         .route("/flows", get(flows::list_flows).post(flows::create_flow))
         .route(
@@ -276,7 +295,10 @@ pub fn router() -> Router<ApiState> {
             delete(queues::agent_logout).patch(queues::update_agent_state),
         )
         .route("/queues/:name/agents/:id/pause", post(queues::pause_agent))
-        .route("/queues/:name/agents/:id/resume", post(queues::resume_agent))
+        .route(
+            "/queues/:name/agents/:id/resume",
+            post(queues::resume_agent),
+        )
         // Presence
         .route("/presence", get(presence::list_presences))
         .route("/presence/stats", get(presence::get_stats))
@@ -304,10 +326,7 @@ pub fn router() -> Router<ApiState> {
         // Configuration
         .route("/config", get(config::list_configs))
         .route("/config/audit", get(config::get_audit_log))
-        .route(
-            "/config/:service",
-            get(config::list_service_config),
-        )
+        .route("/config/:service", get(config::list_service_config))
         .route(
             "/config/:service/:section",
             get(config::get_config)
@@ -335,10 +354,7 @@ pub fn router() -> Router<ApiState> {
                 .post(prompts::upload_audio)
                 .layer(DefaultBodyLimit::max(50 * 1024 * 1024)), // 50 MB for audio uploads
         )
-        .route(
-            "/prompts/:id/synthesize",
-            post(prompts::synthesize_prompt),
-        )
+        .route("/prompts/:id/synthesize", post(prompts::synthesize_prompt))
         // Voicemail (admin management)
         .route(
             "/voicemail/mailboxes",
@@ -394,10 +410,7 @@ pub fn router() -> Router<ApiState> {
             "/api-tokens",
             get(api_tokens::list_api_tokens).post(api_tokens::create_api_token),
         )
-        .route(
-            "/api-tokens/:id",
-            delete(api_tokens::delete_api_token),
-        )
+        .route("/api-tokens/:id", delete(api_tokens::delete_api_token))
         // Routing Rules
         .route(
             "/routing/rules",

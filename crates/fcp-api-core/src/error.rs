@@ -40,11 +40,7 @@ impl IntoResponse for ApiError {
                 "Unauthorized".to_string(),
                 Some(msg),
             ),
-            ApiError::Forbidden(msg) => (
-                StatusCode::FORBIDDEN,
-                "Forbidden".to_string(),
-                Some(msg),
-            ),
+            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "Forbidden".to_string(), Some(msg)),
             ApiError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal Server Error".to_string(),

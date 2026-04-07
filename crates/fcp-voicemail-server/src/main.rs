@@ -11,9 +11,14 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use fcp_core::storage::{LineBindingStore, PhoneNumberStore, VoicemailStore};
+use fcp_core::{storage::ExtensionStore, CredentialStore};
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
 use fcp_media::{BackendType, MediaConfig};
-use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
+use fcp_sbc_core::{
+    CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar,
+    TrunkRouter,
+};
 use fcp_sip::flow_handler::FlowCallHandler;
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
@@ -24,8 +29,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use fcp_core::storage::{LineBindingStore, PhoneNumberStore, VoicemailStore};
-use fcp_core::{CredentialStore, storage::ExtensionStore};
 use tracing::{info, warn};
 
 mod cli;
@@ -121,30 +124,78 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
-            ("events", serde_json::to_value(&config.events).unwrap_or_default()),
-            ("voicemail", serde_json::to_value(&config.voicemail).unwrap_or_default()),
-            ("b2bua", serde_json::to_value(&config.b2bua).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+            (
+                "media",
+                serde_json::to_value(&config.media).unwrap_or_default(),
+            ),
+            (
+                "events",
+                serde_json::to_value(&config.events).unwrap_or_default(),
+            ),
+            (
+                "voicemail",
+                serde_json::to_value(&config.voicemail).unwrap_or_default(),
+            ),
+            (
+                "b2bua",
+                serde_json::to_value(&config.b2bua).unwrap_or_default(),
+            ),
+            (
+                "cluster",
+                serde_json::to_value(&config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
-                        "events" => if let Ok(v) = serde_json::from_value(entry.value) { config.events = v; },
-                        "voicemail" => if let Ok(v) = serde_json::from_value(entry.value) { config.voicemail = v; },
-                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { config.b2bua = v; },
-                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        "media" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.media = v;
+                            }
+                        }
+                        "events" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.events = v;
+                            }
+                        }
+                        "voicemail" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.voicemail = v;
+                            }
+                        }
+                        "b2bua" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.b2bua = v;
+                            }
+                        }
+                        "cluster" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.cluster = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -181,7 +232,9 @@ async fn main() -> Result<()> {
 
     // 10. Build credential provider from trunks (if any)
     let trunk_cred_provider: Option<Arc<TrunkCredentialProvider>> = if !config.trunks.is_empty() {
-        Some(Arc::new(TrunkCredentialProvider::from_trunks(&config.trunks)))
+        Some(Arc::new(TrunkCredentialProvider::from_trunks(
+            &config.trunks,
+        )))
     } else {
         None
     };
@@ -226,7 +279,11 @@ async fn main() -> Result<()> {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
                 http_address: config.http.bind_address,
-                sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_address: config
+                    .sip
+                    .udp_bind
+                    .parse()
+                    .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                 capabilities: vec!["voicemail".to_string(), "mwi".to_string()],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
@@ -235,9 +292,15 @@ async fn main() -> Result<()> {
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             };
-            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
-                .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
-                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+            let cm =
+                fcp_cluster::ClusterManager::new(redis.clone(), member)
+                    .with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    )
+                    .with_event_publisher(
+                        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
+                    );
             let _handle = cm.start();
             info!("Cluster membership started");
             Some(cm)
@@ -347,7 +410,11 @@ async fn main() -> Result<()> {
     .with_transaction_manager(Arc::clone(&transaction_manager_ref))
     .with_dialog_manager(Arc::clone(&dialog_manager_ref))
     .with_uris(local_uri.clone(), contact_uri)
-    .with_media_profile(media_profile, local_addr.clone(), config.media.rtp_port_start)
+    .with_media_profile(
+        media_profile,
+        local_addr.clone(),
+        config.media.rtp_port_start,
+    )
     .with_voicemail_service(Arc::clone(&voicemail_service));
 
     let flow_handler = Arc::new(flow_handler);
@@ -365,10 +432,9 @@ async fn main() -> Result<()> {
 
         // Only insert if the flow doesn't already exist (preserves user edits)
         if flow_store.get_flow(&flow_id).await?.is_none() {
-            flow_store
-                .insert_flow(flow_def)
-                .await
-                .with_context(|| format!("Failed to save voicemail flow for route {}", route.did))?;
+            flow_store.insert_flow(flow_def).await.with_context(|| {
+                format!("Failed to save voicemail flow for route {}", route.did)
+            })?;
         }
 
         flow_handler
@@ -413,16 +479,20 @@ async fn main() -> Result<()> {
         let tenant_id = fcp_core::TenantId::nil();
 
         // Pre-load extensions for alias resolution
-        let all_extensions: Vec<fcp_core::Extension> = match dyn_storage.list_extensions(&tenant_id).await {
-            Ok(exts) => {
-                info!(count = exts.len(), "Loaded extensions for voicemail alias resolution");
-                exts
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to list extensions for voicemail alias resolution");
-                Vec::new()
-            }
-        };
+        let all_extensions: Vec<fcp_core::Extension> =
+            match dyn_storage.list_extensions(&tenant_id).await {
+                Ok(exts) => {
+                    info!(
+                        count = exts.len(),
+                        "Loaded extensions for voicemail alias resolution"
+                    );
+                    exts
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to list extensions for voicemail alias resolution");
+                    Vec::new()
+                }
+            };
 
         match dyn_storage.list_mailboxes(&tenant_id).await {
             Ok(mailboxes) => {
@@ -451,32 +521,48 @@ async fn main() -> Result<()> {
 
                     // Register by owner's SIP username (primary identifier)
                     if let Ok(Some(user)) = dyn_storage.get_user_by_id(&mb.user_id).await {
-                        flow_handler.add_route(user.username.clone(), flow_id.clone()).await;
+                        flow_handler
+                            .add_route(user.username.clone(), flow_id.clone())
+                            .await;
                         // Also register by mailbox extension if different from username
                         if mb.extension != user.username {
-                            flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+                            flow_handler
+                                .add_route(mb.extension.clone(), flow_id.clone())
+                                .await;
                         }
                     } else {
                         // Fallback: register by extension if user not found
-                        flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+                        flow_handler
+                            .add_route(mb.extension.clone(), flow_id.clone())
+                            .await;
                     }
                     auto_routes += 1;
 
                     // Register by associated phone number E.164 and dial plan extensions
                     if let Ok(Some(lb)) = dyn_storage.get_line_binding(&mb.line_binding_id).await {
-                        if let Ok(Some(pn)) = dyn_storage.get_phone_number(&lb.phone_number_id).await {
-                            flow_handler.add_route(pn.e164.clone(), flow_id.clone()).await;
+                        if let Ok(Some(pn)) =
+                            dyn_storage.get_phone_number(&lb.phone_number_id).await
+                        {
+                            flow_handler
+                                .add_route(pn.e164.clone(), flow_id.clone())
+                                .await;
                             // Also register without leading +
                             if let Some(stripped) = pn.e164.strip_prefix('+') {
-                                flow_handler.add_route(stripped.to_string(), flow_id.clone()).await;
+                                flow_handler
+                                    .add_route(stripped.to_string(), flow_id.clone())
+                                    .await;
                             }
 
                             // Register any dial plan extensions that target this phone number
                             for ext in &all_extensions {
                                 if ext.enabled {
-                                    if let fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) = ext.target {
+                                    if let fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) =
+                                        ext.target
+                                    {
                                         if *pn_id == pn.id && ext.number != mb.extension {
-                                            flow_handler.add_route(ext.number.clone(), flow_id.clone()).await;
+                                            flow_handler
+                                                .add_route(ext.number.clone(), flow_id.clone())
+                                                .await;
                                         }
                                     }
                                 }
@@ -538,8 +624,16 @@ async fn main() -> Result<()> {
 
     info!(
         voicemail_routes = config.voicemail.routes.len(),
-        default_mailbox = config.voicemail.default_mailbox_id.as_deref().unwrap_or("none"),
-        access_extension = config.voicemail.access_extension.as_deref().unwrap_or("none"),
+        default_mailbox = config
+            .voicemail
+            .default_mailbox_id
+            .as_deref()
+            .unwrap_or("none"),
+        access_extension = config
+            .voicemail
+            .access_extension
+            .as_deref()
+            .unwrap_or("none"),
         "Voicemail flow routes loaded"
     );
 
@@ -567,11 +661,11 @@ async fn main() -> Result<()> {
         Some(Arc::clone(&flow_handler)),
         config.b2bua.clone(),
         outbound_route_provider,
-        None, // No PBX handler
-        None, // No conference handler
-        None, // No queue handler
-        None, // presence_handler
-        None, // cluster_parking
+        None,          // No PBX handler
+        None,          // No conference handler
+        None,          // No queue handler
+        None,          // presence_handler
+        None,          // cluster_parking
         String::new(), // node_id
     )?);
 
@@ -652,9 +746,12 @@ async fn main() -> Result<()> {
     // 23. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
+        let events_auth_token = config.events.auth_token.clone();
         let event_bus_clone = Arc::clone(&event_bus);
         tokio::spawn(async move {
-            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
+            if let Err(e) =
+                run_event_forwarder(event_bus_clone, &events_url, events_auth_token).await
+            {
                 tracing::error!(%e, "Event forwarder task failed");
             }
         });
@@ -669,7 +766,7 @@ async fn main() -> Result<()> {
             .replace("http://", "ws://")
             .replace("https://", "wss://");
         let tenant_id = "tenant-00000000-0000-0000-0000-000000000000";
-        let ws_url = format!("{}/ws/{}", ws_url, tenant_id);
+        let ws_url = build_events_ws_url(&ws_url, tenant_id, config.events.auth_token.as_deref());
 
         let sub_flow_store = Arc::clone(&flow_store);
         let sub_flow_handler = Arc::clone(&flow_handler);
@@ -684,7 +781,8 @@ async fn main() -> Result<()> {
                 sub_storage,
                 sub_max_duration,
                 sub_play_beep,
-            ).await;
+            )
+            .await;
         });
         info!("Events subscriber started (listening for mailbox lifecycle events)");
     }
@@ -713,7 +811,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("voicemail", "_system").await {
                     Ok(v) if v > last_version => {
-                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}
@@ -806,10 +908,7 @@ fn build_voicemail_flow(
     FlowDefinition {
         id: flow_id.to_string(),
         name: format!("Voicemail: {}", extension),
-        description: Some(format!(
-            "Auto-generated voicemail flow for {}",
-            extension
-        )),
+        description: Some(format!("Auto-generated voicemail flow for {}", extension)),
         version: 1,
         initial_node: "answer".to_string(),
         nodes,
@@ -1088,7 +1187,11 @@ fn init_tracing(config: &VoicemailServerConfig) {
 }
 
 /// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
-async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str) -> Result<()> {
+async fn run_event_forwarder(
+    event_bus: Arc<InMemoryEventBus>,
+    events_url: &str,
+    auth_token: Option<String>,
+) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -1107,8 +1210,14 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 tracing::debug!(?event, "Forwarding event to events server");
                 let client = client.clone();
                 let url = events_url.to_string();
+                let auth_token = auth_token.clone();
                 tokio::spawn(async move {
-                    match client.post(&url).json(&event).send().await {
+                    let mut request = client.post(&url).json(&event);
+                    if let Some(token) = auth_token.as_deref() {
+                        request = request.bearer_auth(token);
+                    }
+
+                    match request.send().await {
                         Ok(resp) => {
                             if resp.status().is_success() {
                                 tracing::debug!(status = %resp.status(), "Event forwarded");
@@ -1143,6 +1252,15 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
     }
 }
 
+fn build_events_ws_url(base_url: &str, tenant_id: &str, auth_token: Option<&str>) -> String {
+    let mut url = reqwest::Url::parse(&format!("{}/ws/{}", base_url, tenant_id))
+        .expect("events server base URL should be valid");
+    if let Some(token) = auth_token {
+        url.query_pairs_mut().append_pair("token", token);
+    }
+    url.to_string()
+}
+
 /// Subscribe to the events server WebSocket and handle mailbox lifecycle events.
 async fn run_events_subscriber(
     ws_url: &str,
@@ -1166,9 +1284,15 @@ async fn run_events_subscriber(
                         Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                             if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if wrapper.get("type").and_then(|t| t.as_str()) == Some("events") {
-                                    if let Some(events) = wrapper.get("events").and_then(|e| e.as_array()) {
+                                    if let Some(events) =
+                                        wrapper.get("events").and_then(|e| e.as_array())
+                                    {
                                         for event_val in events {
-                                            if let Ok(event) = serde_json::from_value::<fcp_events::PlatformEvent>(event_val.clone()) {
+                                            if let Ok(event) =
+                                                serde_json::from_value::<fcp_events::PlatformEvent>(
+                                                    event_val.clone(),
+                                                )
+                                            {
                                                 match event {
                                                     fcp_events::PlatformEvent::Voicemail(fcp_events::VoicemailEvent::MailboxCreated { ref mailbox_id, .. }) => {
                                                         info!(mailbox_id = %mailbox_id, "Received MailboxCreated event");
@@ -1262,7 +1386,13 @@ async fn handle_mailbox_created(
     }
 
     let flow_id = format!("vm-auto-{}", mb.id);
-    let flow_def = build_voicemail_flow(&flow_id, &mb.id, &mb.extension, max_message_duration, play_beep);
+    let flow_def = build_voicemail_flow(
+        &flow_id,
+        &mb.id,
+        &mb.extension,
+        max_message_duration,
+        play_beep,
+    );
 
     // Insert or update flow
     match flow_store.get_flow(&flow_id).await {
@@ -1282,20 +1412,30 @@ async fn handle_mailbox_created(
 
     // Register by owner's SIP username
     if let Ok(Some(user)) = storage.get_user_by_id(&mb.user_id).await {
-        flow_handler.add_route(user.username.clone(), flow_id.clone()).await;
+        flow_handler
+            .add_route(user.username.clone(), flow_id.clone())
+            .await;
         if mb.extension != user.username {
-            flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+            flow_handler
+                .add_route(mb.extension.clone(), flow_id.clone())
+                .await;
         }
     } else {
-        flow_handler.add_route(mb.extension.clone(), flow_id.clone()).await;
+        flow_handler
+            .add_route(mb.extension.clone(), flow_id.clone())
+            .await;
     }
 
     // Register by phone number and dial plan extensions
     if let Ok(Some(lb)) = storage.get_line_binding(&mb.line_binding_id).await {
         if let Ok(Some(pn)) = storage.get_phone_number(&lb.phone_number_id).await {
-            flow_handler.add_route(pn.e164.clone(), flow_id.clone()).await;
+            flow_handler
+                .add_route(pn.e164.clone(), flow_id.clone())
+                .await;
             if let Some(stripped) = pn.e164.strip_prefix('+') {
-                flow_handler.add_route(stripped.to_string(), flow_id.clone()).await;
+                flow_handler
+                    .add_route(stripped.to_string(), flow_id.clone())
+                    .await;
             }
 
             // Register dial plan extensions targeting this phone number
@@ -1305,7 +1445,9 @@ async fn handle_mailbox_created(
                     if ext.enabled {
                         if let fcp_core::ExtensionTarget::PhoneNumber(ref pn_id) = ext.target {
                             if *pn_id == pn.id && ext.number != mb.extension {
-                                flow_handler.add_route(ext.number.clone(), flow_id.clone()).await;
+                                flow_handler
+                                    .add_route(ext.number.clone(), flow_id.clone())
+                                    .await;
                             }
                         }
                     }

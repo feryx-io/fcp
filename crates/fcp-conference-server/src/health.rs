@@ -121,10 +121,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             post(promote_participant_handler),
         )
         .route("/conferences/:room_number/stats", get(room_stats_handler))
-        .route(
-            "/conferences/:room_number/announce",
-            post(announce_handler),
-        )
+        .route("/conferences/:room_number/announce", post(announce_handler))
         // Admin: admit waiting participants
         .route(
             "/conferences/:room_number/admit/:pid",
@@ -135,10 +132,7 @@ fn protected_router() -> Router<Arc<ConferenceState>> {
             post(admit_all_handler),
         )
         // Dial-out: invite an external participant by calling them
-        .route(
-            "/conferences/:room_number/dial-out",
-            post(dial_out_handler),
-        )
+        .route("/conferences/:room_number/dial-out", post(dial_out_handler))
         // AI participant
         .route("/conferences/:room_number/ai", post(attach_ai_handler))
         .route("/conferences/:room_number/ai", delete(detach_ai_handler))
@@ -1006,13 +1000,17 @@ async fn dial_out_handler(
 
     let tenant_id = extract_tenant_id(&headers);
 
-    match state.conference_handler.dial_out(
-        &room_number,
-        &dest,
-        tenant_id,
-        payload.greeting_tts.as_deref(),
-        payload.greeting_prompt.as_deref(),
-    ).await {
+    match state
+        .conference_handler
+        .dial_out(
+            &room_number,
+            &dest,
+            tenant_id,
+            payload.greeting_tts.as_deref(),
+            payload.greeting_prompt.as_deref(),
+        )
+        .await
+    {
         Ok(participant_id) => {
             info!(
                 action = "dial_out",
@@ -1021,12 +1019,15 @@ async fn dial_out_handler(
                 participant = %participant_id,
                 "AUDIT: dial-out initiated via API"
             );
-            (StatusCode::OK, Json(serde_json::json!({
-                "status": "connected",
-                "participant_id": participant_id,
-                "destination": dest,
-                "room_number": room_number,
-            })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "connected",
+                    "participant_id": participant_id,
+                    "destination": dest,
+                    "room_number": room_number,
+                })),
+            )
         }
         Err(e) => {
             warn!(room = %room_number, destination = %dest, error = %e, "Dial-out failed");

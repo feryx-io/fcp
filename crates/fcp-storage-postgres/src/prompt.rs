@@ -53,8 +53,12 @@ impl PostgresPromptStore {
             tts_voice: row.try_get("tts_voice")?,
             audio_path: audio_path_str.map(PathBuf::from),
             audio_format: row.try_get("audio_format")?,
-            duration_ms: row.try_get::<Option<i32>, _>("duration_ms")?.map(|v| v as u32),
-            file_size: row.try_get::<Option<i64>, _>("file_size")?.map(|v| v as u64),
+            duration_ms: row
+                .try_get::<Option<i32>, _>("duration_ms")?
+                .map(|v| v as u32),
+            file_size: row
+                .try_get::<Option<i64>, _>("file_size")?
+                .map(|v| v as u64),
             is_system: row.try_get("is_system")?,
             created_at: datetime_to_system_time(created_at),
             updated_at: datetime_to_system_time(updated_at),
@@ -62,8 +66,7 @@ impl PostgresPromptStore {
     }
 }
 
-const PROMPT_COLUMNS: &str =
-    "id, tenant_id, name, description, category, language, source_type,
+const PROMPT_COLUMNS: &str = "id, tenant_id, name, description, category, language, source_type,
      tts_text, tts_voice, audio_path, audio_format, duration_ms, file_size,
      is_system, created_at, updated_at";
 

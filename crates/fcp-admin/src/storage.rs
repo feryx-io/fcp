@@ -31,19 +31,19 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
     let storage = Arc::new(storage);
 
     // Create SIP trace store backed by the same PostgreSQL pool
-    let sip_trace_store = Arc::new(
-        fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(storage.pool().clone()),
-    );
+    let sip_trace_store = Arc::new(fcp_storage_postgres::sip_trace::PostgresSipTraceStore::new(
+        storage.pool().clone(),
+    ));
 
     // Create API token store backed by the same PostgreSQL pool
-    let api_token_store = Arc::new(
-        fcp_storage_postgres::api_token::PostgresApiTokenStore::new(storage.pool().clone()),
-    );
+    let api_token_store = Arc::new(fcp_storage_postgres::api_token::PostgresApiTokenStore::new(
+        storage.pool().clone(),
+    ));
 
     // Create prompt store backed by the same PostgreSQL pool
-    let prompt_store = Arc::new(
-        fcp_storage_postgres::prompt::PostgresPromptStore::new(storage.pool().clone()),
-    );
+    let prompt_store = Arc::new(fcp_storage_postgres::prompt::PostgresPromptStore::new(
+        storage.pool().clone(),
+    ));
 
     // Create flow trace store backed by the same PostgreSQL pool
     let flow_trace_store = Arc::new(

@@ -148,14 +148,10 @@ impl SiprecConfig {
                 return Err("recording_dir must not be empty when local_capture_enabled".into());
             }
             if self.recording_dir.contains('\r') || self.recording_dir.contains('\n') {
-                return Err(
-                    "recording_dir must not contain CR/LF characters".into(),
-                );
+                return Err("recording_dir must not contain CR/LF characters".into());
             }
             if self.recording_format.contains('\r') || self.recording_format.contains('\n') {
-                return Err(
-                    "recording_format must not contain CR/LF characters".into(),
-                );
+                return Err("recording_format must not contain CR/LF characters".into());
             }
             if self.recording_format != "wav" && self.recording_format != "opus" {
                 return Err(format!(

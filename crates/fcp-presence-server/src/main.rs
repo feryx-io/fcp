@@ -64,30 +64,78 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("presence", serde_json::to_value(&config.presence).unwrap_or_default()),
-            ("redis", serde_json::to_value(&config.redis).unwrap_or_default()),
-            ("xcap", serde_json::to_value(&config.xcap).unwrap_or_default()),
-            ("webhook", serde_json::to_value(&config.webhooks).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+            (
+                "presence",
+                serde_json::to_value(&config.presence).unwrap_or_default(),
+            ),
+            (
+                "redis",
+                serde_json::to_value(&config.redis).unwrap_or_default(),
+            ),
+            (
+                "xcap",
+                serde_json::to_value(&config.xcap).unwrap_or_default(),
+            ),
+            (
+                "webhook",
+                serde_json::to_value(&config.webhooks).unwrap_or_default(),
+            ),
+            (
+                "cluster",
+                serde_json::to_value(&config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "presence" => if let Ok(v) = serde_json::from_value(entry.value) { config.presence = v; },
-                        "redis" => if let Ok(v) = serde_json::from_value(entry.value) { config.redis = v; },
-                        "xcap" => if let Ok(v) = serde_json::from_value(entry.value) { config.xcap = v; },
-                        "webhook" => if let Ok(v) = serde_json::from_value(entry.value) { config.webhooks = v; },
-                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        "presence" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.presence = v;
+                            }
+                        }
+                        "redis" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.redis = v;
+                            }
+                        }
+                        "xcap" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.xcap = v;
+                            }
+                        }
+                        "webhook" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.webhooks = v;
+                            }
+                        }
+                        "cluster" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.cluster = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => tracing::warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            tracing::warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -134,8 +182,13 @@ async fn main() -> Result<()> {
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     };
                     let cm = fcp_cluster::ClusterManager::new(redis, member)
-                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
-                        .with_event_publisher(event_bus.clone() as Arc<dyn fcp_events::EventPublisher>);
+                        .with_intervals(
+                            config.cluster.heartbeat_interval_secs,
+                            config.cluster.heartbeat_ttl_secs,
+                        )
+                        .with_event_publisher(
+                            event_bus.clone() as Arc<dyn fcp_events::EventPublisher>
+                        );
                     let _handle = cm.start();
                     info!("Cluster membership started");
                     Some(cm)
@@ -169,8 +222,9 @@ async fn main() -> Result<()> {
     }
 
     // Start presence analytics consumer
-    let history_store: Arc<dyn fcp_core::storage::PresenceHistoryStore> =
-        Arc::new(fcp_presence::analytics::InMemoryPresenceHistory::new(100_000));
+    let history_store: Arc<dyn fcp_core::storage::PresenceHistoryStore> = Arc::new(
+        fcp_presence::analytics::InMemoryPresenceHistory::new(100_000),
+    );
     let _analytics_handle = fcp_presence::analytics::spawn_analytics_consumer(
         event_bus.clone() as Arc<dyn fcp_events::EventSubscriber>,
         Arc::clone(&history_store),
@@ -179,11 +233,7 @@ async fn main() -> Result<()> {
     // Start webhook dispatcher (if configured and webhook feature enabled)
     #[cfg(feature = "webhook")]
     let webhook_dispatcher = {
-        let dispatcher = if config
-            .webhooks
-            .as_ref()
-            .map_or(false, |w| w.enabled)
-        {
+        let dispatcher = if config.webhooks.as_ref().map_or(false, |w| w.enabled) {
             let wh = config.webhooks.as_ref().unwrap();
             let d = Arc::new(fcp_presence::webhook::WebhookDispatcher::new(
                 wh.max_retries,
@@ -275,7 +325,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("presence", "_system").await {
                     Ok(v) if v > last_version => {
-                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        tracing::info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}
@@ -321,9 +375,7 @@ struct StorageResult {
 }
 
 /// Initialize PostgreSQL storage backend based on configuration.
-async fn initialize_storage(
-    config: &PresenceServerConfig,
-) -> Result<StorageResult> {
+async fn initialize_storage(config: &PresenceServerConfig) -> Result<StorageResult> {
     use fcp_storage_postgres::{PostgresConfig, PostgresStorage};
 
     let pg_config = PostgresConfig {
@@ -340,7 +392,9 @@ async fn initialize_storage(
 
     info!("PostgreSQL storage initialized successfully");
     Ok(StorageResult {
-        dyn_storage: Arc::new(fcp_core::storage::DynStorage::from_all_in_one(storage.clone())),
+        dyn_storage: Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
+            storage.clone(),
+        )),
         config_store: storage,
     })
 }
@@ -356,7 +410,12 @@ async fn setup_redis(
 
     let pubsub = RedisPresencePubSub::new(
         &redis_config.url,
-        Some(redis_config.node_id.clone().unwrap_or_else(|| node_id.to_string())),
+        Some(
+            redis_config
+                .node_id
+                .clone()
+                .unwrap_or_else(|| node_id.to_string()),
+        ),
     )?;
     info!(
         node_id = %pubsub.node_id(),

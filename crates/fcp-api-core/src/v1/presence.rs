@@ -17,9 +17,10 @@ use tracing::info;
 /// Helper macro to get presence_manager or return 404.
 macro_rules! require_presence_manager {
     ($state:expr) => {
-        $state.presence_manager.as_ref().ok_or_else(|| {
-            ApiError::NotFound("Presence service is not configured".to_string())
-        })?
+        $state
+            .presence_manager
+            .as_ref()
+            .ok_or_else(|| ApiError::NotFound("Presence service is not configured".to_string()))?
     };
 }
 
@@ -71,9 +72,7 @@ pub struct UpdatePresenceRequest {
 ///
 /// Device AORs that belong to an extension are merged into the extension entry
 /// so each extension appears as a single card in the UI.
-pub async fn list_presences(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_presences(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
     let tenant_id = &state.default_tenant_id;
 
@@ -97,10 +96,8 @@ pub async fn list_presences(
                 let ext_aor_prefix = format!("{}@", ext.number);
                 for p in &presences {
                     if p.aor.starts_with(&ext_aor_prefix) {
-                        ext_aor_info.insert(
-                            p.aor.clone(),
-                            (ext.number.clone(), ext.description.clone()),
-                        );
+                        ext_aor_info
+                            .insert(p.aor.clone(), (ext.number.clone(), ext.description.clone()));
                         break;
                     }
                 }
@@ -108,10 +105,8 @@ pub async fn list_presences(
                 // Resolve extension target to device AOR(s)
                 let device_aors = resolve_ext_to_device_aors(&ext, storage.as_ref()).await;
                 for dev_aor in device_aors {
-                    device_aor_to_ext.insert(
-                        dev_aor,
-                        (ext.number.clone(), ext.description.clone()),
-                    );
+                    device_aor_to_ext
+                        .insert(dev_aor, (ext.number.clone(), ext.description.clone()));
                 }
 
                 // If the extension targets a phone number, map that phone number's AOR
@@ -120,7 +115,8 @@ pub async fn list_presences(
                     if let Ok(Some(pn)) = storage.get_phone_number(phone_number_id).await {
                         // The phone number E.164 (e.g. "+15185551234") appears in presence
                         // as an AOR like "15185551234@host" (digits only, no +).
-                        let digits: String = pn.e164.chars().filter(|c| c.is_ascii_digit()).collect();
+                        let digits: String =
+                            pn.e164.chars().filter(|c| c.is_ascii_digit()).collect();
                         if !digits.is_empty() {
                             // Find any presence entries that match this phone number
                             let pn_aor_prefix = format!("{}@", digits);
@@ -141,14 +137,17 @@ pub async fn list_presences(
     }
 
     // Collect device AORs and phone number AORs that should be hidden (merged into extension entries).
-    let hidden_aors: HashSet<&String> = device_aor_to_ext.keys()
+    let hidden_aors: HashSet<&String> = device_aor_to_ext
+        .keys()
         .chain(phone_aor_to_ext.keys())
         .filter(|merged_aor| {
             // Only hide if the extension AOR also has a presence entry
-            let ext_info = device_aor_to_ext.get(*merged_aor)
+            let ext_info = device_aor_to_ext
+                .get(*merged_aor)
                 .or_else(|| phone_aor_to_ext.get(*merged_aor));
             let ext_aor_prefix = ext_info.map(|(num, _)| format!("{}@", num));
-            ext_aor_prefix.map(|prefix| presences.iter().any(|p| p.aor.starts_with(&prefix)))
+            ext_aor_prefix
+                .map(|prefix| presences.iter().any(|p| p.aor.starts_with(&prefix)))
                 .unwrap_or(false)
         })
         .collect();
@@ -162,7 +161,9 @@ pub async fn list_presences(
             // Add watcher counts from merged device and phone number AORs
             if ext_aor_info.contains_key(&p.aor) {
                 let ext_num = ext_aor_info.get(&p.aor).map(|(n, _)| n);
-                for (merged_aor, (num, _)) in device_aor_to_ext.iter().chain(phone_aor_to_ext.iter()) {
+                for (merged_aor, (num, _)) in
+                    device_aor_to_ext.iter().chain(phone_aor_to_ext.iter())
+                {
                     if ext_num == Some(num) {
                         watcher_count += pm.get_watchers(merged_aor).len();
                     }
@@ -243,9 +244,7 @@ async fn resolve_ext_to_device_aors(
 }
 
 /// GET /presence/stats — Presentity and watcher counts.
-pub async fn get_stats(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
     Ok(Json(PresenceStatsResponse {

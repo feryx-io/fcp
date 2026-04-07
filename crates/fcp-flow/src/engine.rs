@@ -264,7 +264,10 @@ impl FlowEngine {
                 // finish_on_key, infer from the transition keys so the
                 // collector completes as soon as enough digits are received
                 // instead of always waiting for the full timeout.
-                let effective_num_digits = if *num_digits == 0 && finish_on_key.is_none() && !transitions.is_empty() {
+                let effective_num_digits = if *num_digits == 0
+                    && finish_on_key.is_none()
+                    && !transitions.is_empty()
+                {
                     let max_key_len = transitions.keys().map(|k| k.len()).max().unwrap_or(0);
                     if max_key_len > 0 {
                         info!(
@@ -281,7 +284,10 @@ impl FlowEngine {
                 };
 
                 // Store gather configuration in context
-                context.set_variable("__gather_num_digits".to_string(), effective_num_digits.to_string());
+                context.set_variable(
+                    "__gather_num_digits".to_string(),
+                    effective_num_digits.to_string(),
+                );
                 context.set_variable("__gather_timeout".to_string(), timeout.to_string());
                 if let Some(key) = finish_on_key {
                     context.set_variable("__gather_finish_on_key".to_string(), key.to_string());
@@ -410,82 +416,74 @@ impl FlowEngine {
                 if_true,
                 if_false,
                 on_error,
-            } => {
-                match context.get_variable(variable) {
-                    Ok(var_value) => {
-                        let interpolated_compare_value =
-                            self.interpolate_variables(value, context)?;
+            } => match context.get_variable(variable) {
+                Ok(var_value) => {
+                    let interpolated_compare_value = self.interpolate_variables(value, context)?;
 
-                        let condition_met = self.evaluate_condition(
-                            &var_value,
-                            *operator,
-                            &interpolated_compare_value,
-                        );
+                    let condition_met =
+                        self.evaluate_condition(&var_value, *operator, &interpolated_compare_value);
 
-                        debug!(
-                            call_id = %context.call_id,
-                            variable = %variable,
-                            value = %var_value,
-                            operator = ?operator,
-                            compare_value = %interpolated_compare_value,
-                            result = %condition_met,
-                            "Evaluating branch condition"
-                        );
+                    debug!(
+                        call_id = %context.call_id,
+                        variable = %variable,
+                        value = %var_value,
+                        operator = ?operator,
+                        compare_value = %interpolated_compare_value,
+                        result = %condition_met,
+                        "Evaluating branch condition"
+                    );
 
-                        if condition_met {
-                            Ok(FlowExecutionResult::Continue(if_true.clone()))
-                        } else {
-                            Ok(FlowExecutionResult::Continue(if_false.clone()))
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            call_id = %context.call_id,
-                            variable = %variable,
-                            error = %e,
-                            "Branch variable lookup failed"
-                        );
-                        if let Some(error_node) = on_error {
-                            Ok(FlowExecutionResult::Continue(error_node.clone()))
-                        } else {
-                            Err(e)
-                        }
+                    if condition_met {
+                        Ok(FlowExecutionResult::Continue(if_true.clone()))
+                    } else {
+                        Ok(FlowExecutionResult::Continue(if_false.clone()))
                     }
                 }
-            }
+                Err(e) => {
+                    warn!(
+                        call_id = %context.call_id,
+                        variable = %variable,
+                        error = %e,
+                        "Branch variable lookup failed"
+                    );
+                    if let Some(error_node) = on_error {
+                        Ok(FlowExecutionResult::Continue(error_node.clone()))
+                    } else {
+                        Err(e)
+                    }
+                }
+            },
 
             NodeType::SetVariable {
                 variable,
                 value,
                 next,
                 on_error,
-            } => {
-                match self.interpolate_variables(value, context) {
-                    Ok(interpolated_value) => {
-                        debug!(
-                            call_id = %context.call_id,
-                            variable = %variable,
-                            value = %interpolated_value,
-                            "Setting variable"
-                        );
-                        context.set_variable(variable.clone(), interpolated_value);
-                        Ok(FlowExecutionResult::Continue(next.clone()))
-                    }
-                    Err(e) => {
-                        warn!(
-                            call_id = %context.call_id,
-                            variable = %variable,
-                            error = %e,
-                            "SetVariable interpolation failed"
-                        );
-                        if let Some(error_node) = on_error {
-                            Ok(FlowExecutionResult::Continue(error_node.clone()))
-                        } else {
-                            Err(e)
-                        }
+            } => match self.interpolate_variables(value, context) {
+                Ok(interpolated_value) => {
+                    debug!(
+                        call_id = %context.call_id,
+                        variable = %variable,
+                        value = %interpolated_value,
+                        "Setting variable"
+                    );
+                    context.set_variable(variable.clone(), interpolated_value);
+                    Ok(FlowExecutionResult::Continue(next.clone()))
+                }
+                Err(e) => {
+                    warn!(
+                        call_id = %context.call_id,
+                        variable = %variable,
+                        error = %e,
+                        "SetVariable interpolation failed"
+                    );
+                    if let Some(error_node) = on_error {
+                        Ok(FlowExecutionResult::Continue(error_node.clone()))
+                    } else {
+                        Err(e)
                     }
                 }
-            }
+            },
 
             NodeType::Fork {
                 destinations,
@@ -669,7 +667,8 @@ impl FlowEngine {
                 context.set_variable("__queue_priority".to_string(), priority.to_string());
                 context.set_variable("__queue_next_on_answer".to_string(), next_on_answer.clone());
                 if let Some(timeout_node) = next_on_timeout {
-                    context.set_variable("__queue_next_on_timeout".to_string(), timeout_node.clone());
+                    context
+                        .set_variable("__queue_next_on_timeout".to_string(), timeout_node.clone());
                 }
                 if let Some(error_node) = next_on_error {
                     context.set_variable("__queue_next_on_error".to_string(), error_node.clone());
@@ -911,11 +910,9 @@ impl FlowContext {
             .variables
             .iter()
             .filter(|(k, _)| !k.starts_with('_'))
-            .filter_map(|(k, v)| {
-                match v {
-                    serde_json::Value::String(s) => Some((k.clone(), s.clone())),
-                    _ => None,
-                }
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::String(s) => Some((k.clone(), s.clone())),
+                _ => None,
             })
             .collect();
         variables.extend(initial_variables);
@@ -1256,7 +1253,9 @@ mod tests {
         vars.insert("name".to_string(), "World".to_string());
         let ctx = test_context_with(vars);
 
-        let result = engine.interpolate_variables("Hello {{name}}", &ctx).unwrap();
+        let result = engine
+            .interpolate_variables("Hello {{name}}", &ctx)
+            .unwrap();
         assert_eq!(result, "Hello World");
     }
 
@@ -1268,7 +1267,9 @@ mod tests {
         vars.insert("last".to_string(), "Doe".to_string());
         let ctx = test_context_with(vars);
 
-        let result = engine.interpolate_variables("{{first}} {{last}}", &ctx).unwrap();
+        let result = engine
+            .interpolate_variables("{{first}} {{last}}", &ctx)
+            .unwrap();
         assert_eq!(result, "John Doe");
     }
 
@@ -1279,7 +1280,10 @@ mod tests {
 
         let result = engine.interpolate_variables("Hello {{missing}}", &ctx);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FlowError::VariableNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            FlowError::VariableNotFound(_)
+        ));
     }
 
     #[test]
@@ -1287,7 +1291,9 @@ mod tests {
         let engine = test_engine();
         let ctx = test_context_with(HashMap::new());
 
-        let result = engine.interpolate_variables("No placeholders here", &ctx).unwrap();
+        let result = engine
+            .interpolate_variables("No placeholders here", &ctx)
+            .unwrap();
         assert_eq!(result, "No placeholders here");
     }
 
@@ -1305,6 +1311,9 @@ mod tests {
         let ctx = test_context_with(HashMap::new());
         let result = ctx.get_variable("nonexistent");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), FlowError::VariableNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            FlowError::VariableNotFound(_)
+        ));
     }
 }

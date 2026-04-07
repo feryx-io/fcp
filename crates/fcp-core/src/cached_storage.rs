@@ -126,9 +126,12 @@ impl CachedCredentialStore {
         }
         let evicted = before.saturating_sub(self.cache.len());
         if evicted > 0 {
-            self.evictions
-                .fetch_add(evicted as u64, Ordering::Relaxed);
-            debug!(evicted, remaining = self.cache.len(), "Credential cache capacity enforced");
+            self.evictions.fetch_add(evicted as u64, Ordering::Relaxed);
+            debug!(
+                evicted,
+                remaining = self.cache.len(),
+                "Credential cache capacity enforced"
+            );
         }
     }
 }
@@ -266,19 +269,19 @@ impl CachedExtensionStore {
         }
         let evicted = before.saturating_sub(self.cache.len());
         if evicted > 0 {
-            self.evictions
-                .fetch_add(evicted as u64, Ordering::Relaxed);
-            debug!(evicted, remaining = self.cache.len(), "Extension cache capacity enforced");
+            self.evictions.fetch_add(evicted as u64, Ordering::Relaxed);
+            debug!(
+                evicted,
+                remaining = self.cache.len(),
+                "Extension cache capacity enforced"
+            );
         }
     }
 }
 
 #[async_trait]
 impl ExtensionStore for CachedExtensionStore {
-    async fn get_extension(
-        &self,
-        id: &crate::ExtensionId,
-    ) -> Result<Option<crate::Extension>> {
+    async fn get_extension(&self, id: &crate::ExtensionId) -> Result<Option<crate::Extension>> {
         // get_extension by ID is not the hot path — skip cache
         self.inner.get_extension(id).await
     }
@@ -302,17 +305,17 @@ impl ExtensionStore for CachedExtensionStore {
 
         self.misses.fetch_add(1, Ordering::Relaxed);
         debug!(tenant_id = %tenant_id, number = %number, "Extension cache MISS");
-        let result = self.inner.get_extension_by_number(tenant_id, number).await?;
+        let result = self
+            .inner
+            .get_extension_by_number(tenant_id, number)
+            .await?;
 
         self.cache.insert(key, CacheEntry::new(result.clone()));
         self.enforce_capacity();
         Ok(result)
     }
 
-    async fn list_extensions(
-        &self,
-        tenant_id: &crate::TenantId,
-    ) -> Result<Vec<crate::Extension>> {
+    async fn list_extensions(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Extension>> {
         self.inner.list_extensions(tenant_id).await
     }
 
@@ -410,27 +413,24 @@ impl CachedDeviceStore {
         }
         let evicted = before.saturating_sub(self.cache.len());
         if evicted > 0 {
-            self.evictions
-                .fetch_add(evicted as u64, Ordering::Relaxed);
-            debug!(evicted, remaining = self.cache.len(), "Device cache capacity enforced");
+            self.evictions.fetch_add(evicted as u64, Ordering::Relaxed);
+            debug!(
+                evicted,
+                remaining = self.cache.len(),
+                "Device cache capacity enforced"
+            );
         }
     }
 }
 
 #[async_trait]
 impl DeviceStore for CachedDeviceStore {
-    async fn get_device(
-        &self,
-        id: &crate::DeviceId,
-    ) -> Result<Option<crate::Device>> {
+    async fn get_device(&self, id: &crate::DeviceId) -> Result<Option<crate::Device>> {
         // get by ID is not the hot path
         self.inner.get_device(id).await
     }
 
-    async fn get_device_by_sip_uri(
-        &self,
-        sip_uri: &str,
-    ) -> Result<Option<crate::Device>> {
+    async fn get_device_by_sip_uri(&self, sip_uri: &str) -> Result<Option<crate::Device>> {
         if let Some(entry) = self.cache.get(sip_uri) {
             if !entry.is_expired(self.ttl) {
                 self.hits.fetch_add(1, Ordering::Relaxed);
@@ -451,17 +451,11 @@ impl DeviceStore for CachedDeviceStore {
         Ok(result)
     }
 
-    async fn list_devices(
-        &self,
-        tenant_id: &crate::TenantId,
-    ) -> Result<Vec<crate::Device>> {
+    async fn list_devices(&self, tenant_id: &crate::TenantId) -> Result<Vec<crate::Device>> {
         self.inner.list_devices(tenant_id).await
     }
 
-    async fn list_devices_by_user(
-        &self,
-        user_id: &crate::UserId,
-    ) -> Result<Vec<crate::Device>> {
+    async fn list_devices_by_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::Device>> {
         self.inner.list_devices_by_user(user_id).await
     }
 

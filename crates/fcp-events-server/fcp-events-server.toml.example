@@ -10,8 +10,8 @@ service_type = "events"
 
 [websocket]
 # WebSocket bind address
-# Use 0.0.0.0:8081 to accept connections from all interfaces
-bind_address = "0.0.0.0:8081"
+# Default to loopback; only use 0.0.0.0:8081 with [auth].token configured
+bind_address = "127.0.0.1:8081"
 
 # Heartbeat interval (seconds)
 # Server sends ping frames at this interval to keep connections alive
@@ -62,6 +62,11 @@ level = "info"
 # Use "json" for production (machine-parseable)
 # Use "pretty" for development (human-readable)
 format = "json"
+
+[auth]
+# Shared bearer token for ingest/query APIs and WebSocket subscriptions.
+# Required when binding to a non-loopback address.
+# token = "replace-with-long-random-secret"
 
 # ============================================================
 # Example Configurations for Different Deployment Scenarios

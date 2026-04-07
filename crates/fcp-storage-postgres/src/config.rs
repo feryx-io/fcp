@@ -13,7 +13,9 @@ fn row_to_config_entry(row: sqlx::postgres::PgRow) -> Result<ConfigEntry> {
     Ok(ConfigEntry {
         service: row.try_get("service").context("missing service column")?,
         section: row.try_get("section").context("missing section column")?,
-        tenant_id: row.try_get("tenant_id").context("missing tenant_id column")?,
+        tenant_id: row
+            .try_get("tenant_id")
+            .context("missing tenant_id column")?,
         value: row.try_get("value").context("missing value column")?,
         version: row.try_get("version").context("missing version column")?,
         updated_at: row
@@ -29,9 +31,13 @@ fn row_to_audit_entry(row: sqlx::postgres::PgRow) -> Result<AuditEntry> {
         id: row.try_get("id").context("missing id column")?,
         service: row.try_get("service").context("missing service column")?,
         section: row.try_get("section").context("missing section column")?,
-        tenant_id: row.try_get("tenant_id").context("missing tenant_id column")?,
+        tenant_id: row
+            .try_get("tenant_id")
+            .context("missing tenant_id column")?,
         old_value: row.try_get("old_value").ok(),
-        new_value: row.try_get("new_value").context("missing new_value column")?,
+        new_value: row
+            .try_get("new_value")
+            .context("missing new_value column")?,
         changed_by: row.try_get("changed_by").ok(),
         changed_at: row
             .try_get::<DateTime<Utc>, _>("changed_at")
@@ -62,8 +68,9 @@ impl ConfigStore for PostgresStorage {
 
         match row {
             Some(row) => {
-                let entry = row_to_config_entry(row)
-                    .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+                let entry = row_to_config_entry(row).map_err(|e| {
+                    fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+                })?;
                 Ok(Some(entry))
             }
             None => Ok(None),
@@ -104,11 +111,9 @@ impl ConfigStore for PostgresStorage {
         updated_by: Option<&str>,
     ) -> fcp_core::Result<i64> {
         // Use a transaction for atomic upsert + audit log insert
-        let mut tx = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+        let mut tx = self.pool().begin().await.map_err(|e| {
+            fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+        })?;
 
         // Get old value for audit log (if exists)
         let old_row = sqlx::query(
@@ -124,12 +129,12 @@ impl ConfigStore for PostgresStorage {
 
         let (old_value, new_version) = match &old_row {
             Some(row) => {
-                let old_val: serde_json::Value = row
-                    .try_get("value")
-                    .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
-                let old_ver: i64 = row
-                    .try_get("version")
-                    .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+                let old_val: serde_json::Value = row.try_get("value").map_err(|e| {
+                    fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+                })?;
+                let old_ver: i64 = row.try_get("version").map_err(|e| {
+                    fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+                })?;
                 (Some(old_val), old_ver + 1)
             }
             None => (None, 1),
@@ -168,9 +173,9 @@ impl ConfigStore for PostgresStorage {
         .await
         .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
 
-        tx.commit()
-            .await
-            .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+        tx.commit().await.map_err(|e| {
+            fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+        })?;
 
         Ok(new_version)
     }
@@ -255,11 +260,7 @@ impl ConfigStore for PostgresStorage {
         Ok(entries)
     }
 
-    async fn get_latest_version(
-        &self,
-        service: &str,
-        tenant_id: &str,
-    ) -> fcp_core::Result<i64> {
+    async fn get_latest_version(&self, service: &str, tenant_id: &str) -> fcp_core::Result<i64> {
         let row = sqlx::query(
             "SELECT COALESCE(MAX(version), 0) as max_version
              FROM config_settings
@@ -271,9 +272,9 @@ impl ConfigStore for PostgresStorage {
         .await
         .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
 
-        let version: i64 = row
-            .try_get("max_version")
-            .map_err(|e| fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string())))?;
+        let version: i64 = row.try_get("max_version").map_err(|e| {
+            fcp_core::Error::Storage(fcp_core::StorageError::Database(e.to_string()))
+        })?;
 
         Ok(version)
     }

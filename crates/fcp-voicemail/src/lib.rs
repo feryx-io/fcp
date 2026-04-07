@@ -221,9 +221,9 @@ impl VoicemailService {
                 .media_manager
                 .play_tone(
                     call_id,
-                    1000.0,  // 1kHz tone
-                    300,     // 300ms duration
-                    0.5,     // -6dB amplitude
+                    1000.0, // 1kHz tone
+                    300,    // 300ms duration
+                    0.5,    // -6dB amplitude
                     fcp_media::AudioTarget::ParticipantA,
                 )
                 .await
@@ -261,7 +261,10 @@ impl VoicemailService {
         let relative_recording_path = PathBuf::from(&tenant_dir)
             .join(mailbox_id)
             .join(&recording_filename);
-        debug!("Starting recording to: {:?} (relative: {:?})", recording_path, relative_recording_path);
+        debug!(
+            "Starting recording to: {:?} (relative: {:?})",
+            recording_path, relative_recording_path
+        );
         let max_duration = std::cmp::min(
             mailbox.max_message_duration,
             self.config.max_message_duration,
@@ -270,7 +273,10 @@ impl VoicemailService {
         let recording_start = std::time::Instant::now();
 
         self.media_manager
-            .start_recording(call_id, relative_recording_path.to_string_lossy().to_string())
+            .start_recording(
+                call_id,
+                relative_recording_path.to_string_lossy().to_string(),
+            )
             .await
             .context("Failed to start recording")?;
 
@@ -579,11 +585,8 @@ impl VoicemailService {
         let audio_path = match greeting {
             Some(greeting) => {
                 // Custom greeting — validate it's within a safe directory
-                validate_path_within_dir(
-                    &greeting.audio_path,
-                    &self.config.greetings_dir,
-                )
-                .context("Custom greeting path failed safety check")?;
+                validate_path_within_dir(&greeting.audio_path, &self.config.greetings_dir)
+                    .context("Custom greeting path failed safety check")?;
                 Some(&greeting.audio_path)
             }
             None => {
@@ -602,7 +605,13 @@ impl VoicemailService {
                 // before the beep. This is better than failing the call entirely.
                 info!(call_id = %call_id, "No greeting configured, playing silence before beep");
                 self.media_manager
-                    .play_tone(call_id, 0.0, 1000, 0.0, fcp_media::AudioTarget::ParticipantA)
+                    .play_tone(
+                        call_id,
+                        0.0,
+                        1000,
+                        0.0,
+                        fcp_media::AudioTarget::ParticipantA,
+                    )
                     .await
                     .context("Failed to play silence as greeting fallback")?;
                 Ok(())
@@ -710,9 +719,9 @@ fn validate_path_within_dir(path: &Path, base_dir: &Path) -> Result<()> {
             }
         }
 
-        let canonical_ancestor = ancestor.canonicalize().with_context(|| {
-            format!("Cannot canonicalize nearest ancestor of {:?}", path)
-        })?;
+        let canonical_ancestor = ancestor
+            .canonicalize()
+            .with_context(|| format!("Cannot canonicalize nearest ancestor of {:?}", path))?;
 
         // Re-assemble the full logical path
         let mut full = canonical_ancestor;

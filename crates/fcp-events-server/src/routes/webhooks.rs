@@ -26,7 +26,9 @@ pub fn webhook_router(state: WebhookRouteState) -> Router {
         .route("/v1/webhooks", post(create_endpoint).get(list_endpoints))
         .route(
             "/v1/webhooks/{id}",
-            get(get_endpoint).put(update_endpoint).delete(delete_endpoint_handler),
+            get(get_endpoint)
+                .put(update_endpoint)
+                .delete(delete_endpoint_handler),
         )
         .route("/v1/webhooks/{id}/test", post(test_endpoint))
         .route("/v1/webhooks/{id}/deliveries", get(list_deliveries))
@@ -120,7 +122,13 @@ async fn create_endpoint(
 ) -> impl IntoResponse {
     let tenant_id: TenantId = match req.tenant_id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid tenant_id"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid tenant_id"})),
+            )
+                .into_response()
+        }
     };
 
     let now = SystemTime::now();
@@ -139,10 +147,18 @@ async fn create_endpoint(
     let response = EndpointResponse::from(endpoint.clone());
 
     match state.dispatcher.store().create_endpoint(endpoint).await {
-        Ok(()) => (StatusCode::CREATED, Json(serde_json::to_value(response).unwrap())).into_response(),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(response).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             warn!(error = %e, "Failed to create webhook endpoint");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -154,12 +170,19 @@ async fn list_endpoints(
 ) -> impl IntoResponse {
     let tenant_id: TenantId = match query.tenant_id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid tenant_id"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid tenant_id"})),
+            )
+                .into_response()
+        }
     };
 
     match state.dispatcher.store().list_endpoints(&tenant_id).await {
         Ok(endpoints) => {
-            let responses: Vec<EndpointResponse> = endpoints.into_iter().map(EndpointResponse::from).collect();
+            let responses: Vec<EndpointResponse> =
+                endpoints.into_iter().map(EndpointResponse::from).collect();
             Json(serde_json::json!({
                 "endpoints": responses,
                 "count": responses.len(),
@@ -168,7 +191,11 @@ async fn list_endpoints(
         }
         Err(e) => {
             warn!(error = %e, "Failed to list webhook endpoints");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -180,15 +207,31 @@ async fn get_endpoint(
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid webhook ID"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid webhook ID"})),
+            )
+                .into_response()
+        }
     };
 
     match state.dispatcher.store().get_endpoint(&webhook_id).await {
-        Ok(Some(ep)) => Json(serde_json::to_value(EndpointResponse::from(ep)).unwrap()).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Endpoint not found"}))).into_response(),
+        Ok(Some(ep)) => {
+            Json(serde_json::to_value(EndpointResponse::from(ep)).unwrap()).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Endpoint not found"})),
+        )
+            .into_response(),
         Err(e) => {
             warn!(error = %e, "Failed to get webhook endpoint");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -201,13 +244,31 @@ async fn update_endpoint(
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid webhook ID"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid webhook ID"})),
+            )
+                .into_response()
+        }
     };
 
     let existing = match state.dispatcher.store().get_endpoint(&webhook_id).await {
         Ok(Some(ep)) => ep,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Endpoint not found"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Endpoint not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
     let updated = fcp_core::storage::WebhookEndpoint {
@@ -226,7 +287,11 @@ async fn update_endpoint(
         Ok(()) => Json(serde_json::to_value(response).unwrap()).into_response(),
         Err(e) => {
             warn!(error = %e, "Failed to update webhook endpoint");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -238,14 +303,24 @@ async fn delete_endpoint_handler(
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid webhook ID"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid webhook ID"})),
+            )
+                .into_response()
+        }
     };
 
     match state.dispatcher.store().delete_endpoint(&webhook_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             warn!(error = %e, "Failed to delete webhook endpoint");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }
@@ -257,13 +332,31 @@ async fn test_endpoint(
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid webhook ID"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid webhook ID"})),
+            )
+                .into_response()
+        }
     };
 
     let endpoint = match state.dispatcher.store().get_endpoint(&webhook_id).await {
         Ok(Some(ep)) => ep,
-        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Endpoint not found"}))).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Endpoint not found"})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
     };
 
     // Build a test payload
@@ -309,13 +402,11 @@ async fn test_endpoint(
             }))
             .into_response()
         }
-        Err(e) => {
-            Json(serde_json::json!({
-                "success": false,
-                "error": e.to_string(),
-            }))
-            .into_response()
-        }
+        Err(e) => Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string(),
+        }))
+        .into_response(),
     }
 }
 
@@ -327,7 +418,13 @@ async fn list_deliveries(
 ) -> impl IntoResponse {
     let webhook_id: WebhookId = match id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid webhook ID"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid webhook ID"})),
+            )
+                .into_response()
+        }
     };
 
     match state
@@ -346,7 +443,11 @@ async fn list_deliveries(
         }
         Err(e) => {
             warn!(error = %e, "Failed to get delivery logs");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
         }
     }
 }

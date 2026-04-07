@@ -17,15 +17,18 @@ mod storage;
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::{ws::WebSocketUpgrade, Path, Query, State},
+    extract::{ws::WebSocketUpgrade, Path, Query, Request, State},
     http::StatusCode,
-    response::IntoResponse,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use clap::Parser;
 use fcp_core::TenantId;
-use fcp_events::{CallEvent, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent, SystemEvent};
+use fcp_events::{
+    CallEvent, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent, SystemEvent,
+};
 use fcp_webhooks::{WebhookDispatcher, WebhookDispatcherConfig};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -85,6 +88,8 @@ async fn main() -> Result<()> {
         "Starting FCP Events Server"
     );
 
+    validate_listener_auth(&config)?;
+
     // Initialize PostgreSQL storage for config store (and webhooks)
     // Only connect if webhooks are enabled (which requires a real database_url).
     let storage_result = if config.webhook.enabled {
@@ -108,32 +113,87 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("websocket", serde_json::to_value(&config.websocket).unwrap_or_default()),
-            ("event_bus", serde_json::to_value(&config.event_bus).unwrap_or_default()),
-            ("limits", serde_json::to_value(&config.limits).unwrap_or_default()),
-            ("upstream", serde_json::to_value(&config.upstream).unwrap_or_default()),
-            ("webhook", serde_json::to_value(&config.webhook).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+            (
+                "websocket",
+                serde_json::to_value(&config.websocket).unwrap_or_default(),
+            ),
+            (
+                "event_bus",
+                serde_json::to_value(&config.event_bus).unwrap_or_default(),
+            ),
+            (
+                "limits",
+                serde_json::to_value(&config.limits).unwrap_or_default(),
+            ),
+            (
+                "upstream",
+                serde_json::to_value(&config.upstream).unwrap_or_default(),
+            ),
+            (
+                "webhook",
+                serde_json::to_value(&config.webhook).unwrap_or_default(),
+            ),
+            (
+                "cluster",
+                serde_json::to_value(&config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "websocket" => if let Ok(v) = serde_json::from_value(entry.value) { config.websocket = v; },
-                        "event_bus" => if let Ok(v) = serde_json::from_value(entry.value) { config.event_bus = v; },
-                        "limits" => if let Ok(v) = serde_json::from_value(entry.value) { config.limits = v; },
-                        "upstream" => if let Ok(v) = serde_json::from_value(entry.value) { config.upstream = v; },
-                        "webhook" => if let Ok(v) = serde_json::from_value(entry.value) { config.webhook = v; },
-                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        "websocket" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.websocket = v;
+                            }
+                        }
+                        "event_bus" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.event_bus = v;
+                            }
+                        }
+                        "limits" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.limits = v;
+                            }
+                        }
+                        "upstream" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.upstream = v;
+                            }
+                        }
+                        "webhook" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.webhook = v;
+                            }
+                        }
+                        "cluster" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.cluster = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -150,7 +210,10 @@ async fn main() -> Result<()> {
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
     let _cluster_manager = if config.cluster.enabled {
-        let redis_url = config.cluster.redis_url.as_ref()
+        let redis_url = config
+            .cluster
+            .redis_url
+            .as_ref()
             .or(config.event_bus.redis_url.as_ref());
         if let Some(url) = redis_url {
             match fcp_storage_redis::RedisStorage::new(fcp_storage_redis::RedisConfig {
@@ -173,8 +236,10 @@ async fn main() -> Result<()> {
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     };
-                    let cm = fcp_cluster::ClusterManager::new(redis, member)
-                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs);
+                    let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    );
                     let _handle = cm.start();
                     info!("Cluster membership started");
                     Some(cm)
@@ -252,37 +317,37 @@ async fn main() -> Result<()> {
     };
 
     // Build router with new endpoints
-    let app = Router::new()
-        // Health and status
-        .route("/health", get(health_handler))
+    let protected_routes = Router::new()
         .route("/status", get(status_handler))
-        // WebSocket
         .route("/ws/:tenant_id", get(websocket_handler))
-        // Event ingestion
         .route("/ingest", post(ingest_handler))
         .route("/ingest/batch", post(ingest_batch_handler))
-        // Call aggregation API
         .route("/calls", get(list_calls_handler))
         .route("/calls/:call_id", get(get_call_handler))
-        // Registration aggregation API
         .route("/registrations", get(list_registrations_handler))
-        // Node registry API
         .route("/nodes", get(list_nodes_handler))
-        // Aggregated statistics
         .route("/stats", get(stats_handler))
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
 
     // Merge webhook routes if dispatcher is available
-    let app = if let Some(ref dispatcher) = webhook_dispatcher {
+    let protected_routes = if let Some(ref dispatcher) = webhook_dispatcher {
         let webhook_state = routes::webhooks::WebhookRouteState {
             dispatcher: dispatcher.clone(),
         };
-        app.merge(routes::webhooks::webhook_router(webhook_state))
+        protected_routes.merge(routes::webhooks::webhook_router(webhook_state))
     } else {
-        app
-    };
+        protected_routes
+    }
+    .route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        require_api_token,
+    ));
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .merge(protected_routes)
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http());
 
     // Start Redis stream consumer if configured
     #[cfg(feature = "redis-events")]
@@ -351,7 +416,12 @@ async fn main() -> Result<()> {
     let registration_store_cleanup = registration_store.clone();
     let node_registry_cleanup = node_registry.clone();
     tokio::spawn(async move {
-        stale_cleanup_task(call_store_cleanup, registration_store_cleanup, node_registry_cleanup).await;
+        stale_cleanup_task(
+            call_store_cleanup,
+            registration_store_cleanup,
+            node_registry_cleanup,
+        )
+        .await;
     });
 
     // Spawn config poll loop (checks DB every 10s for config changes)
@@ -364,7 +434,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("events-server", "_system").await {
                     Ok(v) if v > last_version => {
-                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}
@@ -437,6 +511,83 @@ fn init_logging(level: &str, format: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_listener_auth(config: &EventsConfig) -> Result<()> {
+    if !config.websocket.bind_address.ip().is_loopback()
+        && config
+            .auth
+            .token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .is_none()
+    {
+        anyhow::bail!(
+            "Refusing to bind fcp-events-server to {} without auth.token configured",
+            config.websocket.bind_address
+        );
+    }
+
+    Ok(())
+}
+
+fn extract_bearer_token(header_value: &str) -> Option<&str> {
+    header_value
+        .strip_prefix("Bearer ")
+        .or_else(|| header_value.strip_prefix("bearer "))
+        .map(str::trim)
+}
+
+fn constant_time_compare(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (lhs, rhs)| acc | (lhs ^ rhs))
+        == 0
+}
+
+fn is_valid_api_token(headers: &axum::http::HeaderMap, expected: &str) -> bool {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(extract_bearer_token)
+        .map(|provided| constant_time_compare(provided, expected))
+        .unwrap_or(false)
+}
+
+fn is_valid_query_token(uri: &axum::http::Uri, expected: &str) -> bool {
+    let Some(query) = uri.query() else {
+        return false;
+    };
+
+    url::form_urlencoded::parse(query.as_bytes())
+        .any(|(key, value)| key == "token" && constant_time_compare(value.as_ref(), expected))
+}
+
+async fn require_api_token(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(expected_token) = state.config.auth.token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    if is_valid_api_token(request.headers(), expected_token)
+        || is_valid_query_token(request.uri(), expected_token)
+    {
+        return next.run(request).await;
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+    )
+        .into_response()
+}
+
 /// Health check endpoint
 async fn health_handler() -> impl IntoResponse {
     (StatusCode::OK, "OK")
@@ -478,8 +629,30 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
 async fn websocket_handler(
     ws: WebSocketUpgrade,
     Path(tenant_id_str): Path<String>,
+    Query(query): Query<WebSocketAuthQuery>,
+    headers: axum::http::HeaderMap,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
+    if let Some(expected_token) = state.config.auth.token.as_deref() {
+        let provided_token = headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(extract_bearer_token)
+            .map(|value| value.to_string())
+            .or(query.token);
+
+        match provided_token {
+            Some(token) if constant_time_compare(&token, expected_token) => {}
+            _ => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     // Parse tenant ID
     let tenant_id = match tenant_id_str.parse::<TenantId>() {
         Ok(id) => id,
@@ -516,6 +689,11 @@ async fn websocket_handler(
         )
     })
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct WebSocketAuthQuery {
+    token: Option<String>,
 }
 
 /// Ingest a single event from another service (e.g., fcp-call-manager)
@@ -693,7 +871,9 @@ fn process_event_for_state(
                     info!(node_id = %node_id, "Node stopping");
                     // Node will be marked offline via stale check
                 }
-                SystemEvent::HealthCheck { node_id, healthy, .. } => {
+                SystemEvent::HealthCheck {
+                    node_id, healthy, ..
+                } => {
                     debug!(node_id = %node_id, healthy = %healthy, "Health check received");
                     if *healthy {
                         node_registry.register_or_update(node_id, Some(NodeType::CallManager));
@@ -731,10 +911,7 @@ fn extract_node_id_from_call_event(event: &CallEvent) -> Option<String> {
 }
 
 /// Background task to broadcast events from event bus to connections
-async fn event_broadcast_task(
-    event_bus: Arc<InMemoryEventBus>,
-    manager: Arc<ConnectionManager>,
-) {
+async fn event_broadcast_task(event_bus: Arc<InMemoryEventBus>, manager: Arc<ConnectionManager>) {
     use fcp_events::{EventFilter, EventSubscriber};
 
     // Subscribe to all events

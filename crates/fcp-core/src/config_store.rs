@@ -71,11 +71,7 @@ pub trait ConfigStore: Send + Sync {
     ) -> Result<Option<ConfigEntry>>;
 
     /// Get all config sections for a given service and tenant.
-    async fn get_service_config(
-        &self,
-        service: &str,
-        tenant_id: &str,
-    ) -> Result<Vec<ConfigEntry>>;
+    async fn get_service_config(&self, service: &str, tenant_id: &str) -> Result<Vec<ConfigEntry>>;
 
     /// Upsert a config entry. Increments version on update.
     /// Inserts an audit log entry in the same transaction.
@@ -90,12 +86,7 @@ pub trait ConfigStore: Send + Sync {
     ) -> Result<i64>;
 
     /// Delete a config entry. Returns true if a row was actually deleted.
-    async fn delete_config(
-        &self,
-        service: &str,
-        section: &str,
-        tenant_id: &str,
-    ) -> Result<bool>;
+    async fn delete_config(&self, service: &str, section: &str, tenant_id: &str) -> Result<bool>;
 
     /// List config entries with optional filters.
     async fn list_configs(
@@ -106,11 +97,7 @@ pub trait ConfigStore: Send + Sync {
 
     /// Get the latest version number for a service+tenant combination.
     /// Returns 0 if no entries exist. Used for poll-based change detection.
-    async fn get_latest_version(
-        &self,
-        service: &str,
-        tenant_id: &str,
-    ) -> Result<i64>;
+    async fn get_latest_version(&self, service: &str, tenant_id: &str) -> Result<i64>;
 
     /// Get audit log entries, optionally filtered by section.
     async fn get_audit_log(
@@ -173,8 +160,7 @@ impl<T: Clone + Send + Sync + 'static> ConfigWatcher<T> {
 
     /// Get the last known version.
     pub fn last_version(&self) -> i64 {
-        self.last_version
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.last_version.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get the service name this watcher is tracking.
@@ -217,7 +203,9 @@ where
             Ok(config) => {
                 debug!(
                     service,
-                    section, tenant_id, version = entry.version,
+                    section,
+                    tenant_id,
+                    version = entry.version,
                     "loaded config from database"
                 );
                 return Ok((config, entry.version));
@@ -236,8 +224,9 @@ where
     }
 
     // Seed from TOML value
-    let json_value = serde_json::to_value(toml_value)
-        .map_err(|e| crate::Error::Config(format!("failed to serialize config for seeding: {e}")))?;
+    let json_value = serde_json::to_value(toml_value).map_err(|e| {
+        crate::Error::Config(format!("failed to serialize config for seeding: {e}"))
+    })?;
 
     let version = store
         .set_config(service, section, tenant_id, json_value, Some("seed"))
@@ -245,8 +234,7 @@ where
 
     info!(
         service,
-        section, tenant_id, version,
-        "seeded config into database from TOML"
+        section, tenant_id, version, "seeded config into database from TOML"
     );
 
     Ok((toml_value.clone(), version))
@@ -271,11 +259,7 @@ where
     if tenant_id != "_system" {
         if let Some(entry) = store.get_config(service, section, tenant_id).await? {
             if let Ok(config) = serde_json::from_value::<T>(entry.value) {
-                debug!(
-                    service,
-                    section, tenant_id,
-                    "loaded tenant-specific config"
-                );
+                debug!(service, section, tenant_id, "loaded tenant-specific config");
                 return Ok(config);
             }
         }
@@ -286,8 +270,7 @@ where
         if let Ok(config) = serde_json::from_value::<T>(entry.value) {
             debug!(
                 service,
-                section,
-                "loaded system-wide config (fallback from tenant {tenant_id})"
+                section, "loaded system-wide config (fallback from tenant {tenant_id})"
             );
             return Ok(config);
         }
@@ -296,8 +279,7 @@ where
     // Fall back to default
     debug!(
         service,
-        section, tenant_id,
-        "using default config (no DB entry found)"
+        section, tenant_id, "using default config (no DB entry found)"
     );
     Ok(T::default())
 }
@@ -369,11 +351,7 @@ where
                     }
                 },
                 Ok(None) => {
-                    debug!(
-                        service,
-                        section,
-                        "config poll: entry was deleted"
-                    );
+                    debug!(service, section, "config poll: entry was deleted");
                 }
                 Err(e) => {
                     warn!(

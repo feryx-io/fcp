@@ -67,7 +67,8 @@ impl FlowRegistry {
     pub fn register(&self, stream: mpsc::Sender<Bytes>, peer_addr: SocketAddr) -> FlowToken {
         let token = format!("flow-{}", Uuid::new_v4().simple());
         debug!(flow_token = %token, peer = %peer_addr, "Registered new flow");
-        self.flows.insert(token.clone(), FlowInfo { stream, peer_addr });
+        self.flows
+            .insert(token.clone(), FlowInfo { stream, peer_addr });
         token
     }
 
@@ -84,7 +85,9 @@ impl FlowRegistry {
 
     /// Look up just the connection writer by flow token.
     pub fn lookup_stream(&self, token: &str) -> Option<mpsc::Sender<Bytes>> {
-        self.flows.get(token).map(|entry| entry.value().stream.clone())
+        self.flows
+            .get(token)
+            .map(|entry| entry.value().stream.clone())
     }
 
     /// Remove a flow from the registry.

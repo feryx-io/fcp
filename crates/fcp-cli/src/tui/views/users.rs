@@ -555,9 +555,15 @@ fn render_users_table(
     state: &mut UsersViewState,
     area: Rect,
 ) {
-    let header = Row::new(vec!["Username", "Display Name", "Role", "Tenant", "Enabled"])
-        .style(theme.title())
-        .bottom_margin(1);
+    let header = Row::new(vec![
+        "Username",
+        "Display Name",
+        "Role",
+        "Tenant",
+        "Enabled",
+    ])
+    .style(theme.title())
+    .bottom_margin(1);
 
     let rows: Vec<Row> = state
         .users
@@ -980,7 +986,6 @@ pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut UsersVie
     state.loading = false;
 }
 
-
 /// Render add user modal
 fn render_add_modal(
     f: &mut Frame,
@@ -1121,11 +1126,7 @@ fn render_edit_modal(
             password_masked.as_str(),
             state.focused_field == 2,
         ),
-        (
-            "Role:",
-            state.input_role.value(),
-            state.focused_field == 3,
-        ),
+        ("Role:", state.input_role.value(), state.focused_field == 3),
         // Enterprise fields
         (
             "Email:",

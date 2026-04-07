@@ -527,15 +527,31 @@ mod tests {
 
         let peer: std::net::SocketAddr = "127.0.0.1:5060".parse().unwrap();
         let mut headers = Headers::new();
-        headers.push(SmolStr::new("From"), SmolStr::new("Alice <sip:alice@example.com>")).unwrap();
-        headers.push(SmolStr::new("To"), SmolStr::new("Bob <sip:bob@example.com>")).unwrap();
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-park")).unwrap();
+        headers
+            .push(
+                SmolStr::new("From"),
+                SmolStr::new("Alice <sip:alice@example.com>"),
+            )
+            .unwrap();
+        headers
+            .push(
+                SmolStr::new("To"),
+                SmolStr::new("Bob <sip:bob@example.com>"),
+            )
+            .unwrap();
+        headers
+            .push(SmolStr::new("Call-ID"), SmolStr::new("test-park"))
+            .unwrap();
 
         let request = sip_core::Request::new(
-            RequestLine::new(Method::Invite, sip_core::SipUri::parse("sip:bob@example.com").unwrap()),
+            RequestLine::new(
+                Method::Invite,
+                sip_core::SipUri::parse("sip:bob@example.com").unwrap(),
+            ),
             headers,
             Bytes::new(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut call = Call::from_invite(request, peer, fcp_core::TenantId::nil());
         call.establish();

@@ -52,9 +52,10 @@ impl RateLimiterState {
             .per_ip
             .entry(ip)
             .or_insert_with(|| {
-                let quota =
-                    Quota::per_minute(NonZeroU32::new(self.config.default_requests_per_minute).unwrap())
-                        .allow_burst(NonZeroU32::new(self.config.burst_size).unwrap());
+                let quota = Quota::per_minute(
+                    NonZeroU32::new(self.config.default_requests_per_minute).unwrap(),
+                )
+                .allow_burst(NonZeroU32::new(self.config.burst_size).unwrap());
                 Arc::new(RateLimiter::direct(quota))
             })
             .clone();

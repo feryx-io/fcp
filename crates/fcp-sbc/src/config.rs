@@ -32,8 +32,12 @@ pub struct ClusterSection {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5 }
-fn default_heartbeat_ttl() -> u64 { 15 }
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {

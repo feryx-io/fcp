@@ -55,12 +55,12 @@ pub struct AuthUserResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,       // username
+    pub sub: String, // username
     pub role: String,
     pub tenant_id: String,
     pub display_name: Option<String>,
-    pub exp: usize,        // expiry timestamp
-    pub iat: usize,        // issued at
+    pub exp: usize, // expiry timestamp
+    pub iat: usize, // issued at
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,17 +75,23 @@ pub async fn login(
     State(state): State<ApiState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".to_string())
-    })?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
 
     // Get user first (we need to check lock status before password verification)
     let mut user = match storage.get_user(&req.username).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             // Constant-time: still do a bcrypt check to prevent timing attacks
-            let _ = password::verify_password(&req.password, "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC");
-            return Err(ApiError::Unauthorized("Invalid username or password".to_string()));
+            let _ = password::verify_password(
+                &req.password,
+                "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
+            );
+            return Err(ApiError::Unauthorized(
+                "Invalid username or password".to_string(),
+            ));
         }
         Err(e) => return Err(ApiError::Internal(e.to_string())),
     };
@@ -99,7 +105,9 @@ pub async fn login(
             if now < locked_until {
                 // Still locked — do constant-time bcrypt to prevent timing attacks
                 let _ = password::verify_password(&req.password, &user.password);
-                return Err(ApiError::Forbidden("Account is locked. Try again later.".to_string()));
+                return Err(ApiError::Forbidden(
+                    "Account is locked. Try again later.".to_string(),
+                ));
             }
             // Lock expired — auto-unlock
             user.account_status = AccountStatus::Active;
@@ -115,7 +123,9 @@ pub async fn login(
         } else {
             // Locked without expiry (admin-locked) — still do bcrypt for timing
             let _ = password::verify_password(&req.password, &user.password);
-            return Err(ApiError::Forbidden("Account is locked. Contact an administrator.".to_string()));
+            return Err(ApiError::Forbidden(
+                "Account is locked. Contact an administrator.".to_string(),
+            ));
         }
     }
 
@@ -143,7 +153,8 @@ pub async fn login(
         if user.failed_login_attempts >= policy.max_failed_attempts as i32 {
             // Lock the account
             user.account_status = AccountStatus::Locked;
-            user.account_locked_until = Some(now + Duration::from_secs(policy.lockout_duration_secs));
+            user.account_locked_until =
+                Some(now + Duration::from_secs(policy.lockout_duration_secs));
             tracing::warn!(
                 event = "account_locked",
                 username = %user.username,
@@ -155,7 +166,9 @@ pub async fn login(
 
         let _ = storage.put_user(user).await;
         // Return generic error — don't reveal lockout details to attacker
-        return Err(ApiError::Unauthorized("Invalid username or password".to_string()));
+        return Err(ApiError::Unauthorized(
+            "Invalid username or password".to_string(),
+        ));
     }
 
     // Password is correct — reset failed attempts and update last_login
@@ -182,10 +195,7 @@ pub async fn login(
     };
 
     // Build JWT claims
-    let epoch_secs = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as usize;
+    let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
 
     let claims = Claims {
         sub: user.username.clone(),
@@ -214,11 +224,14 @@ pub async fn login(
         "Login successful"
     );
 
-    Ok((StatusCode::OK, Json(LoginResponse {
-        token,
-        user: auth_user,
-        password_expired: if password_expired { Some(true) } else { None },
-    })))
+    Ok((
+        StatusCode::OK,
+        Json(LoginResponse {
+            token,
+            user: auth_user,
+            password_expired: if password_expired { Some(true) } else { None },
+        }),
+    ))
 }
 
 /// POST /api/v1/auth/logout
@@ -320,26 +333,36 @@ pub async fn change_expired_password(
     State(state): State<ApiState>,
     Json(req): Json<ChangeExpiredPasswordRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".to_string())
-    })?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
 
     // Validate new password is not empty
     if req.new_password.is_empty() {
-        return Err(ApiError::BadRequest("New password cannot be empty".to_string()));
+        return Err(ApiError::BadRequest(
+            "New password cannot be empty".to_string(),
+        ));
     }
 
     // Validate new password is different from current
     if req.new_password == req.current_password {
-        return Err(ApiError::BadRequest("New password must be different from current password".to_string()));
+        return Err(ApiError::BadRequest(
+            "New password must be different from current password".to_string(),
+        ));
     }
 
     // Get user (with constant-time bcrypt on miss to prevent timing attacks)
     let mut user = match storage.get_user(&req.username).await {
         Ok(Some(u)) => u,
         Ok(None) => {
-            let _ = password::verify_password(&req.current_password, "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC");
-            return Err(ApiError::Unauthorized("Invalid username or password".to_string()));
+            let _ = password::verify_password(
+                &req.current_password,
+                "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
+            );
+            return Err(ApiError::Unauthorized(
+                "Invalid username or password".to_string(),
+            ));
         }
         Err(e) => return Err(ApiError::Internal(e.to_string())),
     };
@@ -352,7 +375,9 @@ pub async fn change_expired_password(
         if let Some(locked_until) = user.account_locked_until {
             if now < locked_until {
                 let _ = password::verify_password(&req.current_password, &user.password);
-                return Err(ApiError::Forbidden("Account is locked. Try again later.".to_string()));
+                return Err(ApiError::Forbidden(
+                    "Account is locked. Try again later.".to_string(),
+                ));
             }
             // Lock expired — auto-unlock
             user.account_status = AccountStatus::Active;
@@ -367,7 +392,9 @@ pub async fn change_expired_password(
             );
         } else {
             let _ = password::verify_password(&req.current_password, &user.password);
-            return Err(ApiError::Forbidden("Account is locked. Contact an administrator.".to_string()));
+            return Err(ApiError::Forbidden(
+                "Account is locked. Contact an administrator.".to_string(),
+            ));
         }
     }
 
@@ -394,7 +421,8 @@ pub async fn change_expired_password(
 
         if user.failed_login_attempts >= policy.max_failed_attempts as i32 {
             user.account_status = AccountStatus::Locked;
-            user.account_locked_until = Some(now + Duration::from_secs(policy.lockout_duration_secs));
+            user.account_locked_until =
+                Some(now + Duration::from_secs(policy.lockout_duration_secs));
             tracing::warn!(
                 event = "account_locked",
                 username = %user.username,
@@ -405,7 +433,9 @@ pub async fn change_expired_password(
         }
 
         let _ = storage.put_user(user).await;
-        return Err(ApiError::Unauthorized("Invalid username or password".to_string()));
+        return Err(ApiError::Unauthorized(
+            "Invalid username or password".to_string(),
+        ));
     }
 
     // Password correct — reset failed attempts
@@ -423,7 +453,8 @@ pub async fn change_expired_password(
             };
             if !expired {
                 return Err(ApiError::BadRequest(
-                    "Password is not expired. Use the regular password change endpoint.".to_string(),
+                    "Password is not expired. Use the regular password change endpoint."
+                        .to_string(),
                 ));
             }
         } else {
@@ -463,10 +494,7 @@ pub async fn change_expired_password(
     );
 
     // Issue JWT token so user can proceed
-    let epoch_secs = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as usize;
+    let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
 
     let claims = Claims {
         sub: user.username.clone(),
@@ -487,11 +515,14 @@ pub async fn change_expired_password(
         display_name: user.display_name,
     };
 
-    Ok((StatusCode::OK, Json(LoginResponse {
-        token,
-        user: auth_user,
-        password_expired: None,
-    })))
+    Ok((
+        StatusCode::OK,
+        Json(LoginResponse {
+            token,
+            user: auth_user,
+            password_expired: None,
+        }),
+    ))
 }
 
 // ---- JWT helpers ----
@@ -515,8 +546,8 @@ fn encode_jwt(claims: &Claims, secret: &[u8]) -> Result<String, ApiError> {
 
     let message = format!("{}.{}", header, payload);
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret).map_err(|e| ApiError::Internal(e.to_string()))?;
     mac.update(message.as_bytes());
     let signature = base64url_encode(&mac.finalize().into_bytes());
 
@@ -534,8 +565,8 @@ pub(crate) fn decode_jwt(token: &str, secret: &[u8]) -> Result<Claims, ApiError>
 
     // Verify signature
     let message = format!("{}.{}", parts[0], parts[1]);
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret).map_err(|e| ApiError::Internal(e.to_string()))?;
     mac.update(message.as_bytes());
 
     let signature = base64url_decode(parts[2])

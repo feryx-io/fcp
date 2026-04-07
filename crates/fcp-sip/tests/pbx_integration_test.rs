@@ -215,11 +215,8 @@ async fn test_hunt_group_extension_resolved() {
         .await;
 
     // INVITE to hunt group extension (not a feature code)
-    let request = build_invite_with_sdp(
-        "alice@example.com",
-        "5000@example.com",
-        Some(minimal_sdp()),
-    );
+    let request =
+        build_invite_with_sdp("alice@example.com", "5000@example.com", Some(minimal_sdp()));
     harness.send_request(&request).await;
 
     // Should get responses — at minimum 100 Trying + an error since members
@@ -240,11 +237,8 @@ async fn test_regular_extension_not_treated_as_feature_code() {
         .await;
 
     // Normal extension 1001, should NOT be treated as a feature code
-    let request = build_invite_with_sdp(
-        "alice@example.com",
-        "1001@example.com",
-        Some(minimal_sdp()),
-    );
+    let request =
+        build_invite_with_sdp("alice@example.com", "1001@example.com", Some(minimal_sdp()));
     harness.send_request(&request).await;
 
     let responses = harness.wait_for_responses(2, Duration::from_secs(2)).await;

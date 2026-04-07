@@ -441,13 +441,23 @@ mod tests {
         manager.add_rule(rule);
 
         let now = SystemTime::now();
-        let found = manager.find_applicable_rule(&line_binding_id, ForwardType::NoAnswer, "+15551234567", now);
+        let found = manager.find_applicable_rule(
+            &line_binding_id,
+            ForwardType::NoAnswer,
+            "+15551234567",
+            now,
+        );
         assert!(found.is_some());
         assert_eq!(found.unwrap().forward_type, ForwardType::NoAnswer);
         assert_eq!(found.unwrap().destination, ForwardDestination::Voicemail);
 
         // Should NOT match Unconditional
-        let not_found = manager.find_applicable_rule(&line_binding_id, ForwardType::Unconditional, "+15551234567", now);
+        let not_found = manager.find_applicable_rule(
+            &line_binding_id,
+            ForwardType::Unconditional,
+            "+15551234567",
+            now,
+        );
         assert!(not_found.is_none());
     }
 

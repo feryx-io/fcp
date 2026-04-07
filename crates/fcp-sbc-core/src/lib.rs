@@ -33,20 +33,22 @@ pub mod trunk_router;
 // Re-export config types for convenience
 pub use admission::{AdmissionAction, AdmissionConfig, TrunkCpsLimit};
 pub use config::{SbcConfig, SbcStorageConfig};
+pub use hmr::{
+    HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection, HmrMessageType,
+    HmrRule,
+};
 pub use metrics::{PerSourceIpSnapshot, SbcMetricsConfig, SbcMetricsSnapshot, TrunkHealthStatus};
 pub use nat::{NatConfig, StunServerConfig, TurnServerConfig};
 pub use rate_limit::{MethodRateLimits, RateLimitEntry, RateLimitPolicyConfig};
 pub use security::{AclAction, IpAcl, IpAclEntry, MalformedSipPolicy, SecurityConfig};
 pub use siprec::{RecordingPolicy, RecordingServer, SelectiveRecordingRule, SiprecConfig};
-pub use hmr::{
-    HeaderManipulationConfig, HmrAction, HmrActionType, HmrCondition, HmrDirection,
-    HmrMessageType, HmrRule,
-};
 pub use stir_shaken::{
-    AttestationLevel, StirShakenConfig, StirSignMode, StirVerifyMode,
-    TrunkStirShakenConfig,
+    AttestationLevel, StirShakenConfig, StirSignMode, StirVerifyMode, TrunkStirShakenConfig,
 };
-pub use trunk::{SrtpMode, TrunkCodecConfig, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig, TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport};
+pub use trunk::{
+    SrtpMode, TrunkCodecConfig, TrunkConfig, TrunkCredentials, TrunkDirection, TrunkDtmfConfig,
+    TrunkDtmfMode, TrunkFailover, TrunkSrtpConfig, TrunkTransport,
+};
 
 // Re-export LCR and quality types
 pub use lcr::{LcrConfig, LcrRouteEntry, LoadBalanceStrategy};
@@ -54,8 +56,8 @@ pub use trunk_quality::{TrunkQualitySnapshot, TrunkQualityTracker};
 
 // Re-export trunk runtime types for convenience
 pub use cps::{CpsChecker, NoCpsLimit};
+pub use health_probes::run_health_probes;
 pub use trunk_auth::TrunkCredentialProvider;
 pub use trunk_health::TrunkHealthMonitor;
-pub use trunk_registration::{TrunkRegistrar, RegistrationState, run_trunk_registration};
+pub use trunk_registration::{run_trunk_registration, RegistrationState, TrunkRegistrar};
 pub use trunk_router::TrunkRouter;
-pub use health_probes::run_health_probes;

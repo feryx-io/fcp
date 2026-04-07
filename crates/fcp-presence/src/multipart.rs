@@ -111,12 +111,14 @@ mod tests {
         let mut builder = MultipartBuilder::with_boundary("test-boundary");
 
         builder.add_rlmi(
-            "<list xmlns=\"urn:ietf:params:xml:ns:rlmi\" uri=\"sip:team@example.com\"/>".to_string(),
+            "<list xmlns=\"urn:ietf:params:xml:ns:rlmi\" uri=\"sip:team@example.com\"/>"
+                .to_string(),
             "list@example.com",
         );
 
         builder.add_pidf(
-            "<presence xmlns=\"urn:ietf:params:xml:ns:pidf\" entity=\"pres:alice@example.com\"/>".to_string(),
+            "<presence xmlns=\"urn:ietf:params:xml:ns:pidf\" entity=\"pres:alice@example.com\"/>"
+                .to_string(),
             "alice@example.com",
         );
 

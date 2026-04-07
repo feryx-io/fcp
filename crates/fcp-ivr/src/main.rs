@@ -14,7 +14,10 @@ use clap::Parser;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
 use fcp_flow::InMemoryFlowStore;
 use fcp_media::{BackendType, MediaConfig};
-use fcp_sbc_core::{CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar, TrunkRouter};
+use fcp_sbc_core::{
+    CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar,
+    TrunkRouter,
+};
 use fcp_sip::flow_handler::FlowCallHandler;
 use fcp_sip::prelude::*;
 use fcp_sip::service::{DialogService, SubscriptionService, TransactionService};
@@ -116,30 +119,78 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("media", serde_json::to_value(&config.media).unwrap_or_default()),
-            ("events", serde_json::to_value(&config.events).unwrap_or_default()),
-            ("flows", serde_json::to_value(&config.flows).unwrap_or_default()),
-            ("b2bua", serde_json::to_value(&config.b2bua).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&config.cluster).unwrap_or_default()),
+            (
+                "media",
+                serde_json::to_value(&config.media).unwrap_or_default(),
+            ),
+            (
+                "events",
+                serde_json::to_value(&config.events).unwrap_or_default(),
+            ),
+            (
+                "flows",
+                serde_json::to_value(&config.flows).unwrap_or_default(),
+            ),
+            (
+                "b2bua",
+                serde_json::to_value(&config.b2bua).unwrap_or_default(),
+            ),
+            (
+                "cluster",
+                serde_json::to_value(&config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "media" => if let Ok(v) = serde_json::from_value(entry.value) { config.media = v; },
-                        "events" => if let Ok(v) = serde_json::from_value(entry.value) { config.events = v; },
-                        "flows" => if let Ok(v) = serde_json::from_value(entry.value) { config.flows = v; },
-                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { config.b2bua = v; },
-                        "cluster" => if let Ok(v) = serde_json::from_value(entry.value) { config.cluster = v; },
+                        "media" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.media = v;
+                            }
+                        }
+                        "events" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.events = v;
+                            }
+                        }
+                        "flows" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.flows = v;
+                            }
+                        }
+                        "b2bua" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.b2bua = v;
+                            }
+                        }
+                        "cluster" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                config.cluster = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -176,7 +227,9 @@ async fn main() -> Result<()> {
 
     // 10. Build credential provider from trunks (if any)
     let trunk_cred_provider: Option<Arc<TrunkCredentialProvider>> = if !config.trunks.is_empty() {
-        Some(Arc::new(TrunkCredentialProvider::from_trunks(&config.trunks)))
+        Some(Arc::new(TrunkCredentialProvider::from_trunks(
+            &config.trunks,
+        )))
     } else {
         None
     };
@@ -221,7 +274,11 @@ async fn main() -> Result<()> {
                 node_id: config.service.node_id.clone(),
                 node_type: config.service.service_type.clone(),
                 http_address: config.http.bind_address,
-                sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                sip_address: config
+                    .sip
+                    .udp_bind
+                    .parse()
+                    .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                 capabilities: vec!["ivr".to_string(), "flow_engine".to_string()],
                 active_calls: 0,
                 started_at: std::time::SystemTime::now()
@@ -230,9 +287,15 @@ async fn main() -> Result<()> {
                     .as_secs(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             };
-            let cm = fcp_cluster::ClusterManager::new(redis.clone(), member)
-                .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs)
-                .with_event_publisher(Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>);
+            let cm =
+                fcp_cluster::ClusterManager::new(redis.clone(), member)
+                    .with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    )
+                    .with_event_publisher(
+                        Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>
+                    );
             let _handle = cm.start();
             info!("Cluster membership started");
             Some(cm)
@@ -319,7 +382,11 @@ async fn main() -> Result<()> {
     .with_transaction_manager(Arc::clone(&transaction_manager_ref))
     .with_dialog_manager(Arc::clone(&dialog_manager_ref))
     .with_uris(local_uri.clone(), contact_uri)
-    .with_media_profile(media_profile, local_addr.clone(), config.media.rtp_port_start);
+    .with_media_profile(
+        media_profile,
+        local_addr.clone(),
+        config.media.rtp_port_start,
+    );
 
     let flow_handler = Arc::new(flow_handler);
 
@@ -365,11 +432,11 @@ async fn main() -> Result<()> {
         Some(Arc::clone(&flow_handler)), // ← THE KEY DIFFERENCE
         config.b2bua.clone(),
         outbound_route_provider,
-        None, // No PBX handler
-        None, // No conference handler
-        None, // No queue handler
-        None, // presence_handler
-        None, // cluster_parking
+        None,          // No PBX handler
+        None,          // No conference handler
+        None,          // No queue handler
+        None,          // presence_handler
+        None,          // cluster_parking
         String::new(), // node_id
     )?);
 
@@ -449,9 +516,12 @@ async fn main() -> Result<()> {
     // 22. Spawn event forwarding task (if configured)
     if let Some(ref events_url) = config.events.server_url {
         let events_url = events_url.clone();
+        let events_auth_token = config.events.auth_token.clone();
         let event_bus_clone = Arc::clone(&event_bus);
         tokio::spawn(async move {
-            if let Err(e) = run_event_forwarder(event_bus_clone, &events_url).await {
+            if let Err(e) =
+                run_event_forwarder(event_bus_clone, &events_url, events_auth_token).await
+            {
                 tracing::error!(%e, "Event forwarder task failed");
             }
         });
@@ -482,7 +552,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("ivr", "_system").await {
                     Ok(v) if v > last_version => {
-                        info!(old_version = last_version, new_version = v, "config version changed in database");
+                        info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}
@@ -727,7 +801,11 @@ fn init_tracing(config: &IvrConfig) {
 }
 
 /// Run the event forwarder task that subscribes to local events and POSTs them to fcp-events-server.
-async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str) -> Result<()> {
+async fn run_event_forwarder(
+    event_bus: Arc<InMemoryEventBus>,
+    events_url: &str,
+    auth_token: Option<String>,
+) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -746,8 +824,14 @@ async fn run_event_forwarder(event_bus: Arc<InMemoryEventBus>, events_url: &str)
                 tracing::debug!(?event, "Forwarding event to events server");
                 let client = client.clone();
                 let url = events_url.to_string();
+                let auth_token = auth_token.clone();
                 tokio::spawn(async move {
-                    match client.post(&url).json(&event).send().await {
+                    let mut request = client.post(&url).json(&event);
+                    if let Some(token) = auth_token.as_deref() {
+                        request = request.bearer_auth(token);
+                    }
+
+                    match request.send().await {
                         Ok(resp) => {
                             if resp.status().is_success() {
                                 tracing::debug!(status = %resp.status(), "Event forwarded");

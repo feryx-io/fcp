@@ -255,10 +255,7 @@ pub async fn get_audit_log(
 ) -> Result<Json<Vec<AuditEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
 
-    let service = params
-        .service
-        .as_deref()
-        .unwrap_or("_global");
+    let service = params.service.as_deref().unwrap_or("_global");
 
     let limit = params.limit.min(500).max(1);
 

@@ -75,10 +75,12 @@ impl AppSettings {
     /// Get a setting value by dotted key
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
-            "deployment.mode" | "deployment_mode" => {
-                Some(format!("{}", serde_json::to_string(&self.deployment_mode)
-                    .unwrap_or_default().trim_matches('"')))
-            }
+            "deployment.mode" | "deployment_mode" => Some(format!(
+                "{}",
+                serde_json::to_string(&self.deployment_mode)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+            )),
             "output.format" | "output_format" => Some(self.output_format.clone()),
             "output.no_color" | "no_color" => Some(self.no_color.to_string()),
             "api.timeout" | "api_timeout_secs" => Some(self.api_timeout_secs.to_string()),
@@ -104,34 +106,36 @@ impl AppSettings {
                     ),
                 };
             }
-            "output.format" | "output_format" => {
-                match value.to_lowercase().as_str() {
-                    "table" | "json" | "yaml" => self.output_format = value.to_lowercase(),
-                    _ => anyhow::bail!(
-                        "Invalid output format '{}'. Valid: table, json, yaml",
-                        value
-                    ),
-                }
-            }
+            "output.format" | "output_format" => match value.to_lowercase().as_str() {
+                "table" | "json" | "yaml" => self.output_format = value.to_lowercase(),
+                _ => anyhow::bail!(
+                    "Invalid output format '{}'. Valid: table, json, yaml",
+                    value
+                ),
+            },
             "output.no_color" | "no_color" => {
-                self.no_color = value.parse::<bool>()
-                    .map_err(|_| anyhow::anyhow!("Invalid boolean '{}'. Use true or false", value))?;
+                self.no_color = value.parse::<bool>().map_err(|_| {
+                    anyhow::anyhow!("Invalid boolean '{}'. Use true or false", value)
+                })?;
             }
             "api.timeout" | "api_timeout_secs" => {
-                let secs = value.parse::<u64>()
-                    .map_err(|_| anyhow::anyhow!("Invalid timeout '{}'. Must be a positive integer", value))?;
+                let secs = value.parse::<u64>().map_err(|_| {
+                    anyhow::anyhow!("Invalid timeout '{}'. Must be a positive integer", value)
+                })?;
                 if secs == 0 || secs > 300 {
                     anyhow::bail!("Timeout must be between 1 and 300 seconds");
                 }
                 self.api_timeout_secs = secs;
             }
             "api.confirm_destructive" | "confirm_destructive" => {
-                self.confirm_destructive = value.parse::<bool>()
-                    .map_err(|_| anyhow::anyhow!("Invalid boolean '{}'. Use true or false", value))?;
+                self.confirm_destructive = value.parse::<bool>().map_err(|_| {
+                    anyhow::anyhow!("Invalid boolean '{}'. Use true or false", value)
+                })?;
             }
             "api.page_size" | "page_size" => {
-                let size = value.parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("Invalid page size '{}'. Must be a positive integer", value))?;
+                let size = value.parse::<usize>().map_err(|_| {
+                    anyhow::anyhow!("Invalid page size '{}'. Must be a positive integer", value)
+                })?;
                 if size == 0 || size > 1000 {
                     anyhow::bail!("Page size must be between 1 and 1000");
                 }

@@ -80,7 +80,8 @@ impl LocationStoreAdapter {
         // Create a temporary Headers object to use sip_parse::parse_path
         let mut headers = sip_core::Headers::new();
         let _ = headers.push(SmolStr::new("Path"), SmolStr::new(path_str));
-        sip_parse::parse_path(&headers).map_err(|e| anyhow::anyhow!("Failed to parse Path: {:?}", e))
+        sip_parse::parse_path(&headers)
+            .map_err(|e| anyhow::anyhow!("Failed to parse Path: {:?}", e))
     }
 
     /// Convert siphon-rs Binding to FCP Registration.
@@ -415,8 +416,11 @@ impl FcpRegistrar {
                         Ok(response) => response,
                         Err(e) => {
                             tracing::error!("Failed to create auth challenge: {}", e);
-                            return self
-                                .create_error_response(request, 500, "Internal Server Error");
+                            return self.create_error_response(
+                                request,
+                                500,
+                                "Internal Server Error",
+                            );
                         }
                     };
                 }
@@ -457,8 +461,7 @@ impl FcpRegistrar {
                             reason: format!("authentication_error: {}", e),
                             timestamp: SystemTime::now(),
                         });
-                        return self
-                            .create_error_response(request, 500, "Internal Server Error");
+                        return self.create_error_response(request, 500, "Internal Server Error");
                     }
                 }
             } else {
@@ -861,7 +864,10 @@ impl FcpRegistrar {
         for binding in &bindings {
             if let Some(path) = binding.path() {
                 // Path and Service-Route have the same format
-                let _ = headers.push(SmolStr::new("Service-Route"), SmolStr::new(path.to_string()));
+                let _ = headers.push(
+                    SmolStr::new("Service-Route"),
+                    SmolStr::new(path.to_string()),
+                );
                 debug!(service_route = %path, "Added Service-Route to 200 OK");
             }
         }
@@ -944,8 +950,7 @@ impl FcpRegistrar {
                     for alias in &self.domain_aliases {
                         if alias.to_lowercase() != domain_lower {
                             let aliased_aor = format!("sip:{}@{}", user, alias);
-                            if let Ok(mut bindings) =
-                                self.location_store.lookup(&aliased_aor).await
+                            if let Ok(mut bindings) = self.location_store.lookup(&aliased_aor).await
                             {
                                 debug!(
                                     original_aor = %normalized,
@@ -968,7 +973,9 @@ impl FcpRegistrar {
     /// Returns None if the AOR doesn't have the expected format.
     fn split_aor(aor: &str) -> Option<(&str, &str)> {
         // Handle "sip:user@domain" format
-        let without_scheme = aor.strip_prefix("sip:").or_else(|| aor.strip_prefix("sips:"))?;
+        let without_scheme = aor
+            .strip_prefix("sip:")
+            .or_else(|| aor.strip_prefix("sips:"))?;
         let at_pos = without_scheme.find('@')?;
         let user = &without_scheme[..at_pos];
         let domain = &without_scheme[at_pos + 1..];
@@ -1027,26 +1034,42 @@ mod tests {
 
         // Create a simple REGISTER request
         let mut headers = sip_core::Headers::new();
-        headers.push(
-            SmolStr::new("Via"),
-            SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"),
-        ).unwrap();
-        headers.push(
-            SmolStr::new("From"),
-            SmolStr::new("<sip:alice@example.com>;tag=abc123"),
-        ).unwrap();
-        headers.push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>")).unwrap();
-        headers.push(
-            SmolStr::new("Call-ID"),
-            SmolStr::new("test-call-id@example.com"),
-        ).unwrap();
-        headers.push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER")).unwrap();
-        headers.push(
-            SmolStr::new("Contact"),
-            SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"),
-        ).unwrap();
-        headers.push(SmolStr::new("Expires"), SmolStr::new("3600")).unwrap();
-        headers.push(SmolStr::new("Content-Length"), SmolStr::new("0")).unwrap();
+        headers
+            .push(
+                SmolStr::new("Via"),
+                SmolStr::new("SIP/2.0/UDP 192.168.1.1:5060;branch=z9hG4bK123"),
+            )
+            .unwrap();
+        headers
+            .push(
+                SmolStr::new("From"),
+                SmolStr::new("<sip:alice@example.com>;tag=abc123"),
+            )
+            .unwrap();
+        headers
+            .push(SmolStr::new("To"), SmolStr::new("<sip:alice@example.com>"))
+            .unwrap();
+        headers
+            .push(
+                SmolStr::new("Call-ID"),
+                SmolStr::new("test-call-id@example.com"),
+            )
+            .unwrap();
+        headers
+            .push(SmolStr::new("CSeq"), SmolStr::new("1 REGISTER"))
+            .unwrap();
+        headers
+            .push(
+                SmolStr::new("Contact"),
+                SmolStr::new("<sip:alice@192.168.1.1:5060>;expires=3600"),
+            )
+            .unwrap();
+        headers
+            .push(SmolStr::new("Expires"), SmolStr::new("3600"))
+            .unwrap();
+        headers
+            .push(SmolStr::new("Content-Length"), SmolStr::new("0"))
+            .unwrap();
 
         let request = Request::new(
             sip_core::RequestLine::new(

@@ -61,7 +61,10 @@ impl TrunkQualityTracker {
                 },
             );
         }
-        Self { state, _window_secs: window_secs }
+        Self {
+            state,
+            _window_secs: window_secs,
+        }
     }
 
     /// Record that a call attempt was initiated on this trunk.
@@ -82,7 +85,12 @@ impl TrunkQualityTracker {
     pub fn record_call_answered(&self, trunk: &str, pdd_ms: u64) {
         if let Some(mut entry) = self.state.get_mut(trunk) {
             // Find the most recent unanswered sample and mark it answered
-            if let Some(sample) = entry.samples.iter_mut().rev().find(|s| !s.answered && s.sip_code == 0) {
+            if let Some(sample) = entry
+                .samples
+                .iter_mut()
+                .rev()
+                .find(|s| !s.answered && s.sip_code == 0)
+            {
                 sample.answered = true;
                 sample.post_dial_delay_ms = pdd_ms;
             }
@@ -100,7 +108,12 @@ impl TrunkQualityTracker {
                 }
                 if entry
                     .concurrent_calls
-                    .compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed)
+                    .compare_exchange_weak(
+                        current,
+                        current - 1,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
                     .is_ok()
                 {
                     break;
@@ -108,7 +121,12 @@ impl TrunkQualityTracker {
             }
 
             // Update the most recent answered sample with duration
-            if let Some(sample) = entry.samples.iter_mut().rev().find(|s| s.answered && s.sip_code == 0) {
+            if let Some(sample) = entry
+                .samples
+                .iter_mut()
+                .rev()
+                .find(|s| s.answered && s.sip_code == 0)
+            {
                 sample.duration_secs = duration_secs;
                 sample.sip_code = sip_code;
             }
@@ -126,7 +144,12 @@ impl TrunkQualityTracker {
                 }
                 if entry
                     .concurrent_calls
-                    .compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed)
+                    .compare_exchange_weak(
+                        current,
+                        current - 1,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
                     .is_ok()
                 {
                     break;
@@ -134,7 +157,12 @@ impl TrunkQualityTracker {
             }
 
             // Mark the most recent unanswered sample with the failure code
-            if let Some(sample) = entry.samples.iter_mut().rev().find(|s| !s.answered && s.sip_code == 0) {
+            if let Some(sample) = entry
+                .samples
+                .iter_mut()
+                .rev()
+                .find(|s| !s.answered && s.sip_code == 0)
+            {
                 sample.sip_code = sip_code;
             }
         }

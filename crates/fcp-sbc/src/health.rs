@@ -4,11 +4,11 @@ use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::recording_store::RecordingStore;
 use crate::stir_shaken::{StirMetrics, StirVerifier};
-use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
-use fcp_sbc_core::trunk_registration::TrunkRegistrar;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::{extract::State, routing::get, Json, Router};
+use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
+use fcp_sbc_core::trunk_registration::TrunkRegistrar;
 use std::fmt::Write;
 use std::sync::Arc;
 use tracing::info;
@@ -141,21 +141,45 @@ async fn metrics_snapshot(State(state): State<Arc<HealthState>>) -> impl IntoRes
     // Per-trunk quality metrics (if quality tracker is available)
     if let Some(ref tracker) = state.quality_tracker {
         let _ = writeln!(buf);
-        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_asr Answer seizure ratio per trunk (0.0-1.0)");
+        let _ = writeln!(
+            buf,
+            "# HELP fcp_sbc_trunk_asr Answer seizure ratio per trunk (0.0-1.0)"
+        );
         let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_asr gauge");
-        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_acd_secs Average call duration per trunk");
+        let _ = writeln!(
+            buf,
+            "# HELP fcp_sbc_trunk_acd_secs Average call duration per trunk"
+        );
         let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_acd_secs gauge");
-        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_pdd_ms Average post-dial delay per trunk");
+        let _ = writeln!(
+            buf,
+            "# HELP fcp_sbc_trunk_pdd_ms Average post-dial delay per trunk"
+        );
         let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_pdd_ms gauge");
-        let _ = writeln!(buf, "# HELP fcp_sbc_trunk_calls_total Total calls in quality window per trunk");
+        let _ = writeln!(
+            buf,
+            "# HELP fcp_sbc_trunk_calls_total Total calls in quality window per trunk"
+        );
         let _ = writeln!(buf, "# TYPE fcp_sbc_trunk_calls_total gauge");
 
         for snap_entry in tracker.all_snapshots() {
             let (name, snap) = snap_entry;
             let _ = writeln!(buf, "fcp_sbc_trunk_asr{{trunk=\"{name}\"}} {:.4}", snap.asr);
-            let _ = writeln!(buf, "fcp_sbc_trunk_acd_secs{{trunk=\"{name}\"}} {:.1}", snap.acd_secs);
-            let _ = writeln!(buf, "fcp_sbc_trunk_pdd_ms{{trunk=\"{name}\"}} {:.0}", snap.avg_pdd_ms);
-            let _ = writeln!(buf, "fcp_sbc_trunk_calls_total{{trunk=\"{name}\"}} {}", snap.total_calls);
+            let _ = writeln!(
+                buf,
+                "fcp_sbc_trunk_acd_secs{{trunk=\"{name}\"}} {:.1}",
+                snap.acd_secs
+            );
+            let _ = writeln!(
+                buf,
+                "fcp_sbc_trunk_pdd_ms{{trunk=\"{name}\"}} {:.0}",
+                snap.avg_pdd_ms
+            );
+            let _ = writeln!(
+                buf,
+                "fcp_sbc_trunk_calls_total{{trunk=\"{name}\"}} {}",
+                snap.total_calls
+            );
         }
     }
 
@@ -237,7 +261,9 @@ mod tests {
         metrics.update_snapshot(42, 10, 5);
 
         let state = Arc::new(HealthState {
-            admission: Arc::new(crate::admission::AdmissionController::new(Default::default())),
+            admission: Arc::new(crate::admission::AdmissionController::new(
+                Default::default(),
+            )),
             health_monitor: Arc::new(fcp_sbc_core::trunk_health::TrunkHealthMonitor::new(&[])),
             metrics,
             call_manager: Arc::new(fcp_b2bua_core::CallManager::new()),

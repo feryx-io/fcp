@@ -164,7 +164,9 @@ impl SipUserAgentClient {
         flow_stream: tokio::sync::mpsc::Sender<bytes::Bytes>,
         peer_addr: std::net::SocketAddr,
     ) -> Result<sip_core::Response> {
-        self.inner.bye_via_flow(dialog, flow_stream, peer_addr).await
+        self.inner
+            .bye_via_flow(dialog, flow_stream, peer_addr)
+            .await
     }
 
     /// Send REGISTER request.
@@ -315,7 +317,13 @@ impl SipUserAgentClient {
         subscription_state: &str,
     ) -> Result<sip_core::Response> {
         self.inner
-            .send_unsolicited_notify_with_state(target, event, content_type, body, subscription_state)
+            .send_unsolicited_notify_with_state(
+                target,
+                event,
+                content_type,
+                body,
+                subscription_state,
+            )
             .await
     }
 

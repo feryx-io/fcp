@@ -10,9 +10,9 @@ use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, HangupCause
 use fcp_core::TenantId;
 use fcp_events::EventPublisher;
 use fcp_media::{construct_answer_for_a_leg, extract_telephone_event_pt, parse_sdp_codecs};
-use forge_dtmf::Rfc2833Detector;
 use fcp_queue::{QueueManager, QueueSystemConfig, QueuedCall};
 use fcp_sip::prelude::SipUserAgentClient;
+use forge_dtmf::Rfc2833Detector;
 use forge_rtp::{PortPair, PortPool, RemoteEndpoint, RtpSocketConfig, RtpSocketPair};
 use sip_core::Uri;
 use sip_uas::UserAgentServer;
@@ -246,7 +246,8 @@ impl QueueCallHandler {
                     if !languages.contains(&"en".to_string()) {
                         languages.push("en".to_string());
                     }
-                    let cache = PromptCache::load(std::path::Path::new(dir), &prompt_files, &languages);
+                    let cache =
+                        PromptCache::load(std::path::Path::new(dir), &prompt_files, &languages);
                     if cache.is_empty() {
                         None
                     } else {
@@ -306,7 +307,10 @@ impl QueueCallHandler {
     fn build_announce_config(&self, queue_name: &str) -> Option<AnnounceConfig> {
         let cache = self.announcement_cache.as_ref()?;
 
-        let queue_cfg = self.config.queues.get(queue_name)
+        let queue_cfg = self
+            .config
+            .queues
+            .get(queue_name)
             .or_else(|| self.config.queues.values().find(|qc| qc.announce_position))?;
 
         if !queue_cfg.announce_position {
@@ -363,7 +367,10 @@ impl QueueCallHandler {
         let uri = request.uri();
         let uri_str = uri.to_string();
         if let Some(rest) = uri_str.strip_prefix("sip:") {
-            rest.split('@').next().filter(|u| !u.is_empty()).map(String::from)
+            rest.split('@')
+                .next()
+                .filter(|u| !u.is_empty())
+                .map(String::from)
         } else if let Some(rest) = uri_str.strip_prefix("tel:") {
             let number = rest.split(';').next().unwrap_or(rest).trim();
             if !number.is_empty() {
@@ -465,10 +472,10 @@ impl QueueCallHandler {
         moh_frames: Option<Arc<Vec<Vec<u8>>>>,
     ) -> JoinHandle<()> {
         let silence_frame: Vec<u8> = match codec_name {
-            "PCMU" => vec![0xFFu8; 160],        // G.711 μ-law silence
-            "PCMA" => vec![0xD5u8; 160],        // G.711 A-law silence
-            "G722" => vec![0x00u8; 160],         // G.722 silence
-            _ => vec![0xFFu8; 160],              // Default to μ-law
+            "PCMU" => vec![0xFFu8; 160], // G.711 μ-law silence
+            "PCMA" => vec![0xD5u8; 160], // G.711 A-law silence
+            "G722" => vec![0x00u8; 160], // G.722 silence
+            _ => vec![0xFFu8; 160],      // Default to μ-law
         };
 
         let seq = Arc::new(AtomicU16::new(0));
@@ -496,7 +503,9 @@ impl QueueCallHandler {
                             // Collect all announcement frames: position + optional ETA
                             let mut all_frames: Vec<&[u8]> = Vec::new();
 
-                            if let Some(pos_frames) = ac.cache.get_position_frames(position, &codec, &ac.language) {
+                            if let Some(pos_frames) =
+                                ac.cache.get_position_frames(position, &codec, &ac.language)
+                            {
                                 for f in pos_frames {
                                     all_frames.push(f);
                                 }
@@ -504,12 +513,16 @@ impl QueueCallHandler {
 
                             // Add ETA frames if enabled
                             if ac.announce_eta {
-                                if let Some(eta_secs) = ac.queue_manager.estimate_wait_secs(&call_id) {
+                                if let Some(eta_secs) =
+                                    ac.queue_manager.estimate_wait_secs(&call_id)
+                                {
                                     let eta_mins = ((eta_secs + 30) / 60).max(1) as usize; // Round to nearest minute, minimum 1
                                     if eta_mins <= 60 {
                                         // Small gap between position and ETA (200ms = 10 silence frames at 20ms)
                                         // We'll handle this by adding silence in between
-                                        if let Some(eta_frames) = ac.cache.get_eta_frames(eta_mins, &codec, &ac.language) {
+                                        if let Some(eta_frames) =
+                                            ac.cache.get_eta_frames(eta_mins, &codec, &ac.language)
+                                        {
                                             debug!(
                                                 call_id = %call_id,
                                                 eta_mins = eta_mins,
@@ -609,7 +622,9 @@ impl QueueCallHandler {
         let recording_dir = self.config.recording_dir.clone();
         let campaign_call_id_map = Arc::clone(&self.campaign_call_id_map);
         // Derive tenant_id from config, falling back to nil
-        let campaign_tenant_id: TenantId = self.config.default_tenant_id
+        let campaign_tenant_id: TenantId = self
+            .config
+            .default_tenant_id
             .as_ref()
             .and_then(|s| s.parse::<TenantId>().ok())
             .unwrap_or_else(TenantId::nil);
@@ -711,7 +726,8 @@ impl QueueCallHandler {
                         "max_attempts_exceeded",
                         expired.callback_attempts,
                         &expired.tenant_id,
-                    ).await;
+                    )
+                    .await;
                 }
 
                 // Also collect callback call_ids (in QueueManager queue but no session)
@@ -732,7 +748,9 @@ impl QueueCallHandler {
                     };
 
                     // Mark agent as ringing
-                    queue_manager.mark_agent_ringing(&plan.agent_id, &call_id).await;
+                    queue_manager
+                        .mark_agent_ringing(&plan.agent_id, &call_id)
+                        .await;
 
                     // Update session state to RingingAgent
                     if let Some(mut session) = sessions.get_mut(&call_id) {
@@ -785,7 +803,9 @@ impl QueueCallHandler {
                         None => break,
                     };
 
-                    queue_manager.mark_agent_ringing(&plan.agent_id, &call_id).await;
+                    queue_manager
+                        .mark_agent_ringing(&plan.agent_id, &call_id)
+                        .await;
 
                     spawn_callback_ring(
                         call_id,
@@ -809,7 +829,8 @@ impl QueueCallHandler {
                     if config.campaign_enabled && queue_manager.is_campaign_running(&queue_name) {
                         let available = queue_manager.count_available_agents(&queue_name);
                         let active = queue_manager.campaign_active_dial_count(&queue_name);
-                        let dials_target = (available as f32 * config.campaign_dial_ratio).ceil() as usize;
+                        let dials_target =
+                            (available as f32 * config.campaign_dial_ratio).ceil() as usize;
                         let dials_needed = dials_target.saturating_sub(active);
 
                         for _ in 0..dials_needed {
@@ -831,7 +852,8 @@ impl QueueCallHandler {
                                 &queue_name,
                                 &dest,
                                 &campaign_tenant_id,
-                            ).await;
+                            )
+                            .await;
 
                             // Spawn outbound INVITE task
                             let qm = queue_manager.clone();
@@ -869,7 +891,8 @@ impl QueueCallHandler {
                                     rd2,
                                     tid,
                                     ccm,
-                                ).await;
+                                )
+                                .await;
                             });
                         }
                     }
@@ -880,12 +903,8 @@ impl QueueCallHandler {
                     let active = sessions.iter().any(|e| e.value().queue_name == queue_name);
                     if !active {
                         let events = queue_manager.events_ref();
-                        fcp_queue::events::queue_drained(
-                            &events,
-                            &queue_name,
-                            &campaign_tenant_id,
-                        )
-                        .await;
+                        fcp_queue::events::queue_drained(&events, &queue_name, &campaign_tenant_id)
+                            .await;
                     }
                 }
             }
@@ -924,7 +943,14 @@ impl QueueCallHandler {
                         error = %e,
                         "Failed to allocate RTP port for agent leg"
                     );
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
+                    Self::return_to_waiting(
+                        &call_id,
+                        &agent_id,
+                        &sessions,
+                        &queue_manager,
+                        announce_config.clone(),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -944,7 +970,14 @@ impl QueueCallHandler {
                         "Failed to INVITE agent"
                     );
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
+                    Self::return_to_waiting(
+                        &call_id,
+                        &agent_id,
+                        &sessions,
+                        &queue_manager,
+                        announce_config.clone(),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -967,7 +1000,10 @@ impl QueueCallHandler {
             };
 
             match result {
-                Ok(Ok(response)) if response.start_line().code() >= 200 && response.start_line().code() < 300 => {
+                Ok(Ok(response))
+                    if response.start_line().code() >= 200
+                        && response.start_line().code() < 300 =>
+                {
                     // Agent answered (200 OK)
                     info!(
                         call_id = %call_id,
@@ -988,18 +1024,24 @@ impl QueueCallHandler {
                     );
 
                     // Create B-leg RTP socket
-                    let agent_rtp_socket = match RtpSocketPair::new(
-                        agent_port_pair,
-                        RtpSocketConfig::default(),
-                    ).await {
-                        Ok(s) => Arc::new(s),
-                        Err(e) => {
-                            warn!(error = %e, "Failed to create agent RTP socket");
-                            port_pool.deallocate(agent_port_pair).await;
-                            Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
-                            return;
-                        }
-                    };
+                    let agent_rtp_socket =
+                        match RtpSocketPair::new(agent_port_pair, RtpSocketConfig::default()).await
+                        {
+                            Ok(s) => Arc::new(s),
+                            Err(e) => {
+                                warn!(error = %e, "Failed to create agent RTP socket");
+                                port_pool.deallocate(agent_port_pair).await;
+                                Self::return_to_waiting(
+                                    &call_id,
+                                    &agent_id,
+                                    &sessions,
+                                    &queue_manager,
+                                    announce_config.clone(),
+                                )
+                                .await;
+                                return;
+                            }
+                        };
 
                     // Set agent remote RTP endpoint
                     if let Some(remote_addr) = Self::parse_remote_rtp_addr(agent_sdp) {
@@ -1067,26 +1109,22 @@ impl QueueCallHandler {
                                 .get_queue_config(&session.queue_name)
                                 .map(|c| c.recording_format.clone())
                                 .unwrap_or_else(|| "wav".to_string());
-                            let rec_path = format!(
-                                "{}/{}.{}",
-                                queue_rec_dir, call_id, rec_format
-                            );
+                            let rec_path = format!("{}/{}.{}", queue_rec_dir, call_id, rec_format);
 
                             let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
                             let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
 
                             if needs_transcoding {
-                                let (bridge_a_to_b, bridge_b_to_a) =
-                                    spawn_transcoding_rtp_bridge(
-                                        Arc::clone(&session.rtp_socket),
-                                        Arc::clone(&agent_rtp_socket),
-                                        codec_name_to_type(&caller_codec),
-                                        codec_name_to_type(&agent_codec_name),
-                                        caller_pt,
-                                        agent_pt,
-                                        Some(a_tx),
-                                        Some(b_tx),
-                                    );
+                                let (bridge_a_to_b, bridge_b_to_a) = spawn_transcoding_rtp_bridge(
+                                    Arc::clone(&session.rtp_socket),
+                                    Arc::clone(&agent_rtp_socket),
+                                    codec_name_to_type(&caller_codec),
+                                    codec_name_to_type(&agent_codec_name),
+                                    caller_pt,
+                                    agent_pt,
+                                    Some(a_tx),
+                                    Some(b_tx),
+                                );
                                 session.bridge_a_to_b = Some(bridge_a_to_b);
                                 session.bridge_b_to_a = Some(bridge_b_to_a);
                             } else {
@@ -1102,9 +1140,8 @@ impl QueueCallHandler {
                             }
 
                             let codec = session.codec_name.clone();
-                            let rec_handle = spawn_recording_task(
-                                a_rx, b_rx, codec, rec_path.clone(),
-                            );
+                            let rec_handle =
+                                spawn_recording_task(a_rx, b_rx, codec, rec_path.clone());
 
                             info!(
                                 call_id = %call_id,
@@ -1115,17 +1152,16 @@ impl QueueCallHandler {
                             session.recording_handle = Some(rec_handle);
                             session.recording_path = Some(rec_path);
                         } else if needs_transcoding {
-                            let (bridge_a_to_b, bridge_b_to_a) =
-                                spawn_transcoding_rtp_bridge(
-                                    Arc::clone(&session.rtp_socket),
-                                    Arc::clone(&agent_rtp_socket),
-                                    codec_name_to_type(&caller_codec),
-                                    codec_name_to_type(&agent_codec_name),
-                                    caller_pt,
-                                    agent_pt,
-                                    None,
-                                    None,
-                                );
+                            let (bridge_a_to_b, bridge_b_to_a) = spawn_transcoding_rtp_bridge(
+                                Arc::clone(&session.rtp_socket),
+                                Arc::clone(&agent_rtp_socket),
+                                codec_name_to_type(&caller_codec),
+                                codec_name_to_type(&agent_codec_name),
+                                caller_pt,
+                                agent_pt,
+                                None,
+                                None,
+                            );
                             session.bridge_a_to_b = Some(bridge_a_to_b);
                             session.bridge_b_to_a = Some(bridge_b_to_a);
                         } else {
@@ -1156,7 +1192,14 @@ impl QueueCallHandler {
                         "Agent rejected queue call"
                     );
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
+                    Self::return_to_waiting(
+                        &call_id,
+                        &agent_id,
+                        &sessions,
+                        &queue_manager,
+                        announce_config.clone(),
+                    )
+                    .await;
                 }
                 Ok(Err(e)) => {
                     // Error during call setup
@@ -1167,7 +1210,14 @@ impl QueueCallHandler {
                         "Error during agent INVITE"
                     );
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
+                    Self::return_to_waiting(
+                        &call_id,
+                        &agent_id,
+                        &sessions,
+                        &queue_manager,
+                        announce_config.clone(),
+                    )
+                    .await;
                 }
                 Err(_) => {
                     // Ring timeout — cancel the agent INVITE
@@ -1179,7 +1229,14 @@ impl QueueCallHandler {
                     );
                     let _ = call_handle.cancel().await;
                     port_pool.deallocate(agent_port_pair).await;
-                    Self::return_to_waiting(&call_id, &agent_id, &sessions, &queue_manager, announce_config.clone()).await;
+                    Self::return_to_waiting(
+                        &call_id,
+                        &agent_id,
+                        &sessions,
+                        &queue_manager,
+                        announce_config.clone(),
+                    )
+                    .await;
                 }
             }
         })
@@ -1384,7 +1441,10 @@ impl QueueCallHandler {
         }
 
         // Allocate C-leg RTP port pair
-        let sup_port_pair = self.port_pool.allocate().await
+        let sup_port_pair = self
+            .port_pool
+            .allocate()
+            .await
             .context("Failed to allocate RTP port for supervisor")?;
 
         // Build SDP offer for supervisor
@@ -1405,26 +1465,23 @@ impl QueueCallHandler {
         };
 
         // Wait for answer with 30s timeout
-        let result = tokio::time::timeout(
-            Duration::from_secs(30),
-            call_handle.await_final(),
-        ).await;
+        let result = tokio::time::timeout(Duration::from_secs(30), call_handle.await_final()).await;
 
         match result {
-            Ok(Ok(response)) if response.start_line().code() >= 200 && response.start_line().code() < 300 => {
+            Ok(Ok(response))
+                if response.start_line().code() >= 200 && response.start_line().code() < 300 =>
+            {
                 let agent_body = response.body();
                 let sup_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
 
-                let sup_rtp_socket = match RtpSocketPair::new(
-                    sup_port_pair,
-                    RtpSocketConfig::default(),
-                ).await {
-                    Ok(s) => Arc::new(s),
-                    Err(e) => {
-                        self.port_pool.deallocate(sup_port_pair).await;
-                        bail!("Failed to create supervisor RTP socket: {}", e);
-                    }
-                };
+                let sup_rtp_socket =
+                    match RtpSocketPair::new(sup_port_pair, RtpSocketConfig::default()).await {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => {
+                            self.port_pool.deallocate(sup_port_pair).await;
+                            bail!("Failed to create supervisor RTP socket: {}", e);
+                        }
+                    };
 
                 if let Some(remote_addr) = Self::parse_remote_rtp_addr(sup_sdp) {
                     sup_rtp_socket
@@ -1447,15 +1504,15 @@ impl QueueCallHandler {
                 }
 
                 let a_socket = Arc::clone(&session.rtp_socket);
-                let b_socket = session.agent_rtp_socket.as_ref()
+                let b_socket = session
+                    .agent_rtp_socket
+                    .as_ref()
                     .context("No agent RTP socket")?;
                 let b_socket = Arc::clone(b_socket);
                 let c_socket = Arc::clone(&sup_rtp_socket);
                 let codec = session.codec_name.clone();
 
-                let tasks = spawn_supervisor_bridge(
-                    a_socket, b_socket, c_socket, mode, codec,
-                );
+                let tasks = spawn_supervisor_bridge(a_socket, b_socket, c_socket, mode, codec);
 
                 session.supervisor_port_pair = Some(sup_port_pair);
                 session.supervisor_rtp_socket = Some(sup_rtp_socket);
@@ -1470,8 +1527,13 @@ impl QueueCallHandler {
                 // Publish event
                 let events = Some(Arc::clone(&self.event_bus));
                 fcp_queue::events::supervisor_joined(
-                    &events, call_id, supervisor_ext, &mode.to_string(), &tenant_id,
-                ).await;
+                    &events,
+                    call_id,
+                    supervisor_ext,
+                    &mode.to_string(),
+                    &tenant_id,
+                )
+                .await;
 
                 info!(
                     call_id = %call_id,
@@ -1527,7 +1589,9 @@ impl QueueCallHandler {
 
         // Restore normal A-B bridge
         let a_socket = Arc::clone(&session.rtp_socket);
-        let b_socket = session.agent_rtp_socket.as_ref()
+        let b_socket = session
+            .agent_rtp_socket
+            .as_ref()
             .context("No agent RTP socket")?;
         let b_socket = Arc::clone(b_socket);
 
@@ -1538,16 +1602,18 @@ impl QueueCallHandler {
         drop(session);
 
         let events = Some(Arc::clone(&self.event_bus));
-        fcp_queue::events::supervisor_left(
-            &events, call_id, &supervisor_id, &tenant_id,
-        ).await;
+        fcp_queue::events::supervisor_left(&events, call_id, &supervisor_id, &tenant_id).await;
 
         info!(call_id = %call_id, supervisor = %supervisor_id, "Supervisor left call");
         Ok(())
     }
 
     /// Change the supervisor mode on an active supervised call.
-    pub async fn change_supervisor_mode(&self, call_id: &str, new_mode: SupervisorMode) -> Result<()> {
+    pub async fn change_supervisor_mode(
+        &self,
+        call_id: &str,
+        new_mode: SupervisorMode,
+    ) -> Result<()> {
         let mut session = self.sessions.get_mut(call_id).context("Call not found")?;
 
         if session.supervisor_mode.is_none() {
@@ -1566,10 +1632,14 @@ impl QueueCallHandler {
 
         // Create new bridge with different mode
         let a_socket = Arc::clone(&session.rtp_socket);
-        let b_socket = session.agent_rtp_socket.as_ref()
+        let b_socket = session
+            .agent_rtp_socket
+            .as_ref()
             .context("No agent RTP socket")?;
         let b_socket = Arc::clone(b_socket);
-        let c_socket = session.supervisor_rtp_socket.as_ref()
+        let c_socket = session
+            .supervisor_rtp_socket
+            .as_ref()
             .context("No supervisor RTP socket")?;
         let c_socket = Arc::clone(c_socket);
         let codec = session.codec_name.clone();
@@ -1593,12 +1663,7 @@ impl QueueCallHandler {
 
     /// Route a call to the overflow destination using B2BUA bridging.
     /// Keeps the caller's A-leg alive and INVITEs the overflow target.
-    async fn overflow_call(
-        &self,
-        call_id: &str,
-        overflow_dest: &str,
-        reason: &str,
-    ) -> Result<()> {
+    async fn overflow_call(&self, call_id: &str, overflow_dest: &str, reason: &str) -> Result<()> {
         // Queue chaining: if destination is "queue:<name>", transfer to another queue
         if let Some(target_queue) = overflow_dest.strip_prefix("queue:") {
             let from_queue = {
@@ -1753,12 +1818,7 @@ impl QueueCallHandler {
 
     /// Try a list of overflow destinations in order. Returns Ok on first success.
     /// If all fail, sends BYE to the caller and cleans up the session.
-    async fn overflow_call_multi(
-        &self,
-        call_id: &str,
-        destinations: &[String],
-        reason: &str,
-    ) {
+    async fn overflow_call_multi(&self, call_id: &str, destinations: &[String], reason: &str) {
         for (i, dest) in destinations.iter().enumerate() {
             info!(
                 call_id = %call_id,
@@ -1801,7 +1861,9 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             Some(ext) => ext,
             None => return false,
         };
-        self.queue_manager.get_queue_for_extension(&extension).is_some()
+        self.queue_manager
+            .get_queue_for_extension(&extension)
+            .is_some()
     }
 
     async fn handle_invite(
@@ -1846,7 +1908,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                     queue = %queue_name,
                     "Queue is closed, no destination configured, rejecting"
                 );
-                let reject = UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
+                let reject =
+                    UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
                 handle.send_final(reject).await;
                 return Ok(());
             }
@@ -1868,7 +1931,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                     queue = %queue_name,
                     "Queue is draining, no destination configured, rejecting"
                 );
-                let reject = UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
+                let reject =
+                    UserAgentServer::create_response(request, 480, "Temporarily Unavailable");
                 handle.send_final(reject).await;
                 return Ok(());
             }
@@ -1881,8 +1945,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             handle.send_final(reject).await;
             return Ok(());
         }
-        let sdp_offer = std::str::from_utf8(&body[..])
-            .context("SDP body is not valid UTF-8")?;
+        let sdp_offer = std::str::from_utf8(&body[..]).context("SDP body is not valid UTF-8")?;
 
         // 3. Parse codecs and pick first supported one
         let offered_codecs = parse_sdp_codecs(sdp_offer);
@@ -2020,9 +2083,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             }
             Err(e) => {
                 // Queue full — try overflow destinations before disconnecting
-                let overflow_dests = self
-                    .queue_manager
-                    .get_overflow_destinations(&queue_name);
+                let overflow_dests = self.queue_manager.get_overflow_destinations(&queue_name);
 
                 if !overflow_dests.is_empty() {
                     info!(
@@ -2074,7 +2135,8 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                         },
                     );
 
-                    self.overflow_call_multi(&call_id, &overflow_dests, "queue_full").await;
+                    self.overflow_call_multi(&call_id, &overflow_dests, "queue_full")
+                        .await;
                 } else {
                     warn!(
                         call_id = %call_id,
@@ -2099,7 +2161,10 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let queue_config = self.queue_manager.get_queue_config(&queue_name);
         let has_dtmf = queue_config
             .as_ref()
-            .map(|c| !c.dtmf_exit_options.is_empty() || (c.callback_enabled && c.callback_digit.is_some()))
+            .map(|c| {
+                !c.dtmf_exit_options.is_empty()
+                    || (c.callback_enabled && c.callback_digit.is_some())
+            })
             .unwrap_or(false);
 
         let dtmf_listener_handle = if has_dtmf {
@@ -2237,7 +2302,13 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             .unwrap_or_default();
 
         self.queue_manager
-            .agent_login(extension, extension, &queue_names, tenant_id.clone(), skills)
+            .agent_login(
+                extension,
+                extension,
+                &queue_names,
+                tenant_id.clone(),
+                skills,
+            )
             .await
     }
 
@@ -2347,12 +2418,10 @@ fn spawn_transcoding_rtp_bridge(
     let a_to_b_b = Arc::clone(&b_socket);
 
     let a_to_b = tokio::spawn(async move {
-        let src_format = forge_transcoder::AudioFormat::new(
-            codec_sample_rate_for_type(a_codec), 1, a_codec,
-        );
-        let dst_format = forge_transcoder::AudioFormat::new(
-            codec_sample_rate_for_type(b_codec), 1, b_codec,
-        );
+        let src_format =
+            forge_transcoder::AudioFormat::new(codec_sample_rate_for_type(a_codec), 1, a_codec);
+        let dst_format =
+            forge_transcoder::AudioFormat::new(codec_sample_rate_for_type(b_codec), 1, b_codec);
         let mut transcoder = match forge_transcoder::Transcoder::new(src_format, dst_format) {
             Ok(t) => t,
             Err(e) => {
@@ -2415,12 +2484,10 @@ fn spawn_transcoding_rtp_bridge(
     let b_to_a_a = Arc::clone(&a_socket);
 
     let b_to_a = tokio::spawn(async move {
-        let src_format = forge_transcoder::AudioFormat::new(
-            codec_sample_rate_for_type(b_codec), 1, b_codec,
-        );
-        let dst_format = forge_transcoder::AudioFormat::new(
-            codec_sample_rate_for_type(a_codec), 1, a_codec,
-        );
+        let src_format =
+            forge_transcoder::AudioFormat::new(codec_sample_rate_for_type(b_codec), 1, b_codec);
+        let dst_format =
+            forge_transcoder::AudioFormat::new(codec_sample_rate_for_type(a_codec), 1, a_codec);
         let mut transcoder = match forge_transcoder::Transcoder::new(src_format, dst_format) {
             Ok(t) => t,
             Err(e) => {
@@ -2490,8 +2557,14 @@ fn decode_rtp_payload(data: &[u8], codec: &str) -> Vec<i16> {
     let payload = &data[12..]; // Skip 12-byte RTP header
 
     match codec {
-        "PCMU" => payload.iter().map(|&b| forge_codecs::g711::decode_ulaw(b)).collect(),
-        "PCMA" => payload.iter().map(|&b| forge_codecs::g711::decode_alaw(b)).collect(),
+        "PCMU" => payload
+            .iter()
+            .map(|&b| forge_codecs::g711::decode_ulaw(b))
+            .collect(),
+        "PCMA" => payload
+            .iter()
+            .map(|&b| forge_codecs::g711::decode_alaw(b))
+            .collect(),
         _ => Vec::new(), // G.722 recording not yet supported
     }
 }
@@ -2589,7 +2662,9 @@ fn spawn_supervisor_bridge(
         tokio::spawn(async move {
             loop {
                 match a_sock.recv_rtp_raw().await {
-                    Ok((data, _)) if !data.is_empty() => { let _ = tx.send(data.into()); }
+                    Ok((data, _)) if !data.is_empty() => {
+                        let _ = tx.send(data.into());
+                    }
                     _ => break,
                 }
             }
@@ -2602,7 +2677,9 @@ fn spawn_supervisor_bridge(
         tokio::spawn(async move {
             loop {
                 match b_sock.recv_rtp_raw().await {
-                    Ok((data, _)) if !data.is_empty() => { let _ = tx.send(data.into()); }
+                    Ok((data, _)) if !data.is_empty() => {
+                        let _ = tx.send(data.into());
+                    }
                     _ => break,
                 }
             }
@@ -2615,7 +2692,9 @@ fn spawn_supervisor_bridge(
         tokio::spawn(async move {
             loop {
                 match c_sock.recv_rtp_raw().await {
-                    Ok((data, _)) if !data.is_empty() => { let _ = tx.send(data.into()); }
+                    Ok((data, _)) if !data.is_empty() => {
+                        let _ = tx.send(data.into());
+                    }
                     _ => break,
                 }
             }
@@ -2632,7 +2711,9 @@ fn spawn_supervisor_bridge(
                 let b_sock = Arc::clone(&b_socket);
                 tokio::spawn(async move {
                     while let Ok(data) = rx.recv().await {
-                        if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                        if b_sock.send_rtp_raw(&data).await.is_err() {
+                            break;
+                        }
                     }
                 })
             };
@@ -2642,7 +2723,9 @@ fn spawn_supervisor_bridge(
                 let a_sock = Arc::clone(&a_socket);
                 tokio::spawn(async move {
                     while let Ok(data) = rx.recv().await {
-                        if a_sock.send_rtp_raw(&data).await.is_err() { break; }
+                        if a_sock.send_rtp_raw(&data).await.is_err() {
+                            break;
+                        }
                     }
                 })
             };
@@ -2678,7 +2761,9 @@ fn spawn_supervisor_bridge(
                 let b_sock = Arc::clone(&b_socket);
                 tokio::spawn(async move {
                     while let Ok(data) = rx.recv().await {
-                        if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                        if b_sock.send_rtp_raw(&data).await.is_err() {
+                            break;
+                        }
                     }
                 })
             };
@@ -2688,7 +2773,9 @@ fn spawn_supervisor_bridge(
                 let a_sock = Arc::clone(&a_socket);
                 tokio::spawn(async move {
                     while let Ok(data) = rx.recv().await {
-                        if a_sock.send_rtp_raw(&data).await.is_err() { break; }
+                        if a_sock.send_rtp_raw(&data).await.is_err() {
+                            break;
+                        }
                     }
                 })
             };
@@ -2701,7 +2788,9 @@ fn spawn_supervisor_bridge(
                     while let Ok(data) = rx.recv().await {
                         // Send supervisor audio directly to agent
                         // Note: this means agent gets both A and C packets
-                        if b_sock.send_rtp_raw(&data).await.is_err() { break; }
+                        if b_sock.send_rtp_raw(&data).await.is_err() {
+                            break;
+                        }
                     }
                 })
             };
@@ -2889,7 +2978,6 @@ fn codec_name_to_type(name: &str) -> forge_codecs::AudioCodecType {
     }
 }
 
-
 /// Parse overflow destination string into a SIP URI.
 /// Supports formats:
 /// - "sip:user@host" — used as-is
@@ -2901,9 +2989,7 @@ fn parse_overflow_destination(dest: &str, local_domain: &str) -> String {
     } else {
         let ext = dest.strip_prefix("extension:").unwrap_or(dest);
         // Also strip voicemail: prefix etc., treat as extension
-        let ext = ext
-            .strip_prefix("voicemail:")
-            .unwrap_or(ext);
+        let ext = ext.strip_prefix("voicemail:").unwrap_or(ext);
         format!("sip:{}@{}", ext, local_domain)
     }
 }
@@ -2969,7 +3055,9 @@ fn spawn_callback_ring(
         let agent_result = tokio::time::timeout(ring_timeout, agent_handle.await_final()).await;
 
         let agent_response = match agent_result {
-            Ok(Ok(resp)) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => resp,
+            Ok(Ok(resp)) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => {
+                resp
+            }
             Ok(Ok(_)) | Ok(Err(_)) => {
                 port_pool.deallocate(agent_port_pair).await;
                 queue_manager.agent_no_answer(&agent_id, &call_id).await;
@@ -2986,13 +3074,17 @@ fn spawn_callback_ring(
         info!(call_id = %call_id, agent = %agent_id, "Callback: agent answered, calling back caller");
 
         // Create agent RTP socket
-        let agent_rtp_socket = match RtpSocketPair::new(agent_port_pair, RtpSocketConfig::default()).await {
+        let agent_rtp_socket = match RtpSocketPair::new(agent_port_pair, RtpSocketConfig::default())
+            .await
+        {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 warn!(call_id = %call_id, error = %e, "Callback: failed to create agent RTP socket");
                 port_pool.deallocate(agent_port_pair).await;
                 let _ = uac.bye(&agent_handle.dialog.read().await.clone()).await;
-                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
+                queue_manager
+                    .agent_callback_recipient_failed(&agent_id, &call_id)
+                    .await;
                 return;
             }
         };
@@ -3018,7 +3110,9 @@ fn spawn_callback_ring(
                 warn!(call_id = %call_id, error = %e, "Callback: failed to allocate callback RTP port");
                 let _ = uac.bye(&agent_dialog).await;
                 port_pool.deallocate(agent_port_pair).await;
-                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
+                queue_manager
+                    .agent_callback_recipient_failed(&agent_id, &call_id)
+                    .await;
                 return;
             }
         };
@@ -3035,33 +3129,56 @@ fn spawn_callback_ring(
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
                 // Stage 2 failure — don't penalize agent
-                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
-                let attempts = queue_manager.get_queued_call(&call_id)
-                    .map(|c| c.callback_attempts).unwrap_or(0);
+                queue_manager
+                    .agent_callback_recipient_failed(&agent_id, &call_id)
+                    .await;
+                let attempts = queue_manager
+                    .get_queued_call(&call_id)
+                    .map(|c| c.callback_attempts)
+                    .unwrap_or(0);
                 fcp_queue::events::callback_attempted(
-                    &events, &queue_name, &call_id, &callback_uri, attempts, &tenant_id,
-                ).await;
+                    &events,
+                    &queue_name,
+                    &call_id,
+                    &callback_uri,
+                    attempts,
+                    &tenant_id,
+                )
+                .await;
                 return;
             }
         };
 
         // 6. Wait for callback recipient to answer (Stage 2 — NOT the agent's fault)
-        let cb_result = tokio::time::timeout(Duration::from_secs(30), cb_handle.await_final()).await;
+        let cb_result =
+            tokio::time::timeout(Duration::from_secs(30), cb_handle.await_final()).await;
 
         let cb_response = match cb_result {
-            Ok(Ok(resp)) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => resp,
+            Ok(Ok(resp)) if resp.start_line().code() >= 200 && resp.start_line().code() < 300 => {
+                resp
+            }
             Ok(Ok(_)) | Ok(Err(_)) => {
                 warn!(call_id = %call_id, "Callback: recipient did not answer");
                 let _ = uac.bye(&agent_dialog).await;
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
                 // Stage 2 failure — don't penalize agent
-                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
-                let attempts = queue_manager.get_queued_call(&call_id)
-                    .map(|c| c.callback_attempts).unwrap_or(0);
+                queue_manager
+                    .agent_callback_recipient_failed(&agent_id, &call_id)
+                    .await;
+                let attempts = queue_manager
+                    .get_queued_call(&call_id)
+                    .map(|c| c.callback_attempts)
+                    .unwrap_or(0);
                 fcp_queue::events::callback_attempted(
-                    &events, &queue_name, &call_id, &callback_uri, attempts, &tenant_id,
-                ).await;
+                    &events,
+                    &queue_name,
+                    &call_id,
+                    &callback_uri,
+                    attempts,
+                    &tenant_id,
+                )
+                .await;
                 return;
             }
             Err(_) => {
@@ -3070,12 +3187,22 @@ fn spawn_callback_ring(
                 port_pool.deallocate(agent_port_pair).await;
                 port_pool.deallocate(callback_port_pair).await;
                 // Stage 2 timeout — don't penalize agent
-                queue_manager.agent_callback_recipient_failed(&agent_id, &call_id).await;
-                let attempts = queue_manager.get_queued_call(&call_id)
-                    .map(|c| c.callback_attempts).unwrap_or(0);
+                queue_manager
+                    .agent_callback_recipient_failed(&agent_id, &call_id)
+                    .await;
+                let attempts = queue_manager
+                    .get_queued_call(&call_id)
+                    .map(|c| c.callback_attempts)
+                    .unwrap_or(0);
                 fcp_queue::events::callback_attempted(
-                    &events, &queue_name, &call_id, &callback_uri, attempts, &tenant_id,
-                ).await;
+                    &events,
+                    &queue_name,
+                    &call_id,
+                    &callback_uri,
+                    attempts,
+                    &tenant_id,
+                )
+                .await;
                 return;
             }
         };
@@ -3083,7 +3210,9 @@ fn spawn_callback_ring(
         info!(call_id = %call_id, callback_uri = %callback_uri, "Callback: recipient answered, bridging");
 
         // Create callback RTP socket
-        let cb_rtp_socket = match RtpSocketPair::new(callback_port_pair, RtpSocketConfig::default()).await {
+        let cb_rtp_socket = match RtpSocketPair::new(callback_port_pair, RtpSocketConfig::default())
+            .await
+        {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 warn!(call_id = %call_id, error = %e, "Callback: failed to create callback RTP socket");
@@ -3111,15 +3240,23 @@ fn spawn_callback_ring(
         let cb_dialog = cb_handle.dialog.read().await.clone();
 
         // 7. Dequeue the call and update agent state
-        let cb_attempts = queue_manager.get_queued_call(&call_id)
-            .map(|c| c.callback_attempts).unwrap_or(0);
+        let cb_attempts = queue_manager
+            .get_queued_call(&call_id)
+            .map(|c| c.callback_attempts)
+            .unwrap_or(0);
         queue_manager.agent_answered(&agent_id, &call_id).await;
 
         // Publish CallbackCompleted event
         fcp_queue::events::callback_completed(
-            &events, &queue_name, &call_id, &callback_uri,
-            &agent_id, cb_attempts + 1, &tenant_id,
-        ).await;
+            &events,
+            &queue_name,
+            &call_id,
+            &callback_uri,
+            &agent_id,
+            cb_attempts + 1,
+            &tenant_id,
+        )
+        .await;
 
         // 8. Bridge agent ↔ callback RTP
         let (bridge_a_to_b, bridge_b_to_a) =
@@ -3302,10 +3439,8 @@ fn spawn_dtmf_listener(
                     )
                     .await
                     {
-                        bye_and_cleanup(
-                            &call_id, &sessions, &uac, &port_pool, &queue_manager,
-                        )
-                        .await;
+                        bye_and_cleanup(&call_id, &sessions, &uac, &port_pool, &queue_manager)
+                            .await;
                     }
 
                     return;
@@ -3338,8 +3473,16 @@ async fn overflow_expired_call_multi(
             "Trying overflow destination for expired call"
         );
         if overflow_expired_call_single(
-            call_id, dest, queue_name, sessions, queue_manager, uac, port_pool,
-            local_addr, local_uri, event_bus,
+            call_id,
+            dest,
+            queue_name,
+            sessions,
+            queue_manager,
+            uac,
+            port_pool,
+            local_addr,
+            local_uri,
+            event_bus,
         )
         .await
         {
@@ -3456,15 +3599,16 @@ async fn overflow_expired_call_single(
             let agent_body = response.body();
             let agent_sdp = std::str::from_utf8(&agent_body[..]).unwrap_or("");
 
-            let b_rtp_socket =
-                match RtpSocketPair::new(b_port_pair, RtpSocketConfig::default()).await {
-                    Ok(s) => Arc::new(s),
-                    Err(e) => {
-                        warn!(call_id = %call_id, error = %e, "Failed to create overflow RTP socket");
-                        port_pool.deallocate(b_port_pair).await;
-                        return false;
-                    }
-                };
+            let b_rtp_socket = match RtpSocketPair::new(b_port_pair, RtpSocketConfig::default())
+                .await
+            {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    warn!(call_id = %call_id, error = %e, "Failed to create overflow RTP socket");
+                    port_pool.deallocate(b_port_pair).await;
+                    return false;
+                }
+            };
 
             if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(agent_sdp) {
                 b_rtp_socket
@@ -3536,21 +3680,21 @@ async fn bye_and_cleanup(
         }
         let bye_uac = Arc::clone(uac);
         let bye_dialog = session.dialog.clone();
-        tokio::spawn(async move { let _ = bye_uac.bye(&bye_dialog).await; });
+        tokio::spawn(async move {
+            let _ = bye_uac.bye(&bye_dialog).await;
+        });
         let pool = Arc::clone(port_pool);
         let pp = session.port_pair;
-        tokio::spawn(async move { pool.deallocate(pp).await; });
+        tokio::spawn(async move {
+            pool.deallocate(pp).await;
+        });
     }
     queue_manager.dequeue_call(call_id);
 }
 
 /// Extract domain part from a SIP URI string.
 /// Play pre-encoded prompt frames to an RTP socket at 20ms intervals.
-async fn play_prompt_frames(
-    socket: &RtpSocketPair,
-    frames: &[Vec<u8>],
-    payload_type: u8,
-) {
+async fn play_prompt_frames(socket: &RtpSocketPair, frames: &[Vec<u8>], payload_type: u8) {
     use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
     let seq = AtomicU16::new(0);
@@ -3578,7 +3722,10 @@ async fn play_prompt_frames(
 
 fn extract_domain(uri: &str) -> String {
     // Handle "sip:user@host:port" format
-    if let Some(rest) = uri.strip_prefix("sip:").or_else(|| uri.strip_prefix("sips:")) {
+    if let Some(rest) = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))
+    {
         if let Some(at_pos) = rest.find('@') {
             return rest[at_pos + 1..].to_string();
         }
@@ -3608,36 +3755,29 @@ async fn create_queue_cdr(
     let total_elapsed = enqueued_at.elapsed();
 
     // Approximate start_time by subtracting elapsed from now
-    let start_time = now
-        .checked_sub(total_elapsed)
-        .unwrap_or(now);
+    let start_time = now.checked_sub(total_elapsed).unwrap_or(now);
 
     // Compute answer_time and durations
-    let (answer_time, setup_duration_ms, call_duration_ms) = if let Some(answered_at) = agent_answered_at {
-        let wait_dur = answered_at.duration_since(enqueued_at);
-        let answer_sys = start_time
-            .checked_add(wait_dur)
-            .unwrap_or(now);
-        let talk_dur = answered_at.elapsed();
-        (
-            Some(answer_sys),
-            Some(wait_dur.as_millis() as u64),
-            Some(talk_dur.as_millis() as u64),
-        )
-    } else {
-        (None, Some(total_elapsed.as_millis() as u64), None)
-    };
+    let (answer_time, setup_duration_ms, call_duration_ms) =
+        if let Some(answered_at) = agent_answered_at {
+            let wait_dur = answered_at.duration_since(enqueued_at);
+            let answer_sys = start_time.checked_add(wait_dur).unwrap_or(now);
+            let talk_dur = answered_at.elapsed();
+            (
+                Some(answer_sys),
+                Some(wait_dur.as_millis() as u64),
+                Some(talk_dur.as_millis() as u64),
+            )
+        } else {
+            (None, Some(total_elapsed.as_millis() as u64), None)
+        };
 
     let (disposition, hangup_cause) = match state {
         QueueCallState::Connected | QueueCallState::OverflowedToDestination => {
             (CallDisposition::Answered, HangupCause::NormalClearing)
         }
-        QueueCallState::RingingAgent => {
-            (CallDisposition::NoAnswer, HangupCause::NoAnswer)
-        }
-        QueueCallState::WaitingInQueue => {
-            (CallDisposition::Cancelled, HangupCause::NoAnswer)
-        }
+        QueueCallState::RingingAgent => (CallDisposition::NoAnswer, HangupCause::NoAnswer),
+        QueueCallState::WaitingInQueue => (CallDisposition::Cancelled, HangupCause::NoAnswer),
     };
 
     // Build queue metadata as custom_data
@@ -3726,10 +3866,19 @@ async fn campaign_dial_task(
         Ok(pp) => pp,
         Err(e) => {
             warn!(dest = %destination, queue = %queue_name, error = %e, "Campaign: failed to allocate RTP port");
-            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
+            queue_manager.campaign_call_result(
+                &queue_name,
+                &destination,
+                fcp_queue::CampaignCallOutcome::Failed,
+            );
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "port_allocation_failed", &tenant_id,
-            ).await;
+                &Some(Arc::clone(&event_bus)),
+                &queue_name,
+                &destination,
+                "port_allocation_failed",
+                &tenant_id,
+            )
+            .await;
             return;
         }
     };
@@ -3747,10 +3896,19 @@ async fn campaign_dial_task(
         Err(e) => {
             warn!(dest = %destination, queue = %queue_name, error = %e, "Campaign: INVITE failed");
             port_pool.deallocate(outbound_pp).await;
-            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
+            queue_manager.campaign_call_result(
+                &queue_name,
+                &destination,
+                fcp_queue::CampaignCallOutcome::Failed,
+            );
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "invite_failed", &tenant_id,
-            ).await;
+                &Some(Arc::clone(&event_bus)),
+                &queue_name,
+                &destination,
+                "invite_failed",
+                &tenant_id,
+            )
+            .await;
             return;
         }
     };
@@ -3759,7 +3917,9 @@ async fn campaign_dial_task(
     let result = tokio::time::timeout(ring_timeout, call_handle.await_final()).await;
 
     match result {
-        Ok(Ok(response)) if response.start_line().code() >= 200 && response.start_line().code() < 300 => {
+        Ok(Ok(response))
+            if response.start_line().code() >= 200 && response.start_line().code() < 300 =>
+        {
             // Callee answered — try to find an available agent
             info!(dest = %destination, queue = %queue_name, "Campaign call answered");
 
@@ -3773,7 +3933,9 @@ async fn campaign_dial_task(
                 Some(plan) => {
                     // Agent available — bridge the call
                     let agent_id = plan.agent_id.clone();
-                    queue_manager.mark_agent_ringing(&agent_id, &destination).await;
+                    queue_manager
+                        .mark_agent_ringing(&agent_id, &destination)
+                        .await;
 
                     // Allocate agent RTP port
                     let agent_pp = match port_pool.allocate().await {
@@ -3782,46 +3944,77 @@ async fn campaign_dial_task(
                             warn!(dest = %destination, agent = %agent_id, error = %e, "Campaign: agent port alloc failed");
                             let _ = uac.bye(&*call_handle.dialog.read().await).await;
                             port_pool.deallocate(outbound_pp).await;
-                            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
+                            queue_manager.campaign_call_result(
+                                &queue_name,
+                                &destination,
+                                fcp_queue::CampaignCallOutcome::Failed,
+                            );
                             return;
                         }
                     };
 
                     // INVITE agent
                     let agent_sdp = build_multi_codec_sdp_offer(&local_addr, agent_pp.rtp_port);
-                    let agent_uri = format!("sip:{}@{}", plan.agent_extension, extract_domain(&local_uri));
+                    let agent_uri = format!(
+                        "sip:{}@{}",
+                        plan.agent_extension,
+                        extract_domain(&local_uri)
+                    );
                     let agent_ring_timeout = Duration::from_secs(ring_timeout_secs as u64);
 
                     match uac.invite(&agent_uri, Some(&agent_sdp)).await {
                         Ok(agent_handle) => {
-                            match tokio::time::timeout(agent_ring_timeout, agent_handle.await_final()).await {
-                                Ok(Ok(agent_resp)) if agent_resp.start_line().code() >= 200 && agent_resp.start_line().code() < 300 => {
+                            match tokio::time::timeout(
+                                agent_ring_timeout,
+                                agent_handle.await_final(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(agent_resp))
+                                    if agent_resp.start_line().code() >= 200
+                                        && agent_resp.start_line().code() < 300 =>
+                                {
                                     // Agent answered — bridge RTP
                                     info!(
                                         dest = %destination, agent = %agent_id, queue = %queue_name,
                                         "Campaign: agent answered, bridging"
                                     );
                                     queue_manager.agent_answered(&agent_id, &destination).await;
-                                    queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Answered);
+                                    queue_manager.campaign_call_result(
+                                        &queue_name,
+                                        &destination,
+                                        fcp_queue::CampaignCallOutcome::Answered,
+                                    );
                                     fcp_queue::events::campaign_call_connected(
-                                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, &agent_id, &tenant_id,
-                                    ).await;
+                                        &Some(Arc::clone(&event_bus)),
+                                        &queue_name,
+                                        &destination,
+                                        &agent_id,
+                                        &tenant_id,
+                                    )
+                                    .await;
 
                                     // Parse agent SDP
                                     let agent_body = agent_resp.body();
-                                    let agent_sdp_str = std::str::from_utf8(&agent_body[..]).unwrap_or("");
-                                    let (agent_codec_name, agent_pt) = parse_agent_codec(agent_sdp_str);
+                                    let agent_sdp_str =
+                                        std::str::from_utf8(&agent_body[..]).unwrap_or("");
+                                    let (agent_codec_name, agent_pt) =
+                                        parse_agent_codec(agent_sdp_str);
 
                                     // Create callee RTP socket
                                     let callee_rtp_socket = match RtpSocketPair::new(
                                         outbound_pp,
                                         RtpSocketConfig::default(),
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(s) => Arc::new(s),
                                         Err(e) => {
                                             warn!(error = %e, "Campaign: failed to create callee RTP socket");
-                                            let _ = uac.bye(&*call_handle.dialog.read().await).await;
-                                            let _ = uac.bye(&*agent_handle.dialog.read().await).await;
+                                            let _ =
+                                                uac.bye(&*call_handle.dialog.read().await).await;
+                                            let _ =
+                                                uac.bye(&*agent_handle.dialog.read().await).await;
                                             port_pool.deallocate(outbound_pp).await;
                                             port_pool.deallocate(agent_pp).await;
                                             return;
@@ -3829,23 +4022,31 @@ async fn campaign_dial_task(
                                     };
 
                                     // Set callee remote RTP endpoint
-                                    if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(callee_sdp) {
-                                        callee_rtp_socket.set_remote_endpoint(RemoteEndpoint {
-                                            rtp_addr: remote_addr,
-                                            rtcp_addr: None,
-                                        }).await;
+                                    if let Some(remote_addr) =
+                                        QueueCallHandler::parse_remote_rtp_addr(callee_sdp)
+                                    {
+                                        callee_rtp_socket
+                                            .set_remote_endpoint(RemoteEndpoint {
+                                                rtp_addr: remote_addr,
+                                                rtcp_addr: None,
+                                            })
+                                            .await;
                                     }
 
                                     // Create agent RTP socket
                                     let agent_rtp_socket = match RtpSocketPair::new(
                                         agent_pp,
                                         RtpSocketConfig::default(),
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(s) => Arc::new(s),
                                         Err(e) => {
                                             warn!(error = %e, "Campaign: failed to create agent RTP socket");
-                                            let _ = uac.bye(&*call_handle.dialog.read().await).await;
-                                            let _ = uac.bye(&*agent_handle.dialog.read().await).await;
+                                            let _ =
+                                                uac.bye(&*call_handle.dialog.read().await).await;
+                                            let _ =
+                                                uac.bye(&*agent_handle.dialog.read().await).await;
                                             port_pool.deallocate(outbound_pp).await;
                                             port_pool.deallocate(agent_pp).await;
                                             return;
@@ -3853,11 +4054,15 @@ async fn campaign_dial_task(
                                     };
 
                                     // Set agent remote RTP endpoint
-                                    if let Some(remote_addr) = QueueCallHandler::parse_remote_rtp_addr(agent_sdp_str) {
-                                        agent_rtp_socket.set_remote_endpoint(RemoteEndpoint {
-                                            rtp_addr: remote_addr,
-                                            rtcp_addr: None,
-                                        }).await;
+                                    if let Some(remote_addr) =
+                                        QueueCallHandler::parse_remote_rtp_addr(agent_sdp_str)
+                                    {
+                                        agent_rtp_socket
+                                            .set_remote_endpoint(RemoteEndpoint {
+                                                rtp_addr: remote_addr,
+                                                rtcp_addr: None,
+                                            })
+                                            .await;
                                     }
 
                                     let needs_transcoding = callee_codec != agent_codec_name;
@@ -3876,7 +4081,12 @@ async fn campaign_dial_task(
                                             .map(|c| c.record_calls)
                                             .unwrap_or(false);
 
-                                    let (bridge_a_to_b, bridge_b_to_a, recording_handle, recording_path) = if should_record {
+                                    let (
+                                        bridge_a_to_b,
+                                        bridge_b_to_a,
+                                        recording_handle,
+                                        recording_path,
+                                    ) = if should_record {
                                         let rec_dir = recording_dir.as_deref().unwrap();
                                         let queue_rec_dir = format!("{}/{}", rec_dir, queue_name);
                                         let _ = std::fs::create_dir_all(&queue_rec_dir);
@@ -3884,10 +4094,15 @@ async fn campaign_dial_task(
                                             .get_queue_config(&queue_name)
                                             .map(|c| c.recording_format.clone())
                                             .unwrap_or_else(|| "wav".to_string());
-                                        let rec_path = format!("{}/{}.{}", queue_rec_dir, destination, rec_format);
+                                        let rec_path = format!(
+                                            "{}/{}.{}",
+                                            queue_rec_dir, destination, rec_format
+                                        );
 
-                                        let (a_tx, a_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
-                                        let (b_tx, b_rx) = tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+                                        let (a_tx, a_rx) =
+                                            tokio::sync::broadcast::channel::<bytes::Bytes>(256);
+                                        let (b_tx, b_rx) =
+                                            tokio::sync::broadcast::channel::<bytes::Bytes>(256);
 
                                         let (ba, bb) = if needs_transcoding {
                                             spawn_transcoding_rtp_bridge(
@@ -3909,7 +4124,12 @@ async fn campaign_dial_task(
                                             )
                                         };
 
-                                        let rec_handle = spawn_recording_task(a_rx, b_rx, callee_codec.clone(), rec_path.clone());
+                                        let rec_handle = spawn_recording_task(
+                                            a_rx,
+                                            b_rx,
+                                            callee_codec.clone(),
+                                            rec_path.clone(),
+                                        );
                                         info!(dest = %destination, path = %rec_path, "Campaign call recording started");
                                         (ba, bb, Some(rec_handle), Some(rec_path))
                                     } else if needs_transcoding {
@@ -3983,7 +4203,8 @@ async fn campaign_dial_task(
                                     );
 
                                     // Map callee ↔ agent Call-IDs for reverse BYE lookup
-                                    campaign_call_id_map.insert(callee_call_id.clone(), agent_call_id.clone());
+                                    campaign_call_id_map
+                                        .insert(callee_call_id.clone(), agent_call_id.clone());
                                     campaign_call_id_map.insert(agent_call_id, callee_call_id);
 
                                     debug!(
@@ -3997,10 +4218,19 @@ async fn campaign_dial_task(
                                     let _ = uac.bye(&*call_handle.dialog.read().await).await;
                                     port_pool.deallocate(agent_pp).await;
                                     port_pool.deallocate(outbound_pp).await;
-                                    queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Abandoned);
+                                    queue_manager.campaign_call_result(
+                                        &queue_name,
+                                        &destination,
+                                        fcp_queue::CampaignCallOutcome::Abandoned,
+                                    );
                                     fcp_queue::events::campaign_call_failed(
-                                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, "abandoned", &tenant_id,
-                                    ).await;
+                                        &Some(Arc::clone(&event_bus)),
+                                        &queue_name,
+                                        &destination,
+                                        "abandoned",
+                                        &tenant_id,
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -4009,7 +4239,11 @@ async fn campaign_dial_task(
                             let _ = uac.bye(&*call_handle.dialog.read().await).await;
                             port_pool.deallocate(agent_pp).await;
                             port_pool.deallocate(outbound_pp).await;
-                            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Abandoned);
+                            queue_manager.campaign_call_result(
+                                &queue_name,
+                                &destination,
+                                fcp_queue::CampaignCallOutcome::Abandoned,
+                            );
                         }
                     }
                 }
@@ -4021,49 +4255,96 @@ async fn campaign_dial_task(
 
                     let _ = uac.bye(&*call_handle.dialog.read().await).await;
                     port_pool.deallocate(outbound_pp).await;
-                    queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Abandoned);
+                    queue_manager.campaign_call_result(
+                        &queue_name,
+                        &destination,
+                        fcp_queue::CampaignCallOutcome::Abandoned,
+                    );
                     fcp_queue::events::campaign_call_failed(
-                        &Some(Arc::clone(&event_bus)), &queue_name, &destination, "abandoned", &tenant_id,
-                    ).await;
+                        &Some(Arc::clone(&event_bus)),
+                        &queue_name,
+                        &destination,
+                        "abandoned",
+                        &tenant_id,
+                    )
+                    .await;
                 }
             }
         }
-        Ok(Ok(response)) if response.start_line().code() == 486 || response.start_line().code() == 600 => {
+        Ok(Ok(response))
+            if response.start_line().code() == 486 || response.start_line().code() == 600 =>
+        {
             // Busy
             info!(dest = %destination, queue = %queue_name, "Campaign call busy");
             port_pool.deallocate(outbound_pp).await;
-            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Busy);
+            queue_manager.campaign_call_result(
+                &queue_name,
+                &destination,
+                fcp_queue::CampaignCallOutcome::Busy,
+            );
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "busy", &tenant_id,
-            ).await;
+                &Some(Arc::clone(&event_bus)),
+                &queue_name,
+                &destination,
+                "busy",
+                &tenant_id,
+            )
+            .await;
         }
         Ok(Ok(_response)) => {
             // Other failure (4xx, 5xx, 6xx)
             info!(dest = %destination, queue = %queue_name, "Campaign call failed");
             port_pool.deallocate(outbound_pp).await;
-            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
+            queue_manager.campaign_call_result(
+                &queue_name,
+                &destination,
+                fcp_queue::CampaignCallOutcome::Failed,
+            );
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "failed", &tenant_id,
-            ).await;
+                &Some(Arc::clone(&event_bus)),
+                &queue_name,
+                &destination,
+                "failed",
+                &tenant_id,
+            )
+            .await;
         }
         Ok(Err(e)) => {
             // Transport/protocol error
             warn!(dest = %destination, queue = %queue_name, error = %e, "Campaign call error");
             port_pool.deallocate(outbound_pp).await;
-            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::Failed);
+            queue_manager.campaign_call_result(
+                &queue_name,
+                &destination,
+                fcp_queue::CampaignCallOutcome::Failed,
+            );
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "error", &tenant_id,
-            ).await;
+                &Some(Arc::clone(&event_bus)),
+                &queue_name,
+                &destination,
+                "error",
+                &tenant_id,
+            )
+            .await;
         }
         Err(_) => {
             // Ring timeout — no answer
             info!(dest = %destination, queue = %queue_name, "Campaign call no answer (timeout)");
             let _ = call_handle.cancel().await;
             port_pool.deallocate(outbound_pp).await;
-            queue_manager.campaign_call_result(&queue_name, &destination, fcp_queue::CampaignCallOutcome::NoAnswer);
+            queue_manager.campaign_call_result(
+                &queue_name,
+                &destination,
+                fcp_queue::CampaignCallOutcome::NoAnswer,
+            );
             fcp_queue::events::campaign_call_failed(
-                &Some(Arc::clone(&event_bus)), &queue_name, &destination, "no_answer", &tenant_id,
-            ).await;
+                &Some(Arc::clone(&event_bus)),
+                &queue_name,
+                &destination,
+                "no_answer",
+                &tenant_id,
+            )
+            .await;
         }
     }
 }

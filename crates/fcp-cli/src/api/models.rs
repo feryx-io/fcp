@@ -240,8 +240,8 @@ pub struct AllRegistrationsResponse {
 impl SimpleRegistrationResponse {
     /// Convert to full RegistrationResponse with default values for missing fields
     pub fn to_registration_response(&self) -> RegistrationResponse {
-        let expires_at = std::time::UNIX_EPOCH
-            + std::time::Duration::from_secs(self.expires_at_epoch);
+        let expires_at =
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(self.expires_at_epoch);
         let now = std::time::SystemTime::now();
         let expires_in_seconds = expires_at
             .duration_since(now)
@@ -255,8 +255,8 @@ impl SimpleRegistrationResponse {
             call_id: String::new(), // Not available from simple endpoint
             cseq: 0,                // Not available from simple endpoint
             user_agent: self.user_agent.clone(),
-            q: None,                // Not available from simple endpoint
-            registered_at: now,     // Approximate
+            q: None,            // Not available from simple endpoint
+            registered_at: now, // Approximate
             expires_in_seconds,
         }
     }
@@ -298,7 +298,7 @@ impl AggregatedRegistrationResponse {
             call_id: String::new(), // Not available from aggregated endpoint
             cseq: 0,                // Not available from aggregated endpoint
             user_agent: self.user_agent.clone(),
-            q: None,                // Not available from aggregated endpoint
+            q: None, // Not available from aggregated endpoint
             registered_at,
             expires_in_seconds,
         }
@@ -726,7 +726,10 @@ mod tests {
         let response = result.unwrap();
         assert_eq!(response.count, 1);
         assert_eq!(response.calls.len(), 1);
-        assert_eq!(response.calls[0].call_id, "call-0bb0d31e-2449-4466-9af1-959d5fe0e37b");
+        assert_eq!(
+            response.calls[0].call_id,
+            "call-0bb0d31e-2449-4466-9af1-959d5fe0e37b"
+        );
         assert_eq!(response.calls[0].state, "answered");
         assert_eq!(response.calls[0].node_id, Some("cm-docker-01".to_string()));
     }
@@ -757,7 +760,7 @@ mod tests {
         assert_eq!(call.id, "call-123");
         assert_eq!(call.state, "answered");
         assert_eq!(call.node_id, Some("node-1".to_string()));
-        assert_eq!(call.duration_seconds, Some(5));  // 5000ms / 1000 = 5s
-        assert!(call.media_anchored);  // codec is Some
+        assert_eq!(call.duration_seconds, Some(5)); // 5000ms / 1000 = 5s
+        assert!(call.media_anchored); // codec is Some
     }
 }

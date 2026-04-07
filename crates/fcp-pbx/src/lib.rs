@@ -55,12 +55,7 @@ impl PbxHandler {
         let hunt_groups: HashMap<String, HuntGroup> = config
             .hunt_groups
             .iter()
-            .map(|(ext, hg_config)| {
-                (
-                    ext.clone(),
-                    HuntGroup::new(ext.clone(), hg_config.clone()),
-                )
-            })
+            .map(|(ext, hg_config)| (ext.clone(), HuntGroup::new(ext.clone(), hg_config.clone())))
             .collect();
 
         // Build pickup group lookups
@@ -321,9 +316,6 @@ mod tests {
         assert_eq!(extract_user_part("sip:1001@10.0.0.1"), "1001");
         assert_eq!(extract_user_part("<sip:1001@10.0.0.1>"), "1001");
         assert_eq!(extract_user_part("1001"), "1001");
-        assert_eq!(
-            extract_user_part("\"Alice\" <sip:1001@10.0.0.1>"),
-            "1001"
-        );
+        assert_eq!(extract_user_part("\"Alice\" <sip:1001@10.0.0.1>"), "1001");
     }
 }

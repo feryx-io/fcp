@@ -311,12 +311,22 @@ pub fn generate_pres_rules(policy: &PresenceAuthPolicy) -> String {
 
     // Allow patterns
     for (i, pattern) in policy.allow_patterns.iter().enumerate() {
-        write_pattern_rule(&mut writer, &format!("pres_pattern_allow_{i}"), pattern, "allow");
+        write_pattern_rule(
+            &mut writer,
+            &format!("pres_pattern_allow_{i}"),
+            pattern,
+            "allow",
+        );
     }
 
     // Block patterns
     for (i, pattern) in policy.block_patterns.iter().enumerate() {
-        write_pattern_rule(&mut writer, &format!("pres_pattern_block_{i}"), pattern, "block");
+        write_pattern_rule(
+            &mut writer,
+            &format!("pres_pattern_block_{i}"),
+            pattern,
+            "block",
+        );
     }
 
     // Time windows
@@ -355,9 +365,7 @@ fn write_identity_rule(
 
     let mut one = BytesStart::new("cr:one");
     one.push_attribute(("id", format!("sip:{aor}").as_str()));
-    writer
-        .write_event(Event::Empty(one))
-        .expect("write one");
+    writer.write_event(Event::Empty(one)).expect("write one");
 
     writer
         .write_event(Event::End(BytesEnd::new("cr:identity")))
@@ -398,31 +406,59 @@ fn write_event_identity_rule(
 ) {
     let mut rule = BytesStart::new("cr:rule");
     rule.push_attribute(("id", rule_id));
-    writer.write_event(Event::Start(rule)).expect("write rule start");
+    writer
+        .write_event(Event::Start(rule))
+        .expect("write rule start");
 
     // <cr:conditions><cr:identity><cr:one id="sip:aor"/></cr:identity>
     // <pr:event-package>event</pr:event-package></cr:conditions>
-    writer.write_event(Event::Start(BytesStart::new("cr:conditions"))).expect("write conditions start");
-    writer.write_event(Event::Start(BytesStart::new("cr:identity"))).expect("write identity start");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:conditions")))
+        .expect("write conditions start");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:identity")))
+        .expect("write identity start");
     let mut one = BytesStart::new("cr:one");
     one.push_attribute(("id", format!("sip:{aor}").as_str()));
     writer.write_event(Event::Empty(one)).expect("write one");
-    writer.write_event(Event::End(BytesEnd::new("cr:identity"))).expect("write identity end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:identity")))
+        .expect("write identity end");
 
-    writer.write_event(Event::Start(BytesStart::new("pr:event-package"))).expect("write event-package start");
-    writer.write_event(Event::Text(BytesText::new(event_package))).expect("write event-package text");
-    writer.write_event(Event::End(BytesEnd::new("pr:event-package"))).expect("write event-package end");
+    writer
+        .write_event(Event::Start(BytesStart::new("pr:event-package")))
+        .expect("write event-package start");
+    writer
+        .write_event(Event::Text(BytesText::new(event_package)))
+        .expect("write event-package text");
+    writer
+        .write_event(Event::End(BytesEnd::new("pr:event-package")))
+        .expect("write event-package end");
 
-    writer.write_event(Event::End(BytesEnd::new("cr:conditions"))).expect("write conditions end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:conditions")))
+        .expect("write conditions end");
 
     // <cr:actions><pr:sub-handling>action</pr:sub-handling></cr:actions>
-    writer.write_event(Event::Start(BytesStart::new("cr:actions"))).expect("write actions start");
-    writer.write_event(Event::Start(BytesStart::new("pr:sub-handling"))).expect("write sub-handling start");
-    writer.write_event(Event::Text(BytesText::new(action))).expect("write sub-handling text");
-    writer.write_event(Event::End(BytesEnd::new("pr:sub-handling"))).expect("write sub-handling end");
-    writer.write_event(Event::End(BytesEnd::new("cr:actions"))).expect("write actions end");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:actions")))
+        .expect("write actions start");
+    writer
+        .write_event(Event::Start(BytesStart::new("pr:sub-handling")))
+        .expect("write sub-handling start");
+    writer
+        .write_event(Event::Text(BytesText::new(action)))
+        .expect("write sub-handling text");
+    writer
+        .write_event(Event::End(BytesEnd::new("pr:sub-handling")))
+        .expect("write sub-handling end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:actions")))
+        .expect("write actions end");
 
-    writer.write_event(Event::End(BytesEnd::new("cr:rule"))).expect("write rule end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:rule")))
+        .expect("write rule end");
 }
 
 /// Write a pattern-based rule (domain wildcard).
@@ -434,60 +470,116 @@ fn write_pattern_rule(
 ) {
     let mut rule = BytesStart::new("cr:rule");
     rule.push_attribute(("id", rule_id));
-    writer.write_event(Event::Start(rule)).expect("write rule start");
+    writer
+        .write_event(Event::Start(rule))
+        .expect("write rule start");
 
     // <cr:conditions><pr:domain-pattern>pattern</pr:domain-pattern></cr:conditions>
-    writer.write_event(Event::Start(BytesStart::new("cr:conditions"))).expect("write conditions start");
-    writer.write_event(Event::Start(BytesStart::new("pr:domain-pattern"))).expect("write domain-pattern start");
-    writer.write_event(Event::Text(BytesText::new(pattern))).expect("write domain-pattern text");
-    writer.write_event(Event::End(BytesEnd::new("pr:domain-pattern"))).expect("write domain-pattern end");
-    writer.write_event(Event::End(BytesEnd::new("cr:conditions"))).expect("write conditions end");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:conditions")))
+        .expect("write conditions start");
+    writer
+        .write_event(Event::Start(BytesStart::new("pr:domain-pattern")))
+        .expect("write domain-pattern start");
+    writer
+        .write_event(Event::Text(BytesText::new(pattern)))
+        .expect("write domain-pattern text");
+    writer
+        .write_event(Event::End(BytesEnd::new("pr:domain-pattern")))
+        .expect("write domain-pattern end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:conditions")))
+        .expect("write conditions end");
 
-    writer.write_event(Event::Start(BytesStart::new("cr:actions"))).expect("write actions start");
-    writer.write_event(Event::Start(BytesStart::new("pr:sub-handling"))).expect("write sub-handling start");
-    writer.write_event(Event::Text(BytesText::new(action))).expect("write sub-handling text");
-    writer.write_event(Event::End(BytesEnd::new("pr:sub-handling"))).expect("write sub-handling end");
-    writer.write_event(Event::End(BytesEnd::new("cr:actions"))).expect("write actions end");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:actions")))
+        .expect("write actions start");
+    writer
+        .write_event(Event::Start(BytesStart::new("pr:sub-handling")))
+        .expect("write sub-handling start");
+    writer
+        .write_event(Event::Text(BytesText::new(action)))
+        .expect("write sub-handling text");
+    writer
+        .write_event(Event::End(BytesEnd::new("pr:sub-handling")))
+        .expect("write sub-handling end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:actions")))
+        .expect("write actions end");
 
-    writer.write_event(Event::End(BytesEnd::new("cr:rule"))).expect("write rule end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:rule")))
+        .expect("write rule end");
 }
 
 /// Write time-window rules.
-fn write_time_window_rules(
-    writer: &mut Writer<Cursor<Vec<u8>>>,
-    windows: &[TimeWindow],
-) {
+fn write_time_window_rules(writer: &mut Writer<Cursor<Vec<u8>>>, windows: &[TimeWindow]) {
     let mut rule = BytesStart::new("cr:rule");
     rule.push_attribute(("id", "pres_time_windows"));
-    writer.write_event(Event::Start(rule)).expect("write rule start");
+    writer
+        .write_event(Event::Start(rule))
+        .expect("write rule start");
 
-    writer.write_event(Event::Start(BytesStart::new("cr:conditions"))).expect("write conditions start");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:conditions")))
+        .expect("write conditions start");
     for (i, w) in windows.iter().enumerate() {
         let mut tw = BytesStart::new("pr:time-window");
         tw.push_attribute(("id", format!("tw_{i}").as_str()));
         tw.push_attribute(("start-hour", w.start_hour.to_string().as_str()));
         tw.push_attribute(("end-hour", w.end_hour.to_string().as_str()));
         if w.days.is_empty() {
-            writer.write_event(Event::Empty(tw)).expect("write time-window");
+            writer
+                .write_event(Event::Empty(tw))
+                .expect("write time-window");
         } else {
-            writer.write_event(Event::Start(tw)).expect("write time-window start");
-            let days_str = w.days.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
-            writer.write_event(Event::Start(BytesStart::new("pr:days"))).expect("write days start");
-            writer.write_event(Event::Text(BytesText::new(&days_str))).expect("write days text");
-            writer.write_event(Event::End(BytesEnd::new("pr:days"))).expect("write days end");
-            writer.write_event(Event::End(BytesEnd::new("pr:time-window"))).expect("write time-window end");
+            writer
+                .write_event(Event::Start(tw))
+                .expect("write time-window start");
+            let days_str = w
+                .days
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            writer
+                .write_event(Event::Start(BytesStart::new("pr:days")))
+                .expect("write days start");
+            writer
+                .write_event(Event::Text(BytesText::new(&days_str)))
+                .expect("write days text");
+            writer
+                .write_event(Event::End(BytesEnd::new("pr:days")))
+                .expect("write days end");
+            writer
+                .write_event(Event::End(BytesEnd::new("pr:time-window")))
+                .expect("write time-window end");
         }
     }
-    writer.write_event(Event::End(BytesEnd::new("cr:conditions"))).expect("write conditions end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:conditions")))
+        .expect("write conditions end");
 
     // Time windows don't have an action — they're conditions on the default rule
-    writer.write_event(Event::Start(BytesStart::new("cr:actions"))).expect("write actions start");
-    writer.write_event(Event::Start(BytesStart::new("pr:sub-handling"))).expect("write sub-handling start");
-    writer.write_event(Event::Text(BytesText::new("allow"))).expect("write sub-handling text");
-    writer.write_event(Event::End(BytesEnd::new("pr:sub-handling"))).expect("write sub-handling end");
-    writer.write_event(Event::End(BytesEnd::new("cr:actions"))).expect("write actions end");
+    writer
+        .write_event(Event::Start(BytesStart::new("cr:actions")))
+        .expect("write actions start");
+    writer
+        .write_event(Event::Start(BytesStart::new("pr:sub-handling")))
+        .expect("write sub-handling start");
+    writer
+        .write_event(Event::Text(BytesText::new("allow")))
+        .expect("write sub-handling text");
+    writer
+        .write_event(Event::End(BytesEnd::new("pr:sub-handling")))
+        .expect("write sub-handling end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:actions")))
+        .expect("write actions end");
 
-    writer.write_event(Event::End(BytesEnd::new("cr:rule"))).expect("write rule end");
+    writer
+        .write_event(Event::End(BytesEnd::new("cr:rule")))
+        .expect("write rule end");
 }
 
 /// Parse pres-rules XML (RFC 5025) into a `PresenceAuthPolicy`.
@@ -604,11 +696,18 @@ pub fn parse_pres_rules(xml: &str) -> Result<PresenceAuthPolicy> {
                 } else if in_domain_pattern {
                     current_domain_pattern = Some(text);
                 } else if in_days {
-                    let days: Vec<u8> = text.split(',')
+                    let days: Vec<u8> = text
+                        .split(',')
                         .filter_map(|d| d.trim().parse().ok())
                         .collect();
-                    if let (Some(start), Some(end)) = (pending_tw_start.take(), pending_tw_end.take()) {
-                        current_time_windows.push(TimeWindow { start_hour: start, end_hour: end, days });
+                    if let (Some(start), Some(end)) =
+                        (pending_tw_start.take(), pending_tw_end.take())
+                    {
+                        current_time_windows.push(TimeWindow {
+                            start_hour: start,
+                            end_hour: end,
+                            days,
+                        });
                     }
                 }
             }
@@ -623,8 +722,14 @@ pub fn parse_pres_rules(xml: &str) -> Result<PresenceAuthPolicy> {
                             time_windows.append(&mut current_time_windows);
                         } else if has_time_window {
                             // Time windows with no days — finalize any pending
-                            if let (Some(start), Some(end)) = (pending_tw_start.take(), pending_tw_end.take()) {
-                                time_windows.push(TimeWindow { start_hour: start, end_hour: end, days: vec![] });
+                            if let (Some(start), Some(end)) =
+                                (pending_tw_start.take(), pending_tw_end.take())
+                            {
+                                time_windows.push(TimeWindow {
+                                    start_hour: start,
+                                    end_hour: end,
+                                    days: vec![],
+                                });
                             }
                         } else if has_domain_pattern {
                             if let Some(ref pattern) = current_domain_pattern {
@@ -640,12 +745,14 @@ pub fn parse_pres_rules(xml: &str) -> Result<PresenceAuthPolicy> {
                                 // Event-package-specific rule
                                 match action {
                                     "allow" => {
-                                        event_allow.entry(event_pkg.clone())
+                                        event_allow
+                                            .entry(event_pkg.clone())
                                             .or_default()
                                             .insert(aor.clone());
                                     }
                                     _ => {
-                                        event_block.entry(event_pkg.clone())
+                                        event_block
+                                            .entry(event_pkg.clone())
                                             .or_default()
                                             .insert(aor.clone());
                                     }
@@ -653,8 +760,12 @@ pub fn parse_pres_rules(xml: &str) -> Result<PresenceAuthPolicy> {
                             } else {
                                 // Simple identity rule
                                 match action {
-                                    "allow" => { allow_list.insert(aor.clone()); }
-                                    "block" | "polite-block" | "confirm" => { block_list.insert(aor.clone()); }
+                                    "allow" => {
+                                        allow_list.insert(aor.clone());
+                                    }
+                                    "block" | "polite-block" | "confirm" => {
+                                        block_list.insert(aor.clone());
+                                    }
                                     _ => {}
                                 }
                             }
@@ -671,8 +782,14 @@ pub fn parse_pres_rules(xml: &str) -> Result<PresenceAuthPolicy> {
                     "domain-pattern" => in_domain_pattern = false,
                     "time-window" => {
                         // Finalize time window if no days child was seen
-                        if let (Some(start), Some(end)) = (pending_tw_start.take(), pending_tw_end.take()) {
-                            current_time_windows.push(TimeWindow { start_hour: start, end_hour: end, days: vec![] });
+                        if let (Some(start), Some(end)) =
+                            (pending_tw_start.take(), pending_tw_end.take())
+                        {
+                            current_time_windows.push(TimeWindow {
+                                start_hour: start,
+                                end_hour: end,
+                                days: vec![],
+                            });
                         }
                     }
                     "days" => in_days = false,

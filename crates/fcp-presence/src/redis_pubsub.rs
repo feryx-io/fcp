@@ -42,8 +42,8 @@ impl RedisPresencePubSub {
     ///
     /// If `node_id` is None, a random UUID is generated.
     pub fn new(redis_url: &str, node_id: Option<String>) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .context("Failed to create Redis client for pubsub")?;
+        let client =
+            redis::Client::open(redis_url).context("Failed to create Redis client for pubsub")?;
         let node_id = node_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         Ok(Self { client, node_id })
     }
@@ -71,10 +71,11 @@ impl RedisPresencePubSub {
             note: note.map(|s| s.to_string()),
         };
 
-        let payload = serde_json::to_string(&event)
-            .context("Failed to serialize presence change event")?;
+        let payload =
+            serde_json::to_string(&event).context("Failed to serialize presence change event")?;
 
-        let mut conn = self.client
+        let mut conn = self
+            .client
             .get_multiplexed_async_connection()
             .await
             .context("Failed to get Redis connection for publish")?;
@@ -97,7 +98,8 @@ impl RedisPresencePubSub {
     pub async fn subscribe(
         &self,
     ) -> Result<impl Stream<Item = PresenceChangeEvent> + Send + 'static> {
-        let mut pubsub = self.client
+        let mut pubsub = self
+            .client
             .get_async_pubsub()
             .await
             .context("Failed to create Redis pubsub connection")?;

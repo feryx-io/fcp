@@ -7,8 +7,7 @@ use std::time::Duration;
 async fn test_error_response_has_required_headers() {
     let harness = TestHarness::builder().build().await;
     // Send a REGISTER to a handler with no registrar → 501
-    let request =
-        common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
+    let request = common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
     harness.send_request(&request).await;
 
     let resp = harness.last_response().await.expect("expected response");
@@ -48,8 +47,7 @@ async fn test_error_response_has_required_headers() {
 async fn test_error_response_includes_allow_header() {
     let harness = TestHarness::builder().build().await;
     // Unknown method would give 501, but a REGISTER without registrar is simpler
-    let request =
-        common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
+    let request = common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
     harness.send_request(&request).await;
 
     let resp = harness.last_response().await.expect("expected response");
@@ -61,10 +59,7 @@ async fn test_error_response_includes_allow_header() {
         allow_str.contains("INVITE"),
         "Allow header should include INVITE"
     );
-    assert!(
-        allow_str.contains("BYE"),
-        "Allow header should include BYE"
-    );
+    assert!(allow_str.contains("BYE"), "Allow header should include BYE");
     assert!(
         allow_str.contains("OPTIONS"),
         "Allow header should include OPTIONS"
@@ -74,8 +69,7 @@ async fn test_error_response_includes_allow_header() {
 #[tokio::test]
 async fn test_error_response_includes_supported_header() {
     let harness = TestHarness::builder().build().await;
-    let request =
-        common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
+    let request = common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
     harness.send_request(&request).await;
 
     let resp = harness.last_response().await.expect("expected response");
@@ -111,8 +105,7 @@ async fn test_error_response_includes_contact() {
 #[tokio::test]
 async fn test_content_length_matches_body() {
     let harness = TestHarness::builder().build().await;
-    let request =
-        common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
+    let request = common::build_register_request("alice@example.com", "alice@127.0.0.1:5060");
     harness.send_request(&request).await;
 
     let resp = harness.last_response().await.expect("expected response");
@@ -136,24 +129,19 @@ async fn test_options_response_200_with_capabilities() {
     harness.send_request(&request).await;
 
     let resp = harness.last_response().await.expect("expected response");
-    assert_eq!(resp.start_line().code(), 200, "OPTIONS should return 200 OK");
+    assert_eq!(
+        resp.start_line().code(),
+        200,
+        "OPTIONS should return 200 OK"
+    );
 
     // Capabilities headers
     let allow = resp.headers().get("Allow");
     assert!(allow.is_some(), "OPTIONS 200 missing Allow header");
     let allow_str = allow.unwrap().to_string();
-    assert!(
-        allow_str.contains("INVITE"),
-        "Allow should list INVITE"
-    );
-    assert!(
-        allow_str.contains("OPTIONS"),
-        "Allow should list OPTIONS"
-    );
+    assert!(allow_str.contains("INVITE"), "Allow should list INVITE");
+    assert!(allow_str.contains("OPTIONS"), "Allow should list OPTIONS");
 
     let supported = resp.headers().get("Supported");
-    assert!(
-        supported.is_some(),
-        "OPTIONS 200 missing Supported header"
-    );
+    assert!(supported.is_some(), "OPTIONS 200 missing Supported header");
 }

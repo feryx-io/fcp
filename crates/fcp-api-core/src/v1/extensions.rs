@@ -8,7 +8,9 @@ use axum::{
     Json,
 };
 use fcp_core::storage::ExtensionStore;
-use fcp_core::{DeviceId, Extension, ExtensionTarget, LocationId, PhoneNumberId, ServiceId, TenantId, UserId};
+use fcp_core::{
+    DeviceId, Extension, ExtensionTarget, LocationId, PhoneNumberId, ServiceId, TenantId, UserId,
+};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -264,8 +266,10 @@ pub async fn update_extension(
         extension.location_id = if location_id_str.is_empty() {
             None
         } else {
-            Some(LocationId::from_str(&location_id_str)
-                .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?)
+            Some(
+                LocationId::from_str(&location_id_str)
+                    .map_err(|e| ApiError::BadRequest(format!("Invalid location ID: {}", e)))?,
+            )
         };
     }
 

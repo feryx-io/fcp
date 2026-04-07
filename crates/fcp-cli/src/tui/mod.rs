@@ -161,8 +161,7 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
     let result = match app.active_tab {
         Tab::Dashboard => views::dashboard::handle_event(&app.api_client, &event, &ctx).await,
         Tab::Tenants => {
-            views::tenants::handle_event(&mut app.tenants_view, &app.api_client, &event, &ctx)
-                .await
+            views::tenants::handle_event(&mut app.tenants_view, &app.api_client, &event, &ctx).await
         }
         Tab::Users => {
             views::users::handle_event(&mut app.users_view, &app.api_client, &event, &ctx).await
@@ -177,8 +176,7 @@ async fn handle_event(app: &mut App, event: Event) -> Result<()> {
             .await
         }
         Tab::Devices => {
-            views::devices::handle_event(&mut app.devices_view, &app.api_client, &event, &ctx)
-                .await
+            views::devices::handle_event(&mut app.devices_view, &app.api_client, &event, &ctx).await
         }
         Tab::LineBindings => {
             views::line_bindings::handle_event(
@@ -309,10 +307,20 @@ async fn refresh_active_tab(app: &mut App) {
             views::users::fetch_data(&app.api_client, &mut app.users_view).await;
         }
         Tab::Calls => {
-            views::calls::fetch_data(&app.api_client, &mut app.calls_view, app.events_url.as_deref()).await;
+            views::calls::fetch_data(
+                &app.api_client,
+                &mut app.calls_view,
+                app.events_url.as_deref(),
+            )
+            .await;
         }
         Tab::Registrations => {
-            views::registrations::fetch_data(&app.api_client, &mut app.registrations_view, app.events_url.as_deref()).await;
+            views::registrations::fetch_data(
+                &app.api_client,
+                &mut app.registrations_view,
+                app.events_url.as_deref(),
+            )
+            .await;
         }
         Tab::Debug => {
             views::debug::fetch_data(&app.api_client, &mut app.debug_view).await;

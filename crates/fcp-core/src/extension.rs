@@ -4,7 +4,9 @@
 //! users, phone numbers, devices, or services. This enables internal dialing
 //! without using full E.164 numbers.
 
-use crate::identifiers::{DeviceId, ExtensionId, LocationId, PhoneNumberId, ServiceId, TenantId, UserId};
+use crate::identifiers::{
+    DeviceId, ExtensionId, LocationId, PhoneNumberId, ServiceId, TenantId, UserId,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::SystemTime;

@@ -42,6 +42,10 @@ pub struct EventsConfig {
     /// Cluster membership configuration
     #[serde(default)]
     pub cluster: ClusterConfig,
+
+    /// Service authentication configuration
+    #[serde(default)]
+    pub auth: AuthConfig,
 }
 
 /// Upstream services configuration
@@ -100,13 +104,27 @@ pub struct WebhookConfig {
     pub database_url: String,
 }
 
-fn default_webhook_request_timeout() -> u64 { 10 }
-fn default_webhook_max_retries() -> u32 { 5 }
-fn default_webhook_base_retry_delay() -> u64 { 30 }
-fn default_webhook_max_retry_delay() -> u64 { 3600 }
-fn default_webhook_max_concurrent() -> usize { 50 }
-fn default_webhook_retry_interval() -> u64 { 60 }
-fn default_webhook_database_url() -> String { "postgresql://localhost/fcp".to_string() }
+fn default_webhook_request_timeout() -> u64 {
+    10
+}
+fn default_webhook_max_retries() -> u32 {
+    5
+}
+fn default_webhook_base_retry_delay() -> u64 {
+    30
+}
+fn default_webhook_max_retry_delay() -> u64 {
+    3600
+}
+fn default_webhook_max_concurrent() -> usize {
+    50
+}
+fn default_webhook_retry_interval() -> u64 {
+    60
+}
+fn default_webhook_database_url() -> String {
+    "postgresql://localhost/fcp".to_string()
+}
 
 impl Default for WebhookConfig {
     fn default() -> Self {
@@ -134,8 +152,18 @@ impl Default for EventsConfig {
             upstream: UpstreamConfig::default(),
             webhook: WebhookConfig::default(),
             cluster: ClusterConfig::default(),
+            auth: AuthConfig::default(),
         }
     }
+}
+
+/// Authentication configuration for the events server.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct AuthConfig {
+    /// Shared bearer token required for ingest, query, and webhook management APIs.
+    /// WebSocket clients may provide the same token via `?token=...`.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 /// Cluster configuration.
@@ -158,8 +186,12 @@ pub struct ClusterConfig {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_cluster_heartbeat_interval() -> u64 { 5 }
-fn default_cluster_heartbeat_ttl() -> u64 { 15 }
+fn default_cluster_heartbeat_interval() -> u64 {
+    5
+}
+fn default_cluster_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterConfig {
     fn default() -> Self {
@@ -230,7 +262,7 @@ pub struct WebSocketConfig {
 }
 
 fn default_bind_address() -> SocketAddr {
-    "0.0.0.0:8081".parse().unwrap()
+    "127.0.0.1:8081".parse().unwrap()
 }
 
 fn default_heartbeat_interval_secs() -> Duration {
@@ -477,11 +509,13 @@ mod tests {
     fn test_default_config() {
         let config = EventsConfig::default();
         assert_eq!(config.service.service_type, "events");
+        assert!(config.websocket.bind_address.ip().is_loopback());
         assert_eq!(config.websocket.bind_address.port(), 8081);
         assert_eq!(config.event_bus.bus_type, "in-memory");
         assert_eq!(config.limits.max_connections, 10000);
         assert!(!config.webhook.enabled);
         assert_eq!(config.webhook.max_retries, 5);
+        assert!(config.auth.token.is_none());
     }
 
     #[test]

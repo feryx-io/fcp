@@ -8,10 +8,10 @@
 //! - [`TrunkRegistrar`]: Tracks registration state per trunk
 //! - [`run_trunk_registration`]: Background task that maintains registrations
 
+use crate::trunk::TrunkConfig;
 use crate::trunk_health::TrunkHealthMonitor;
 use dashmap::DashMap;
 use fcp_core::transport::TransportType;
-use crate::trunk::TrunkConfig;
 use fcp_sip::uac::SipUserAgentClient;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -112,8 +112,7 @@ impl TrunkRegistrar {
                                 return true;
                             }
                             let remaining = expiry.duration_since(now);
-                            let threshold =
-                                Duration::from_secs(u64::from(e.configured_expiry) / 2);
+                            let threshold = Duration::from_secs(u64::from(e.configured_expiry) / 2);
                             remaining <= threshold
                         }
                         None => true, // No expiry recorded — re-register
@@ -169,9 +168,7 @@ impl TrunkRegistrar {
 
     /// Get the last registration error for a trunk.
     pub fn last_error(&self, trunk: &str) -> Option<String> {
-        self.state
-            .get(trunk)
-            .and_then(|e| e.last_error.clone())
+        self.state.get(trunk).and_then(|e| e.last_error.clone())
     }
 
     /// Get all trunk names managed by this registrar.
@@ -260,11 +257,7 @@ pub async fn run_trunk_registration(
                         registrar.record_registered(&name, expires);
                         health.record_success(&name);
                     } else {
-                        let reason = format!(
-                            "{} {}",
-                            code,
-                            response.start_line().reason()
-                        );
+                        let reason = format!("{} {}", code, response.start_line().reason());
                         warn!(trunk = %name, code, "Trunk registration rejected");
                         registrar.record_failed(&name, reason);
                         health.record_failure(&name);

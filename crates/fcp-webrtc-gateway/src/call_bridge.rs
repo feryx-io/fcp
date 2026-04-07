@@ -226,7 +226,11 @@ impl CallBridgeManager {
                 }
             }
             _ => {
-                anyhow::bail!("Call '{}' is in state {} and cannot be hung up", call_id, bridge.state);
+                anyhow::bail!(
+                    "Call '{}' is in state {} and cannot be hung up",
+                    call_id,
+                    bridge.state
+                );
             }
         }
 
@@ -268,7 +272,10 @@ pub async fn create_media_manager(
         .map_err(|e| anyhow::anyhow!("Failed to create media manager: {}", e))?;
 
     info!(
-        rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
+        rtp_ports = format!(
+            "{}-{}",
+            config.media.rtp_port_start, config.media.rtp_port_end
+        ),
         "Media manager created"
     );
 
@@ -325,11 +332,7 @@ async fn drive_call_lifecycle(
 
     if code < 200 || code >= 300 {
         // Non-2xx final → call failed
-        let reason = format!(
-            "{} {}",
-            code,
-            final_response.start_line().reason()
-        );
+        let reason = format!("{} {}", code, final_response.start_line().reason());
         error!(bridge_id = %bridge_id, reason = %reason, "SIP call rejected");
         let mut b = bridge.write().await;
         b.state = CallBridgeState::Failed(reason);

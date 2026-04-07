@@ -49,10 +49,7 @@ impl fcp_core::MwiNotifier for SipMwiNotifier {
             .await
             .context("Failed to look up line binding for MWI")?
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Line binding not found: {}",
-                    mwi_status.line_binding_id
-                )
+                anyhow::anyhow!("Line binding not found: {}", mwi_status.line_binding_id)
             })?;
 
         // Step 2: For each device, look up its SIP URI and find registered contacts

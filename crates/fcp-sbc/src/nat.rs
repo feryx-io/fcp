@@ -31,8 +31,14 @@ pub fn build_fcp_media_config(
     nat: &NatConfig,
     effective_ip: &str,
 ) -> fcp_media::config::MediaConfig {
-    let stun_server = nat.stun_servers.first().map(|s| format!("{}:{}", s.host, s.port));
-    let turn_server = nat.turn_servers.first().map(|t| format!("{}:{}", t.host, t.port));
+    let stun_server = nat
+        .stun_servers
+        .first()
+        .map(|s| format!("{}:{}", s.host, s.port));
+    let turn_server = nat
+        .turn_servers
+        .first()
+        .map(|t| format!("{}:{}", t.host, t.port));
 
     fcp_media::config::MediaConfig {
         backend: fcp_media::config::BackendType::Embedded,
@@ -64,8 +70,14 @@ pub fn build_fcp_core_media_config(
     nat: &NatConfig,
     effective_ip: &str,
 ) -> fcp_core::config::MediaConfig {
-    let stun_server = nat.stun_servers.first().map(|s| format!("{}:{}", s.host, s.port));
-    let turn_server = nat.turn_servers.first().map(|t| format!("{}:{}", t.host, t.port));
+    let stun_server = nat
+        .stun_servers
+        .first()
+        .map(|s| format!("{}:{}", s.host, s.port));
+    let turn_server = nat
+        .turn_servers
+        .first()
+        .map(|t| format!("{}:{}", t.host, t.port));
 
     fcp_core::config::MediaConfig {
         enabled: nat.enabled && nat.rewrite_sdp,

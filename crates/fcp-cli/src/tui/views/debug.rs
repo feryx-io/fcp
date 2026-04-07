@@ -682,7 +682,6 @@ pub fn refresh_interval() -> Duration {
     Duration::from_secs(4)
 }
 
-
 /// Fetch all debug data
 pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut DebugViewState) {
     state.loading = true;
@@ -740,4 +739,3 @@ pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut DebugVie
 
     state.loading = false;
 }
-

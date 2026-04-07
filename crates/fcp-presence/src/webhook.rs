@@ -104,7 +104,12 @@ impl WebhookDispatcher {
 
     /// Get a specific endpoint by ID.
     pub async fn get_endpoint(&self, id: &str) -> Option<WebhookEndpoint> {
-        self.endpoints.read().await.iter().find(|e| e.id == id).cloned()
+        self.endpoints
+            .read()
+            .await
+            .iter()
+            .find(|e| e.id == id)
+            .cloned()
     }
 
     /// Compute HMAC-SHA256 signature for a payload.
@@ -176,7 +181,13 @@ impl WebhookDispatcher {
     }
 
     /// Add a failed delivery to the retry queue.
-    fn queue_retry(&self, endpoint_id: &str, url: &str, payload_json: &str, signature: Option<&str>) {
+    fn queue_retry(
+        &self,
+        endpoint_id: &str,
+        url: &str,
+        payload_json: &str,
+        signature: Option<&str>,
+    ) {
         let retry_key = format!("{}-{}", endpoint_id, uuid::Uuid::new_v4());
         self.retry_queue.insert(
             retry_key,
@@ -285,8 +296,8 @@ pub fn spawn_webhook_consumer(
 
     // Spawn event consumer
     tokio::spawn(async move {
-        let filter = fcp_events::EventFilter::new()
-            .types(vec![fcp_events::filter::EventType::Presence]);
+        let filter =
+            fcp_events::EventFilter::new().types(vec![fcp_events::filter::EventType::Presence]);
 
         let mut stream = match event_bus.subscribe(filter).await {
             Ok(s) => s,
@@ -385,7 +396,9 @@ pub fn spawn_webhook_consumer(
                 if !WebhookDispatcher::matches_event(endpoint, event_type) {
                     continue;
                 }
-                dispatcher.deliver(endpoint, event_type, &payload_json).await;
+                dispatcher
+                    .deliver(endpoint, event_type, &payload_json)
+                    .await;
             }
         }
     })
@@ -424,8 +437,14 @@ mod tests {
             events: vec!["status_changed".to_string()],
             ..all.clone()
         };
-        assert!(WebhookDispatcher::matches_event(&specific, "status_changed"));
-        assert!(!WebhookDispatcher::matches_event(&specific, "dialog_changed"));
+        assert!(WebhookDispatcher::matches_event(
+            &specific,
+            "status_changed"
+        ));
+        assert!(!WebhookDispatcher::matches_event(
+            &specific,
+            "dialog_changed"
+        ));
     }
 
     #[tokio::test]

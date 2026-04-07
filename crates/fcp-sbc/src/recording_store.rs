@@ -44,8 +44,7 @@ impl RecordingStore {
 
     /// Insert a new recording metadata entry.
     pub fn insert(&self, metadata: RecordingMetadata) {
-        self.recordings
-            .insert(metadata.call_id.clone(), metadata);
+        self.recordings.insert(metadata.call_id.clone(), metadata);
     }
 
     /// Get a clone of the metadata for a given call_id.
@@ -73,7 +72,11 @@ impl RecordingStore {
     pub fn list(&self) -> Vec<RecordingMetadata> {
         let mut entries: Vec<RecordingMetadata> =
             self.recordings.iter().map(|r| r.value().clone()).collect();
-        entries.sort_by(|a, b| b.started_at.partial_cmp(&a.started_at).unwrap_or(std::cmp::Ordering::Equal));
+        entries.sort_by(|a, b| {
+            b.started_at
+                .partial_cmp(&a.started_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         entries
     }
 }

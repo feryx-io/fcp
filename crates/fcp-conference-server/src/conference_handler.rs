@@ -1141,7 +1141,11 @@ impl ConferenceCallHandler {
             format!("sip:{}", destination)
         } else {
             // Bare extension/number → sip:ext@local_domain
-            let domain = self.local_addr.split(':').next().unwrap_or(&self.local_addr);
+            let domain = self
+                .local_addr
+                .split(':')
+                .next()
+                .unwrap_or(&self.local_addr);
             format!("sip:{}@{}", destination, domain)
         };
         let destination = &destination;
@@ -1177,11 +1181,18 @@ impl ConferenceCallHandler {
         }
 
         // 2. Allocate RTP port pair
-        let port_pair = self.port_pool.allocate().await
+        let port_pair = self
+            .port_pool
+            .allocate()
+            .await
             .context("Failed to allocate RTP port pair for dial-out")?;
 
         // 3. Build multi-codec SDP offer
-        let ip = self.local_addr.split(':').next().unwrap_or(&self.local_addr);
+        let ip = self
+            .local_addr
+            .split(':')
+            .next()
+            .unwrap_or(&self.local_addr);
         let sdp_offer = format!(
             "v=0\r\n\
              o=fcp-conference 0 0 IN IP4 {ip}\r\n\
@@ -1294,8 +1305,9 @@ impl ConferenceCallHandler {
 
         // 8. Create RTP socket and set remote endpoint
         let rtp_socket = Arc::new(
-            RtpSocketPair::new(port_pair, RtpSocketConfig::default()).await
-                .context("Failed to create RTP socket for dial-out")?
+            RtpSocketPair::new(port_pair, RtpSocketConfig::default())
+                .await
+                .context("Failed to create RTP socket for dial-out")?,
         );
         if let Some(remote_addr) = parse_remote_rtp_addr(answer_sdp) {
             rtp_socket
@@ -1321,7 +1333,9 @@ impl ConferenceCallHandler {
             if let Some(prompt_name) = greeting_prompt {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tid = fcp_core::TenantId::nil();
-                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, prompt_name).await {
+                    if let Ok(Some(prompt)) =
+                        prompt_store.get_prompt_by_name(&tid, prompt_name).await
+                    {
                         if let Some(ref path) = prompt.audio_path {
                             greeting_samples = player.load_audio_file(path).map(|s| s.to_vec());
                         }
@@ -1335,11 +1349,16 @@ impl ConferenceCallHandler {
                         match tokio::time::timeout(
                             Duration::from_secs(10),
                             tts.synthesize(tts_text, None, None),
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(Ok(path)) => {
-                                greeting_samples = player.load_audio_file(&path).map(|s| s.to_vec());
+                                greeting_samples =
+                                    player.load_audio_file(&path).map(|s| s.to_vec());
                             }
-                            Ok(Err(e)) => warn!(error = %e, "Dial-out TTS greeting synthesis failed"),
+                            Ok(Err(e)) => {
+                                warn!(error = %e, "Dial-out TTS greeting synthesis failed")
+                            }
                             Err(_) => warn!("Dial-out TTS greeting synthesis timed out (3s)"),
                         }
                     }
@@ -1350,7 +1369,10 @@ impl ConferenceCallHandler {
             if greeting_samples.is_none() && greeting_tts.is_none() && greeting_prompt.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tid = fcp_core::TenantId::nil();
-                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, "conf_dialout_greeting").await {
+                    if let Ok(Some(prompt)) = prompt_store
+                        .get_prompt_by_name(&tid, "conf_dialout_greeting")
+                        .await
+                    {
                         if let Some(ref path) = prompt.audio_path {
                             greeting_samples = player.load_audio_file(path).map(|s| s.to_vec());
                         }
@@ -1512,7 +1534,16 @@ impl ConferenceCallHandler {
                         let sr = self.conference_config.read().sample_rate;
                         handles.push(tokio::spawn(async move {
                             if let Ok(mut enc) = create_codec_instance(&codec) {
-                                play_prompt_to_rtp(&rtp_socket, &pcm, enc.as_mut(), pt, fs, &srtp, sr).await;
+                                play_prompt_to_rtp(
+                                    &rtp_socket,
+                                    &pcm,
+                                    enc.as_mut(),
+                                    pt,
+                                    fs,
+                                    &srtp,
+                                    sr,
+                                )
+                                .await;
                             }
                         }));
                     }
@@ -2541,7 +2572,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     let tenant_id = fcp_core::TenantId::nil();
                     let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
                     if pin_prompt_samples.is_none() {
-                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_pin_prompt").await {
+                        if let Ok(Some(prompt)) = prompt_store
+                            .get_prompt_by_name(&tenant_id, "conf_pin_prompt")
+                            .await
+                        {
                             if let Some(ref path) = prompt.audio_path {
                                 if let Some(pcm) = player.load_audio_file(path) {
                                     debug!(room = %room_number, "Loaded pin_prompt from Prompt store");
@@ -2551,7 +2585,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                         }
                     }
                     if invalid_pin_samples.is_none() {
-                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_invalid_pin").await {
+                        if let Ok(Some(prompt)) = prompt_store
+                            .get_prompt_by_name(&tenant_id, "conf_invalid_pin")
+                            .await
+                        {
                             if let Some(ref path) = prompt.audio_path {
                                 if let Some(pcm) = player.load_audio_file(path) {
                                     debug!(room = %room_number, "Loaded invalid_pin from Prompt store");
@@ -2636,8 +2673,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     h.abort();
                 }
 
-                match pin_result
-                {
+                match pin_result {
                     Some(ref pin) if pin.is_empty() => {
                         // Empty PIN (user pressed # immediately) — treat as incorrect
                         warn!(room = %room_number, participant = %participant_id, attempt, "Empty PIN submitted");
@@ -2815,118 +2851,148 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         };
 
         if should_wait {
-                info!(
-                    room = %room_number,
-                    participant = %participant_id,
-                    "Participant waiting for moderator"
-                );
-                // Ensure participant is in waiting_participants (add_participant may
-                // have added them if it returned WaitingForModerator, or we may need
-                // to add them here if the handler-level check pre-empted add_participant).
-                if !room.waiting_participants().contains(&participant_id) {
-                    // Handler-level enforcement: manually insert into waiting list.
-                    // Use a low-level DashMap insert via a helper if available, or
-                    // call add_participant which will do it for us (it will return
-                    // WaitingForModerator since we know the conditions are met).
-                    let _ = room.add_participant(&participant_id, false);
-                    // The above call should return Err(WaitingForModerator) and
-                    // insert the participant into waiting_participants.
+            info!(
+                room = %room_number,
+                participant = %participant_id,
+                "Participant waiting for moderator"
+            );
+            // Ensure participant is in waiting_participants (add_participant may
+            // have added them if it returned WaitingForModerator, or we may need
+            // to add them here if the handler-level check pre-empted add_participant).
+            if !room.waiting_participants().contains(&participant_id) {
+                // Handler-level enforcement: manually insert into waiting list.
+                // Use a low-level DashMap insert via a helper if available, or
+                // call add_participant which will do it for us (it will return
+                // WaitingForModerator since we know the conditions are met).
+                let _ = room.add_participant(&participant_id, false);
+                // The above call should return Err(WaitingForModerator) and
+                // insert the participant into waiting_participants.
+            }
+
+            // Spawn a task that polls until they appear in the mixer (when a
+            // host joins and releases them), then start the audio bridge.
+            let bridge_room = Arc::clone(&room);
+            let bridge_participant = participant_id.clone();
+            let bridge_socket = Arc::clone(&rtp_socket);
+            let event_bus = Arc::clone(&self.event_bus);
+            let rn = room_number.clone();
+            let pid = participant_id.clone();
+            let encoder = create_codec_instance(&codec_name)?;
+            let decoder = create_codec_instance(&codec_name)?;
+            let jitter_buffer_ms = conf.jitter_buffer_ms;
+            let mixer_sample_rate = conf.sample_rate;
+            let recordings_dir = conf.recordings_dir.clone();
+            let dtmf_handler = if conf.dtmf_enabled {
+                Some(self.get_or_create_dtmf_handler(&room_number))
+            } else {
+                None
+            };
+            let wait_stats = Arc::new(AudioStats::new());
+            let wait_stats_clone = Arc::clone(&wait_stats);
+            let wait_srtp = srtp_context.clone();
+            let max_wait_secs = conf.max_wait_for_moderator_secs;
+            let announcement_interval_secs = conf.moh_announcement_interval_secs;
+            let wait_uac = Arc::clone(&self.uac);
+            let wait_dialog = dialog.clone();
+
+            // Load announcement sound (short TTS message like "Please wait...")
+            let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
+            if let Some(prompt_store) = self.storage.prompt_store() {
+                let tenant_id = fcp_core::TenantId::nil();
+                if let Ok(Some(prompt)) = prompt_store
+                    .get_prompt_by_name(&tenant_id, "conf_wait_announcement")
+                    .await
+                {
+                    if let Some(ref path) = prompt.audio_path {
+                        let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
+                        if let Some(pcm) = player.load_audio_file(path) {
+                            debug!(room = %room_number, "Loaded announcement from conf_moh prompt");
+                            announcement_samples = Some(Arc::new(pcm));
+                        }
+                    }
                 }
+            }
 
-                // Spawn a task that polls until they appear in the mixer (when a
-                // host joins and releases them), then start the audio bridge.
-                let bridge_room = Arc::clone(&room);
-                let bridge_participant = participant_id.clone();
-                let bridge_socket = Arc::clone(&rtp_socket);
-                let event_bus = Arc::clone(&self.event_bus);
-                let rn = room_number.clone();
-                let pid = participant_id.clone();
-                let encoder = create_codec_instance(&codec_name)?;
-                let decoder = create_codec_instance(&codec_name)?;
-                let jitter_buffer_ms = conf.jitter_buffer_ms;
-                let mixer_sample_rate = conf.sample_rate;
-                let recordings_dir = conf.recordings_dir.clone();
-                let dtmf_handler = if conf.dtmf_enabled {
-                    Some(self.get_or_create_dtmf_handler(&room_number))
-                } else {
-                    None
-                };
-                let wait_stats = Arc::new(AudioStats::new());
-                let wait_stats_clone = Arc::clone(&wait_stats);
-                let wait_srtp = srtp_context.clone();
-                let max_wait_secs = conf.max_wait_for_moderator_secs;
-                let announcement_interval_secs = conf.moh_announcement_interval_secs;
-                let wait_uac = Arc::clone(&self.uac);
-                let wait_dialog = dialog.clone();
-
-                // Load announcement sound (short TTS message like "Please wait...")
-                let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
+            // Load hold music (separate from the announcement).
+            // Priority: meeting moh_sound → room sounds → conf_moh_music prompt
+            let mut music_samples: Option<Arc<Vec<i16>>> =
+                room.get_sounds().and_then(|s| s.moh_sound.clone());
+            if music_samples.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tenant_id = fcp_core::TenantId::nil();
-                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_wait_announcement").await {
+                    if let Ok(Some(prompt)) = prompt_store
+                        .get_prompt_by_name(&tenant_id, "conf_moh_music")
+                        .await
+                    {
                         if let Some(ref path) = prompt.audio_path {
-                            let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
+                            let player =
+                                forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
                             if let Some(pcm) = player.load_audio_file(path) {
-                                debug!(room = %room_number, "Loaded announcement from conf_moh prompt");
-                                announcement_samples = Some(Arc::new(pcm));
+                                debug!(room = %room_number, "Loaded hold music from conf_moh_music prompt");
+                                music_samples = Some(Arc::new(pcm));
                             }
                         }
                     }
                 }
+            }
 
-                // Load hold music (separate from the announcement).
-                // Priority: meeting moh_sound → room sounds → conf_moh_music prompt
-                let mut music_samples: Option<Arc<Vec<i16>>> = room.get_sounds().and_then(|s| s.moh_sound.clone());
-                if music_samples.is_none() {
-                    if let Some(prompt_store) = self.storage.prompt_store() {
-                        let tenant_id = fcp_core::TenantId::nil();
-                        if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tenant_id, "conf_moh_music").await {
-                            if let Some(ref path) = prompt.audio_path {
-                                let player = forge_conference::AudioFeedbackPlayer::new(conf.sample_rate);
-                                if let Some(pcm) = player.load_audio_file(path) {
-                                    debug!(room = %room_number, "Loaded hold music from conf_moh_music prompt");
-                                    music_samples = Some(Arc::new(pcm));
+            let moh_codec_name = codec_name.clone();
+            let moh_payload_type = payload_type;
+            let moh_frame_size = frame_size;
+            let moh_rtp_socket = Arc::clone(&rtp_socket);
+            let moh_srtp = srtp_context.clone();
+            let wait_muted_samples = self.dtmf_muted_samples.clone();
+            let wait_unmuted_samples = self.dtmf_unmuted_samples.clone();
+            let wait_locked_samples = self.dtmf_locked_samples.clone();
+            let wait_unlocked_samples = self.dtmf_unlocked_samples.clone();
+            let wait_ending_samples = self.dtmf_ending_samples.clone();
+
+            let wait_handle = tokio::spawn(async move {
+                // Spawn a background task that plays: announcement → music/silence → repeat
+                let moh_cancel = tokio_util::sync::CancellationToken::new();
+                let has_audio = announcement_samples.is_some() || music_samples.is_some();
+                let moh_handle = if has_audio {
+                    let cancel = moh_cancel.clone();
+                    let rtp_sock = Arc::clone(&moh_rtp_socket);
+                    let srtp = moh_srtp.clone();
+                    let codec_name = moh_codec_name.clone();
+                    let ms_rate = mixer_sample_rate;
+                    Some(tokio::spawn(async move {
+                        let mut moh_encoder = match create_codec_instance(&codec_name) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                warn!(error = %e, "Failed to create MOH encoder");
+                                return;
+                            }
+                        };
+                        loop {
+                            // 1. Play the announcement (short TTS message)
+                            if let Some(ref announcement) = announcement_samples {
+                                play_prompt_to_rtp(
+                                    &rtp_sock,
+                                    announcement,
+                                    moh_encoder.as_mut(),
+                                    moh_payload_type,
+                                    moh_frame_size,
+                                    &srtp,
+                                    ms_rate,
+                                )
+                                .await;
+                                if cancel.is_cancelled() {
+                                    break;
                                 }
                             }
-                        }
-                    }
-                }
 
-                let moh_codec_name = codec_name.clone();
-                let moh_payload_type = payload_type;
-                let moh_frame_size = frame_size;
-                let moh_rtp_socket = Arc::clone(&rtp_socket);
-                let moh_srtp = srtp_context.clone();
-                let wait_muted_samples = self.dtmf_muted_samples.clone();
-                let wait_unmuted_samples = self.dtmf_unmuted_samples.clone();
-                let wait_locked_samples = self.dtmf_locked_samples.clone();
-                let wait_unlocked_samples = self.dtmf_unlocked_samples.clone();
-                let wait_ending_samples = self.dtmf_ending_samples.clone();
-
-                let wait_handle = tokio::spawn(async move {
-                    // Spawn a background task that plays: announcement → music/silence → repeat
-                    let moh_cancel = tokio_util::sync::CancellationToken::new();
-                    let has_audio = announcement_samples.is_some() || music_samples.is_some();
-                    let moh_handle = if has_audio {
-                        let cancel = moh_cancel.clone();
-                        let rtp_sock = Arc::clone(&moh_rtp_socket);
-                        let srtp = moh_srtp.clone();
-                        let codec_name = moh_codec_name.clone();
-                        let ms_rate = mixer_sample_rate;
-                        Some(tokio::spawn(async move {
-                            let mut moh_encoder = match create_codec_instance(&codec_name) {
-                                Ok(e) => e,
-                                Err(e) => {
-                                    warn!(error = %e, "Failed to create MOH encoder");
-                                    return;
-                                }
-                            };
-                            loop {
-                                // 1. Play the announcement (short TTS message)
-                                if let Some(ref announcement) = announcement_samples {
+                            // 2. Play hold music for the announcement interval,
+                            //    or wait silently if no music is configured.
+                            let interval = Duration::from_secs(announcement_interval_secs.max(5));
+                            let music_start = Instant::now();
+                            if let Some(ref music) = music_samples {
+                                // Loop the music file until the interval expires
+                                while music_start.elapsed() < interval {
                                     play_prompt_to_rtp(
                                         &rtp_sock,
-                                        announcement,
+                                        music,
                                         moh_encoder.as_mut(),
                                         moh_payload_type,
                                         moh_frame_size,
@@ -2938,256 +3004,233 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                                         break;
                                     }
                                 }
-
-                                // 2. Play hold music for the announcement interval,
-                                //    or wait silently if no music is configured.
-                                let interval = Duration::from_secs(announcement_interval_secs.max(5));
-                                let music_start = Instant::now();
-                                if let Some(ref music) = music_samples {
-                                    // Loop the music file until the interval expires
-                                    while music_start.elapsed() < interval {
-                                        play_prompt_to_rtp(
-                                            &rtp_sock,
-                                            music,
-                                            moh_encoder.as_mut(),
-                                            moh_payload_type,
-                                            moh_frame_size,
-                                            &srtp,
-                                            ms_rate,
-                                        )
-                                        .await;
-                                        if cancel.is_cancelled() {
-                                            break;
-                                        }
+                            } else {
+                                // No music configured — send silence packets to
+                                // keep the RTP stream alive during the interval.
+                                let silence_frame = vec![0i16; moh_frame_size];
+                                let ptime = Duration::from_millis(
+                                    (moh_frame_size as u64 * 1000) / ms_rate as u64,
+                                );
+                                while music_start.elapsed() < interval {
+                                    play_prompt_to_rtp(
+                                        &rtp_sock,
+                                        &silence_frame,
+                                        moh_encoder.as_mut(),
+                                        moh_payload_type,
+                                        moh_frame_size,
+                                        &srtp,
+                                        ms_rate,
+                                    )
+                                    .await;
+                                    // pace silence at the frame rate
+                                    tokio::time::sleep(ptime).await;
+                                    if cancel.is_cancelled() {
+                                        break;
                                     }
-                                } else {
-                                    // No music configured — send silence packets to
-                                    // keep the RTP stream alive during the interval.
-                                    let silence_frame = vec![0i16; moh_frame_size];
-                                    let ptime = Duration::from_millis(
-                                        (moh_frame_size as u64 * 1000) / ms_rate as u64,
-                                    );
-                                    while music_start.elapsed() < interval {
-                                        play_prompt_to_rtp(
-                                            &rtp_sock,
-                                            &silence_frame,
-                                            moh_encoder.as_mut(),
-                                            moh_payload_type,
-                                            moh_frame_size,
-                                            &srtp,
-                                            ms_rate,
-                                        )
-                                        .await;
-                                        // pace silence at the frame rate
-                                        tokio::time::sleep(ptime).await;
-                                        if cancel.is_cancelled() {
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                if cancel.is_cancelled() {
-                                    break;
                                 }
                             }
-                        }))
-                    } else {
-                        None
-                    };
 
-                    // Poll every 500ms waiting to be released into the mixer
-                    let wait_start = Instant::now();
-                    let max_wait = if max_wait_secs > 0 {
-                        Some(Duration::from_secs(max_wait_secs))
-                    } else {
-                        None // unlimited
-                    };
-                    loop {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-
-                        // Check timeout
-                        if let Some(limit) = max_wait {
-                            if wait_start.elapsed() > limit {
-                                warn!(
-                                    room = %rn,
-                                    participant = %pid,
-                                    timeout_secs = max_wait_secs,
-                                    waited_secs = wait_start.elapsed().as_secs(),
-                                    "Wait-for-moderator timeout, disconnecting participant"
-                                );
-                                // Stop MOH
-                                moh_cancel.cancel();
-                                if let Some(h) = &moh_handle {
-                                    h.abort();
-                                }
-
-                                // Remove from room (handles waiting list cleanup)
-                                let _ = bridge_room.remove_participant(&pid);
-
-                                // Send BYE to disconnect the SIP call
-                                if let Err(e) = wait_uac.bye(&wait_dialog).await {
-                                    warn!(error = %e, "Failed to send BYE after wait-for-moderator timeout");
-                                }
-
-                                // Publish leave event so downstream systems know about the timeout
-                                let timeout_event =
-                                    PlatformEvent::Conference(ConferenceEvent::ParticipantLeft {
-                                        room_number: rn.clone(),
-                                        participant_id: pid.clone(),
-                                        tenant_id,
-                                        timestamp: SystemTime::now(),
-                                    });
-                                let _ = event_bus.publish(timeout_event).await;
+                            if cancel.is_cancelled() {
                                 break;
                             }
                         }
+                    }))
+                } else {
+                    None
+                };
 
-                        // Check if we're still in the waiting list
-                        let still_waiting = bridge_room
-                            .waiting_participants()
-                            .contains(&bridge_participant);
+                // Poll every 500ms waiting to be released into the mixer
+                let wait_start = Instant::now();
+                let max_wait = if max_wait_secs > 0 {
+                    Some(Duration::from_secs(max_wait_secs))
+                } else {
+                    None // unlimited
+                };
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
 
-                        if !still_waiting {
-                            // Stop MOH playback — moderator arrived or we were removed
+                    // Check timeout
+                    if let Some(limit) = max_wait {
+                        if wait_start.elapsed() > limit {
+                            warn!(
+                                room = %rn,
+                                participant = %pid,
+                                timeout_secs = max_wait_secs,
+                                waited_secs = wait_start.elapsed().as_secs(),
+                                "Wait-for-moderator timeout, disconnecting participant"
+                            );
+                            // Stop MOH
                             moh_cancel.cancel();
                             if let Some(h) = &moh_handle {
                                 h.abort();
                             }
 
-                            // We were either released into mixer or removed entirely.
-                            // Check if we're now in the mixer.
-                            if bridge_room.participants().contains(&bridge_participant) {
-                                info!(
-                                    room = %rn,
-                                    participant = %pid,
-                                    "Moderator arrived, participant released"
-                                );
+                            // Remove from room (handles waiting list cleanup)
+                            let _ = bridge_room.remove_participant(&pid);
 
-                                // Publish join event
-                                let event =
-                                    PlatformEvent::Conference(ConferenceEvent::ParticipantJoined {
-                                        room_number: rn.clone(),
-                                        participant_id: pid.clone(),
-                                        is_host: false,
-                                        tenant_id,
-                                        timestamp: SystemTime::now(),
-                                    });
-                                let _ = event_bus.publish(event).await;
+                            // Send BYE to disconnect the SIP call
+                            if let Err(e) = wait_uac.bye(&wait_dialog).await {
+                                warn!(error = %e, "Failed to send BYE after wait-for-moderator timeout");
+                            }
 
-                                // Auto-record check after moderator releases waiting participants
-                                if !bridge_room.is_recording() {
-                                    if let Some(cfg) = bridge_room.get_effective_config() {
-                                        if cfg.min_recording_participants > 0
-                                            && bridge_room.participant_count()
-                                                >= cfg.min_recording_participants
-                                        {
-                                            let ts = SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .unwrap_or_default()
-                                                .as_secs();
-                                            let rec_path = format!(
-                                                "{}/{}-{}-{}.wav",
-                                                recordings_dir,
-                                                rn,
-                                                ts,
-                                                uuid::Uuid::new_v4().as_simple()
-                                            );
-                                            match bridge_room.start_recording(&rec_path, None).await
-                                            {
-                                                Ok(()) => {
-                                                    tracing::info!(
-                                                        room = %rn,
-                                                        path = %rec_path,
-                                                        "Auto-recording started (after moderator join)"
-                                                    );
-                                                    let rec_event = PlatformEvent::Conference(
-                                                        ConferenceEvent::RecordingStarted {
-                                                            room_number: rn.clone(),
-                                                            tenant_id,
-                                                            timestamp: SystemTime::now(),
-                                                        },
-                                                    );
-                                                    let _ = event_bus.publish(rec_event).await;
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        room = %rn,
-                                                        error = %e,
-                                                        "Auto-record failed (after moderator join)"
-                                                    );
-                                                }
+                            // Publish leave event so downstream systems know about the timeout
+                            let timeout_event =
+                                PlatformEvent::Conference(ConferenceEvent::ParticipantLeft {
+                                    room_number: rn.clone(),
+                                    participant_id: pid.clone(),
+                                    tenant_id,
+                                    timestamp: SystemTime::now(),
+                                });
+                            let _ = event_bus.publish(timeout_event).await;
+                            break;
+                        }
+                    }
+
+                    // Check if we're still in the waiting list
+                    let still_waiting = bridge_room
+                        .waiting_participants()
+                        .contains(&bridge_participant);
+
+                    if !still_waiting {
+                        // Stop MOH playback — moderator arrived or we were removed
+                        moh_cancel.cancel();
+                        if let Some(h) = &moh_handle {
+                            h.abort();
+                        }
+
+                        // We were either released into mixer or removed entirely.
+                        // Check if we're now in the mixer.
+                        if bridge_room.participants().contains(&bridge_participant) {
+                            info!(
+                                room = %rn,
+                                participant = %pid,
+                                "Moderator arrived, participant released"
+                            );
+
+                            // Publish join event
+                            let event =
+                                PlatformEvent::Conference(ConferenceEvent::ParticipantJoined {
+                                    room_number: rn.clone(),
+                                    participant_id: pid.clone(),
+                                    is_host: false,
+                                    tenant_id,
+                                    timestamp: SystemTime::now(),
+                                });
+                            let _ = event_bus.publish(event).await;
+
+                            // Auto-record check after moderator releases waiting participants
+                            if !bridge_room.is_recording() {
+                                if let Some(cfg) = bridge_room.get_effective_config() {
+                                    if cfg.min_recording_participants > 0
+                                        && bridge_room.participant_count()
+                                            >= cfg.min_recording_participants
+                                    {
+                                        let ts = SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        let rec_path = format!(
+                                            "{}/{}-{}-{}.wav",
+                                            recordings_dir,
+                                            rn,
+                                            ts,
+                                            uuid::Uuid::new_v4().as_simple()
+                                        );
+                                        match bridge_room.start_recording(&rec_path, None).await {
+                                            Ok(()) => {
+                                                tracing::info!(
+                                                    room = %rn,
+                                                    path = %rec_path,
+                                                    "Auto-recording started (after moderator join)"
+                                                );
+                                                let rec_event = PlatformEvent::Conference(
+                                                    ConferenceEvent::RecordingStarted {
+                                                        room_number: rn.clone(),
+                                                        tenant_id,
+                                                        timestamp: SystemTime::now(),
+                                                    },
+                                                );
+                                                let _ = event_bus.publish(rec_event).await;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    room = %rn,
+                                                    error = %e,
+                                                    "Auto-record failed (after moderator join)"
+                                                );
                                             }
                                         }
                                     }
                                 }
-
-                                // Start audio bridge
-                                audio_bridge::run_audio_bridge(
-                                    bridge_room,
-                                    pid,
-                                    bridge_socket,
-                                    encoder,
-                                    decoder,
-                                    payload_type,
-                                    frame_size,
-                                    jitter_buffer_ms,
-                                    te_pt,
-                                    dtmf_clock_rate,
-                                    dtmf_handler,
-                                    false, // waiting participants are not hosts
-                                    wait_stats_clone,
-                                    wait_srtp.clone(),
-                                    mixer_sample_rate,
-                                    wait_muted_samples.clone(),
-                                    wait_unmuted_samples.clone(),
-                                    wait_locked_samples.clone(),
-                                    wait_unlocked_samples.clone(),
-                                    wait_ending_samples.clone(),
-                                )
-                                .await;
                             }
-                            break;
+
+                            // Start audio bridge
+                            audio_bridge::run_audio_bridge(
+                                bridge_room,
+                                pid,
+                                bridge_socket,
+                                encoder,
+                                decoder,
+                                payload_type,
+                                frame_size,
+                                jitter_buffer_ms,
+                                te_pt,
+                                dtmf_clock_rate,
+                                dtmf_handler,
+                                false, // waiting participants are not hosts
+                                wait_stats_clone,
+                                wait_srtp.clone(),
+                                mixer_sample_rate,
+                                wait_muted_samples.clone(),
+                                wait_unmuted_samples.clone(),
+                                wait_locked_samples.clone(),
+                                wait_unlocked_samples.clone(),
+                                wait_ending_samples.clone(),
+                            )
+                            .await;
                         }
+                        break;
                     }
-                });
+                }
+            });
 
-                // Store session with the wait handle
-                let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
-                self.room_sessions
-                    .entry(room_number.clone())
-                    .or_default()
-                    .push(call_id.clone());
-                self.sessions.insert(
-                    call_id.clone(),
-                    ParticipantSession {
-                        call_id,
-                        room_number,
-                        participant_id,
-                        is_host,
-                        is_dial_out: false,
-                        audio_bridge_handle: wait_handle,
-                        port_pair,
-                        rtp_socket: Arc::clone(&rtp_socket),
-                        remote_addr,
-                        codec_name,
-                        tenant_id,
-                        dialog: dialog.clone(),
-                        joined_at: SystemTime::now(),
-                        te_pt,
-                        stats: wait_stats,
-                        display_name: display_name.clone(),
-                        caller_id: caller_id.clone(),
-                        srtp_context: srtp_context.clone(),
-                        last_refreshed: Instant::now(),
-                    },
-                );
+            // Store session with the wait handle
+            let remote_addr = parse_remote_rtp_addr(sdp_offer).unwrap_or(UNKNOWN_REMOTE);
+            self.room_sessions
+                .entry(room_number.clone())
+                .or_default()
+                .push(call_id.clone());
+            self.sessions.insert(
+                call_id.clone(),
+                ParticipantSession {
+                    call_id,
+                    room_number,
+                    participant_id,
+                    is_host,
+                    is_dial_out: false,
+                    audio_bridge_handle: wait_handle,
+                    port_pair,
+                    rtp_socket: Arc::clone(&rtp_socket),
+                    remote_addr,
+                    codec_name,
+                    tenant_id,
+                    dialog: dialog.clone(),
+                    joined_at: SystemTime::now(),
+                    te_pt,
+                    stats: wait_stats,
+                    display_name: display_name.clone(),
+                    caller_id: caller_id.clone(),
+                    srtp_context: srtp_context.clone(),
+                    last_refreshed: Instant::now(),
+                },
+            );
 
-                self.handler_latency.record(
-                    &self.handler_latency.invite_count,
-                    &self.handler_latency.invite_total_us,
-                    _invite_start.elapsed(),
-                );
-                return Ok(());
+            self.handler_latency.record(
+                &self.handler_latency.invite_count,
+                &self.handler_latency.invite_total_us,
+                _invite_start.elapsed(),
+            );
+            return Ok(());
         }
 
         info!(
@@ -3280,7 +3323,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                     } else if others_count == 1 {
                         "There is 1 other participant in the conference.".to_string()
                     } else {
-                        format!("There are {} other participants in the conference.", others_count)
+                        format!(
+                            "There are {} other participants in the conference.",
+                            others_count
+                        )
                     };
                     format!("You have joined the conference. {}", others)
                 };
@@ -3288,18 +3334,30 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 match tokio::time::timeout(
                     Duration::from_secs(5),
                     tts.synthesize(&welcome_text, None, None),
-                ).await {
+                )
+                .await
+                {
                     Ok(Ok(path)) => {
                         if let Some(pcm) = player.load_audio_file(&path) {
                             play_prompt_to_rtp(
-                                &rtp_socket, &pcm, welcome_encoder.as_mut(),
-                                payload_type, frame_size, &srtp_context, mixer_rate,
-                            ).await;
+                                &rtp_socket,
+                                &pcm,
+                                welcome_encoder.as_mut(),
+                                payload_type,
+                                frame_size,
+                                &srtp_context,
+                                mixer_rate,
+                            )
+                            .await;
                             welcome_played = true;
                         }
                     }
-                    Ok(Err(e)) => warn!(room = %room_number, error = %e, "TTS welcome synthesis failed"),
-                    Err(_) => warn!(room = %room_number, "TTS welcome timed out (5s), using static prompt"),
+                    Ok(Err(e)) => {
+                        warn!(room = %room_number, error = %e, "TTS welcome synthesis failed")
+                    }
+                    Err(_) => {
+                        warn!(room = %room_number, "TTS welcome timed out (5s), using static prompt")
+                    }
                 }
             }
 
@@ -3307,13 +3365,21 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             if !welcome_played {
                 if let Some(prompt_store) = self.storage.prompt_store() {
                     let tid = fcp_core::TenantId::nil();
-                    if let Ok(Some(prompt)) = prompt_store.get_prompt_by_name(&tid, "conf_welcome").await {
+                    if let Ok(Some(prompt)) =
+                        prompt_store.get_prompt_by_name(&tid, "conf_welcome").await
+                    {
                         if let Some(ref path) = prompt.audio_path {
                             if let Some(pcm) = player.load_audio_file(path) {
                                 play_prompt_to_rtp(
-                                    &rtp_socket, &pcm, welcome_encoder.as_mut(),
-                                    payload_type, frame_size, &srtp_context, mixer_rate,
-                                ).await;
+                                    &rtp_socket,
+                                    &pcm,
+                                    welcome_encoder.as_mut(),
+                                    payload_type,
+                                    frame_size,
+                                    &srtp_context,
+                                    mixer_rate,
+                                )
+                                .await;
                             }
                         }
                     }

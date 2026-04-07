@@ -299,10 +299,7 @@ impl PromptService {
     ///
     /// Used when a flow Play node references a prompt via API URL
     /// (e.g. `/api/v1/prompts/prompt-<uuid>/audio`).
-    pub async fn resolve_by_id(
-        &self,
-        id: &PromptId,
-    ) -> anyhow::Result<Option<PathBuf>> {
+    pub async fn resolve_by_id(&self, id: &PromptId) -> anyhow::Result<Option<PathBuf>> {
         if let Some(prompt) = self.store.get_prompt(id).await? {
             if let Some(ref path) = prompt.audio_path {
                 if path.exists() {

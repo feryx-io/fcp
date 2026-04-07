@@ -198,7 +198,8 @@ impl FederationManager {
             remote_aor: remote_aor.to_string(),
             remote_domain: domain.to_string(),
             subscription_state: SubscriptionLifecycle::Pending,
-            expires_at: Instant::now() + Duration::from_secs(self.config.default_expiry_secs as u64),
+            expires_at: Instant::now()
+                + Duration::from_secs(self.config.default_expiry_secs as u64),
             last_notify_state: None,
         };
 
@@ -285,7 +286,10 @@ impl FederationManager {
         }
 
         if !expired.is_empty() {
-            info!(count = expired.len(), "Cleaned up expired federated subscriptions");
+            info!(
+                count = expired.len(),
+                "Cleaned up expired federated subscriptions"
+            );
         }
 
         expired
@@ -461,7 +465,10 @@ mod tests {
 
     #[test]
     fn test_extract_domain() {
-        assert_eq!(FederationManager::extract_domain("alice@example.com"), Some("example.com"));
+        assert_eq!(
+            FederationManager::extract_domain("alice@example.com"),
+            Some("example.com")
+        );
         assert_eq!(FederationManager::extract_domain("noat"), None);
     }
 }

@@ -1700,6 +1700,7 @@ dependencies = [
  "fcp-storage-postgres",
  "fcp-storage-redis",
  "fcp-voicemail",
+ "fcp-webhooks",
  "forge-codecs",
  "forge-core",
  "forge-dtmf",
@@ -1903,6 +1904,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

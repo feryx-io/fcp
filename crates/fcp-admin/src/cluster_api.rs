@@ -51,9 +51,7 @@ where
         .layer(Extension(state))
 }
 
-async fn list_nodes(
-    Extension(state): Extension<ClusterApiState>,
-) -> Json<ClusterNodesResponse> {
+async fn list_nodes(Extension(state): Extension<ClusterApiState>) -> Json<ClusterNodesResponse> {
     let Some(reader) = &state.reader else {
         return Json(ClusterNodesResponse {
             available: false,
@@ -81,9 +79,7 @@ async fn list_nodes(
     }
 }
 
-async fn get_stats(
-    Extension(state): Extension<ClusterApiState>,
-) -> Json<ClusterStatsResponse> {
+async fn get_stats(Extension(state): Extension<ClusterApiState>) -> Json<ClusterStatsResponse> {
     let Some(reader) = &state.reader else {
         return Json(ClusterStatsResponse {
             available: false,

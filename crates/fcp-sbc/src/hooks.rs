@@ -13,12 +13,12 @@ use crate::admission::AdmissionController;
 use crate::local_capture::LocalCaptureManager;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::siprec::SiprecRecorder;
-use dashmap::DashMap;
-use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
-use fcp_sbc_core::trunk_quality::TrunkQualityTracker;
 use anyhow::Result;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use fcp_events::{CallEvent, EventPublisher, PlatformEvent, RegistrationEvent};
+use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
+use fcp_sbc_core::trunk_quality::TrunkQualityTracker;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::debug;
@@ -159,11 +159,7 @@ impl EventPublisher for SbcEventHooks {
                         let b_sdp = b_leg_sdp.clone();
                         tokio::spawn(async move {
                             recorder
-                                .start_recording(
-                                    &call_id_clone,
-                                    a_sdp.as_deref(),
-                                    b_sdp.as_deref(),
-                                )
+                                .start_recording(&call_id_clone, a_sdp.as_deref(), b_sdp.as_deref())
                                 .await;
                         });
                     }
@@ -230,9 +226,8 @@ impl EventPublisher for SbcEventHooks {
                             health.call_ended(name);
                             // 5xx and timeouts indicate trunk-side failure;
                             // 4xx responses are client errors, not trunk issues.
-                            let is_trunk_failure = sip_code
-                                .map(|c| c >= 500 || c == 408)
-                                .unwrap_or(true); // no code = likely timeout
+                            let is_trunk_failure =
+                                sip_code.map(|c| c >= 500 || c == 408).unwrap_or(true); // no code = likely timeout
                             if is_trunk_failure {
                                 health.record_failure(name);
                             }

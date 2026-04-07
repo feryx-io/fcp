@@ -77,11 +77,7 @@ impl RedisStorage {
     }
 
     /// Attach a circuit breaker to this storage instance (builder pattern).
-    pub fn with_circuit_breaker(
-        mut self,
-        threshold: u32,
-        cooldown: std::time::Duration,
-    ) -> Self {
+    pub fn with_circuit_breaker(mut self, threshold: u32, cooldown: std::time::Duration) -> Self {
         self.circuit_breaker = Some(Arc::new(RedisCircuitBreaker::new(threshold, cooldown)));
         self
     }

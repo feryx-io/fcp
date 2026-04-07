@@ -44,7 +44,11 @@ pub fn generate_pidf(
 
     // XML declaration
     writer
-        .write_event(Event::Decl(quick_xml::events::BytesDecl::new("1.0", Some("UTF-8"), None)))
+        .write_event(Event::Decl(quick_xml::events::BytesDecl::new(
+            "1.0",
+            Some("UTF-8"),
+            None,
+        )))
         .expect("write xml decl");
 
     // <presence xmlns="..." entity="pres:user@example.com">
@@ -150,8 +154,7 @@ pub fn generate_pidf(
 pub fn parse_pidf(xml: &str) -> Result<PresenceUpdate> {
     use sip_core::presence::{parse_pidf as sip_parse_pidf, BasicStatus};
 
-    let doc = sip_parse_pidf(xml)
-        .map_err(|e| anyhow::anyhow!("PIDF parse error: {e}"))?;
+    let doc = sip_parse_pidf(xml).map_err(|e| anyhow::anyhow!("PIDF parse error: {e}"))?;
 
     let entity = doc.entity();
     // Strip "pres:" prefix if present
@@ -213,8 +216,12 @@ mod tests {
 
     #[test]
     fn test_generate_pidf_with_note() {
-        let xml =
-            generate_pidf("alice@example.com", &PresenceState::Open, Some("In a meeting"), None);
+        let xml = generate_pidf(
+            "alice@example.com",
+            &PresenceState::Open,
+            Some("In a meeting"),
+            None,
+        );
         assert!(xml.contains("<basic>open</basic>"));
         assert!(xml.contains("<note>In a meeting</note>"));
     }
@@ -274,8 +281,12 @@ mod tests {
 
     #[test]
     fn test_parse_pidf_with_note() {
-        let xml =
-            generate_pidf("bob@example.com", &PresenceState::Open, Some("In a meeting"), None);
+        let xml = generate_pidf(
+            "bob@example.com",
+            &PresenceState::Open,
+            Some("In a meeting"),
+            None,
+        );
         let update = parse_pidf(&xml).unwrap();
         assert_eq!(update.aor, "bob@example.com");
         assert_eq!(update.state, PresenceState::Open);
@@ -295,13 +306,15 @@ mod tests {
         ];
 
         for (state, note) in &states {
-            let xml = generate_pidf("user@example.com", state, note.as_deref(), state.to_rpid_activity());
+            let xml = generate_pidf(
+                "user@example.com",
+                state,
+                note.as_deref(),
+                state.to_rpid_activity(),
+            );
             let update = parse_pidf(&xml).unwrap();
             assert_eq!(update.aor, "user@example.com");
-            assert_eq!(
-                update.state, *state,
-                "Roundtrip failed for state {state}"
-            );
+            assert_eq!(update.state, *state, "Roundtrip failed for state {state}");
         }
     }
 

@@ -257,7 +257,9 @@ pub async fn create_phone_number(
                 .get_location(&location_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("Location {} not found", location_id))
+                })?;
             if location.tenant_id != tenant.0 {
                 return Err(ApiError::BadRequest(format!(
                     "Location {} is not in the authenticated tenant",
@@ -346,7 +348,9 @@ pub async fn update_phone_number(
                 .get_location(&location_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("Location {} not found", location_id))
+                })?;
             if location.tenant_id != tenant.0 {
                 return Err(ApiError::BadRequest(format!(
                     "Location {} is not in the authenticated tenant",
@@ -389,9 +393,10 @@ pub async fn delete_phone_number(
         .ok_or_else(|| ApiError::NotFound(format!("Phone number {} not found", id)))
         .and_then(|number| ensure_phone_number_in_tenant(number, &tenant.0, &id))?;
 
-    storage.delete_phone_number(&number.id).await.map_err(|e| {
-        ApiError::Internal(format!("Failed to delete phone number: {}", e))
-    })?;
+    storage
+        .delete_phone_number(&number.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete phone number: {}", e)))?;
 
     info!("Deleted phone number {}", id);
     Ok(StatusCode::NO_CONTENT)

@@ -146,7 +146,12 @@ pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoRespon
         let url = format!("{}/calls", events_url);
         tracing::debug!(%url, "Proxying calls request to events server");
         let client = reqwest::Client::new();
-        match client.get(&url).send().await {
+        let mut request = client.get(&url);
+        if let Some(token) = state.events_server_auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+
+        match request.send().await {
             Ok(resp) if resp.status().is_success() => {
                 let body: serde_json::Value = resp
                     .json()
@@ -163,24 +168,38 @@ pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoRespon
                             }
                             let epoch_to_rfc3339 = |v: &serde_json::Value| -> Option<String> {
                                 let ts = v.as_u64()?;
-                                Some(
-                                    chrono::DateTime::from_timestamp(ts as i64, 0)?
-                                        .to_rfc3339(),
-                                )
+                                Some(chrono::DateTime::from_timestamp(ts as i64, 0)?.to_rfc3339())
                             };
                             Some(CallInfo {
                                 id: c.get("call_id")?.as_str()?.to_string(),
                                 state: state_str.to_string(),
-                                from_uri: c.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                to_uri: c.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                from_uri: c
+                                    .get("from")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                to_uri: c
+                                    .get("to")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
                                 from_display_name: None,
                                 to_display_name: None,
-                                created_at: c.get("initiated_at").and_then(epoch_to_rfc3339).unwrap_or_default(),
+                                created_at: c
+                                    .get("initiated_at")
+                                    .and_then(epoch_to_rfc3339)
+                                    .unwrap_or_default(),
                                 established_at: c.get("answered_at").and_then(epoch_to_rfc3339),
                                 ended_at: None,
-                                duration_seconds: c.get("duration_ms").and_then(|v| v.as_u64()).map(|ms| ms / 1000),
+                                duration_seconds: c
+                                    .get("duration_ms")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|ms| ms / 1000),
                                 media_anchored: true,
-                                failure_reason: c.get("failure_reason").and_then(|v| v.as_str()).map(String::from),
+                                failure_reason: c
+                                    .get("failure_reason")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from),
                             })
                         })
                         .collect();

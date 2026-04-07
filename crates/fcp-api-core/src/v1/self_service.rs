@@ -25,9 +25,10 @@ use tracing::info;
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
     ($state:expr) => {
-        $state.storage.as_ref().ok_or_else(|| {
-            ApiError::Internal("Storage not configured".to_string())
-        })?
+        $state
+            .storage
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?
     };
 }
 
@@ -549,27 +550,20 @@ pub async fn upload_voicemail_greeting(
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "greeting_type" => {
-                greeting_type_str = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| ApiError::BadRequest(format!("Failed to read greeting_type: {}", e)))?,
-                );
+                greeting_type_str = Some(field.text().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read greeting_type: {}", e))
+                })?);
             }
             "audio" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(format!("Failed to read audio data: {}", e)))?;
+                let bytes = field.bytes().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read audio data: {}", e))
+                })?;
                 audio_data = Some(bytes.to_vec());
             }
             "expires_in" => {
-                expires_in_str = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| ApiError::BadRequest(format!("Failed to read expires_in: {}", e)))?,
-                );
+                expires_in_str = Some(field.text().await.map_err(|e| {
+                    ApiError::BadRequest(format!("Failed to read expires_in: {}", e))
+                })?);
             }
             _ => {}
         }
@@ -577,8 +571,8 @@ pub async fn upload_voicemail_greeting(
 
     let greeting_type_str = greeting_type_str
         .ok_or_else(|| ApiError::BadRequest("Missing 'greeting_type' field".to_string()))?;
-    let audio_data = audio_data
-        .ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
+    let audio_data =
+        audio_data.ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
     if audio_data.is_empty() {
         return Err(ApiError::BadRequest("Audio file is empty".to_string()));
     }
@@ -599,9 +593,9 @@ pub async fn upload_voicemail_greeting(
 
     // Create greeting (with optional expiration for temporary greetings)
     let greeting = if let Some(expires_in) = expires_in_str {
-        let hours: u64 = expires_in
-            .parse()
-            .map_err(|_| ApiError::BadRequest("expires_in must be a number of hours".to_string()))?;
+        let hours: u64 = expires_in.parse().map_err(|_| {
+            ApiError::BadRequest("expires_in must be a number of hours".to_string())
+        })?;
         let expires_at = SystemTime::now() + std::time::Duration::from_secs(hours * 3600);
         VoicemailGreeting::with_expiration(greeting_type, file_path, expires_at)
     } else {
@@ -726,7 +720,10 @@ pub async fn delete_voicemail_greeting(
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
-    let had_greeting = mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type);
+    let had_greeting = mailbox
+        .greetings
+        .iter()
+        .any(|g| g.greeting_type == greeting_type);
     if !had_greeting {
         return Err(ApiError::NotFound(format!(
             "Greeting '{}' not found",
@@ -735,11 +732,17 @@ pub async fn delete_voicemail_greeting(
     }
 
     // Try to remove the audio file (best-effort)
-    if let Some(g) = mailbox.greetings.iter().find(|g| g.greeting_type == greeting_type) {
+    if let Some(g) = mailbox
+        .greetings
+        .iter()
+        .find(|g| g.greeting_type == greeting_type)
+    {
         let _ = tokio::fs::remove_file(&g.audio_path).await;
     }
 
-    mailbox.greetings.retain(|g| g.greeting_type != greeting_type);
+    mailbox
+        .greetings
+        .retain(|g| g.greeting_type != greeting_type);
     mailbox.updated_at = SystemTime::now();
 
     storage
@@ -770,7 +773,11 @@ pub async fn set_voicemail_greeting_active(
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
-    if !mailbox.greetings.iter().any(|g| g.greeting_type == greeting_type) {
+    if !mailbox
+        .greetings
+        .iter()
+        .any(|g| g.greeting_type == greeting_type)
+    {
         return Err(ApiError::NotFound(format!(
             "Greeting '{}' not found",
             greeting_type_str
@@ -806,9 +813,7 @@ pub async fn download_voicemail_greeting_audio(
         .greetings
         .iter()
         .find(|g| g.greeting_type == greeting_type)
-        .ok_or_else(|| {
-            ApiError::NotFound(format!("Greeting '{}' not found", greeting_type_str))
-        })?;
+        .ok_or_else(|| ApiError::NotFound(format!("Greeting '{}' not found", greeting_type_str)))?;
 
     let data = tokio::fs::read(&greeting.audio_path)
         .await
@@ -979,7 +984,9 @@ async fn get_user_mailbox(
         .get_mailbox_by_user(&user.id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("No voicemail mailbox found for your account".to_string()))?;
+        .ok_or_else(|| {
+            ApiError::NotFound("No voicemail mailbox found for your account".to_string())
+        })?;
 
     Ok((mailbox, user.id))
 }
@@ -1051,8 +1058,8 @@ pub async fn upload_avatar(
         }
     }
 
-    let image_data =
-        image_data.ok_or_else(|| ApiError::BadRequest("Missing 'avatar' file field".to_string()))?;
+    let image_data = image_data
+        .ok_or_else(|| ApiError::BadRequest("Missing 'avatar' file field".to_string()))?;
     if image_data.is_empty() {
         return Err(ApiError::BadRequest("Image file is empty".to_string()));
     }

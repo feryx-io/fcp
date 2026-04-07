@@ -62,7 +62,8 @@ impl TrunkHealthEntry {
     /// Uptime in seconds (how long continuously healthy), or None.
     pub fn uptime_secs(&self) -> Option<u64> {
         if self.status == HealthStatus::Healthy {
-            self.healthy_since.map(|t| Instant::now().duration_since(t).as_secs())
+            self.healthy_since
+                .map(|t| Instant::now().duration_since(t).as_secs())
         } else {
             None
         }
@@ -154,18 +155,19 @@ pub async fn run_trunk_health_probes(
 
             // Update health map
             let now = Instant::now();
-            let mut entry = health_map
-                .entry(trunk_id.clone())
-                .or_insert_with(|| TrunkHealthEntry {
-                    status: HealthStatus::Unknown,
-                    consecutive_failures: 0,
-                    max_failures: trunk.max_failures as u32,
-                    recovery_interval_secs: trunk.recovery_interval_secs as u64,
-                    last_probe: None,
-                    last_success: None,
-                    last_failure: None,
-                    healthy_since: None,
-                });
+            let mut entry =
+                health_map
+                    .entry(trunk_id.clone())
+                    .or_insert_with(|| TrunkHealthEntry {
+                        status: HealthStatus::Unknown,
+                        consecutive_failures: 0,
+                        max_failures: trunk.max_failures as u32,
+                        recovery_interval_secs: trunk.recovery_interval_secs as u64,
+                        last_probe: None,
+                        last_success: None,
+                        last_failure: None,
+                        healthy_since: None,
+                    });
 
             entry.last_probe = Some(now);
             entry.max_failures = trunk.max_failures as u32;
@@ -226,8 +228,11 @@ async fn probe_trunk_hosts(trunk: &fcp_core::Trunk) -> bool {
         let (host, port) = parse_host_port(host_str, default_port);
         let target = format!("{}:{}", host, port);
 
-        match tokio::time::timeout(Duration::from_secs(5), send_options_probe(&target, &host, port))
-            .await
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            send_options_probe(&target, &host, port),
+        )
+        .await
         {
             Ok(Ok(true)) => return true,
             Ok(Ok(false)) => {

@@ -164,7 +164,10 @@ impl AnnouncementCache {
         // Backward compatibility: if no language subdirs found, try flat layout as "en"
         if languages.is_empty() && audio_dir.join("position.wav").exists() {
             if let Some(cache) = load_language_cache(audio_dir) {
-                info!(positions = cache.pcmu.len(), "Loaded flat announcement audio as 'en'");
+                info!(
+                    positions = cache.pcmu.len(),
+                    "Loaded flat announcement audio as 'en'"
+                );
                 languages.insert("en".to_string(), cache);
             }
         }
@@ -174,8 +177,16 @@ impl AnnouncementCache {
 
     /// Get pre-encoded frames for a position number, codec, and language.
     /// Falls back to "en" if the requested language is not available.
-    pub fn get_position_frames(&self, position: usize, codec_name: &str, lang: &str) -> Option<&[Vec<u8>]> {
-        let cache = self.languages.get(lang).or_else(|| self.languages.get("en"))?;
+    pub fn get_position_frames(
+        &self,
+        position: usize,
+        codec_name: &str,
+        lang: &str,
+    ) -> Option<&[Vec<u8>]> {
+        let cache = self
+            .languages
+            .get(lang)
+            .or_else(|| self.languages.get("en"))?;
         let map = match codec_name {
             "PCMU" => &cache.pcmu,
             "PCMA" => &cache.pcma,
@@ -187,8 +198,16 @@ impl AnnouncementCache {
 
     /// Get pre-encoded ETA frames for a given number of minutes, codec, and language.
     /// Falls back to "en" if the requested language is not available.
-    pub fn get_eta_frames(&self, minutes: usize, codec_name: &str, lang: &str) -> Option<&[Vec<u8>]> {
-        let cache = self.languages.get(lang).or_else(|| self.languages.get("en"))?;
+    pub fn get_eta_frames(
+        &self,
+        minutes: usize,
+        codec_name: &str,
+        lang: &str,
+    ) -> Option<&[Vec<u8>]> {
+        let cache = self
+            .languages
+            .get(lang)
+            .or_else(|| self.languages.get("en"))?;
         let map = match codec_name {
             "PCMU" => &cache.eta_pcmu,
             "PCMA" => &cache.eta_pcma,
@@ -491,7 +510,12 @@ impl PromptCache {
 
     /// Get pre-encoded frames for a prompt and codec, with language support.
     /// Tries `{lang}/{prompt_name}` first, falls back to `{prompt_name}`.
-    pub fn get_frames_i18n(&self, prompt_name: &str, codec: &str, lang: &str) -> Option<&[Vec<u8>]> {
+    pub fn get_frames_i18n(
+        &self,
+        prompt_name: &str,
+        codec: &str,
+        lang: &str,
+    ) -> Option<&[Vec<u8>]> {
         let lang_key = format!("{}/{}", lang, prompt_name);
         self.prompts
             .get(&lang_key)

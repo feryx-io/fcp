@@ -68,10 +68,7 @@ pub struct PresenceManager {
 
 impl PresenceManager {
     /// Create a new PresenceManager.
-    pub fn new(
-        config: PresenceConfig,
-        events: Option<Arc<dyn EventPublisher>>,
-    ) -> Self {
+    pub fn new(config: PresenceConfig, events: Option<Arc<dyn EventPublisher>>) -> Self {
         Self::with_metrics(config, events, metrics::noop_metrics())
     }
 
@@ -135,13 +132,19 @@ impl PresenceManager {
     /// Cap a requested PUBLISH expiry to the configured min/max range.
     pub fn cap_publish_expiry(&self, requested: u32) -> u32 {
         let config = self.config.read();
-        requested.clamp(config.min_publish_expiry_secs, config.max_publish_expiry_secs)
+        requested.clamp(
+            config.min_publish_expiry_secs,
+            config.max_publish_expiry_secs,
+        )
     }
 
     /// Cap a requested SUBSCRIBE expiry to the configured min/max range.
     pub fn cap_subscription_expiry(&self, requested: u32) -> u32 {
         let config = self.config.read();
-        requested.clamp(config.min_subscription_expiry_secs, config.max_subscription_expiry_secs)
+        requested.clamp(
+            config.min_subscription_expiry_secs,
+            config.max_subscription_expiry_secs,
+        )
     }
 
     /// Whether the watcher-info event package is enabled.
@@ -182,15 +185,10 @@ impl PresenceManager {
         if !self.presentities.contains_key(&update.aor)
             && self.presentities.len() >= max_presentities
         {
-            bail!(
-                "Max presentities limit reached ({max_presentities})"
-            );
+            bail!("Max presentities limit reached ({max_presentities})");
         }
 
-        let old_state = self
-            .presentities
-            .get(&update.aor)
-            .map(|p| p.state);
+        let old_state = self.presentities.get(&update.aor).map(|p| p.state);
 
         let update_aor = update.aor.clone();
         let update_state = update.state;
@@ -207,8 +205,15 @@ impl PresenceManager {
         self.presentities.insert(update_aor.clone(), info.clone());
 
         // Emit metrics
-        self.metrics.set_gauge("fcp_presence_presentities", self.presentities.len() as f64, &[]);
-        self.metrics.inc_counter("fcp_presence_updates_total", &[("tenant_id", &tenant_id.to_string())]);
+        self.metrics.set_gauge(
+            "fcp_presence_presentities",
+            self.presentities.len() as f64,
+            &[],
+        );
+        self.metrics.inc_counter(
+            "fcp_presence_updates_total",
+            &[("tenant_id", &tenant_id.to_string())],
+        );
 
         // Publish event only if state actually changed
         let old = old_state.unwrap_or(PresenceState::Closed);
@@ -219,8 +224,7 @@ impl PresenceManager {
                 new_state = %update_state,
                 "Presence state changed"
             );
-            events::status_changed(&self.events, &update_aor, old, update_state, tenant_id)
-                .await;
+            events::status_changed(&self.events, &update_aor, old, update_state, tenant_id).await;
 
             // Publish to Redis for cross-node propagation
             #[cfg(feature = "redis")]
@@ -229,7 +233,8 @@ impl PresenceManager {
                 tenant_id,
                 &update_state.to_string(),
                 update_note.as_deref(),
-            ).await;
+            )
+            .await;
         }
 
         Ok(info)
@@ -285,10 +290,7 @@ impl PresenceManager {
     /// Publishes a StatusChanged event (→ Closed) so watchers are notified,
     /// and removes from persistent storage.
     pub async fn remove_presence(&self, aor: &str, tenant_id: &TenantId) {
-        let old_state = self
-            .presentities
-            .get(aor)
-            .map(|p| p.state);
+        let old_state = self.presentities.get(aor).map(|p| p.state);
 
         self.presentities.remove(aor);
 
@@ -299,7 +301,6 @@ impl PresenceManager {
                     .await;
             }
         }
-
     }
 
     /// Add a watcher subscription for a presentity.
@@ -317,23 +318,25 @@ impl PresenceManager {
             }
         }
 
-        let mut entry = self
-            .watchers
-            .entry(presentity_aor.clone())
-            .or_default();
+        let mut entry = self.watchers.entry(presentity_aor.clone()).or_default();
 
         if max > 0 && entry.len() >= max {
-            bail!(
-                "Max watchers per presentity reached ({max}) for {presentity_aor}"
-            );
+            bail!("Max watchers per presentity reached ({max}) for {presentity_aor}");
         }
 
         entry.push(watcher);
         drop(entry);
 
         // Emit metrics
-        self.metrics.set_gauge("fcp_presence_watchers", self.total_watcher_count() as f64, &[]);
-        self.metrics.inc_counter("fcp_presence_subscribes_total", &[("tenant_id", &tenant_id.to_string())]);
+        self.metrics.set_gauge(
+            "fcp_presence_watchers",
+            self.total_watcher_count() as f64,
+            &[],
+        );
+        self.metrics.inc_counter(
+            "fcp_presence_subscribes_total",
+            &[("tenant_id", &tenant_id.to_string())],
+        );
 
         info!(
             presentity = %presentity_aor,
@@ -363,8 +366,13 @@ impl PresenceManager {
         }
 
         if let (Some(watcher_aor), Some(tid)) = (removed_aor, tenant_id) {
-            self.metrics.set_gauge("fcp_presence_watchers", self.total_watcher_count() as f64, &[]);
-            self.metrics.inc_counter("fcp_presence_unsubscribes_total", &[]);
+            self.metrics.set_gauge(
+                "fcp_presence_watchers",
+                self.total_watcher_count() as f64,
+                &[],
+            );
+            self.metrics
+                .inc_counter("fcp_presence_unsubscribes_total", &[]);
 
             info!(
                 presentity = %presentity_aor,
@@ -489,7 +497,12 @@ impl PresenceManager {
     /// Includes RFC 4480 RPID activity extensions when applicable.
     pub fn generate_pidf(&self, aor: &str) -> Option<String> {
         self.presentities.get(aor).map(|info| {
-            pidf::generate_pidf(aor, &info.state, info.note.as_deref(), info.state.to_rpid_activity())
+            pidf::generate_pidf(
+                aor,
+                &info.state,
+                info.note.as_deref(),
+                info.state.to_rpid_activity(),
+            )
         })
     }
 
@@ -600,8 +613,15 @@ impl PresenceManager {
             created_at: now,
         };
         self.publish_etags.insert(etag.clone(), esc);
-        self.metrics.inc_counter("fcp_presence_publishes_total", &[("tenant_id", &tenant_id.to_string())]);
-        self.metrics.set_gauge("fcp_presence_publish_etags", self.publish_etags.len() as f64, &[]);
+        self.metrics.inc_counter(
+            "fcp_presence_publishes_total",
+            &[("tenant_id", &tenant_id.to_string())],
+        );
+        self.metrics.set_gauge(
+            "fcp_presence_publish_etags",
+            self.publish_etags.len() as f64,
+            &[],
+        );
         self.recompose_and_update(aor, tenant_id).await;
         etag
     }
@@ -680,7 +700,11 @@ impl PresenceManager {
             .publish_etags
             .remove(etag)
             .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
-        self.metrics.set_gauge("fcp_presence_publish_etags", self.publish_etags.len() as f64, &[]);
+        self.metrics.set_gauge(
+            "fcp_presence_publish_etags",
+            self.publish_etags.len() as f64,
+            &[],
+        );
         self.recompose_and_update(&old.aor, &old.tenant_id).await;
         Ok(())
     }
@@ -759,7 +783,8 @@ impl PresenceManager {
                     &esc.tenant_id,
                 )
                 .await;
-                self.metrics.inc_counter("fcp_presence_publish_expiry_warnings_total", &[]);
+                self.metrics
+                    .inc_counter("fcp_presence_publish_expiry_warnings_total", &[]);
                 debug!(
                     aor = %esc.aor,
                     etag = %esc.etag,
@@ -800,7 +825,8 @@ impl PresenceManager {
         // Emit PublishExpired events
         for (aor, etag, state, tenant_id) in &expired_entries {
             events::publish_expired(&self.events, aor, etag, state, tenant_id).await;
-            self.metrics.inc_counter("fcp_presence_publish_expired_total", &[]);
+            self.metrics
+                .inc_counter("fcp_presence_publish_expired_total", &[]);
         }
 
         // Deduplicate AORs (multiple ESCs may have expired for the same AOR)
@@ -989,8 +1015,7 @@ impl PresenceManager {
     /// Generate watcherinfo XML (RFC 3858) for the given AOR's watcher list.
     pub fn generate_watcherinfo(&self, aor: &str) -> anyhow::Result<String> {
         use sip_core::watcher_info::{
-            WatcherinfoDocument, WatcherList,
-            Watcher as WinfoWatcher, WatcherStatus, WatcherEvent,
+            Watcher as WinfoWatcher, WatcherEvent, WatcherList, WatcherStatus, WatcherinfoDocument,
         };
 
         let version = {
@@ -1062,12 +1087,18 @@ impl PresenceManager {
     /// Check if a watcher is authorized to subscribe to a presentity for a specific event package.
     ///
     /// If no policy is set, all watchers are allowed (default open).
-    pub fn is_watcher_authorized(&self, watcher_aor: &str, presentity_aor: &str, event_package: &str) -> bool {
+    pub fn is_watcher_authorized(
+        &self,
+        watcher_aor: &str,
+        presentity_aor: &str,
+        event_package: &str,
+    ) -> bool {
         match self.auth_policies.get(presentity_aor) {
             Some(policy) => {
                 let allowed = policy.is_allowed_for_event(watcher_aor, event_package);
                 if !allowed {
-                    self.metrics.inc_counter("fcp_presence_auth_denied_total", &[]);
+                    self.metrics
+                        .inc_counter("fcp_presence_auth_denied_total", &[]);
                 }
                 allowed
             }
@@ -1075,15 +1106,22 @@ impl PresenceManager {
         }
     }
 
-
     // ---- NOTIFY retry queue ----
 
     /// Enqueue a failed NOTIFY for retry with exponential backoff.
     pub fn enqueue_retry(&self, entry: NotifyRetryEntry) {
-        let key = format!("{}:{}", entry.watcher.subscription_id, entry.watcher.presentity_aor);
+        let key = format!(
+            "{}:{}",
+            entry.watcher.subscription_id, entry.watcher.presentity_aor
+        );
         self.notify_retry_queue.insert(key, entry);
-        self.metrics.inc_counter("fcp_presence_notify_retries_enqueued_total", &[]);
-        self.metrics.set_gauge("fcp_presence_retry_queue_depth", self.notify_retry_queue.len() as f64, &[]);
+        self.metrics
+            .inc_counter("fcp_presence_notify_retries_enqueued_total", &[]);
+        self.metrics.set_gauge(
+            "fcp_presence_retry_queue_depth",
+            self.notify_retry_queue.len() as f64,
+            &[],
+        );
     }
 
     /// Dequeue all retry entries whose next_retry_at has passed and are within max retries.
@@ -1117,7 +1155,11 @@ impl PresenceManager {
     pub fn remove_retry(&self, subscription_id: &str, aor: &str) {
         let key = format!("{subscription_id}:{aor}");
         self.notify_retry_queue.remove(&key);
-        self.metrics.set_gauge("fcp_presence_retry_queue_depth", self.notify_retry_queue.len() as f64, &[]);
+        self.metrics.set_gauge(
+            "fcp_presence_retry_queue_depth",
+            self.notify_retry_queue.len() as f64,
+            &[],
+        );
     }
 
     /// Number of pending retry entries.
@@ -1181,9 +1223,7 @@ impl PresenceManager {
     ///
     /// Returns a `JoinHandle` for the background task.
     #[cfg(feature = "redis")]
-    pub async fn run_pubsub_listener(
-        &self,
-    ) -> Result<tokio::task::JoinHandle<()>> {
+    pub async fn run_pubsub_listener(&self) -> Result<tokio::task::JoinHandle<()>> {
         use futures::StreamExt;
 
         let pubsub = self
@@ -1281,7 +1321,10 @@ impl PresenceManager {
     // ========================================================================
 
     /// Set the resource list store for RLS operations.
-    pub fn set_resource_list_store(&mut self, store: Arc<dyn fcp_core::storage::ResourceListStore>) {
+    pub fn set_resource_list_store(
+        &mut self,
+        store: Arc<dyn fcp_core::storage::ResourceListStore>,
+    ) {
         self.resource_list_store = Some(store);
     }
 
@@ -1313,8 +1356,7 @@ impl PresenceManager {
 
         // Parse entries
         let entries: Vec<crate::rls::ResourceListEntry> =
-            serde_json::from_str(&stored.entries_json)
-                .unwrap_or_default();
+            serde_json::from_str(&stored.entries_json).unwrap_or_default();
 
         // Create virtual subscriptions for each entry
         let expires_at = SystemTime::now()
@@ -1327,9 +1369,7 @@ impl PresenceManager {
             .iter()
             .map(|entry| VirtualSubscription {
                 presentity_aor: entry.uri.clone(),
-                last_state: self
-                    .get_presence(&entry.uri)
-                    .map(|p| p.state),
+                last_state: self.get_presence(&entry.uri).map(|p| p.state),
                 last_notify_cseq: 0,
             })
             .collect();
@@ -1440,10 +1480,7 @@ impl PresenceManager {
     ///
     /// Returns a list of `(subscription_id, contact_uri, content_type, body)` tuples
     /// for the caller to send as SIP NOTIFYs.
-    pub fn notify_rls_watchers(
-        &self,
-        aor: &str,
-    ) -> Vec<(String, String, String, String)> {
+    pub fn notify_rls_watchers(&self, aor: &str) -> Vec<(String, String, String, String)> {
         let mut notifications = Vec::new();
 
         for mut entry in self.rls_subscriptions.iter_mut() {
@@ -1493,10 +1530,7 @@ impl PresenceManager {
 
     /// Get the count of active RLS subscriptions.
     pub fn rls_subscription_count(&self) -> usize {
-        self.rls_subscriptions
-            .iter()
-            .map(|e| e.value().len())
-            .sum()
+        self.rls_subscriptions.iter().map(|e| e.value().len()).sum()
     }
 
     /// Get all watchers including winfo watchers (for shutdown NOTIFY).
@@ -1843,7 +1877,9 @@ mod tests {
         let tenant = test_tenant();
 
         // No watcher → None
-        assert!(mgr.find_existing_watcher("bob@example.com", "alice@example.com", "presence").is_none());
+        assert!(mgr
+            .find_existing_watcher("bob@example.com", "alice@example.com", "presence")
+            .is_none());
 
         let watcher = Watcher {
             watcher_aor: "bob@example.com".to_string(),
@@ -1866,10 +1902,14 @@ mod tests {
         );
 
         // Wrong event → None
-        assert!(mgr.find_existing_watcher("bob@example.com", "alice@example.com", "dialog").is_none());
+        assert!(mgr
+            .find_existing_watcher("bob@example.com", "alice@example.com", "dialog")
+            .is_none());
 
         // Wrong watcher → None
-        assert!(mgr.find_existing_watcher("charlie@example.com", "alice@example.com", "presence").is_none());
+        assert!(mgr
+            .find_existing_watcher("charlie@example.com", "alice@example.com", "presence")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1900,13 +1940,15 @@ mod tests {
         let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
-        let etag = mgr.store_publish(
-            "alice@example.com",
-            PresenceState::Open,
-            Some("Available".into()),
-            &tenant,
-            3600,
-        ).await;
+        let etag = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::Open,
+                Some("Available".into()),
+                &tenant,
+                3600,
+            )
+            .await;
         assert!(!etag.is_empty());
     }
 
@@ -1915,7 +1957,15 @@ mod tests {
         let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
-        let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
+        let etag1 = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::Open,
+                None,
+                &tenant,
+                3600,
+            )
+            .await;
         let etag2 = mgr.refresh_publish(&etag1, 7200).unwrap();
         assert_ne!(etag1, etag2);
 
@@ -1928,12 +1978,26 @@ mod tests {
         let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
-        let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
-        let etag2 = mgr.modify_publish(&etag1, PresenceState::Busy, Some("DND".into()), 3600).await.unwrap();
+        let etag1 = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::Open,
+                None,
+                &tenant,
+                3600,
+            )
+            .await;
+        let etag2 = mgr
+            .modify_publish(&etag1, PresenceState::Busy, Some("DND".into()), 3600)
+            .await
+            .unwrap();
         assert_ne!(etag1, etag2);
 
         // Old ETag should no longer be valid
-        assert!(mgr.modify_publish(&etag1, PresenceState::Away, None, 3600).await.is_err());
+        assert!(mgr
+            .modify_publish(&etag1, PresenceState::Away, None, 3600)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1941,7 +2005,15 @@ mod tests {
         let mgr = PresenceManager::new(test_config(), None);
         let tenant = test_tenant();
 
-        let etag = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
+        let etag = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::Open,
+                None,
+                &tenant,
+                3600,
+            )
+            .await;
         mgr.remove_publish(&etag).await.unwrap();
 
         // Removed ETag should return 412
@@ -1952,7 +2024,10 @@ mod tests {
     async fn test_412_on_unknown_etag() {
         let mgr = PresenceManager::new(test_config(), None);
         assert!(mgr.refresh_publish("nonexistent", 3600).is_err());
-        assert!(mgr.modify_publish("nonexistent", PresenceState::Open, None, 3600).await.is_err());
+        assert!(mgr
+            .modify_publish("nonexistent", PresenceState::Open, None, 3600)
+            .await
+            .is_err());
         assert!(mgr.remove_publish("nonexistent").await.is_err());
     }
 
@@ -1962,7 +2037,9 @@ mod tests {
         let tenant = test_tenant();
 
         // Store a PUBLISH that expires immediately
-        let etag = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 0).await;
+        let etag = mgr
+            .store_publish("alice@example.com", PresenceState::Open, None, &tenant, 0)
+            .await;
 
         // Also set presence so cleanup can revert it
         let update = PresenceUpdate {
@@ -1999,10 +2076,26 @@ mod tests {
         mgr.update_presence(update, &tenant).await.unwrap();
 
         // Device 1: Open
-        let etag1 = mgr.store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600).await;
+        let etag1 = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::Open,
+                None,
+                &tenant,
+                3600,
+            )
+            .await;
 
         // Device 2: OnThePhone (higher priority)
-        let _etag2 = mgr.store_publish("alice@example.com", PresenceState::OnThePhone, Some("On a call".into()), &tenant, 3600).await;
+        let _etag2 = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::OnThePhone,
+                Some("On a call".into()),
+                &tenant,
+                3600,
+            )
+            .await;
 
         // Composed state should be OnThePhone (highest priority)
         let info = mgr.get_presence("alice@example.com").unwrap();
@@ -2035,7 +2128,15 @@ mod tests {
         mgr.update_presence(update, &tenant).await.unwrap();
 
         // PUBLISH with higher priority state
-        let _etag = mgr.store_publish("alice@example.com", PresenceState::OnThePhone, None, &tenant, 3600).await;
+        let _etag = mgr
+            .store_publish(
+                "alice@example.com",
+                PresenceState::OnThePhone,
+                None,
+                &tenant,
+                3600,
+            )
+            .await;
 
         // With composition disabled, presence should NOT be auto-updated
         let info = mgr.get_presence("alice@example.com").unwrap();

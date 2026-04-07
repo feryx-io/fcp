@@ -54,7 +54,7 @@ pub struct Cli {
         short = 'b',
         long = "bind",
         value_name = "ADDR",
-        help = "Override WebSocket bind address (e.g., 0.0.0.0:8081)",
+        help = "Override WebSocket bind address (e.g., 127.0.0.1:8081 or 0.0.0.0:8081)",
         env = "FCP_EVENTS_BIND_ADDR"
     )]
     pub bind_addr: Option<String>,

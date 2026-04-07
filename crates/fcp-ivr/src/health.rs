@@ -70,9 +70,7 @@ async fn status_handler(State(state): State<Arc<IvrState>>) -> Json<serde_json::
     }))
 }
 
-async fn list_routes_handler(
-    State(state): State<Arc<IvrState>>,
-) -> Json<serde_json::Value> {
+async fn list_routes_handler(State(state): State<Arc<IvrState>>) -> Json<serde_json::Value> {
     let routes = state.flow_handler.get_all_routes().await;
     let route_list: Vec<serde_json::Value> = routes
         .iter()
@@ -122,9 +120,7 @@ async fn remove_route_handler(
     }))
 }
 
-async fn active_flows_handler(
-    State(state): State<Arc<IvrState>>,
-) -> Json<serde_json::Value> {
+async fn active_flows_handler(State(state): State<Arc<IvrState>>) -> Json<serde_json::Value> {
     let calls = state.call_manager.all_calls();
     let active_flows: Vec<serde_json::Value> = calls
         .iter()

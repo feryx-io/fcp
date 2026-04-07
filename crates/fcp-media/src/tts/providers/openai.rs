@@ -88,12 +88,7 @@ impl TtsProvider for OpenAiTts {
         "openai".to_string()
     }
 
-    async fn synthesize(
-        &self,
-        text: &str,
-        language: &str,
-        voice: Option<&str>,
-    ) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>> {
         debug!(
             text_len = text.len(),
             language = %language,
@@ -131,11 +126,7 @@ impl TtsProvider for OpenAiTts {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            anyhow::bail!(
-                "OpenAI TTS API error (status {}): {}",
-                status,
-                error_text
-            );
+            anyhow::bail!("OpenAI TTS API error (status {}): {}", status, error_text);
         }
 
         // OpenAI returns raw audio bytes directly (not base64)

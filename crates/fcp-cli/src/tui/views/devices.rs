@@ -1014,7 +1014,6 @@ pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut DevicesV
     }
 }
 
-
 /// Handle keyboard events for device modal
 pub async fn handle_device_action(
     state: &mut DevicesViewState,

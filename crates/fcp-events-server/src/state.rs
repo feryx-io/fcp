@@ -42,13 +42,25 @@ pub struct AggregatedCall {
     #[serde(with = "system_time_serde")]
     pub initiated_at: SystemTime,
     /// When the call started ringing (if applicable)
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "option_system_time_serde")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "option_system_time_serde"
+    )]
     pub ringing_at: Option<SystemTime>,
     /// When the call was answered (if applicable)
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "option_system_time_serde")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "option_system_time_serde"
+    )]
     pub answered_at: Option<SystemTime>,
     /// When the call ended (if applicable)
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "option_system_time_serde")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "option_system_time_serde"
+    )]
     pub ended_at: Option<SystemTime>,
     /// Negotiated codec (if answered)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,9 +229,7 @@ impl CallStateStore {
     pub fn get_active_calls(&self) -> Vec<AggregatedCall> {
         self.calls
             .iter()
-            .filter(|entry| {
-                !matches!(entry.state, CallState::Ended | CallState::Failed)
-            })
+            .filter(|entry| !matches!(entry.state, CallState::Ended | CallState::Failed))
             .map(|entry| Self::with_calculated_duration(entry.value().clone()))
             .collect()
     }
@@ -291,7 +301,9 @@ impl CallStateStore {
                     return false;
                 }
                 // Remove active calls stuck for too long (orphaned — never received Ended event)
-                if !matches!(call.state, CallState::Ended | CallState::Failed) && age > max_active_age {
+                if !matches!(call.state, CallState::Ended | CallState::Failed)
+                    && age > max_active_age
+                {
                     tracing::warn!(
                         call_id = %call.call_id,
                         state = ?call.state,
@@ -573,14 +585,17 @@ mod tests {
     #[test]
     fn test_process_initiated() {
         let store = CallStateStore::new();
-        let event = create_initiated_event("call-12345678-1234-1234-1234-123456789012", Some("node-1"));
+        let event =
+            create_initiated_event("call-12345678-1234-1234-1234-123456789012", Some("node-1"));
 
         store.process_event(&event);
 
         assert_eq!(store.total_count(), 1);
         assert_eq!(store.active_count(), 1);
 
-        let call = store.get_call("call-12345678-1234-1234-1234-123456789012").unwrap();
+        let call = store
+            .get_call("call-12345678-1234-1234-1234-123456789012")
+            .unwrap();
         assert_eq!(call.state, CallState::Initiated);
         assert_eq!(call.node_id.as_deref(), Some("node-1"));
     }
@@ -591,8 +606,14 @@ mod tests {
         let call_id: CallId = "call-12345678-1234-1234-1234-123456789012".parse().unwrap();
 
         // Initiated
-        store.process_event(&create_initiated_event(&call_id.to_string(), Some("node-1")));
-        assert_eq!(store.get_call(&call_id.to_string()).unwrap().state, CallState::Initiated);
+        store.process_event(&create_initiated_event(
+            &call_id.to_string(),
+            Some("node-1"),
+        ));
+        assert_eq!(
+            store.get_call(&call_id.to_string()).unwrap().state,
+            CallState::Initiated
+        );
 
         // Ringing
         store.process_event(&CallEvent::Ringing {
@@ -600,7 +621,10 @@ mod tests {
             timestamp: SystemTime::now(),
             node_id: Some("node-1".to_string()),
         });
-        assert_eq!(store.get_call(&call_id.to_string()).unwrap().state, CallState::Ringing);
+        assert_eq!(
+            store.get_call(&call_id.to_string()).unwrap().state,
+            CallState::Ringing
+        );
 
         // Answered
         store.process_event(&CallEvent::Answered {
@@ -640,9 +664,18 @@ mod tests {
     fn test_get_active_calls_by_node() {
         let store = CallStateStore::new();
 
-        store.process_event(&create_initiated_event("call-00000000-0000-0000-0000-000000000001", Some("node-1")));
-        store.process_event(&create_initiated_event("call-00000000-0000-0000-0000-000000000002", Some("node-2")));
-        store.process_event(&create_initiated_event("call-00000000-0000-0000-0000-000000000003", Some("node-1")));
+        store.process_event(&create_initiated_event(
+            "call-00000000-0000-0000-0000-000000000001",
+            Some("node-1"),
+        ));
+        store.process_event(&create_initiated_event(
+            "call-00000000-0000-0000-0000-000000000002",
+            Some("node-2"),
+        ));
+        store.process_event(&create_initiated_event(
+            "call-00000000-0000-0000-0000-000000000003",
+            Some("node-1"),
+        ));
 
         let node1_calls = store.get_active_calls_by_node("node-1");
         assert_eq!(node1_calls.len(), 2);
@@ -656,7 +689,10 @@ mod tests {
         let store = CallStateStore::new();
         let call_id: CallId = "call-12345678-1234-1234-1234-123456789012".parse().unwrap();
 
-        store.process_event(&create_initiated_event(&call_id.to_string(), Some("node-1")));
+        store.process_event(&create_initiated_event(
+            &call_id.to_string(),
+            Some("node-1"),
+        ));
 
         let stats = store.get_stats();
         assert_eq!(stats.total, 1);

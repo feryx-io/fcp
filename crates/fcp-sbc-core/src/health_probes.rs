@@ -1,8 +1,8 @@
 //! Periodic OPTIONS health probes for SBC trunks.
 
+use crate::trunk::TrunkConfig;
 use crate::trunk_health::TrunkHealthMonitor;
 use fcp_core::transport::TransportType;
-use crate::trunk::TrunkConfig;
 use fcp_sip::uac::SipUserAgentClient;
 use sip_dns::{DnsTarget, Transport as DnsTransport};
 use std::sync::Arc;

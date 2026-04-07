@@ -466,6 +466,10 @@ pub struct EventsSection {
     /// Example: "http://fcp-events-server:8081/ingest"
     pub server_url: Option<String>,
 
+    /// Optional bearer token for authenticating to fcp-events-server.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+
     /// Use Redis Pub/Sub + Streams for distributed event bus.
     /// Requires `storage.redis_url` to be set.
     #[serde(default)]
@@ -488,6 +492,7 @@ impl Default for EventsSection {
     fn default() -> Self {
         Self {
             server_url: None,
+            auth_token: None,
             use_redis: false,
             redis_channel: None,
             redis_stream_key: None,
@@ -576,7 +581,8 @@ pub struct WebhookConfig {
     #[serde(default)]
     pub event_types: Vec<String>,
 
-    /// Optional secret for HMAC-SHA256 signature in X-Webhook-Signature header.
+    /// Optional secret for HMAC-SHA256 signatures in X-FCP-Signature.
+    /// X-Webhook-Signature is also emitted for backward compatibility.
     pub secret: Option<String>,
 }
 

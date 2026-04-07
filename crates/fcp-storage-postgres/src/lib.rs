@@ -36,24 +36,22 @@ pub mod sip_trace;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use fcp_core::porting::PortingStore;
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
-        LineBindingStore, PhoneNumberStore, PresenceStore, QueueConfigStore, QueueStore, RegistrationStore,
-        ResourceListStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-        StoredResourceList, StoredSubscription, TenantStore, TrunkStore, RoutingRuleStore,
-        VoicemailStore,
-        WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
+        LineBindingStore, PhoneNumberStore, PresenceStore, QueueConfigStore, QueueStore,
+        RegistrationStore, ResourceListStore, RoutingRuleStore, SiteLocationStore, StoredAgent,
+        StoredAuthPolicy, StoredPresentity, StoredResourceList, StoredSubscription, TenantStore,
+        TrunkStore, VoicemailStore, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
-    HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences, NumberState,
-    PhoneNumber, PhoneNumberId, Registration, RegistrationState, RingStrategy, SiteLocation, Tenant,
-    Trunk, TrunkDirection, TrunkId, RoutingAction, RoutingRule, RoutingRuleId,
-    QueueConfigId, QueueConfigRecord,
-    TenantId, User, UserId, WebhookId,
+    HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences,
+    NumberState, PhoneNumber, PhoneNumberId, QueueConfigId, QueueConfigRecord, Registration,
+    RegistrationState, RingStrategy, RoutingAction, RoutingRule, RoutingRuleId, SiteLocation,
+    Tenant, TenantId, Trunk, TrunkDirection, TrunkId, User, UserId, WebhookId,
 };
-use fcp_core::porting::PortingStore;
 use fcp_flow::schema::{FlowDefinition, FlowNode};
 use fcp_flow::storage::{FlowQuery, FlowQueryResult, FlowStore, SortField, SortOrder};
 use fcp_flow::FlowError;
@@ -72,6 +70,43 @@ fn system_time_to_datetime(st: SystemTime) -> DateTime<Utc> {
 
 fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(dt.timestamp() as u64)
+}
+
+fn webhook_endpoint_from_value(value: serde_json::Value) -> Result<WebhookEndpoint> {
+    serde_json::from_value(value).context("Failed to deserialize webhook endpoint")
+}
+
+fn webhook_delivery_log_from_value(value: serde_json::Value) -> Result<WebhookDeliveryLog> {
+    serde_json::from_value(value).context("Failed to deserialize webhook delivery log")
+}
+
+fn geo_rule_from_value(value: serde_json::Value) -> Result<fcp_core::GeoRoutingRule> {
+    serde_json::from_value(value).context("Failed to deserialize geo routing rule")
+}
+
+fn phone_number_location_from_value(
+    value: serde_json::Value,
+) -> Result<fcp_core::PhoneNumberLocation> {
+    serde_json::from_value(value).context("Failed to deserialize phone number location")
+}
+
+fn port_request_from_value(value: serde_json::Value) -> Result<fcp_core::PortRequest> {
+    serde_json::from_value(value).context("Failed to deserialize port request")
+}
+
+fn port_status_to_db(status: fcp_core::PortStatus) -> &'static str {
+    match status {
+        fcp_core::PortStatus::Draft => "draft",
+        fcp_core::PortStatus::Submitted => "submitted",
+        fcp_core::PortStatus::Pending => "pending",
+        fcp_core::PortStatus::Approved => "approved",
+        fcp_core::PortStatus::Scheduled => "scheduled",
+        fcp_core::PortStatus::InProgress => "in_progress",
+        fcp_core::PortStatus::Completed => "completed",
+        fcp_core::PortStatus::Rejected => "rejected",
+        fcp_core::PortStatus::Cancelled => "cancelled",
+        fcp_core::PortStatus::Failed => "failed",
+    }
 }
 
 /// Configuration for PostgreSQL storage backend.
@@ -1007,7 +1042,8 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         department: row.get("department"),
         job_title: row.get("job_title"),
         location: row.get("location"),
-        location_id: row.get::<Option<String>, _>("location_id")
+        location_id: row
+            .get::<Option<String>, _>("location_id")
             .and_then(|s| fcp_core::LocationId::from_str(&s).ok()),
         language: row.get("language"),
         timezone: row.get("timezone"),
@@ -1811,10 +1847,7 @@ impl DeviceStore for PostgresStorage {
 
 #[async_trait]
 impl ConferenceStore for PostgresStorage {
-    async fn get_meeting(
-        &self,
-        id: &fcp_core::MeetingId,
-    ) -> Result<Option<fcp_core::Meeting>> {
+    async fn get_meeting(&self, id: &fcp_core::MeetingId) -> Result<Option<fcp_core::Meeting>> {
         let row = sqlx::query(
             "SELECT id, tenant_id, room_number, name, guest_pin, host_pin,
                     require_guest_pin, max_participants, wait_for_moderator,
@@ -2104,7 +2137,8 @@ fn row_to_phone_number(row: sqlx::postgres::PgRow) -> Result<PhoneNumber> {
         allow_list,
         block_list,
         tags,
-        location_id: row.get::<Option<String>, _>("location_id")
+        location_id: row
+            .get::<Option<String>, _>("location_id")
             .and_then(|s| LocationId::from_str(&s).ok()),
         created_at,
         updated_at,
@@ -2201,7 +2235,8 @@ fn row_to_extension(row: sqlx::postgres::PgRow) -> Result<Extension> {
         target,
         tenant_id,
         description: row.get("description"),
-        location_id: row.get::<Option<String>, _>("location_id")
+        location_id: row
+            .get::<Option<String>, _>("location_id")
             .and_then(|s| LocationId::from_str(&s).ok()),
         enabled: row.get::<bool, _>("enabled"),
         created_at,
@@ -2283,7 +2318,8 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         supports_blf: row.get::<bool, _>("supports_blf"),
         codec_support,
         location: row.get("location"),
-        location_id: row.get::<Option<String>, _>("location_id")
+        location_id: row
+            .get::<Option<String>, _>("location_id")
             .and_then(|s| LocationId::from_str(&s).ok()),
         e911_override,
         provisioning_url: row.get("provisioning_url"),
@@ -2370,7 +2406,8 @@ fn row_to_trunk(row: sqlx::postgres::PgRow) -> Result<Trunk> {
     let created_at: DateTime<Utc> = row.try_get("created_at")?;
     let updated_at: DateTime<Utc> = row.try_get("updated_at")?;
 
-    let direction = direction_str.parse::<TrunkDirection>()
+    let direction = direction_str
+        .parse::<TrunkDirection>()
         .unwrap_or(TrunkDirection::Upstream);
 
     Ok(Trunk {
@@ -2461,7 +2498,10 @@ impl TrunkStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await?;
 
-        let trunks = rows.into_iter().filter_map(|row| row_to_trunk(row).ok()).collect();
+        let trunks = rows
+            .into_iter()
+            .filter_map(|row| row_to_trunk(row).ok())
+            .collect();
         Ok(trunks)
     }
 
@@ -2654,12 +2694,20 @@ fn row_to_routing_rule(row: sqlx::postgres::PgRow) -> Result<RoutingRule> {
         enabled: row.try_get("enabled")?,
         destination_pattern: row.try_get("destination_pattern")?,
         source_pattern: row.try_get("source_pattern")?,
-        source_ip_ranges: row.try_get::<Vec<String>, _>("source_ip_ranges").unwrap_or_default(),
-        time_window_days: row.try_get::<Vec<String>, _>("time_window_days").unwrap_or_default(),
+        source_ip_ranges: row
+            .try_get::<Vec<String>, _>("source_ip_ranges")
+            .unwrap_or_default(),
+        time_window_days: row
+            .try_get::<Vec<String>, _>("time_window_days")
+            .unwrap_or_default(),
         time_window_start: row.try_get("time_window_start")?,
         time_window_end: row.try_get("time_window_end")?,
-        time_window_timezone: row.try_get::<String, _>("time_window_timezone").unwrap_or_else(|_| "UTC".to_string()),
-        action: action_str.parse::<RoutingAction>().unwrap_or(RoutingAction::Allow),
+        time_window_timezone: row
+            .try_get::<String, _>("time_window_timezone")
+            .unwrap_or_else(|_| "UTC".to_string()),
+        action: action_str
+            .parse::<RoutingAction>()
+            .unwrap_or(RoutingAction::Allow),
         target_trunk_id: row.try_get("target_trunk_id")?,
         target_trunk_group: row.try_get("target_trunk_group")?,
         reason: row.try_get("reason")?,
@@ -2671,12 +2719,10 @@ fn row_to_routing_rule(row: sqlx::postgres::PgRow) -> Result<RoutingRule> {
 #[async_trait]
 impl RoutingRuleStore for PostgresStorage {
     async fn get_routing_rule(&self, id: &RoutingRuleId) -> Result<Option<RoutingRule>> {
-        let row = sqlx::query(
-            "SELECT * FROM routing_rules WHERE id = $1",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query("SELECT * FROM routing_rules WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
         match row {
             Some(row) => Ok(Some(row_to_routing_rule(row)?)),
             None => Ok(None),
@@ -2684,13 +2730,15 @@ impl RoutingRuleStore for PostgresStorage {
     }
 
     async fn list_routing_rules(&self, tenant_id: &TenantId) -> Result<Vec<RoutingRule>> {
-        let rows = sqlx::query(
-            "SELECT * FROM routing_rules WHERE tenant_id = $1 ORDER BY priority, name",
-        )
-        .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-        let rules = rows.into_iter().filter_map(|r| row_to_routing_rule(r).ok()).collect();
+        let rows =
+            sqlx::query("SELECT * FROM routing_rules WHERE tenant_id = $1 ORDER BY priority, name")
+                .bind(tenant_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        let rules = rows
+            .into_iter()
+            .filter_map(|r| row_to_routing_rule(r).ok())
+            .collect();
         Ok(rules)
     }
 
@@ -2766,7 +2814,9 @@ fn row_to_queue_config(row: sqlx::postgres::PgRow) -> Result<QueueConfigRecord> 
         tenant_id: TenantId::from_str(&tenant_id_str).unwrap_or_else(|_| TenantId::nil()),
         name: row.try_get("name")?,
         extension: row.try_get("extension")?,
-        strategy: row.try_get::<String, _>("strategy").unwrap_or_else(|_| "round_robin".to_string()),
+        strategy: row
+            .try_get::<String, _>("strategy")
+            .unwrap_or_else(|_| "round_robin".to_string()),
         max_wait_time_secs: row.try_get("max_wait_time_secs").unwrap_or(300),
         max_queue_depth: row.try_get("max_queue_depth").unwrap_or(50),
         overflow_destination: row.try_get("overflow_destination")?,
@@ -2776,10 +2826,14 @@ fn row_to_queue_config(row: sqlx::postgres::PgRow) -> Result<QueueConfigRecord> 
         retry_on_no_answer: row.try_get("retry_on_no_answer").unwrap_or(true),
         agents: row.try_get::<Vec<String>, _>("agents").unwrap_or_default(),
         priority: row.try_get("priority").unwrap_or(0),
-        required_skills: row.try_get::<Vec<String>, _>("required_skills").unwrap_or_default(),
+        required_skills: row
+            .try_get::<Vec<String>, _>("required_skills")
+            .unwrap_or_default(),
         record_calls: row.try_get("record_calls").unwrap_or(false),
         callback_enabled: row.try_get("callback_enabled").unwrap_or(false),
-        timezone: row.try_get::<String, _>("timezone").unwrap_or_else(|_| "UTC".to_string()),
+        timezone: row
+            .try_get::<String, _>("timezone")
+            .unwrap_or_else(|_| "UTC".to_string()),
         enabled: row.try_get("enabled").unwrap_or(true),
         created_at: datetime_to_system_time(created_at),
         updated_at: datetime_to_system_time(updated_at),
@@ -2789,12 +2843,10 @@ fn row_to_queue_config(row: sqlx::postgres::PgRow) -> Result<QueueConfigRecord> 
 #[async_trait]
 impl QueueConfigStore for PostgresStorage {
     async fn get_queue_config(&self, id: &QueueConfigId) -> Result<Option<QueueConfigRecord>> {
-        let row = sqlx::query(
-            "SELECT * FROM queue_configs WHERE id = $1",
-        )
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query("SELECT * FROM queue_configs WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
         match row {
             Some(row) => Ok(Some(row_to_queue_config(row)?)),
             None => Ok(None),
@@ -2802,13 +2854,15 @@ impl QueueConfigStore for PostgresStorage {
     }
 
     async fn list_queue_configs(&self, tenant_id: &TenantId) -> Result<Vec<QueueConfigRecord>> {
-        let rows = sqlx::query(
-            "SELECT * FROM queue_configs WHERE tenant_id = $1 ORDER BY priority, name",
-        )
-        .bind(tenant_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-        let configs = rows.into_iter().filter_map(|r| row_to_queue_config(r).ok()).collect();
+        let rows =
+            sqlx::query("SELECT * FROM queue_configs WHERE tenant_id = $1 ORDER BY priority, name")
+                .bind(tenant_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        let configs = rows
+            .into_iter()
+            .filter_map(|r| row_to_queue_config(r).ok())
+            .collect();
         Ok(configs)
     }
 
@@ -3047,8 +3101,7 @@ impl QueueStore for PostgresStorage {
 
         let mut agents = Vec::with_capacity(rows.len());
         for row in rows {
-            let queue_priorities = row
-                .get::<serde_json::Value, _>("queue_priorities");
+            let queue_priorities = row.get::<serde_json::Value, _>("queue_priorities");
             agents.push(StoredAgent {
                 id: row.get("agent_id"),
                 extension: row.get("extension"),
@@ -3120,10 +3173,7 @@ impl PresenceStore for PostgresStorage {
         Ok(())
     }
 
-    async fn load_subscriptions(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<StoredSubscription>> {
+    async fn load_subscriptions(&self, tenant_id: &TenantId) -> Result<Vec<StoredSubscription>> {
         let now_epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -3184,11 +3234,10 @@ impl PresenceStore for PostgresStorage {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let result =
-            sqlx::query("DELETE FROM presence_subscriptions WHERE expires_at_epoch <= $1")
-                .bind(now_epoch)
-                .execute(&self.pool)
-                .await?;
+        let result = sqlx::query("DELETE FROM presence_subscriptions WHERE expires_at_epoch <= $1")
+            .bind(now_epoch)
+            .execute(&self.pool)
+            .await?;
 
         Ok(result.rows_affected() as usize)
     }
@@ -3214,10 +3263,7 @@ impl PresenceStore for PostgresStorage {
         Ok(())
     }
 
-    async fn load_presentities(
-        &self,
-        tenant_id: &TenantId,
-    ) -> Result<Vec<StoredPresentity>> {
+    async fn load_presentities(&self, tenant_id: &TenantId) -> Result<Vec<StoredPresentity>> {
         let rows = sqlx::query(
             "SELECT aor, state, note, tenant_id, updated_at_epoch \
              FROM presence_presentities WHERE tenant_id = $1",
@@ -3347,10 +3393,12 @@ impl ResourceListStore for PostgresStorage {
     }
 
     async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
-        let row = sqlx::query("SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE uri = $1")
-            .bind(uri)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE uri = $1",
+        )
+        .bind(uri)
+        .fetch_optional(&self.pool)
+        .await?;
 
         Ok(row.map(|r| StoredResourceList {
             uri: r.get("uri"),
@@ -3364,10 +3412,12 @@ impl ResourceListStore for PostgresStorage {
         &self,
         tenant_id: &TenantId,
     ) -> Result<Vec<StoredResourceList>> {
-        let rows = sqlx::query("SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE tenant_id = $1")
-            .bind(tenant_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE tenant_id = $1",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(rows
             .into_iter()
@@ -3391,40 +3441,152 @@ impl ResourceListStore for PostgresStorage {
 
 #[async_trait]
 impl WebhookStore for PostgresStorage {
-    async fn create_endpoint(&self, _endpoint: WebhookEndpoint) -> Result<()> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn create_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        let endpoint_json = serde_json::to_value(&endpoint)?;
+        sqlx::query(
+            "INSERT INTO webhook_endpoints (id, tenant_id, endpoint_json, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO UPDATE
+             SET tenant_id = EXCLUDED.tenant_id,
+                 endpoint_json = EXCLUDED.endpoint_json,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(endpoint.id.to_string())
+        .bind(endpoint.tenant_id.to_string())
+        .bind(endpoint_json)
+        .bind(system_time_to_datetime(endpoint.created_at))
+        .bind(system_time_to_datetime(endpoint.updated_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
-    async fn get_endpoint(&self, _id: &WebhookId) -> Result<Option<WebhookEndpoint>> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn get_endpoint(&self, id: &WebhookId) -> Result<Option<WebhookEndpoint>> {
+        let row = sqlx::query("SELECT endpoint_json FROM webhook_endpoints WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        row.map(|row| webhook_endpoint_from_value(row.get("endpoint_json")))
+            .transpose()
     }
 
-    async fn list_endpoints(&self, _tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn list_endpoints(&self, tenant_id: &TenantId) -> Result<Vec<WebhookEndpoint>> {
+        let rows = sqlx::query(
+            "SELECT endpoint_json
+             FROM webhook_endpoints
+             WHERE tenant_id = $1
+             ORDER BY updated_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| webhook_endpoint_from_value(row.get("endpoint_json")))
+            .collect()
     }
 
-    async fn update_endpoint(&self, _endpoint: WebhookEndpoint) -> Result<()> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn update_endpoint(&self, endpoint: WebhookEndpoint) -> Result<()> {
+        let endpoint_json = serde_json::to_value(&endpoint)?;
+        sqlx::query(
+            "UPDATE webhook_endpoints
+             SET tenant_id = $2,
+                 endpoint_json = $3,
+                 updated_at = $4
+             WHERE id = $1",
+        )
+        .bind(endpoint.id.to_string())
+        .bind(endpoint.tenant_id.to_string())
+        .bind(endpoint_json)
+        .bind(system_time_to_datetime(endpoint.updated_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
-    async fn delete_endpoint(&self, _id: &WebhookId) -> Result<()> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn delete_endpoint(&self, id: &WebhookId) -> Result<()> {
+        sqlx::query("DELETE FROM webhook_endpoints WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
-    async fn log_delivery(&self, _log: WebhookDeliveryLog) -> Result<()> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn log_delivery(&self, log: WebhookDeliveryLog) -> Result<()> {
+        let delivery_json = serde_json::to_value(&log)?;
+        sqlx::query(
+            "INSERT INTO webhook_delivery_logs (id, endpoint_id, delivery_json, delivered, next_retry_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&log.id)
+        .bind(log.endpoint_id.to_string())
+        .bind(delivery_json)
+        .bind(log.delivered)
+        .bind(log.next_retry_at.map(system_time_to_datetime))
+        .bind(system_time_to_datetime(log.created_at))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
-    async fn get_pending_retries(&self, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn get_pending_retries(&self, limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
+        let rows = sqlx::query(
+            "SELECT delivery_json
+             FROM webhook_delivery_logs
+             WHERE delivered = FALSE
+               AND next_retry_at IS NOT NULL
+               AND next_retry_at <= NOW()
+             ORDER BY next_retry_at ASC, created_at ASC
+             LIMIT $1",
+        )
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| webhook_delivery_log_from_value(row.get("delivery_json")))
+            .collect()
     }
 
-    async fn update_delivery_log(&self, _log: WebhookDeliveryLog) -> Result<()> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn update_delivery_log(&self, log: WebhookDeliveryLog) -> Result<()> {
+        let delivery_json = serde_json::to_value(&log)?;
+        sqlx::query(
+            "UPDATE webhook_delivery_logs
+             SET delivery_json = $2,
+                 delivered = $3,
+                 next_retry_at = $4
+             WHERE id = $1",
+        )
+        .bind(&log.id)
+        .bind(delivery_json)
+        .bind(log.delivered)
+        .bind(log.next_retry_at.map(system_time_to_datetime))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
-    async fn get_delivery_logs(&self, _endpoint_id: &WebhookId, _limit: usize) -> Result<Vec<WebhookDeliveryLog>> {
-        anyhow::bail!("Webhook store not yet implemented for Postgres backend")
+    async fn get_delivery_logs(
+        &self,
+        endpoint_id: &WebhookId,
+        limit: usize,
+    ) -> Result<Vec<WebhookDeliveryLog>> {
+        let rows = sqlx::query(
+            "SELECT delivery_json
+             FROM webhook_delivery_logs
+             WHERE endpoint_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2",
+        )
+        .bind(endpoint_id.to_string())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| webhook_delivery_log_from_value(row.get("delivery_json")))
+            .collect()
     }
 }
 
@@ -4335,59 +4497,131 @@ impl VoicemailStore for PostgresStorage {
 
 #[async_trait]
 impl GeoRoutingStore for PostgresStorage {
-    async fn get_geo_rule(&self, _id: &str) -> Result<Option<fcp_core::GeoRoutingRule>> {
-        Ok(None)
+    async fn get_geo_rule(&self, id: &str) -> Result<Option<fcp_core::GeoRoutingRule>> {
+        let row = sqlx::query("SELECT rule_json FROM geo_routing_rules WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        row.map(|row| geo_rule_from_value(row.get("rule_json")))
+            .transpose()
     }
 
     async fn list_geo_rules(
         &self,
-        _tenant_id: &fcp_core::TenantId,
+        tenant_id: &fcp_core::TenantId,
     ) -> Result<Vec<fcp_core::GeoRoutingRule>> {
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            "SELECT rule_json
+             FROM geo_routing_rules
+             WHERE tenant_id = $1
+             ORDER BY priority ASC, updated_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| geo_rule_from_value(row.get("rule_json")))
+            .collect()
     }
 
-    async fn put_geo_rule(&self, _rule: fcp_core::GeoRoutingRule) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Geographic routing storage not yet implemented"
-        ))
+    async fn put_geo_rule(&self, rule: fcp_core::GeoRoutingRule) -> Result<()> {
+        let rule_json = serde_json::to_value(&rule)?;
+        sqlx::query(
+            "INSERT INTO geo_routing_rules (id, tenant_id, priority, updated_at, rule_json)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO UPDATE
+             SET tenant_id = EXCLUDED.tenant_id,
+                 priority = EXCLUDED.priority,
+                 updated_at = EXCLUDED.updated_at,
+                 rule_json = EXCLUDED.rule_json",
+        )
+        .bind(&rule.id)
+        .bind(rule.tenant_id.to_string())
+        .bind(rule.priority as i32)
+        .bind(system_time_to_datetime(rule.updated_at))
+        .bind(rule_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
-    async fn delete_geo_rule(&self, _id: &str) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Geographic routing storage not yet implemented"
-        ))
+    async fn delete_geo_rule(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM geo_routing_rules WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn get_phone_number_location(
         &self,
-        _phone_number_id: &fcp_core::PhoneNumberId,
+        phone_number_id: &fcp_core::PhoneNumberId,
     ) -> Result<Option<fcp_core::PhoneNumberLocation>> {
-        Ok(None)
+        let row = sqlx::query(
+            "SELECT location_json
+             FROM phone_number_locations
+             WHERE phone_number_id = $1",
+        )
+        .bind(phone_number_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(|row| phone_number_location_from_value(row.get("location_json")))
+            .transpose()
     }
 
     async fn list_phone_number_locations(
         &self,
-        _tenant_id: &fcp_core::TenantId,
+        tenant_id: &fcp_core::TenantId,
     ) -> Result<Vec<fcp_core::PhoneNumberLocation>> {
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            "SELECT location_json
+             FROM phone_number_locations
+             WHERE tenant_id = $1
+             ORDER BY verified_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| phone_number_location_from_value(row.get("location_json")))
+            .collect()
     }
 
     async fn put_phone_number_location(
         &self,
-        _location: fcp_core::PhoneNumberLocation,
+        location: fcp_core::PhoneNumberLocation,
     ) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Geographic routing storage not yet implemented"
-        ))
+        let location_json = serde_json::to_value(&location)?;
+        sqlx::query(
+            "INSERT INTO phone_number_locations (phone_number_id, tenant_id, verified_at, location_json)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (phone_number_id) DO UPDATE
+             SET tenant_id = EXCLUDED.tenant_id,
+                 verified_at = EXCLUDED.verified_at,
+                 location_json = EXCLUDED.location_json",
+        )
+        .bind(location.phone_number_id.to_string())
+        .bind(location.tenant_id.to_string())
+        .bind(system_time_to_datetime(location.verified_at))
+        .bind(location_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn delete_phone_number_location(
         &self,
-        _phone_number_id: &fcp_core::PhoneNumberId,
+        phone_number_id: &fcp_core::PhoneNumberId,
     ) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Geographic routing storage not yet implemented"
-        ))
+        sqlx::query("DELETE FROM phone_number_locations WHERE phone_number_id = $1")
+            .bind(phone_number_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -4399,36 +4633,85 @@ impl GeoRoutingStore for PostgresStorage {
 impl PortingStore for PostgresStorage {
     async fn get_port_request(
         &self,
-        _id: &fcp_core::PortRequestId,
+        id: &fcp_core::PortRequestId,
     ) -> Result<Option<fcp_core::PortRequest>> {
-        Ok(None)
+        let row = sqlx::query("SELECT request_json FROM port_requests WHERE id = $1")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        row.map(|row| port_request_from_value(row.get("request_json")))
+            .transpose()
     }
 
     async fn list_port_requests(
         &self,
-        _tenant_id: &fcp_core::TenantId,
+        tenant_id: &fcp_core::TenantId,
     ) -> Result<Vec<fcp_core::PortRequest>> {
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            "SELECT request_json
+             FROM port_requests
+             WHERE tenant_id = $1
+             ORDER BY updated_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| port_request_from_value(row.get("request_json")))
+            .collect()
     }
 
-    async fn put_port_request(&self, _request: fcp_core::PortRequest) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Number porting storage not yet implemented"
-        ))
+    async fn put_port_request(&self, request: fcp_core::PortRequest) -> Result<()> {
+        let request_json = serde_json::to_value(&request)?;
+        sqlx::query(
+            "INSERT INTO port_requests (id, tenant_id, status, created_at, updated_at, request_json)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (id) DO UPDATE
+             SET tenant_id = EXCLUDED.tenant_id,
+                 status = EXCLUDED.status,
+                 updated_at = EXCLUDED.updated_at,
+                 request_json = EXCLUDED.request_json",
+        )
+        .bind(request.id.to_string())
+        .bind(request.tenant_id.to_string())
+        .bind(port_status_to_db(request.status))
+        .bind(system_time_to_datetime(request.created_at))
+        .bind(system_time_to_datetime(request.updated_at))
+        .bind(request_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
-    async fn delete_port_request(&self, _id: &fcp_core::PortRequestId) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "Number porting storage not yet implemented"
-        ))
+    async fn delete_port_request(&self, id: &fcp_core::PortRequestId) -> Result<()> {
+        sqlx::query("DELETE FROM port_requests WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     async fn list_port_requests_by_status(
         &self,
-        _tenant_id: &fcp_core::TenantId,
-        _status: fcp_core::PortStatus,
+        tenant_id: &fcp_core::TenantId,
+        status: fcp_core::PortStatus,
     ) -> Result<Vec<fcp_core::PortRequest>> {
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            "SELECT request_json
+             FROM port_requests
+             WHERE tenant_id = $1 AND status = $2
+             ORDER BY updated_at DESC",
+        )
+        .bind(tenant_id.to_string())
+        .bind(port_status_to_db(status))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| port_request_from_value(row.get("request_json")))
+            .collect()
     }
 }
 

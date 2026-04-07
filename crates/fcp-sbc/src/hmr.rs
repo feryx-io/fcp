@@ -5,9 +5,7 @@
 //! egress), message type filtering (request/response), method filtering, trunk
 //! scoping, conditional matching, and priority ordering.
 
-use fcp_sbc_core::hmr::{
-    HeaderManipulationConfig, HmrActionType, HmrDirection, HmrMessageType,
-};
+use fcp_sbc_core::hmr::{HeaderManipulationConfig, HmrActionType, HmrDirection, HmrMessageType};
 use fcp_sbc_core::TrunkConfig;
 use regex::Regex;
 use sip_core::uri::Uri;
@@ -46,7 +44,10 @@ impl std::fmt::Debug for HeaderManipulationEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HeaderManipulationEngine")
             .field("rules_count", &self.rules.len())
-            .field("trunk_rule_map_keys", &self.trunk_rule_map.keys().collect::<Vec<_>>())
+            .field(
+                "trunk_rule_map_keys",
+                &self.trunk_rule_map.keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -62,10 +63,7 @@ impl HeaderManipulationEngine {
     ///
     /// Compiles all regex patterns, builds trunk-rule mappings, and sorts
     /// rules by priority. Returns an error if any regex fails to compile.
-    pub fn new(
-        config: &HeaderManipulationConfig,
-        trunks: &[TrunkConfig],
-    ) -> Result<Self, String> {
+    pub fn new(config: &HeaderManipulationConfig, trunks: &[TrunkConfig]) -> Result<Self, String> {
         let mut rules = Vec::new();
 
         for cfg_rule in &config.rules {
@@ -189,9 +187,7 @@ impl HeaderManipulationEngine {
             }
 
             // Check method filter
-            if !rule.methods.is_empty()
-                && !rule.methods.iter().any(|m| m == &method_str)
-            {
+            if !rule.methods.is_empty() && !rule.methods.iter().any(|m| m == &method_str) {
                 continue;
             }
 
@@ -234,24 +230,19 @@ impl HeaderManipulationEngine {
     }
 
     /// Get matching rules for a given direction and optional trunk, in priority order.
-    fn matching_rules(
-        &self,
-        direction: HmrDirection,
-        trunk: Option<&str>,
-    ) -> Vec<&CompiledRule> {
-        let indices: Box<dyn Iterator<Item = usize>> =
-            if let Some(trunk_name) = trunk {
-                if let Some(trunk_indices) = self.trunk_rule_map.get(trunk_name) {
-                    // Trunk has explicit rule list — use only those
-                    Box::new(trunk_indices.iter().copied())
-                } else {
-                    // Trunk exists but has no explicit rule list — use all rules
-                    Box::new(0..self.rules.len())
-                }
+    fn matching_rules(&self, direction: HmrDirection, trunk: Option<&str>) -> Vec<&CompiledRule> {
+        let indices: Box<dyn Iterator<Item = usize>> = if let Some(trunk_name) = trunk {
+            if let Some(trunk_indices) = self.trunk_rule_map.get(trunk_name) {
+                // Trunk has explicit rule list — use only those
+                Box::new(trunk_indices.iter().copied())
             } else {
-                // No trunk context — use all rules
+                // Trunk exists but has no explicit rule list — use all rules
                 Box::new(0..self.rules.len())
-            };
+            }
+        } else {
+            // No trunk context — use all rules
+            Box::new(0..self.rules.len())
+        };
 
         indices
             .filter_map(|idx| {
@@ -335,8 +326,7 @@ fn execute_action_request(action: &CompiledAction, req: &mut Request) {
                 }
             }
             HmrActionType::Modify => {
-                if let (Some(ref pattern), Some(ref replacement)) =
-                    (&action.pattern, &action.value)
+                if let (Some(ref pattern), Some(ref replacement)) = (&action.pattern, &action.value)
                 {
                     let current = req.uri().to_string();
                     let new_val = pattern.replace(&current, replacement);
@@ -371,10 +361,15 @@ fn execute_action_request(action: &CompiledAction, req: &mut Request) {
         HmrActionType::Modify => {
             if let (Some(ref pattern), Some(ref replacement)) = (&action.pattern, &action.value) {
                 // Read current value into owned string to avoid borrow conflict
-                let current_val = req.headers().get(&action.header_name).map(|v| v.to_string());
+                let current_val = req
+                    .headers()
+                    .get(&action.header_name)
+                    .map(|v| v.to_string());
                 if let Some(current) = current_val {
                     let new_val = pattern.replace(&current, replacement);
-                    let _ = req.headers_mut().replace_first(&action.header_name, new_val.as_ref());
+                    let _ = req
+                        .headers_mut()
+                        .replace_first(&action.header_name, new_val.as_ref());
                 }
             }
         }
@@ -399,15 +394,16 @@ fn execute_action_response(action: &CompiledAction, resp: &mut Response) {
         }
         HmrActionType::Replace => {
             if let Some(ref val) = action.value {
-                let _ = resp
-                    .headers_mut()
-                    .replace_first(&action.header_name, val);
+                let _ = resp.headers_mut().replace_first(&action.header_name, val);
             }
         }
         HmrActionType::Modify => {
             if let (Some(ref pattern), Some(ref replacement)) = (&action.pattern, &action.value) {
                 // Read current value into owned string to avoid borrow conflict
-                let current_val = resp.headers().get(&action.header_name).map(|v| v.to_string());
+                let current_val = resp
+                    .headers()
+                    .get(&action.header_name)
+                    .map(|v| v.to_string());
                 if let Some(current) = current_val {
                     let new_val = pattern.replace(&current, replacement);
                     let _ = resp
@@ -430,8 +426,12 @@ mod tests {
         let uri = Uri::parse(uri).unwrap();
         let rl = RequestLine::new(method, uri);
         let mut headers = Headers::new();
-        headers.push("Via", "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776").unwrap();
-        headers.push("From", "<sip:alice@example.com>;tag=abc").unwrap();
+        headers
+            .push("Via", "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776")
+            .unwrap();
+        headers
+            .push("From", "<sip:alice@example.com>;tag=abc")
+            .unwrap();
         headers.push("To", "<sip:bob@example.com>").unwrap();
         headers.push("Call-ID", "test123@10.0.0.1").unwrap();
         headers.push("CSeq", "1 INVITE").unwrap();
@@ -441,8 +441,12 @@ mod tests {
     fn make_response(code: u16) -> Response {
         let sl = StatusLine::new(code, "OK").unwrap();
         let mut headers = Headers::new();
-        headers.push("Via", "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776").unwrap();
-        headers.push("From", "<sip:alice@example.com>;tag=abc").unwrap();
+        headers
+            .push("Via", "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK776")
+            .unwrap();
+        headers
+            .push("From", "<sip:alice@example.com>;tag=abc")
+            .unwrap();
         headers.push("To", "<sip:bob@example.com>;tag=xyz").unwrap();
         headers.push("Call-ID", "test123@10.0.0.1").unwrap();
         headers.push("CSeq", "1 INVITE").unwrap();
@@ -575,10 +579,7 @@ mod tests {
         let mut req = make_request(Method::Invite, "sip:bob@example.com");
 
         engine.apply_request_ingress(&mut req, None);
-        assert_eq!(
-            req.headers().get("Call-ID"),
-            Some("new-call-id@10.0.0.2")
-        );
+        assert_eq!(req.headers().get("Call-ID"), Some("new-call-id@10.0.0.2"));
     }
 
     #[test]

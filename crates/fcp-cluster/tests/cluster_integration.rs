@@ -192,20 +192,16 @@ async fn test_call_registry_cross_node_lookup() {
     assert_eq!(owner.as_deref(), Some("node-a"));
 
     // Node B should not think it owns the call
-    assert!(
-        !reg_b
-            .is_local_call("call-001")
-            .await
-            .expect("is_local_call failed")
-    );
+    assert!(!reg_b
+        .is_local_call("call-001")
+        .await
+        .expect("is_local_call failed"));
 
     // Node A should think it owns the call
-    assert!(
-        reg_a
-            .is_local_call("call-001")
-            .await
-            .expect("is_local_call failed")
-    );
+    assert!(reg_a
+        .is_local_call("call-001")
+        .await
+        .expect("is_local_call failed"));
 
     // Cleanup
     reg_a.unregister_call("call-001").await.unwrap();

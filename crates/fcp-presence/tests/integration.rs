@@ -8,8 +8,7 @@ use fcp_events::InMemoryEventBus;
 use std::collections::HashSet;
 
 use fcp_presence::{
-    PresenceAuthPolicy, PresenceConfig, PresenceManager, PresenceState,
-    PresenceUpdate, Watcher,
+    PresenceAuthPolicy, PresenceConfig, PresenceManager, PresenceState, PresenceUpdate, Watcher,
 };
 
 fn test_config() -> PresenceConfig {
@@ -33,7 +32,10 @@ fn make_watcher(
         subscription_id: uuid::Uuid::new_v4().to_string(),
         expires_at: Instant::now() + Duration::from_secs(3600),
         tenant_id: tenant_id.clone(),
-        contact_uri: format!("sip:{}@192.168.1.100:5060", watcher_aor.split('@').next().unwrap_or("user")),
+        contact_uri: format!(
+            "sip:{}@192.168.1.100:5060",
+            watcher_aor.split('@').next().unwrap_or("user")
+        ),
         event_package: event_package.to_string(),
         sip_call_id: None,
         sip_from_tag: None,
@@ -105,13 +107,15 @@ async fn test_publish_etag_full_lifecycle() {
     let tenant = TenantId::new();
 
     // Initial PUBLISH
-    let etag1 = mgr.store_publish(
-        "alice@example.com",
-        PresenceState::Open,
-        Some("Available".into()),
-        &tenant,
-        3600,
-    ).await;
+    let etag1 = mgr
+        .store_publish(
+            "alice@example.com",
+            PresenceState::Open,
+            Some("Available".into()),
+            &tenant,
+            3600,
+        )
+        .await;
     assert!(!etag1.is_empty());
 
     // Refresh → new ETag
@@ -136,13 +140,15 @@ async fn test_publish_etag_full_lifecycle() {
     assert!(mgr.refresh_publish(&etag3, 3600).is_err());
 
     // Cleanup should handle expired PUBLISHes
-    let etag_short = mgr.store_publish(
-        "alice@example.com",
-        PresenceState::Open,
-        None,
-        &tenant,
-        0, // expires immediately
-    ).await;
+    let etag_short = mgr
+        .store_publish(
+            "alice@example.com",
+            PresenceState::Open,
+            None,
+            &tenant,
+            0, // expires immediately
+        )
+        .await;
     let update = PresenceUpdate {
         aor: "alice@example.com".to_string(),
         state: PresenceState::Open,
@@ -259,7 +265,11 @@ async fn test_persistence_roundtrip_with_none_store() {
     assert_eq!(mgr.cleanup_expired_subscriptions_from_store().await, 0);
 
     // Remove operations work
-    mgr.remove_watcher("alice@example.com", &mgr.get_watchers("alice@example.com")[0].subscription_id).await;
+    mgr.remove_watcher(
+        "alice@example.com",
+        &mgr.get_watchers("alice@example.com")[0].subscription_id,
+    )
+    .await;
     mgr.remove_auth_policy("alice@example.com");
     mgr.remove_presence("alice@example.com", &tenant).await;
 }
@@ -399,7 +409,12 @@ async fn test_get_all_watchers_including_winfo() {
     mgr.add_watcher(watcher).await.unwrap();
 
     // Add a winfo watcher
-    let winfo_watcher = make_watcher("admin@example.com", "alice@example.com", &tenant, "presence.winfo");
+    let winfo_watcher = make_watcher(
+        "admin@example.com",
+        "alice@example.com",
+        &tenant,
+        "presence.winfo",
+    );
     mgr.add_winfo_watcher(winfo_watcher);
 
     let regular = mgr.get_all_watchers();
@@ -438,7 +453,10 @@ async fn test_expired_watchers_filtered_at_read_time() {
 
     // Read-time filter: only valid watcher visible
     assert_eq!(mgr.get_watchers("alice@example.com").len(), 1);
-    assert_eq!(mgr.get_watchers("alice@example.com")[0].watcher_aor, "bob@example.com");
+    assert_eq!(
+        mgr.get_watchers("alice@example.com")[0].watcher_aor,
+        "bob@example.com"
+    );
 
     // get_all_watchers() also filtered
     assert_eq!(mgr.get_all_watchers().len(), 1);
@@ -447,11 +465,19 @@ async fn test_expired_watchers_filtered_at_read_time() {
     assert_eq!(mgr.total_watcher_count(), 1);
 
     // find_existing_watcher() skips expired
-    assert!(mgr.find_existing_watcher("charlie@example.com", "alice@example.com", "presence").is_none());
-    assert!(mgr.find_existing_watcher("bob@example.com", "alice@example.com", "presence").is_some());
+    assert!(mgr
+        .find_existing_watcher("charlie@example.com", "alice@example.com", "presence")
+        .is_none());
+    assert!(mgr
+        .find_existing_watcher("bob@example.com", "alice@example.com", "presence")
+        .is_some());
 
     // get_watchers_by_event() filtered
-    assert_eq!(mgr.get_watchers_by_event("alice@example.com", "presence").len(), 1);
+    assert_eq!(
+        mgr.get_watchers_by_event("alice@example.com", "presence")
+            .len(),
+        1
+    );
 
     // Cleanup still removes the expired watcher from internal storage
     let removed = mgr.cleanup_expired_watchers();
@@ -466,7 +492,12 @@ async fn test_expired_winfo_watchers_filtered() {
     let tenant = TenantId::new();
 
     // Add valid winfo watcher
-    let valid = make_watcher("admin@example.com", "alice@example.com", &tenant, "presence.winfo");
+    let valid = make_watcher(
+        "admin@example.com",
+        "alice@example.com",
+        &tenant,
+        "presence.winfo",
+    );
     mgr.add_winfo_watcher(valid);
 
     // Add expired winfo watcher
@@ -502,7 +533,12 @@ async fn test_winfo_subscribe_unsubscribe() {
     let mgr = PresenceManager::new(test_config(), None);
     let tenant = TenantId::new();
 
-    let watcher = make_watcher("admin@example.com", "alice@example.com", &tenant, "presence.winfo");
+    let watcher = make_watcher(
+        "admin@example.com",
+        "alice@example.com",
+        &tenant,
+        "presence.winfo",
+    );
     let sub_id = watcher.subscription_id.clone();
     mgr.add_winfo_watcher(watcher);
 
@@ -600,7 +636,12 @@ async fn test_winfo_per_aor_isolation() {
     let w1 = make_watcher("bob@example.com", "alice@example.com", &tenant, "presence");
     mgr.add_watcher(w1).await.unwrap();
 
-    let w2 = make_watcher("charlie@example.com", "dave@example.com", &tenant, "presence");
+    let w2 = make_watcher(
+        "charlie@example.com",
+        "dave@example.com",
+        &tenant,
+        "presence",
+    );
     mgr.add_watcher(w2).await.unwrap();
 
     let xml_alice = mgr.generate_watcherinfo("alice@example.com").unwrap();
@@ -723,7 +764,13 @@ async fn test_rapid_publish_modify_remove() {
 
     for _ in 0..50 {
         let etag = mgr
-            .store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600)
+            .store_publish(
+                "alice@example.com",
+                PresenceState::Open,
+                None,
+                &tenant,
+                3600,
+            )
             .await;
         let etag2 = mgr
             .modify_publish(&etag, PresenceState::Busy, None, 3600)
@@ -811,10 +858,22 @@ async fn test_composition_priority_consistency() {
 
     // Store 3 PUBLISHes with different priorities
     let etag_open = mgr
-        .store_publish("alice@example.com", PresenceState::Open, None, &tenant, 3600)
+        .store_publish(
+            "alice@example.com",
+            PresenceState::Open,
+            None,
+            &tenant,
+            3600,
+        )
         .await;
     let etag_busy = mgr
-        .store_publish("alice@example.com", PresenceState::Busy, None, &tenant, 3600)
+        .store_publish(
+            "alice@example.com",
+            PresenceState::Busy,
+            None,
+            &tenant,
+            3600,
+        )
         .await;
     let etag_phone = mgr
         .store_publish(
@@ -1225,7 +1284,11 @@ async fn test_cleanup_under_load() {
     let start = Instant::now();
     let removed = mgr.cleanup_expired_watchers();
     let elapsed = start.elapsed();
-    eprintln!("Cleaned up {} expired watchers in {:?}", removed.len(), elapsed);
+    eprintln!(
+        "Cleaned up {} expired watchers in {:?}",
+        removed.len(),
+        elapsed
+    );
 
     assert_eq!(removed.len(), 5000);
     assert_eq!(mgr.total_watcher_count(), 5000);
@@ -1235,8 +1298,8 @@ async fn test_cleanup_under_load() {
 // Item 14: Advanced authorization tests
 // ===========================================================================
 
-use std::collections::HashMap;
 use fcp_presence::TimeWindow;
+use std::collections::HashMap;
 
 /// Test: per-event-package allow blocks other packages.
 #[tokio::test]
@@ -1244,7 +1307,10 @@ async fn test_event_package_allow_blocks_other_packages() {
     let mgr = PresenceManager::new(test_config(), None);
 
     let mut event_allow = HashMap::new();
-    event_allow.insert("presence".to_string(), HashSet::from(["bob@example.com".to_string()]));
+    event_allow.insert(
+        "presence".to_string(),
+        HashSet::from(["bob@example.com".to_string()]),
+    );
 
     let policy = PresenceAuthPolicy {
         default_allow: true,
@@ -1271,7 +1337,10 @@ async fn test_event_package_block_specific() {
     let mgr = PresenceManager::new(test_config(), None);
 
     let mut event_block = HashMap::new();
-    event_block.insert("dialog".to_string(), HashSet::from(["bob@example.com".to_string()]));
+    event_block.insert(
+        "dialog".to_string(),
+        HashSet::from(["bob@example.com".to_string()]),
+    );
 
     let policy = PresenceAuthPolicy {
         default_allow: true,
@@ -1299,8 +1368,16 @@ async fn test_domain_wildcard_allow() {
     mgr.set_auth_policy("alice@example.com", policy, &TenantId::nil());
 
     // Support users allowed
-    assert!(mgr.is_watcher_authorized("agent1@support.example.com", "alice@example.com", "presence"));
-    assert!(mgr.is_watcher_authorized("agent2@support.example.com", "alice@example.com", "presence"));
+    assert!(mgr.is_watcher_authorized(
+        "agent1@support.example.com",
+        "alice@example.com",
+        "presence"
+    ));
+    assert!(mgr.is_watcher_authorized(
+        "agent2@support.example.com",
+        "alice@example.com",
+        "presence"
+    ));
     // Other users blocked (default_allow=false)
     assert!(!mgr.is_watcher_authorized("bob@other.com", "alice@example.com", "presence"));
 }

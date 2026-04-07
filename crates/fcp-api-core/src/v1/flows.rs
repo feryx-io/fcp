@@ -21,7 +21,11 @@ fn get_flow_store(state: &ApiState) -> Result<Arc<dyn FlowStore>, ApiError> {
         .ok_or_else(|| ApiError::Internal("Flow store not available".to_string()))
 }
 
-fn ensure_flow_in_tenant(flow: FlowDefinition, tenant_id: &str, id: &str) -> Result<FlowDefinition, ApiError> {
+fn ensure_flow_in_tenant(
+    flow: FlowDefinition,
+    tenant_id: &str,
+    id: &str,
+) -> Result<FlowDefinition, ApiError> {
     if flow.tenant_id.as_deref() == Some(tenant_id) {
         Ok(flow)
     } else {

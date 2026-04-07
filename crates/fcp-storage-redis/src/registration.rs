@@ -44,10 +44,10 @@ impl RegistrationStore for RedisRegistrationStore {
         let key = self.reg_key(aor);
         let mut conn = self.storage.connection();
 
-        let entries: std::collections::HashMap<String, String> =
-            conn.hgetall(&key).await.map_err(|e| {
-                anyhow::anyhow!("Redis HGETALL failed for {}: {}", key, e)
-            })?;
+        let entries: std::collections::HashMap<String, String> = conn
+            .hgetall(&key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Redis HGETALL failed for {}: {}", key, e))?;
 
         if entries.is_empty() {
             return Ok(Vec::new());
@@ -217,10 +217,10 @@ impl RegistrationStore for RedisRegistrationStore {
                 .map_err(|e| anyhow::anyhow!("Redis SCAN failed: {}", e))?;
 
             for key in &keys {
-                let entries: std::collections::HashMap<String, String> =
-                    conn.hgetall(key).await.map_err(|e| {
-                        anyhow::anyhow!("Redis HGETALL failed for {}: {}", key, e)
-                    })?;
+                let entries: std::collections::HashMap<String, String> = conn
+                    .hgetall(key)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Redis HGETALL failed for {}: {}", key, e))?;
 
                 for (_contact, json) in &entries {
                     match serde_json::from_str::<Registration>(json) {
@@ -267,7 +267,11 @@ mod tests {
 
     #[test]
     fn test_registration_serialization() {
-        let reg = make_registration("sip:alice@example.com", "sip:alice@192.168.1.100:5060", 3600);
+        let reg = make_registration(
+            "sip:alice@example.com",
+            "sip:alice@192.168.1.100:5060",
+            3600,
+        );
         let json = serde_json::to_string(&reg).unwrap();
         let deserialized: Registration = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.aor, reg.aor);
@@ -279,8 +283,8 @@ mod tests {
     #[cfg(test)]
     mod integration {
         use super::*;
-        use crate::{RedisConfig, RedisStorage};
         use crate::registration::RedisRegistrationStore;
+        use crate::{RedisConfig, RedisStorage};
         use fcp_core::storage::RegistrationStore;
 
         async fn connect_redis() -> Option<RedisRegistrationStore> {
@@ -314,14 +318,20 @@ mod tests {
             );
             store.put_registration(reg.clone()).await.unwrap();
 
-            let regs = store.get_registrations("sip:alice@example.com").await.unwrap();
+            let regs = store
+                .get_registrations("sip:alice@example.com")
+                .await
+                .unwrap();
             assert_eq!(regs.len(), 1);
             assert_eq!(regs[0].aor, "sip:alice@example.com");
             assert_eq!(regs[0].contact, "sip:alice@192.168.1.100:5060");
             assert_eq!(regs[0].call_id, "test-call-id");
 
             // Cleanup
-            store.delete_all_registrations("sip:alice@example.com").await.unwrap();
+            store
+                .delete_all_registrations("sip:alice@example.com")
+                .await
+                .unwrap();
         }
 
         #[tokio::test]
@@ -355,11 +365,20 @@ mod tests {
             };
 
             let aor = "sip:carol@example.com";
-            store.put_registration(make_registration(aor, "sip:carol@10.0.0.1:5060", 3600)).await.unwrap();
-            store.put_registration(make_registration(aor, "sip:carol@10.0.0.2:5060", 3600)).await.unwrap();
+            store
+                .put_registration(make_registration(aor, "sip:carol@10.0.0.1:5060", 3600))
+                .await
+                .unwrap();
+            store
+                .put_registration(make_registration(aor, "sip:carol@10.0.0.2:5060", 3600))
+                .await
+                .unwrap();
 
             // Delete one contact
-            store.delete_registration(aor, "sip:carol@10.0.0.1:5060").await.unwrap();
+            store
+                .delete_registration(aor, "sip:carol@10.0.0.1:5060")
+                .await
+                .unwrap();
 
             let regs = store.get_registrations(aor).await.unwrap();
             assert_eq!(regs.len(), 1);
@@ -377,8 +396,14 @@ mod tests {
             };
 
             let aor = "sip:dave@example.com";
-            store.put_registration(make_registration(aor, "sip:dave@10.0.0.1:5060", 3600)).await.unwrap();
-            store.put_registration(make_registration(aor, "sip:dave@10.0.0.2:5060", 3600)).await.unwrap();
+            store
+                .put_registration(make_registration(aor, "sip:dave@10.0.0.1:5060", 3600))
+                .await
+                .unwrap();
+            store
+                .put_registration(make_registration(aor, "sip:dave@10.0.0.2:5060", 3600))
+                .await
+                .unwrap();
 
             store.delete_all_registrations(aor).await.unwrap();
 
@@ -416,9 +441,18 @@ mod tests {
 
             let aor1 = "sip:count1@example.com";
             let aor2 = "sip:count2@example.com";
-            store.put_registration(make_registration(aor1, "sip:c1@10.0.0.1:5060", 3600)).await.unwrap();
-            store.put_registration(make_registration(aor2, "sip:c2@10.0.0.1:5060", 3600)).await.unwrap();
-            store.put_registration(make_registration(aor2, "sip:c2@10.0.0.2:5060", 3600)).await.unwrap();
+            store
+                .put_registration(make_registration(aor1, "sip:c1@10.0.0.1:5060", 3600))
+                .await
+                .unwrap();
+            store
+                .put_registration(make_registration(aor2, "sip:c2@10.0.0.1:5060", 3600))
+                .await
+                .unwrap();
+            store
+                .put_registration(make_registration(aor2, "sip:c2@10.0.0.2:5060", 3600))
+                .await
+                .unwrap();
 
             let count = store.registration_count().await.unwrap();
             // At least 3 from our test (may be more if other tests ran concurrently)
@@ -438,8 +472,14 @@ mod tests {
 
             let aor1 = "sip:all1@example.com";
             let aor2 = "sip:all2@example.com";
-            store.put_registration(make_registration(aor1, "sip:a1@10.0.0.1:5060", 3600)).await.unwrap();
-            store.put_registration(make_registration(aor2, "sip:a2@10.0.0.1:5060", 3600)).await.unwrap();
+            store
+                .put_registration(make_registration(aor1, "sip:a1@10.0.0.1:5060", 3600))
+                .await
+                .unwrap();
+            store
+                .put_registration(make_registration(aor2, "sip:a2@10.0.0.1:5060", 3600))
+                .await
+                .unwrap();
 
             let all = store.get_all_registrations().await.unwrap();
             assert!(all.len() >= 2, "Expected at least 2, got {}", all.len());
@@ -456,7 +496,10 @@ mod tests {
                 None => return,
             };
 
-            let regs = store.get_registrations("sip:nonexistent@example.com").await.unwrap();
+            let regs = store
+                .get_registrations("sip:nonexistent@example.com")
+                .await
+                .unwrap();
             assert!(regs.is_empty());
         }
 

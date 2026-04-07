@@ -226,7 +226,11 @@ async fn main() -> Result<()> {
                         node_id: config.service.node_id.clone(),
                         node_type: config.service.service_type.clone(),
                         http_address: config.http.bind_address,
-                        sip_address: config.sip.udp_bind.parse().unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
+                        sip_address: config
+                            .sip
+                            .udp_bind
+                            .parse()
+                            .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                         capabilities: vec!["webrtc".to_string(), "oap_session".to_string()],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()
@@ -235,8 +239,10 @@ async fn main() -> Result<()> {
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     };
-                    let cm = fcp_cluster::ClusterManager::new(redis, member)
-                        .with_intervals(config.cluster.heartbeat_interval_secs, config.cluster.heartbeat_ttl_secs);
+                    let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
+                        config.cluster.heartbeat_interval_secs,
+                        config.cluster.heartbeat_ttl_secs,
+                    );
                     let _handle = cm.start();
                     info!("Cluster membership started");
                     Some(cm)
@@ -267,16 +273,18 @@ async fn main() -> Result<()> {
         rtp_ports = format!("{}-{}", config.media.rtp_port_start, config.media.rtp_port_end),
         "fcp-webrtc-gw ready"
     );
-    info!("  WebRTC API: http://{}/v1/webrtc/connections", config.http.bind_address);
+    info!(
+        "  WebRTC API: http://{}/v1/webrtc/connections",
+        config.http.bind_address
+    );
     info!("  Call API:   http://{}/v1/calls", config.http.bind_address);
     info!("  Health:     http://{}/health", config.http.bind_address);
 
     // 11. Serve with graceful shutdown
     let shutdown_timeout = Duration::from_secs(config.service.shutdown_timeout_secs);
     let shutdown_signal = async move {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("Failed to register SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler");
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -288,7 +296,10 @@ async fn main() -> Result<()> {
         }
 
         if !shutdown_timeout.is_zero() {
-            info!(timeout_secs = shutdown_timeout.as_secs(), "Draining connections...");
+            info!(
+                timeout_secs = shutdown_timeout.as_secs(),
+                "Draining connections..."
+            );
         }
     };
 

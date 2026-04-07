@@ -12,9 +12,9 @@
 
 use crate::cps::CpsChecker;
 use crate::lcr::{LcrConfig, LcrRouteTable, LoadBalanceStrategy};
+use crate::trunk::{TrunkConfig, TrunkDirection};
 use crate::trunk_health::TrunkHealthMonitor;
 use crate::trunk_quality::TrunkQualityTracker;
-use crate::trunk::{TrunkConfig, TrunkDirection};
 use fcp_sip::{OutboundRoute, OutboundRouteProvider};
 use rand::Rng;
 use std::sync::Arc;
@@ -126,10 +126,7 @@ impl TrunkRouter {
         let lcr_table = match &self.lcr {
             Some(table) => table,
             None => {
-                return self
-                    .select_trunk(direction)
-                    .into_iter()
-                    .collect();
+                return self.select_trunk(direction).into_iter().collect();
             }
         };
 
@@ -138,10 +135,7 @@ impl TrunkRouter {
 
         if matched_routes.is_empty() {
             // No LCR routes match — fall back to legacy selection
-            return self
-                .select_trunk(direction)
-                .into_iter()
-                .collect();
+            return self.select_trunk(direction).into_iter().collect();
         }
 
         // For each matched route, look up the trunk and apply filters
@@ -171,7 +165,12 @@ impl TrunkRouter {
                 }
             }
 
-            candidates.push((trunk, route.prefix_len, route.cost_per_minute, route.priority));
+            candidates.push((
+                trunk,
+                route.prefix_len,
+                route.cost_per_minute,
+                route.priority,
+            ));
         }
 
         if candidates.is_empty() {
@@ -185,7 +184,10 @@ impl TrunkRouter {
         let max_results = (self.lcr_config.max_failover_attempts + 1) as usize;
         candidates.truncate(max_results);
 
-        candidates.into_iter().map(|(trunk, _, _, _)| trunk).collect()
+        candidates
+            .into_iter()
+            .map(|(trunk, _, _, _)| trunk)
+            .collect()
     }
 
     /// Check if a trunk passes standard eligibility filters.
@@ -213,10 +215,7 @@ impl TrunkRouter {
     }
 
     /// Apply load balancing strategy to reorder equal-tier candidates.
-    fn apply_load_balancing(
-        &self,
-        candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>,
-    ) {
+    fn apply_load_balancing(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
         match self.lcr_config.load_balance_strategy {
             LoadBalanceStrategy::LeastCost => {
                 // Already sorted by prefix_len desc, cost asc, priority asc — no change needed
@@ -234,10 +233,7 @@ impl TrunkRouter {
     }
 
     /// Rotate among candidates that share the same tier (prefix_len + cost + priority).
-    fn apply_round_robin(
-        &self,
-        candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>,
-    ) {
+    fn apply_round_robin(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
         if candidates.len() <= 1 {
             return;
         }
@@ -245,10 +241,18 @@ impl TrunkRouter {
         // Group equal-tier candidates and rotate within groups
         let mut i = 0;
         while i < candidates.len() {
-            let tier = (candidates[i].1, format!("{:.10}", candidates[i].2), candidates[i].3);
+            let tier = (
+                candidates[i].1,
+                format!("{:.10}", candidates[i].2),
+                candidates[i].3,
+            );
             let start = i;
             while i < candidates.len() {
-                let curr = (candidates[i].1, format!("{:.10}", candidates[i].2), candidates[i].3);
+                let curr = (
+                    candidates[i].1,
+                    format!("{:.10}", candidates[i].2),
+                    candidates[i].3,
+                );
                 if curr != tier {
                     break;
                 }
@@ -268,10 +272,7 @@ impl TrunkRouter {
     }
 
     /// Weighted random selection among equal-tier candidates.
-    fn apply_weighted_random(
-        &self,
-        candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>,
-    ) {
+    fn apply_weighted_random(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
         if candidates.len() <= 1 {
             return;
         }
@@ -279,10 +280,18 @@ impl TrunkRouter {
         let mut rng = rand::thread_rng();
         let mut i = 0;
         while i < candidates.len() {
-            let tier = (candidates[i].1, format!("{:.10}", candidates[i].2), candidates[i].3);
+            let tier = (
+                candidates[i].1,
+                format!("{:.10}", candidates[i].2),
+                candidates[i].3,
+            );
             let start = i;
             while i < candidates.len() {
-                let curr = (candidates[i].1, format!("{:.10}", candidates[i].2), candidates[i].3);
+                let curr = (
+                    candidates[i].1,
+                    format!("{:.10}", candidates[i].2),
+                    candidates[i].3,
+                );
                 if curr != tier {
                     break;
                 }
@@ -291,8 +300,10 @@ impl TrunkRouter {
             let group_len = i - start;
             if group_len > 1 {
                 // Shuffle within group using weighted random
-                let total_weight: u32 =
-                    candidates[start..i].iter().map(|(t, _, _, _)| t.weight).sum();
+                let total_weight: u32 = candidates[start..i]
+                    .iter()
+                    .map(|(t, _, _, _)| t.weight)
+                    .sum();
                 if total_weight > 0 {
                     let pick = rng.gen_range(0..total_weight);
                     let mut acc = 0u32;
@@ -310,10 +321,7 @@ impl TrunkRouter {
     }
 
     /// Sort equal-tier candidates by concurrent calls (ascending).
-    fn apply_least_connections(
-        &self,
-        candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>,
-    ) {
+    fn apply_least_connections(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
         if candidates.len() <= 1 {
             return;
         }
@@ -321,9 +329,10 @@ impl TrunkRouter {
         // Stable sort preserves existing ordering within ties
         candidates.sort_by(|a, b| {
             // First by tier (prefix_len desc, cost asc, priority asc)
-            let tier_cmp = b.1.cmp(&a.1)
-                .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-                .then(a.3.cmp(&b.3));
+            let tier_cmp =
+                b.1.cmp(&a.1)
+                    .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                    .then(a.3.cmp(&b.3));
 
             if tier_cmp != std::cmp::Ordering::Equal {
                 return tier_cmp;
@@ -376,7 +385,11 @@ impl TrunkRouter {
     }
 
     /// Build an OutboundRoute from a trunk and destination URI.
-    fn build_outbound_route(&self, trunk: &TrunkConfig, destination_uri: &str) -> Option<OutboundRoute> {
+    fn build_outbound_route(
+        &self,
+        trunk: &TrunkConfig,
+        destination_uri: &str,
+    ) -> Option<OutboundRoute> {
         // Extract user part from destination URI
         let user_part = destination_uri
             .strip_prefix("sip:")
@@ -634,7 +647,11 @@ mod tests {
 
     // ── LCR selection tests ──────────────────────────────────────────────
 
-    fn lcr_setup() -> (Vec<TrunkConfig>, Arc<TrunkHealthMonitor>, Arc<TrunkQualityTracker>) {
+    fn lcr_setup() -> (
+        Vec<TrunkConfig>,
+        Arc<TrunkHealthMonitor>,
+        Arc<TrunkQualityTracker>,
+    ) {
         let trunks = vec![
             make_trunk("us-cheap", 100, 50, TrunkDirection::Upstream),
             make_trunk("us-premium", 100, 50, TrunkDirection::Upstream),
@@ -653,10 +670,34 @@ mod tests {
         LcrConfig {
             enabled: true,
             routes: vec![
-                LcrRouteEntry { prefix: "+1".into(), trunk_name: "us-cheap".into(), cost_per_minute: 0.01, priority: 100, enabled: true },
-                LcrRouteEntry { prefix: "+1".into(), trunk_name: "us-premium".into(), cost_per_minute: 0.05, priority: 100, enabled: true },
-                LcrRouteEntry { prefix: "+1212".into(), trunk_name: "nyc-local".into(), cost_per_minute: 0.005, priority: 100, enabled: true },
-                LcrRouteEntry { prefix: "+44".into(), trunk_name: "uk-carrier".into(), cost_per_minute: 0.08, priority: 100, enabled: true },
+                LcrRouteEntry {
+                    prefix: "+1".into(),
+                    trunk_name: "us-cheap".into(),
+                    cost_per_minute: 0.01,
+                    priority: 100,
+                    enabled: true,
+                },
+                LcrRouteEntry {
+                    prefix: "+1".into(),
+                    trunk_name: "us-premium".into(),
+                    cost_per_minute: 0.05,
+                    priority: 100,
+                    enabled: true,
+                },
+                LcrRouteEntry {
+                    prefix: "+1212".into(),
+                    trunk_name: "nyc-local".into(),
+                    cost_per_minute: 0.005,
+                    priority: 100,
+                    enabled: true,
+                },
+                LcrRouteEntry {
+                    prefix: "+44".into(),
+                    trunk_name: "uk-carrier".into(),
+                    cost_per_minute: 0.08,
+                    priority: 100,
+                    enabled: true,
+                },
             ],
             load_balance_strategy: LoadBalanceStrategy::LeastCost,
             min_asr: 0.0,
@@ -670,7 +711,8 @@ mod tests {
         let (trunks, health, quality) = lcr_setup();
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), lcr_config(), quality);
 
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+12125551234@example.com");
+        let selected =
+            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+12125551234@example.com");
         // nyc-local (+1212, $0.005) first, then us-cheap (+1, $0.01), then us-premium (+1, $0.05)
         assert_eq!(selected.len(), 3);
         assert_eq!(selected[0].name, "nyc-local");
@@ -720,7 +762,8 @@ mod tests {
         config.min_asr = 0.5; // 50% minimum
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
+        let selected =
+            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
         // us-cheap should be excluded (ASR 10% < 50% min)
         // Only us-premium should remain
         assert_eq!(selected.len(), 1);
@@ -746,7 +789,8 @@ mod tests {
         config.min_asr = 0.5;
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
+        let selected =
+            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
         // us-cheap should NOT be excluded (insufficient samples)
         let names: Vec<&str> = selected.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"us-cheap"));
@@ -760,7 +804,8 @@ mod tests {
 
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+12125551234@host");
+        let selected =
+            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+12125551234@host");
         // max_failover_attempts=1 → 2 results max
         assert_eq!(selected.len(), 2);
     }
@@ -778,8 +823,20 @@ mod tests {
         let config = LcrConfig {
             enabled: true,
             routes: vec![
-                LcrRouteEntry { prefix: "+1".into(), trunk_name: "us-cheap".into(), cost_per_minute: 0.01, priority: 100, enabled: true },
-                LcrRouteEntry { prefix: "+1".into(), trunk_name: "us-premium".into(), cost_per_minute: 0.01, priority: 100, enabled: true },
+                LcrRouteEntry {
+                    prefix: "+1".into(),
+                    trunk_name: "us-cheap".into(),
+                    cost_per_minute: 0.01,
+                    priority: 100,
+                    enabled: true,
+                },
+                LcrRouteEntry {
+                    prefix: "+1".into(),
+                    trunk_name: "us-premium".into(),
+                    cost_per_minute: 0.01,
+                    priority: 100,
+                    enabled: true,
+                },
             ],
             load_balance_strategy: LoadBalanceStrategy::LeastConnections,
             min_asr: 0.0,
@@ -789,7 +846,8 @@ mod tests {
 
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), config, quality);
 
-        let selected = router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
+        let selected =
+            router.select_trunks_ordered(TrunkDirection::Upstream, "sip:+15551234567@host");
         // Both us-cheap and us-premium match +1 at same cost and priority
         // With LeastConnections, us-premium (0 calls) should come before us-cheap (3 calls)
         assert!(selected.len() >= 2);
@@ -802,7 +860,9 @@ mod tests {
         let (trunks, health, quality) = lcr_setup();
         let router = TrunkRouter::with_lcr(trunks, health, no_cps(), lcr_config(), quality);
 
-        let routes = router.resolve_outbound_ordered("sip:+12125551234@example.com").await;
+        let routes = router
+            .resolve_outbound_ordered("sip:+12125551234@example.com")
+            .await;
         assert_eq!(routes.len(), 3);
         assert_eq!(routes[0].trunk_name, Some("nyc-local".to_string()));
         assert_eq!(routes[1].trunk_name, Some("us-cheap".to_string()));
@@ -817,7 +877,12 @@ mod tests {
     async fn test_resolve_outbound_with_codec_config() {
         use crate::trunk::TrunkCodecConfig;
 
-        let mut trunks = vec![make_trunk("codec-trunk", 100, 100, TrunkDirection::Upstream)];
+        let mut trunks = vec![make_trunk(
+            "codec-trunk",
+            100,
+            100,
+            TrunkDirection::Upstream,
+        )];
         trunks[0].codec = TrunkCodecConfig {
             allowed_codecs: vec!["PCMU".into(), "PCMA".into()],
             allow_transcoding: true,
@@ -826,7 +891,9 @@ mod tests {
         health.record_success("codec-trunk");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let route = router.resolve_outbound("sip:+15551234567@example.com").await;
+        let route = router
+            .resolve_outbound("sip:+15551234567@example.com")
+            .await;
         assert!(route.is_some());
         let route = route.unwrap();
         assert_eq!(route.trunk_name, Some("codec-trunk".to_string()));
@@ -838,12 +905,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_outbound_no_codec_restriction() {
-        let trunks = vec![make_trunk("plain-trunk", 100, 100, TrunkDirection::Upstream)];
+        let trunks = vec![make_trunk(
+            "plain-trunk",
+            100,
+            100,
+            TrunkDirection::Upstream,
+        )];
         let health = Arc::new(TrunkHealthMonitor::new(&trunks));
         health.record_success("plain-trunk");
         let router = TrunkRouter::new(trunks, health, no_cps());
 
-        let route = router.resolve_outbound("sip:+15551234567@example.com").await;
+        let route = router
+            .resolve_outbound("sip:+15551234567@example.com")
+            .await;
         assert!(route.is_some());
         let route = route.unwrap();
         assert_eq!(route.trunk_name, Some("plain-trunk".to_string()));

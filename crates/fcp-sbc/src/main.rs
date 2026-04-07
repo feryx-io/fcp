@@ -7,11 +7,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_sip::prelude::*;
-use std::collections::HashMap;
 use fcp_sip::registrar::FcpRegistrar;
 use fcp_sip::service::{DialogService, TransactionService};
 use fcp_sip::transport::ConnectionPool;
 use sip_observe::{set_transport_metrics, TracingTransportMetrics};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -30,10 +30,10 @@ mod metrics;
 mod nat;
 mod recording_store;
 mod registration_store;
-mod topology;
 mod siprec;
 mod srtp;
 mod stir_shaken;
+mod topology;
 
 use admission::AdmissionController;
 use cli::Cli;
@@ -141,11 +141,8 @@ async fn main() -> Result<()> {
     // 7b. Build HMR engine (if enabled) and wrap dispatcher for egress
     let hmr_engine = if sbc_config.header_manipulation.enabled {
         Some(Arc::new(
-            HeaderManipulationEngine::new(
-                &sbc_config.header_manipulation,
-                &sbc_config.trunks,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to compile HMR rules: {e}"))?,
+            HeaderManipulationEngine::new(&sbc_config.header_manipulation, &sbc_config.trunks)
+                .map_err(|e| anyhow::anyhow!("Failed to compile HMR rules: {e}"))?,
         ))
     } else {
         None
@@ -183,17 +180,16 @@ async fn main() -> Result<()> {
     };
 
     // 7d. Wrap dispatcher with STIR/SHAKEN signing (after HMR, before TransactionManager)
-    let effective_dispatcher: Arc<dyn TransportDispatcher> =
-        if let Some(ref signer) = stir_signer {
-            Arc::new(stir_shaken::StirTransportDispatcher::new(
-                effective_dispatcher,
-                Arc::clone(signer),
-                &sbc_config.trunks,
-                Arc::clone(stir_metrics.as_ref().unwrap()),
-            ))
-        } else {
-            effective_dispatcher
-        };
+    let effective_dispatcher: Arc<dyn TransportDispatcher> = if let Some(ref signer) = stir_signer {
+        Arc::new(stir_shaken::StirTransportDispatcher::new(
+            effective_dispatcher,
+            Arc::clone(signer),
+            &sbc_config.trunks,
+            Arc::clone(stir_metrics.as_ref().unwrap()),
+        ))
+    } else {
+        effective_dispatcher
+    };
 
     // 8. Create TransactionManager (uses effective dispatcher for HMR + STIR egress)
     let transaction_manager =
@@ -211,9 +207,9 @@ async fn main() -> Result<()> {
     let local_uri = create_local_uri(&cli.bind)?;
 
     let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
-    let credential_provider = Arc::new(
-        trunk_auth::TrunkCredentialProvider::from_trunks(&sbc_config.trunks),
-    );
+    let credential_provider = Arc::new(trunk_auth::TrunkCredentialProvider::from_trunks(
+        &sbc_config.trunks,
+    ));
     let integrated_uac = IntegratedUAC::builder()
         .local_uri(local_uri.as_str())
         .local_addr(&local_addr)?
@@ -277,10 +273,7 @@ async fn main() -> Result<()> {
     }
 
     // 12b. Create SIPREC recorder (if configured)
-    let siprec_recorder = siprec::SiprecRecorder::new(
-        sbc_config.siprec.clone(),
-        Arc::clone(&uac),
-    );
+    let siprec_recorder = siprec::SiprecRecorder::new(sbc_config.siprec.clone(), Arc::clone(&uac));
     let siprec_recorder = siprec_recorder.map(Arc::new);
 
     // 12b2. Create quality tracker early (needed by hooks AND TrunkRouter)
@@ -335,7 +328,10 @@ async fn main() -> Result<()> {
         let pg_storage = Arc::new(pg_storage);
         let storage = Arc::new(fcp_core::DynStorage::from_all_in_one(pg_storage.clone()));
         info!(db = %sbc_config.storage.database_url, "CDR storage initialized");
-        (Some(storage), Some(pg_storage as Arc<dyn fcp_core::config_store::ConfigStore>))
+        (
+            Some(storage),
+            Some(pg_storage as Arc<dyn fcp_core::config_store::ConfigStore>),
+        )
     } else {
         (None, None)
     };
@@ -347,41 +343,127 @@ async fn main() -> Result<()> {
         let tid = "_system";
 
         let sections: Vec<(&str, serde_json::Value)> = vec![
-            ("admission", serde_json::to_value(&sbc_config.admission).unwrap_or_default()),
-            ("rate_limit", serde_json::to_value(&sbc_config.rate_limit).unwrap_or_default()),
-            ("security", serde_json::to_value(&sbc_config.security).unwrap_or_default()),
-            ("nat", serde_json::to_value(&sbc_config.nat).unwrap_or_default()),
-            ("siprec", serde_json::to_value(&sbc_config.siprec).unwrap_or_default()),
-            ("metrics", serde_json::to_value(&sbc_config.metrics).unwrap_or_default()),
-            ("lcr", serde_json::to_value(&sbc_config.lcr).unwrap_or_default()),
-            ("header_manipulation", serde_json::to_value(&sbc_config.header_manipulation).unwrap_or_default()),
-            ("stir_shaken", serde_json::to_value(&sbc_config.stir_shaken).unwrap_or_default()),
-            ("b2bua", serde_json::to_value(&sbc_config.b2bua).unwrap_or_default()),
-            ("cluster", serde_json::to_value(&deploy_config.cluster).unwrap_or_default()),
+            (
+                "admission",
+                serde_json::to_value(&sbc_config.admission).unwrap_or_default(),
+            ),
+            (
+                "rate_limit",
+                serde_json::to_value(&sbc_config.rate_limit).unwrap_or_default(),
+            ),
+            (
+                "security",
+                serde_json::to_value(&sbc_config.security).unwrap_or_default(),
+            ),
+            (
+                "nat",
+                serde_json::to_value(&sbc_config.nat).unwrap_or_default(),
+            ),
+            (
+                "siprec",
+                serde_json::to_value(&sbc_config.siprec).unwrap_or_default(),
+            ),
+            (
+                "metrics",
+                serde_json::to_value(&sbc_config.metrics).unwrap_or_default(),
+            ),
+            (
+                "lcr",
+                serde_json::to_value(&sbc_config.lcr).unwrap_or_default(),
+            ),
+            (
+                "header_manipulation",
+                serde_json::to_value(&sbc_config.header_manipulation).unwrap_or_default(),
+            ),
+            (
+                "stir_shaken",
+                serde_json::to_value(&sbc_config.stir_shaken).unwrap_or_default(),
+            ),
+            (
+                "b2bua",
+                serde_json::to_value(&sbc_config.b2bua).unwrap_or_default(),
+            ),
+            (
+                "cluster",
+                serde_json::to_value(&deploy_config.cluster).unwrap_or_default(),
+            ),
         ];
 
         for (section, toml_val) in sections {
             match cs.get_config(svc, section, tid).await {
                 Ok(Some(entry)) => {
                     match section {
-                        "admission" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.admission = v; },
-                        "rate_limit" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.rate_limit = v; },
-                        "security" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.security = v; },
-                        "nat" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.nat = v; },
-                        "siprec" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.siprec = v; },
-                        "metrics" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.metrics = v; },
-                        "lcr" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.lcr = v; },
-                        "header_manipulation" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.header_manipulation = v; },
-                        "stir_shaken" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.stir_shaken = v; },
-                        "b2bua" => if let Ok(v) = serde_json::from_value(entry.value) { sbc_config.b2bua = v; },
+                        "admission" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.admission = v;
+                            }
+                        }
+                        "rate_limit" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.rate_limit = v;
+                            }
+                        }
+                        "security" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.security = v;
+                            }
+                        }
+                        "nat" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.nat = v;
+                            }
+                        }
+                        "siprec" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.siprec = v;
+                            }
+                        }
+                        "metrics" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.metrics = v;
+                            }
+                        }
+                        "lcr" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.lcr = v;
+                            }
+                        }
+                        "header_manipulation" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.header_manipulation = v;
+                            }
+                        }
+                        "stir_shaken" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.stir_shaken = v;
+                            }
+                        }
+                        "b2bua" => {
+                            if let Ok(v) = serde_json::from_value(entry.value) {
+                                sbc_config.b2bua = v;
+                            }
+                        }
                         _ => {}
                     }
-                    info!(service = svc, section, version = entry.version, "loaded config from database");
+                    info!(
+                        service = svc,
+                        section,
+                        version = entry.version,
+                        "loaded config from database"
+                    );
                 }
                 Ok(None) => {
-                    match cs.set_config(svc, section, tid, toml_val, Some("seed")).await {
-                        Ok(version) => info!(service = svc, section, version, "seeded config into database"),
-                        Err(e) => warn!(service = svc, section, error = %e, "failed to seed config"),
+                    match cs
+                        .set_config(svc, section, tid, toml_val, Some("seed"))
+                        .await
+                    {
+                        Ok(version) => info!(
+                            service = svc,
+                            section, version, "seeded config into database"
+                        ),
+                        Err(e) => {
+                            warn!(service = svc, section, error = %e, "failed to seed config")
+                        }
                     }
                 }
                 Err(e) => {
@@ -465,11 +547,11 @@ async fn main() -> Result<()> {
         None, // no flow handler
         sbc_config.b2bua.clone(),
         Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
-        None, // No PBX handler
-        None, // No conference handler
-        None, // No queue handler
-        None, // presence_handler
-        None, // cluster_parking
+        None,          // No PBX handler
+        None,          // No conference handler
+        None,          // No queue handler
+        None,          // presence_handler
+        None,          // cluster_parking
         String::new(), // node_id
     )?);
 
@@ -599,7 +681,10 @@ async fn main() -> Result<()> {
                     let member = fcp_cluster::ClusterMember {
                         node_id: format!("sbc-{}", uuid::Uuid::new_v4()),
                         node_type: "sbc".to_string(),
-                        http_address: cli.health_bind.parse().unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
+                        http_address: cli
+                            .health_bind
+                            .parse()
+                            .unwrap_or_else(|_| "0.0.0.0:8080".parse().unwrap()),
                         sip_address: bind_addr,
                         capabilities: vec!["sbc".to_string(), "trunking".to_string()],
                         active_calls: 0,
@@ -609,8 +694,10 @@ async fn main() -> Result<()> {
                             .as_secs(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     };
-                    let cm = fcp_cluster::ClusterManager::new(redis, member)
-                        .with_intervals(deploy_config.cluster.heartbeat_interval_secs, deploy_config.cluster.heartbeat_ttl_secs);
+                    let cm = fcp_cluster::ClusterManager::new(redis, member).with_intervals(
+                        deploy_config.cluster.heartbeat_interval_secs,
+                        deploy_config.cluster.heartbeat_ttl_secs,
+                    );
                     let _handle = cm.start();
                     info!("Cluster membership started");
                     Some(cm)
@@ -694,7 +781,11 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 match cs.get_latest_version("sbc", "_system").await {
                     Ok(v) if v > last_version => {
-                        tracing::info!(old_version = last_version, new_version = v, "config version changed in database");
+                        tracing::info!(
+                            old_version = last_version,
+                            new_version = v,
+                            "config version changed in database"
+                        );
                         last_version = v;
                     }
                     Ok(_) => {}

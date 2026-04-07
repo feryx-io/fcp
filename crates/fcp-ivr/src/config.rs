@@ -246,11 +246,18 @@ pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional)
     /// Example: "http://fcp-events-server:8081/ingest"
     pub server_url: Option<String>,
+
+    /// Optional bearer token for authenticating to fcp-events-server.
+    #[serde(default)]
+    pub auth_token: Option<String>,
 }
 
 impl Default for EventsSection {
     fn default() -> Self {
-        Self { server_url: None }
+        Self {
+            server_url: None,
+            auth_token: None,
+        }
     }
 }
 
@@ -330,8 +337,12 @@ pub struct ClusterSection {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_heartbeat_interval() -> u64 { 5 }
-fn default_heartbeat_ttl() -> u64 { 15 }
+fn default_heartbeat_interval() -> u64 {
+    5
+}
+fn default_heartbeat_ttl() -> u64 {
+    15
+}
 
 impl Default for ClusterSection {
     fn default() -> Self {

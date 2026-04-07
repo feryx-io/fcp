@@ -491,7 +491,14 @@ agents = ["300"]
         // Sales: legacy + list merged, legacy first
         let sales = &config.queues["sales"];
         let dests = sales.effective_overflow_destinations();
-        assert_eq!(dests, vec!["queue:support", "voicemail:6000", "sip:operator@example.com"]);
+        assert_eq!(
+            dests,
+            vec![
+                "queue:support",
+                "voicemail:6000",
+                "sip:operator@example.com"
+            ]
+        );
 
         // Support: legacy only
         let support = &config.queues["support"];

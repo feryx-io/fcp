@@ -162,7 +162,10 @@ pub async fn list_devices(
     // Fetch live registrations and build a lookup by AOR
     let live_regs = match storage.get_all_registrations().await {
         Ok(regs) => {
-            info!("Fetched {} live registrations for device enrichment", regs.len());
+            info!(
+                "Fetched {} live registrations for device enrichment",
+                regs.len()
+            );
             regs
         }
         Err(e) => {
@@ -179,7 +182,9 @@ pub async fn list_devices(
         if reg.expires_at <= now {
             continue;
         }
-        let aor_str = reg.aor.trim_start_matches("sip:")
+        let aor_str = reg
+            .aor
+            .trim_start_matches("sip:")
             .trim_start_matches("sips:")
             .to_string();
         let contact_ip = extract_ip_from_contact(&reg.contact);
@@ -484,7 +489,9 @@ pub async fn update_device(
                 .get_location(&location_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to get location: {}", e)))?
-                .ok_or_else(|| ApiError::BadRequest(format!("Location {} not found", location_id)))?;
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("Location {} not found", location_id))
+                })?;
             if location.tenant_id != tenant.0 {
                 return Err(ApiError::BadRequest(format!(
                     "Location {} is not in the authenticated tenant",

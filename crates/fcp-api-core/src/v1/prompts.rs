@@ -14,9 +14,7 @@ use std::time::SystemTime;
 use tracing::info;
 
 /// Helper to get prompt store from DynStorage.
-fn require_prompt_store(
-    state: &ApiState,
-) -> Result<&std::sync::Arc<dyn PromptStore>, ApiError> {
+fn require_prompt_store(state: &ApiState) -> Result<&std::sync::Arc<dyn PromptStore>, ApiError> {
     let storage = state
         .storage
         .as_ref()
@@ -191,9 +189,9 @@ pub async fn create_prompt(
 
     let mut prompt = match source_type {
         PromptSourceType::Tts => {
-            let tts_text = req
-                .tts_text
-                .ok_or_else(|| ApiError::BadRequest("tts_text is required for TTS prompts".to_string()))?;
+            let tts_text = req.tts_text.ok_or_else(|| {
+                ApiError::BadRequest("tts_text is required for TTS prompts".to_string())
+            })?;
             Prompt::new_tts(
                 state.default_tenant_id.clone(),
                 &req.name,
@@ -216,12 +214,13 @@ pub async fn create_prompt(
 
     // Auto-synthesize TTS audio if TTS service is available
     if source_type == PromptSourceType::Tts {
-        if let (Some(tts_service), Some(prompts_dir)) =
-            (&state.tts_service, &state.prompts_dir)
-        {
+        if let (Some(tts_service), Some(prompts_dir)) = (&state.tts_service, &state.prompts_dir) {
             let tts_text = prompt.tts_text.as_deref().unwrap_or("");
             let voice = req.tts_voice.as_deref();
-            match tts_service.synthesize(tts_text, Some(language), voice).await {
+            match tts_service
+                .synthesize(tts_text, Some(language), voice)
+                .await
+            {
                 Ok(cached_path) => {
                     let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
                     let _ = tokio::fs::create_dir_all(&tenant_dir).await;
@@ -297,12 +296,13 @@ pub async fn update_prompt(
 
     // Re-synthesize audio if TTS parameters changed
     if tts_changed && prompt.source_type == PromptSourceType::Tts {
-        if let (Some(tts_service), Some(prompts_dir)) =
-            (&state.tts_service, &state.prompts_dir)
-        {
+        if let (Some(tts_service), Some(prompts_dir)) = (&state.tts_service, &state.prompts_dir) {
             let tts_text = prompt.tts_text.as_deref().unwrap_or("");
             let voice = prompt.tts_voice.as_deref();
-            match tts_service.synthesize(tts_text, Some(&prompt.language), voice).await {
+            match tts_service
+                .synthesize(tts_text, Some(&prompt.language), voice)
+                .await
+            {
                 Ok(cached_path) => {
                     let tenant_dir = prompts_dir.join(prompt.tenant_id.to_string());
                     let _ = tokio::fs::create_dir_all(&tenant_dir).await;
@@ -385,8 +385,8 @@ pub async fn upload_audio(
         }
     }
 
-    let audio_data = audio_data
-        .ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
+    let audio_data =
+        audio_data.ok_or_else(|| ApiError::BadRequest("Missing 'audio' file field".to_string()))?;
     if audio_data.is_empty() {
         return Err(ApiError::BadRequest("Audio file is empty".to_string()));
     }

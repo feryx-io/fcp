@@ -21,9 +21,7 @@ pub struct DashboardSummary {
 }
 
 /// GET /api/v1/dashboard/summary
-pub async fn summary(
-    State(state): State<ApiState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn summary(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
     let mut summary = DashboardSummary {
         active_calls: 0,
         registered_devices: 0,
@@ -37,7 +35,13 @@ pub async fn summary(
     // Active calls: try events server first, fall back to local call manager
     if let Some(ref events_url) = state.events_server_url {
         let url = format!("{}/stats", events_url);
-        if let Ok(resp) = reqwest::get(&url).await {
+        let client = reqwest::Client::new();
+        let mut request = client.get(&url);
+        if let Some(token) = state.events_server_auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+
+        if let Ok(resp) = request.send().await {
             if let Ok(body) = resp.json::<serde_json::Value>().await {
                 if let Some(count) = body.pointer("/calls/active").and_then(|v| v.as_u64()) {
                     summary.active_calls = count as usize;
@@ -88,10 +92,8 @@ pub async fn summary(
         if let Ok(cdrs) = storage.query_cdrs(query).await {
             summary.calls_today = cdrs.len();
             if !cdrs.is_empty() {
-                let total_duration_ms: u64 = cdrs
-                    .iter()
-                    .filter_map(|cdr| cdr.call_duration_ms)
-                    .sum();
+                let total_duration_ms: u64 =
+                    cdrs.iter().filter_map(|cdr| cdr.call_duration_ms).sum();
                 let calls_with_duration = cdrs
                     .iter()
                     .filter(|cdr| cdr.call_duration_ms.is_some())

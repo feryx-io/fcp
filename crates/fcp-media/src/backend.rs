@@ -405,18 +405,16 @@ pub mod embedded {
                 Some(shared_tts)
             } else {
                 match config.tts.clone() {
-                    Some(tts_config) => {
-                        match crate::tts::TtsService::new(tts_config).await {
-                            Ok(svc) => {
-                                info!(provider = %svc.provider_name(), "TTS service initialized");
-                                Some(Arc::new(svc))
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "TTS service initialization failed, TTS will be unavailable");
-                                None
-                            }
+                    Some(tts_config) => match crate::tts::TtsService::new(tts_config).await {
+                        Ok(svc) => {
+                            info!(provider = %svc.provider_name(), "TTS service initialized");
+                            Some(Arc::new(svc))
                         }
-                    }
+                        Err(e) => {
+                            warn!(error = %e, "TTS service initialization failed, TTS will be unavailable");
+                            None
+                        }
+                    },
                     None => None,
                 }
             };
@@ -436,8 +434,7 @@ pub mod embedded {
 
             info!(
                 tts = tts_service.is_some(),
-                "Embedded media backend initialized, advertise_ip: {}",
-                advertise_ip
+                "Embedded media backend initialized, advertise_ip: {}", advertise_ip
             );
 
             Ok(Self {
@@ -624,7 +621,10 @@ pub mod embedded {
             // Extract telephone-event PT from A-leg's SDP and store on forge session
             let te_pt = crate::sdp::extract_telephone_event_pt(&remote_sdp).unwrap_or_else(|| {
                 // Default to PT 101 — virtually all phones use this
-                debug!(?call_id, "No telephone-event PT in A-leg SDP, defaulting to 101");
+                debug!(
+                    ?call_id,
+                    "No telephone-event PT in A-leg SDP, defaulting to 101"
+                );
                 101
             });
             session_info.forge_session.set_telephone_event_pt_a(te_pt);
@@ -645,8 +645,7 @@ pub mod embedded {
                             profile,
                         ) {
                             Ok(remote_material) => {
-                                let mut srtp_a =
-                                    session_info.forge_session.srtp_a().lock().await;
+                                let mut srtp_a = session_info.forge_session.srtp_a().lock().await;
                                 srtp_a.set_local_key(local_material.clone());
                                 srtp_a.set_remote_key(remote_material);
                                 info!(?call_id, "SRTP keys configured for A-leg");
@@ -891,10 +890,7 @@ pub mod embedded {
             let sender = collector.get_sender();
 
             // Look up the forge CallId for this FCP call
-            let forge_call_id = self
-                .sessions
-                .get(call_id)
-                .map(|s| s.forge_call_id.clone());
+            let forge_call_id = self.sessions.get(call_id).map(|s| s.forge_call_id.clone());
 
             if let Some(forge_call_id) = forge_call_id {
                 info!(
@@ -938,7 +934,8 @@ pub mod embedded {
                     }
                 });
             } else {
-                let session_keys: Vec<String> = self.sessions.iter().map(|e| e.key().to_string()).collect();
+                let session_keys: Vec<String> =
+                    self.sessions.iter().map(|e| e.key().to_string()).collect();
                 warn!(
                     call_id = %call_id,
                     active_sessions = self.sessions.len(),
@@ -1056,7 +1053,14 @@ pub mod embedded {
             amplitude: f32,
             target: AudioTarget,
         ) -> Result<String> {
-            debug!(?call_id, frequency, duration_ms, amplitude, ?target, "Starting tone playback");
+            debug!(
+                ?call_id,
+                frequency,
+                duration_ms,
+                amplitude,
+                ?target,
+                "Starting tone playback"
+            );
 
             let session_info = self
                 .sessions
@@ -1229,8 +1233,18 @@ pub mod embedded {
             // Single-session mode: both call IDs refer to the same media session
             // (used by handler.rs B2BUA where one session handles both legs)
             if a_leg_call_id == b_leg_call_id {
-                let a_addr = a_session.forge_session.participant_a().read().await.remote_addr;
-                let b_addr = a_session.forge_session.participant_b().read().await.remote_addr;
+                let a_addr = a_session
+                    .forge_session
+                    .participant_a()
+                    .read()
+                    .await
+                    .remote_addr;
+                let b_addr = a_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
                 info!(
                     a_leg = %a_leg_call_id,
                     a_endpoint = ?a_addr,
@@ -1249,19 +1263,39 @@ pub mod embedded {
                 .ok_or_else(|| Error::SessionNotFound(b_leg_call_id.to_string()))?;
 
             // Get B-leg phone's address from B-leg session's participant_a
-            let b_phone_addr = b_session.forge_session.participant_a().read().await.remote_addr;
+            let b_phone_addr = b_session
+                .forge_session
+                .participant_a()
+                .read()
+                .await
+                .remote_addr;
 
             // Get A-leg phone's address from A-leg session's participant_a
-            let a_phone_addr = a_session.forge_session.participant_a().read().await.remote_addr;
+            let a_phone_addr = a_session
+                .forge_session
+                .participant_a()
+                .read()
+                .await
+                .remote_addr;
 
             // Cross-wire: A-leg session forwards to B-leg phone
             if let Some(addr) = b_phone_addr {
-                a_session.forge_session.participant_b().write().await.remote_addr = Some(addr);
+                a_session
+                    .forge_session
+                    .participant_b()
+                    .write()
+                    .await
+                    .remote_addr = Some(addr);
             }
 
             // Cross-wire: B-leg session forwards to A-leg phone
             if let Some(addr) = a_phone_addr {
-                b_session.forge_session.participant_b().write().await.remote_addr = Some(addr);
+                b_session
+                    .forge_session
+                    .participant_b()
+                    .write()
+                    .await
+                    .remote_addr = Some(addr);
             }
 
             info!(
@@ -1293,10 +1327,20 @@ pub mod embedded {
 
             // Clear cross-wired participant_b on both sessions
             if let Some(a_session) = self.sessions.get(a_leg_call_id) {
-                a_session.forge_session.participant_b().write().await.remote_addr = None;
+                a_session
+                    .forge_session
+                    .participant_b()
+                    .write()
+                    .await
+                    .remote_addr = None;
             }
             if let Some(b_session) = self.sessions.get(b_leg_call_id) {
-                b_session.forge_session.participant_b().write().await.remote_addr = None;
+                b_session
+                    .forge_session
+                    .participant_b()
+                    .write()
+                    .await
+                    .remote_addr = None;
             }
 
             info!(
@@ -1472,7 +1516,11 @@ pub mod embedded {
             let dialog_id = fcp_core::DialogId::new();
 
             backend
-                .create_session(call_id.clone(), dialog_id, crate::MediaSessionConfig::default())
+                .create_session(
+                    call_id.clone(),
+                    dialog_id,
+                    crate::MediaSessionConfig::default(),
+                )
                 .await
                 .unwrap();
 
@@ -1507,7 +1555,10 @@ pub mod embedded {
 
             // Set A-leg participant_a remote addr
             let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
-            backend.update_session(&call_id_a, a_sdp.to_string()).await.unwrap();
+            backend
+                .update_session(&call_id_a, a_sdp.to_string())
+                .await
+                .unwrap();
 
             // Create B-leg session
             backend
@@ -1521,7 +1572,10 @@ pub mod embedded {
 
             // Set B-leg participant_a remote addr
             let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
-            backend.update_session(&call_id_b, b_sdp.to_string()).await.unwrap();
+            backend
+                .update_session(&call_id_b, b_sdp.to_string())
+                .await
+                .unwrap();
 
             // Bridge calls
             backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
@@ -1529,7 +1583,12 @@ pub mod embedded {
             // Verify cross-wiring: A-leg's participant_b should point to B-leg phone (10.0.0.2:6000)
             {
                 let a_session = backend.sessions.get(&call_id_a).unwrap();
-                let b_remote = a_session.forge_session.participant_b().read().await.remote_addr;
+                let b_remote = a_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
                 assert!(b_remote.is_some());
                 let addr = b_remote.unwrap();
                 assert_eq!(addr.ip().to_string(), "10.0.0.2");
@@ -1539,7 +1598,12 @@ pub mod embedded {
             // Verify cross-wiring: B-leg's participant_b should point to A-leg phone (10.0.0.1:5000)
             {
                 let b_session = backend.sessions.get(&call_id_b).unwrap();
-                let a_remote = b_session.forge_session.participant_b().read().await.remote_addr;
+                let a_remote = b_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
                 assert!(a_remote.is_some());
                 let addr = a_remote.unwrap();
                 assert_eq!(addr.ip().to_string(), "10.0.0.1");
@@ -1583,22 +1647,41 @@ pub mod embedded {
             // Set up endpoints and bridge
             let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
             let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
-            backend.update_session(&call_id_a, a_sdp.to_string()).await.unwrap();
-            backend.update_session(&call_id_b, b_sdp.to_string()).await.unwrap();
+            backend
+                .update_session(&call_id_a, a_sdp.to_string())
+                .await
+                .unwrap();
+            backend
+                .update_session(&call_id_b, b_sdp.to_string())
+                .await
+                .unwrap();
             backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
 
             // Unbridge
-            backend.unbridge_calls(&call_id_a, &call_id_b).await.unwrap();
+            backend
+                .unbridge_calls(&call_id_a, &call_id_b)
+                .await
+                .unwrap();
 
             // Verify participant_b remote_addr cleared on both
             {
                 let a_session = backend.sessions.get(&call_id_a).unwrap();
-                let b_remote = a_session.forge_session.participant_b().read().await.remote_addr;
+                let b_remote = a_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
                 assert!(b_remote.is_none());
             }
             {
                 let b_session = backend.sessions.get(&call_id_b).unwrap();
-                let a_remote = b_session.forge_session.participant_b().read().await.remote_addr;
+                let a_remote = b_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
                 assert!(a_remote.is_none());
             }
 
@@ -1738,9 +1821,7 @@ pub mod embedded {
     }
 
     /// Convert an `SdpCodecInfo` to a forge-engine `ParticipantCodecConfig`.
-    fn sdp_codec_to_forge_config(
-        info: &crate::sdp::SdpCodecInfo,
-    ) -> ParticipantCodecConfig {
+    fn sdp_codec_to_forge_config(info: &crate::sdp::SdpCodecInfo) -> ParticipantCodecConfig {
         let codec = match info.encoding_name.to_uppercase().as_str() {
             "PCMU" => forge_core::AudioCodec::PCMU,
             "PCMA" => forge_core::AudioCodec::PCMA,

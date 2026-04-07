@@ -269,7 +269,9 @@ pub async fn get_trunk(
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
-    Ok(Json(TrunkResponse::from(trunk).with_health(&state.trunk_health)))
+    Ok(Json(
+        TrunkResponse::from(trunk).with_health(&state.trunk_health),
+    ))
 }
 
 /// Create a new trunk.
@@ -294,34 +296,76 @@ pub async fn create_trunk(
 
     let mut trunk = Trunk::new(req.name, tenant_id);
     trunk.direction = direction;
-    if let Some(enabled) = req.enabled { trunk.enabled = enabled; }
-    if let Some(priority) = req.priority { trunk.priority = priority; }
-    if let Some(weight) = req.weight { trunk.weight = weight; }
-    if let Some(hosts) = req.hosts { trunk.hosts = hosts; }
-    if let Some(ref proto) = req.transport_protocol { trunk.transport_protocol = proto.clone(); }
-    if let Some(port) = req.transport_port { trunk.transport_port = port; }
-    if let Some(verify) = req.verify_tls { trunk.verify_tls = verify; }
+    if let Some(enabled) = req.enabled {
+        trunk.enabled = enabled;
+    }
+    if let Some(priority) = req.priority {
+        trunk.priority = priority;
+    }
+    if let Some(weight) = req.weight {
+        trunk.weight = weight;
+    }
+    if let Some(hosts) = req.hosts {
+        trunk.hosts = hosts;
+    }
+    if let Some(ref proto) = req.transport_protocol {
+        trunk.transport_protocol = proto.clone();
+    }
+    if let Some(port) = req.transport_port {
+        trunk.transport_port = port;
+    }
+    if let Some(verify) = req.verify_tls {
+        trunk.verify_tls = verify;
+    }
     trunk.auth_username = req.auth_username;
     trunk.auth_password = req.auth_password;
     trunk.auth_realm = req.auth_realm;
-    if let Some(register) = req.register { trunk.register = register; }
-    if let Some(expiry) = req.register_expiry { trunk.register_expiry = expiry; }
-    if let Some(max) = req.max_concurrent_calls { trunk.max_concurrent_calls = max; }
-    if let Some(max) = req.max_failures { trunk.max_failures = max; }
-    if let Some(secs) = req.recovery_interval_secs { trunk.recovery_interval_secs = secs; }
-    if let Some(enabled) = req.health_check_enabled { trunk.health_check_enabled = enabled; }
-    if let Some(secs) = req.health_check_interval_secs { trunk.health_check_interval_secs = secs; }
-    if let Some(codecs) = req.codec_prefs { trunk.codec_prefs = codecs; }
+    if let Some(register) = req.register {
+        trunk.register = register;
+    }
+    if let Some(expiry) = req.register_expiry {
+        trunk.register_expiry = expiry;
+    }
+    if let Some(max) = req.max_concurrent_calls {
+        trunk.max_concurrent_calls = max;
+    }
+    if let Some(max) = req.max_failures {
+        trunk.max_failures = max;
+    }
+    if let Some(secs) = req.recovery_interval_secs {
+        trunk.recovery_interval_secs = secs;
+    }
+    if let Some(enabled) = req.health_check_enabled {
+        trunk.health_check_enabled = enabled;
+    }
+    if let Some(secs) = req.health_check_interval_secs {
+        trunk.health_check_interval_secs = secs;
+    }
+    if let Some(codecs) = req.codec_prefs {
+        trunk.codec_prefs = codecs;
+    }
     trunk.caller_id_override = req.caller_id_override;
     trunk.from_domain = req.from_domain;
-    if let Some(n) = req.strip_digits { trunk.strip_digits = n; }
+    if let Some(n) = req.strip_digits {
+        trunk.strip_digits = n;
+    }
     trunk.prepend_digits = req.prepend_digits;
-    if let Some(cps) = req.cps_limit { trunk.cps_limit = cps; }
+    if let Some(cps) = req.cps_limit {
+        trunk.cps_limit = cps;
+    }
     trunk.description = req.description;
-    if let Some(ref mode) = req.srtp_mode { trunk.srtp_mode = mode.clone(); }
-    if let Some(ref mode) = req.dtmf_mode { trunk.dtmf_mode = mode.clone(); }
-    if let Some(secs) = req.session_timer_secs { trunk.session_timer_secs = secs; }
-    if let Some(t38) = req.t38_enabled { trunk.t38_enabled = t38; }
+    if let Some(ref mode) = req.srtp_mode {
+        trunk.srtp_mode = mode.clone();
+    }
+    if let Some(ref mode) = req.dtmf_mode {
+        trunk.dtmf_mode = mode.clone();
+    }
+    if let Some(secs) = req.session_timer_secs {
+        trunk.session_timer_secs = secs;
+    }
+    if let Some(t38) = req.t38_enabled {
+        trunk.t38_enabled = t38;
+    }
     trunk.outbound_proxy = req.outbound_proxy;
     trunk.trunk_group = req.trunk_group;
     trunk.header_rules = req.header_rules;
@@ -355,42 +399,107 @@ pub async fn update_trunk(
         return Err(ApiError::NotFound("Trunk not found".to_string()));
     }
 
-    if let Some(name) = req.name { trunk.name = name; }
-    if let Some(enabled) = req.enabled { trunk.enabled = enabled; }
+    if let Some(name) = req.name {
+        trunk.name = name;
+    }
+    if let Some(enabled) = req.enabled {
+        trunk.enabled = enabled;
+    }
     if let Some(ref dir) = req.direction {
-        trunk.direction = dir.parse::<TrunkDirection>()
+        trunk.direction = dir
+            .parse::<TrunkDirection>()
             .map_err(|e| ApiError::BadRequest(e))?;
     }
-    if let Some(priority) = req.priority { trunk.priority = priority; }
-    if let Some(weight) = req.weight { trunk.weight = weight; }
-    if let Some(hosts) = req.hosts { trunk.hosts = hosts; }
-    if let Some(ref proto) = req.transport_protocol { trunk.transport_protocol = proto.clone(); }
-    if let Some(port) = req.transport_port { trunk.transport_port = port; }
-    if let Some(verify) = req.verify_tls { trunk.verify_tls = verify; }
-    if let Some(username) = req.auth_username { trunk.auth_username = Some(username); }
-    if let Some(password) = req.auth_password { trunk.auth_password = Some(password); }
-    if let Some(realm) = req.auth_realm { trunk.auth_realm = Some(realm); }
-    if let Some(register) = req.register { trunk.register = register; }
-    if let Some(expiry) = req.register_expiry { trunk.register_expiry = expiry; }
-    if let Some(max) = req.max_concurrent_calls { trunk.max_concurrent_calls = max; }
-    if let Some(max) = req.max_failures { trunk.max_failures = max; }
-    if let Some(secs) = req.recovery_interval_secs { trunk.recovery_interval_secs = secs; }
-    if let Some(enabled) = req.health_check_enabled { trunk.health_check_enabled = enabled; }
-    if let Some(secs) = req.health_check_interval_secs { trunk.health_check_interval_secs = secs; }
-    if let Some(codecs) = req.codec_prefs { trunk.codec_prefs = codecs; }
-    if let Some(cid) = req.caller_id_override { trunk.caller_id_override = Some(cid); }
-    if let Some(domain) = req.from_domain { trunk.from_domain = Some(domain); }
-    if let Some(n) = req.strip_digits { trunk.strip_digits = n; }
-    if let Some(prepend) = req.prepend_digits { trunk.prepend_digits = Some(prepend); }
-    if let Some(cps) = req.cps_limit { trunk.cps_limit = cps; }
-    if let Some(desc) = req.description { trunk.description = Some(desc); }
-    if let Some(mode) = req.srtp_mode { trunk.srtp_mode = mode; }
-    if let Some(mode) = req.dtmf_mode { trunk.dtmf_mode = mode; }
-    if let Some(secs) = req.session_timer_secs { trunk.session_timer_secs = secs; }
-    if let Some(t38) = req.t38_enabled { trunk.t38_enabled = t38; }
-    if let Some(proxy) = req.outbound_proxy { trunk.outbound_proxy = Some(proxy); }
-    if let Some(group) = req.trunk_group { trunk.trunk_group = Some(group); }
-    if let Some(rules) = req.header_rules { trunk.header_rules = Some(rules); }
+    if let Some(priority) = req.priority {
+        trunk.priority = priority;
+    }
+    if let Some(weight) = req.weight {
+        trunk.weight = weight;
+    }
+    if let Some(hosts) = req.hosts {
+        trunk.hosts = hosts;
+    }
+    if let Some(ref proto) = req.transport_protocol {
+        trunk.transport_protocol = proto.clone();
+    }
+    if let Some(port) = req.transport_port {
+        trunk.transport_port = port;
+    }
+    if let Some(verify) = req.verify_tls {
+        trunk.verify_tls = verify;
+    }
+    if let Some(username) = req.auth_username {
+        trunk.auth_username = Some(username);
+    }
+    if let Some(password) = req.auth_password {
+        trunk.auth_password = Some(password);
+    }
+    if let Some(realm) = req.auth_realm {
+        trunk.auth_realm = Some(realm);
+    }
+    if let Some(register) = req.register {
+        trunk.register = register;
+    }
+    if let Some(expiry) = req.register_expiry {
+        trunk.register_expiry = expiry;
+    }
+    if let Some(max) = req.max_concurrent_calls {
+        trunk.max_concurrent_calls = max;
+    }
+    if let Some(max) = req.max_failures {
+        trunk.max_failures = max;
+    }
+    if let Some(secs) = req.recovery_interval_secs {
+        trunk.recovery_interval_secs = secs;
+    }
+    if let Some(enabled) = req.health_check_enabled {
+        trunk.health_check_enabled = enabled;
+    }
+    if let Some(secs) = req.health_check_interval_secs {
+        trunk.health_check_interval_secs = secs;
+    }
+    if let Some(codecs) = req.codec_prefs {
+        trunk.codec_prefs = codecs;
+    }
+    if let Some(cid) = req.caller_id_override {
+        trunk.caller_id_override = Some(cid);
+    }
+    if let Some(domain) = req.from_domain {
+        trunk.from_domain = Some(domain);
+    }
+    if let Some(n) = req.strip_digits {
+        trunk.strip_digits = n;
+    }
+    if let Some(prepend) = req.prepend_digits {
+        trunk.prepend_digits = Some(prepend);
+    }
+    if let Some(cps) = req.cps_limit {
+        trunk.cps_limit = cps;
+    }
+    if let Some(desc) = req.description {
+        trunk.description = Some(desc);
+    }
+    if let Some(mode) = req.srtp_mode {
+        trunk.srtp_mode = mode;
+    }
+    if let Some(mode) = req.dtmf_mode {
+        trunk.dtmf_mode = mode;
+    }
+    if let Some(secs) = req.session_timer_secs {
+        trunk.session_timer_secs = secs;
+    }
+    if let Some(t38) = req.t38_enabled {
+        trunk.t38_enabled = t38;
+    }
+    if let Some(proxy) = req.outbound_proxy {
+        trunk.outbound_proxy = Some(proxy);
+    }
+    if let Some(group) = req.trunk_group {
+        trunk.trunk_group = Some(group);
+    }
+    if let Some(rules) = req.header_rules {
+        trunk.header_rules = Some(rules);
+    }
 
     trunk.updated_at = SystemTime::now();
 
@@ -452,7 +561,9 @@ pub async fn test_trunk(
     }
 
     if trunk.hosts.is_empty() {
-        return Err(ApiError::BadRequest("Trunk has no hosts configured".to_string()));
+        return Err(ApiError::BadRequest(
+            "Trunk has no hosts configured".to_string(),
+        ));
     }
 
     info!(trunk_name = %trunk.name, "Sending OPTIONS test probe");

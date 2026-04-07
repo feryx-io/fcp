@@ -866,10 +866,7 @@ pub fn refresh_interval() -> Duration {
 }
 
 /// Fetch phone numbers from the API
-pub async fn fetch_data(
-    api_client: &crate::api::ApiClient,
-    state: &mut PhoneNumbersViewState,
-) {
+pub async fn fetch_data(api_client: &crate::api::ApiClient, state: &mut PhoneNumbersViewState) {
     state.loading = true;
     state.error = None;
 
@@ -884,7 +881,6 @@ pub async fn fetch_data(
         }
     }
 }
-
 
 /// Handle keyboard events for phone number modal
 pub async fn handle_phone_number_action(

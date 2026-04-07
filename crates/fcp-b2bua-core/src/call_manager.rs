@@ -799,15 +799,21 @@ mod tests {
         let peer: SocketAddr = "127.0.0.1:5060".parse().unwrap();
 
         let mut headers = Headers::new();
-        headers.push(
-            SmolStr::new("From"),
-            SmolStr::new("Alice <sip:alice@example.com>"),
-        ).unwrap();
-        headers.push(
-            SmolStr::new("To"),
-            SmolStr::new("Bob <sip:bob@example.com>"),
-        ).unwrap();
-        headers.push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id")).unwrap();
+        headers
+            .push(
+                SmolStr::new("From"),
+                SmolStr::new("Alice <sip:alice@example.com>"),
+            )
+            .unwrap();
+        headers
+            .push(
+                SmolStr::new("To"),
+                SmolStr::new("Bob <sip:bob@example.com>"),
+            )
+            .unwrap();
+        headers
+            .push(SmolStr::new("Call-ID"), SmolStr::new("test-call-id"))
+            .unwrap();
 
         let request = sip_core::Request::new(
             RequestLine::new(

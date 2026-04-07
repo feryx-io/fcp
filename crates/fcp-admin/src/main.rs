@@ -15,8 +15,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_events::{EventBus, InMemoryEventBus};
 use fcp_sip::exports::{
-    DialogManager, SubscriptionManager, TransactionManager, TransportContext,
-    TransportDispatcher,
+    DialogManager, SubscriptionManager, TransactionManager, TransportContext, TransportDispatcher,
 };
 use fcp_sip::handler::SipMessageHandler;
 use fcp_sip::{B2buaConfig, CallManager};
@@ -162,19 +161,19 @@ async fn main() -> Result<()> {
         None,                    // registrar
         None,                    // routing_service
         call_manager.clone(),
-        None,                    // uac (no outbound SIP needed)
+        None, // uac (no outbound SIP needed)
         Some(storage.clone()),
-        None,                    // media_manager
-        None,                    // media_config
-        None,                    // flow_handler
+        None, // media_manager
+        None, // media_config
+        None, // flow_handler
         B2buaConfig::default(),
-        None,                    // outbound_route_provider
-        None,                    // pbx_handler
-        None,                    // conference_handler
-        None,                    // queue_handler
-        None,                    // presence_handler
-        None,                    // cluster_parking
-        String::new(),           // node_id
+        None,          // outbound_route_provider
+        None,          // pbx_handler
+        None,          // conference_handler
+        None,          // queue_handler
+        None,          // presence_handler
+        None,          // cluster_parking
+        String::new(), // node_id
     )?);
 
     let api_config = fcp_core::ApiConfig {
@@ -226,7 +225,9 @@ async fn main() -> Result<()> {
                     pm.set_pubsub(std::sync::Arc::new(pubsub));
                     match pm.run_pubsub_listener().await {
                         Ok(_handle) => info!("Admin presence Redis Pub/Sub listener started"),
-                        Err(e) => warn!(error = %e, "Failed to start admin presence Pub/Sub listener"),
+                        Err(e) => {
+                            warn!(error = %e, "Failed to start admin presence Pub/Sub listener")
+                        }
                     }
                 }
                 Err(e) => warn!(error = %e, "Failed to initialize admin presence Redis Pub/Sub"),
@@ -243,7 +244,13 @@ async fn main() -> Result<()> {
         let tenant_id = fcp_core::TenantId::nil();
         let storage_for_presence = Arc::clone(&storage);
         tokio::spawn(async move {
-            run_presence_listener(event_bus_for_presence, pm_clone, tenant_id, storage_for_presence).await;
+            run_presence_listener(
+                event_bus_for_presence,
+                pm_clone,
+                tenant_id,
+                storage_for_presence,
+            )
+            .await;
         });
         info!("Admin presence event listener started");
     }
@@ -278,6 +285,7 @@ async fn main() -> Result<()> {
         fcp_core::TenantId::nil(),
     )
     .with_events_server_url(events_server_url.clone())
+    .with_events_server_auth_token(config.events.auth_token.clone())
     .with_config_store(config_store)
     .with_trunk_health(trunk_health_map);
 
@@ -292,7 +300,8 @@ async fn main() -> Result<()> {
     let api_state = if let Some(ref dir) = config.voicemail_greetings_dir {
         api_state.with_voicemail_greetings_dir(std::path::PathBuf::from(dir))
     } else {
-        api_state.with_voicemail_greetings_dir(std::path::PathBuf::from("/tmp/fcp/voicemail/greetings"))
+        api_state
+            .with_voicemail_greetings_dir(std::path::PathBuf::from("/tmp/fcp/voicemail/greetings"))
     };
 
     // Set profile pictures directory (default: /tmp/fcp/profile-pictures)
@@ -306,7 +315,9 @@ async fn main() -> Result<()> {
     let api_state = if let Some(ref dir) = config.voicemail_recordings_dir {
         api_state.with_voicemail_recordings_dir(std::path::PathBuf::from(dir))
     } else {
-        api_state.with_voicemail_recordings_dir(std::path::PathBuf::from("/tmp/fcp/voicemail/recordings"))
+        api_state.with_voicemail_recordings_dir(std::path::PathBuf::from(
+            "/tmp/fcp/voicemail/recordings",
+        ))
     };
 
     // Set audio prompts directory (default: /tmp/fcp/audio/prompts)
@@ -321,7 +332,10 @@ async fn main() -> Result<()> {
         match fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
             provider: fcp_media::tts::TtsProviderConfig::Local {
                 engine: tts_config.engine.clone(),
-                executable_path: tts_config.python_path.as_ref().map(std::path::PathBuf::from),
+                executable_path: tts_config
+                    .python_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
             },
             cache_dir: std::path::PathBuf::from(&tts_config.cache_dir),
             cache_max_size_mb: 500,
@@ -423,7 +437,11 @@ async fn main() -> Result<()> {
             });
             tracing::info!("API authentication enabled");
             let mut auth_config = fcp_api_core::auth::AuthConfig::new(auth_token.clone());
-            if let Some(store) = api_state.storage.as_ref().and_then(|s| s.api_token_store().cloned()) {
+            if let Some(store) = api_state
+                .storage
+                .as_ref()
+                .and_then(|s| s.api_token_store().cloned())
+            {
                 auth_config = auth_config.with_api_token_store(store);
                 tracing::info!("API token authentication enabled");
             }
@@ -433,9 +451,7 @@ async fn main() -> Result<()> {
             }
             // Share credential store so JWT auth can verify user is still active
             if let Some(ref storage) = api_state.storage {
-                auth_config = auth_config.with_credential_store(
-                    storage.credential_store_arc(),
-                );
+                auth_config = auth_config.with_credential_store(storage.credential_store_arc());
             }
             // Store auth config in ApiState for WebSocket first-message auth
             api_state.auth_config = Some(auth_config.clone());
@@ -446,12 +462,9 @@ async fn main() -> Result<()> {
         }
 
         // Pre-auth, WebSocket routes merged AFTER the auth layer so they bypass it
-        router = router.merge(
-            axum::Router::new().nest("/api/v1", fcp_api_core::v1::pre_auth_router()),
-        );
-        router = router.merge(
-            axum::Router::new().nest("/api/v1", fcp_api_core::v1::ws_router()),
-        );
+        router =
+            router.merge(axum::Router::new().nest("/api/v1", fcp_api_core::v1::pre_auth_router()));
+        router = router.merge(axum::Router::new().nest("/api/v1", fcp_api_core::v1::ws_router()));
 
         let mut app = router
             .layer(cors)
@@ -478,7 +491,7 @@ async fn main() -> Result<()> {
             .replace("http://", "ws://")
             .replace("https://", "wss://");
         let tenant_id = "tenant-00000000-0000-0000-0000-000000000000";
-        let ws_url = format!("{}/ws/{}", ws_url, tenant_id);
+        let ws_url = build_events_ws_url(&ws_url, tenant_id, config.events.auth_token.as_deref());
         let event_bus_sub = Arc::clone(&event_bus_for_subscribe);
         tokio::spawn(async move {
             run_events_subscriber(event_bus_sub, &ws_url).await;
@@ -524,11 +537,19 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
                             if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
                                 match wrapper.get("type").and_then(|t| t.as_str()) {
                                     Some("events") => {
-                                        if let Some(events) = wrapper.get("events").and_then(|e| e.as_array()) {
+                                        if let Some(events) =
+                                            wrapper.get("events").and_then(|e| e.as_array())
+                                        {
                                             for event_val in events {
-                                                match serde_json::from_value::<fcp_events::PlatformEvent>(event_val.clone()) {
+                                                match serde_json::from_value::<
+                                                    fcp_events::PlatformEvent,
+                                                >(
+                                                    event_val.clone()
+                                                ) {
                                                     Ok(event) => {
-                                                        if let Err(e) = event_bus.publish(event).await {
+                                                        if let Err(e) =
+                                                            event_bus.publish(event).await
+                                                        {
                                                             tracing::debug!(%e, "Failed to republish event to local bus");
                                                         }
                                                     }
@@ -570,9 +591,20 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
     }
 }
 
+fn build_events_ws_url(base_url: &str, tenant_id: &str, auth_token: Option<&str>) -> String {
+    let mut url = reqwest::Url::parse(&format!("{}/ws/{}", base_url, tenant_id))
+        .expect("events server base URL should be valid");
+    if let Some(token) = auth_token {
+        url.query_pairs_mut().append_pair("token", token);
+    }
+    url.to_string()
+}
+
 /// Extract the IP:port from a SIP contact URI like "sip:alice@192.168.1.80:5060"
 fn extract_ip_from_contact(contact: &str) -> Option<String> {
-    let stripped = contact.trim_start_matches("sip:").trim_start_matches("sips:");
+    let stripped = contact
+        .trim_start_matches("sip:")
+        .trim_start_matches("sips:");
     // After stripping scheme, format is "user@host:port;params" or "host:port"
     if let Some(at_pos) = stripped.find('@') {
         let host_part = &stripped[at_pos + 1..];
@@ -648,7 +680,9 @@ async fn run_presence_listener(
                     }
                     // Device registration state is enriched at query time in list_devices()
                 }
-                PlatformEvent::Call(fcp_events::CallEvent::Initiated { from, to, call_id, .. }) => {
+                PlatformEvent::Call(fcp_events::CallEvent::Initiated {
+                    from, to, call_id, ..
+                }) => {
                     let call_id_str = call_id.to_string();
                     if let Some(callee_aor) = extract_aor(to) {
                         let update = fcp_presence::PresenceUpdate {
@@ -658,24 +692,30 @@ async fn run_presence_listener(
                         };
                         let _ = presence.update_presence(update, &tenant_id).await;
                         // Track active call for callee
-                        presence.add_active_call(&callee_aor, fcp_presence::ActiveCallInfo {
-                            call_id: call_id_str.clone(),
-                            remote_uri: from.clone(),
-                            remote_display_name: None,
-                            direction: fcp_presence::CallDirection::Recipient,
-                            dialog_state: fcp_presence::DialogState::Early,
-                        });
+                        presence.add_active_call(
+                            &callee_aor,
+                            fcp_presence::ActiveCallInfo {
+                                call_id: call_id_str.clone(),
+                                remote_uri: from.clone(),
+                                remote_display_name: None,
+                                direction: fcp_presence::CallDirection::Recipient,
+                                dialog_state: fcp_presence::DialogState::Early,
+                            },
+                        );
                     }
                     if let Some(caller_aor) = extract_aor(from) {
                         presence.set_on_the_phone(&caller_aor, &tenant_id).await;
                         // Track active call for caller
-                        presence.add_active_call(&caller_aor, fcp_presence::ActiveCallInfo {
-                            call_id: call_id_str.clone(),
-                            remote_uri: to.clone(),
-                            remote_display_name: None,
-                            direction: fcp_presence::CallDirection::Initiator,
-                            dialog_state: fcp_presence::DialogState::Confirmed,
-                        });
+                        presence.add_active_call(
+                            &caller_aor,
+                            fcp_presence::ActiveCallInfo {
+                                call_id: call_id_str.clone(),
+                                remote_uri: to.clone(),
+                                remote_display_name: None,
+                                direction: fcp_presence::CallDirection::Initiator,
+                                dialog_state: fcp_presence::DialogState::Confirmed,
+                            },
+                        );
                     }
                 }
                 // Call answered → transition Ringing → OnThePhone
@@ -683,7 +723,11 @@ async fn run_presence_listener(
                     let call_id_str = call_id.to_string();
                     let affected_aors = presence.get_aors_with_active_call(&call_id_str);
                     for aor in &affected_aors {
-                        presence.update_call_state(aor, &call_id_str, fcp_presence::DialogState::Confirmed);
+                        presence.update_call_state(
+                            aor,
+                            &call_id_str,
+                            fcp_presence::DialogState::Confirmed,
+                        );
                         if let Some(info) = presence.get_presence(aor) {
                             if info.state == fcp_presence::PresenceState::Ringing {
                                 let update = fcp_presence::PresenceUpdate {
@@ -704,10 +748,15 @@ async fn run_presence_listener(
                     presence.remove_active_call_by_id(&call_id_str);
                     for aor in &affected_aors {
                         if presence.get_active_calls(aor).is_empty() {
-                            let is_call_state = presence.get_presence(aor)
-                                .map(|p| matches!(p.state,
-                                    fcp_presence::PresenceState::OnThePhone
-                                    | fcp_presence::PresenceState::Ringing))
+                            let is_call_state = presence
+                                .get_presence(aor)
+                                .map(|p| {
+                                    matches!(
+                                        p.state,
+                                        fcp_presence::PresenceState::OnThePhone
+                                            | fcp_presence::PresenceState::Ringing
+                                    )
+                                })
                                 .unwrap_or(false);
                             if is_call_state {
                                 let update = fcp_presence::PresenceUpdate {

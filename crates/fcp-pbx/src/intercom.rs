@@ -41,10 +41,7 @@ pub fn build_intercom_params(target_extension: &str, mode: IntercomMode) -> Inte
             "Alert-Info".to_string(),
             "<http://127.0.0.1/>;info=alert-autoanswer;delay=0".to_string(),
         ),
-        (
-            "Call-Info".to_string(),
-            "<sip:>;answer-after=0".to_string(),
-        ),
+        ("Call-Info".to_string(), "<sip:>;answer-after=0".to_string()),
     ];
 
     if mode == IntercomMode::OneWay {

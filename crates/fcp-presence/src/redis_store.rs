@@ -30,8 +30,7 @@ pub struct RedisPresenceStore {
 impl RedisPresenceStore {
     /// Create a new RedisPresenceStore from a Redis connection URL.
     pub async fn new(redis_url: &str) -> Result<Self> {
-        let client = redis::Client::open(redis_url)
-            .context("Failed to create Redis client")?;
+        let client = redis::Client::open(redis_url).context("Failed to create Redis client")?;
         let conn = client
             .get_connection_manager()
             .await
@@ -93,19 +92,44 @@ impl PresenceStore for RedisPresenceStore {
             ("contact_uri".into(), sub.contact_uri.clone()),
             ("event_package".into(), sub.event_package.clone()),
             ("expires_at_epoch".into(), sub.expires_at_epoch.to_string()),
-            ("sip_call_id".into(), sub.sip_call_id.clone().unwrap_or_default()),
-            ("sip_from_tag".into(), sub.sip_from_tag.clone().unwrap_or_default()),
-            ("sip_to_tag".into(), sub.sip_to_tag.clone().unwrap_or_default()),
+            (
+                "sip_call_id".into(),
+                sub.sip_call_id.clone().unwrap_or_default(),
+            ),
+            (
+                "sip_from_tag".into(),
+                sub.sip_from_tag.clone().unwrap_or_default(),
+            ),
+            (
+                "sip_to_tag".into(),
+                sub.sip_to_tag.clone().unwrap_or_default(),
+            ),
         ];
 
         // Pipeline: HSET + SADD (by_aor, by_watcher, by_tenant) + ZADD (expiry)
         redis::pipe()
             .atomic()
-            .cmd("HSET").arg(&key).arg(fields).ignore()
-            .cmd("SADD").arg(Self::subs_by_aor_key(&sub.presentity_aor)).arg(&sub.subscription_id).ignore()
-            .cmd("SADD").arg(Self::subs_by_watcher_key(&sub.watcher_aor)).arg(&sub.subscription_id).ignore()
-            .cmd("SADD").arg(Self::subs_by_tenant_key(&sub.tenant_id)).arg(&sub.subscription_id).ignore()
-            .cmd("ZADD").arg(Self::EXPIRY_KEY).arg(sub.expires_at_epoch as f64).arg(&sub.subscription_id).ignore()
+            .cmd("HSET")
+            .arg(&key)
+            .arg(fields)
+            .ignore()
+            .cmd("SADD")
+            .arg(Self::subs_by_aor_key(&sub.presentity_aor))
+            .arg(&sub.subscription_id)
+            .ignore()
+            .cmd("SADD")
+            .arg(Self::subs_by_watcher_key(&sub.watcher_aor))
+            .arg(&sub.subscription_id)
+            .ignore()
+            .cmd("SADD")
+            .arg(Self::subs_by_tenant_key(&sub.tenant_id))
+            .arg(&sub.subscription_id)
+            .ignore()
+            .cmd("ZADD")
+            .arg(Self::EXPIRY_KEY)
+            .arg(sub.expires_at_epoch as f64)
+            .arg(&sub.subscription_id)
+            .ignore()
             .query_async::<()>(&mut conn)
             .await
             .context("Failed to save subscription to Redis")?;
@@ -129,10 +153,8 @@ impl PresenceStore for RedisPresenceStore {
 
         let mut subs = Vec::with_capacity(sub_ids.len());
         for id in &sub_ids {
-            let fields: std::collections::HashMap<String, String> = conn
-                .hgetall(Self::sub_key(id))
-                .await
-                .unwrap_or_default();
+            let fields: std::collections::HashMap<String, String> =
+                conn.hgetall(Self::sub_key(id)).await.unwrap_or_default();
 
             if fields.is_empty() {
                 continue;
@@ -158,10 +180,8 @@ impl PresenceStore for RedisPresenceStore {
         let key = Self::sub_key(subscription_id);
 
         // Read the sub first to get AOR/watcher/tenant for index cleanup
-        let fields: std::collections::HashMap<String, String> = conn
-            .hgetall(&key)
-            .await
-            .unwrap_or_default();
+        let fields: std::collections::HashMap<String, String> =
+            conn.hgetall(&key).await.unwrap_or_default();
 
         if fields.is_empty() {
             return Ok(());
@@ -174,11 +194,25 @@ impl PresenceStore for RedisPresenceStore {
 
         redis::pipe()
             .atomic()
-            .cmd("DEL").arg(&key).ignore()
-            .cmd("SREM").arg(Self::subs_by_aor_key(&presentity_aor)).arg(subscription_id).ignore()
-            .cmd("SREM").arg(Self::subs_by_watcher_key(&watcher_aor)).arg(subscription_id).ignore()
-            .cmd("SREM").arg(Self::subs_by_tenant_key(&tenant_id)).arg(subscription_id).ignore()
-            .cmd("ZREM").arg(Self::EXPIRY_KEY).arg(subscription_id).ignore()
+            .cmd("DEL")
+            .arg(&key)
+            .ignore()
+            .cmd("SREM")
+            .arg(Self::subs_by_aor_key(&presentity_aor))
+            .arg(subscription_id)
+            .ignore()
+            .cmd("SREM")
+            .arg(Self::subs_by_watcher_key(&watcher_aor))
+            .arg(subscription_id)
+            .ignore()
+            .cmd("SREM")
+            .arg(Self::subs_by_tenant_key(&tenant_id))
+            .arg(subscription_id)
+            .ignore()
+            .cmd("ZREM")
+            .arg(Self::EXPIRY_KEY)
+            .arg(subscription_id)
+            .ignore()
             .query_async::<()>(&mut conn)
             .await
             .context("Failed to remove subscription from Redis")?;
@@ -241,13 +275,22 @@ impl PresenceStore for RedisPresenceStore {
             ("state".into(), presentity.state.clone()),
             ("note".into(), presentity.note.clone().unwrap_or_default()),
             ("tenant_id".into(), presentity.tenant_id.to_string()),
-            ("updated_at_epoch".into(), presentity.updated_at_epoch.to_string()),
+            (
+                "updated_at_epoch".into(),
+                presentity.updated_at_epoch.to_string(),
+            ),
         ];
 
         redis::pipe()
             .atomic()
-            .cmd("HSET").arg(&key).arg(fields).ignore()
-            .cmd("SADD").arg(Self::presentities_by_tenant_key(&presentity.tenant_id)).arg(&presentity.aor).ignore()
+            .cmd("HSET")
+            .arg(&key)
+            .arg(fields)
+            .ignore()
+            .cmd("SADD")
+            .arg(Self::presentities_by_tenant_key(&presentity.tenant_id))
+            .arg(&presentity.aor)
+            .ignore()
             .query_async::<()>(&mut conn)
             .await
             .context("Failed to save presentity to Redis")?;
@@ -292,7 +335,10 @@ impl PresenceStore for RedisPresenceStore {
 
         if let Some(tid_str) = tenant_str {
             if let Ok(tid) = tid_str.parse::<TenantId>() {
-                pipe.cmd("SREM").arg(Self::presentities_by_tenant_key(&tid)).arg(aor).ignore();
+                pipe.cmd("SREM")
+                    .arg(Self::presentities_by_tenant_key(&tid))
+                    .arg(aor)
+                    .ignore();
             }
         }
 
@@ -316,14 +362,26 @@ impl PresenceStore for RedisPresenceStore {
             ("event_allow_json".into(), policy.event_allow_json.clone()),
             ("event_block_json".into(), policy.event_block_json.clone()),
             ("time_windows_json".into(), policy.time_windows_json.clone()),
-            ("allow_patterns_json".into(), policy.allow_patterns_json.clone()),
-            ("block_patterns_json".into(), policy.block_patterns_json.clone()),
+            (
+                "allow_patterns_json".into(),
+                policy.allow_patterns_json.clone(),
+            ),
+            (
+                "block_patterns_json".into(),
+                policy.block_patterns_json.clone(),
+            ),
         ];
 
         redis::pipe()
             .atomic()
-            .cmd("HSET").arg(&key).arg(fields).ignore()
-            .cmd("SADD").arg(Self::auth_by_tenant_key(&policy.tenant_id)).arg(&policy.aor).ignore()
+            .cmd("HSET")
+            .arg(&key)
+            .arg(fields)
+            .ignore()
+            .cmd("SADD")
+            .arg(Self::auth_by_tenant_key(&policy.tenant_id))
+            .arg(&policy.aor)
+            .ignore()
             .query_async::<()>(&mut conn)
             .await
             .context("Failed to save auth policy to Redis")?;
@@ -341,10 +399,8 @@ impl PresenceStore for RedisPresenceStore {
 
         let mut policies = Vec::with_capacity(aors.len());
         for aor in &aors {
-            let fields: std::collections::HashMap<String, String> = conn
-                .hgetall(Self::auth_key(aor))
-                .await
-                .unwrap_or_default();
+            let fields: std::collections::HashMap<String, String> =
+                conn.hgetall(Self::auth_key(aor)).await.unwrap_or_default();
 
             if fields.is_empty() {
                 continue;
@@ -368,7 +424,10 @@ impl PresenceStore for RedisPresenceStore {
 
         if let Some(tid_str) = tenant_str {
             if let Ok(tid) = tid_str.parse::<TenantId>() {
-                pipe.cmd("SREM").arg(Self::auth_by_tenant_key(&tid)).arg(aor).ignore();
+                pipe.cmd("SREM")
+                    .arg(Self::auth_by_tenant_key(&tid))
+                    .arg(aor)
+                    .ignore();
             }
         }
 
@@ -380,7 +439,9 @@ impl PresenceStore for RedisPresenceStore {
     }
 }
 
-fn stored_sub_from_fields(fields: &std::collections::HashMap<String, String>) -> StoredSubscription {
+fn stored_sub_from_fields(
+    fields: &std::collections::HashMap<String, String>,
+) -> StoredSubscription {
     let empty = String::new();
     StoredSubscription {
         subscription_id: fields.get("subscription_id").unwrap_or(&empty).clone(),
@@ -397,7 +458,10 @@ fn stored_sub_from_fields(fields: &std::collections::HashMap<String, String>) ->
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
         sip_call_id: fields.get("sip_call_id").filter(|v| !v.is_empty()).cloned(),
-        sip_from_tag: fields.get("sip_from_tag").filter(|v| !v.is_empty()).cloned(),
+        sip_from_tag: fields
+            .get("sip_from_tag")
+            .filter(|v| !v.is_empty())
+            .cloned(),
         sip_to_tag: fields.get("sip_to_tag").filter(|v| !v.is_empty()).cloned(),
     }
 }
@@ -421,9 +485,7 @@ fn stored_presentity_from_fields(
     }
 }
 
-fn stored_auth_from_fields(
-    fields: &std::collections::HashMap<String, String>,
-) -> StoredAuthPolicy {
+fn stored_auth_from_fields(fields: &std::collections::HashMap<String, String>) -> StoredAuthPolicy {
     let empty = String::new();
     StoredAuthPolicy {
         aor: fields.get("aor").unwrap_or(&empty).clone(),

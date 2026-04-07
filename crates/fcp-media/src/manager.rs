@@ -68,7 +68,11 @@ impl MediaManager {
         // Capture TTS service for sharing with other subsystems
         let tts_service = config.tts_service.clone();
 
-        Ok(Self { backend, config, tts_service })
+        Ok(Self {
+            backend,
+            config,
+            tts_service,
+        })
     }
 
     /// Create a media session for a call
@@ -168,7 +172,8 @@ impl MediaManager {
         max_digits: usize,
         finish_on_key: Option<char>,
     ) -> crate::dtmf_collector::DtmfCollector {
-        self.backend.create_dtmf_collector(call_id, max_digits, finish_on_key)
+        self.backend
+            .create_dtmf_collector(call_id, max_digits, finish_on_key)
     }
 
     /// Start recording a call

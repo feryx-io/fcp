@@ -257,8 +257,7 @@ impl LocalCaptureManager {
         self.pending_calls.remove(&call_key);
         // If recording was somehow started (unlikely for failed calls), mark failed
         if self.store.get(&call_key).is_some() {
-            self.store
-                .mark_failed(&call_key, "call failed".to_string());
+            self.store.mark_failed(&call_key, "call failed".to_string());
         }
     }
 
