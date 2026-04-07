@@ -156,7 +156,11 @@ async fn main() -> Result<()> {
                             }
                         }
                         "events" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
+                            if let Ok(mut v) = serde_json::from_value::<config::EventsSection>(entry.value) {
+                                // Preserve auth_token from TOML — it should not be overridden by DB config
+                                if v.auth_token.is_none() {
+                                    v.auth_token = config.events.auth_token.clone();
+                                }
                                 config.events = v;
                             }
                         }
@@ -1253,12 +1257,11 @@ async fn run_event_forwarder(
 }
 
 fn build_events_ws_url(base_url: &str, tenant_id: &str, auth_token: Option<&str>) -> String {
-    let mut url = reqwest::Url::parse(&format!("{}/ws/{}", base_url, tenant_id))
-        .expect("events server base URL should be valid");
-    if let Some(token) = auth_token {
-        url.query_pairs_mut().append_pair("token", token);
+    let base = format!("{}/ws/{}", base_url, tenant_id);
+    match auth_token {
+        Some(token) => format!("{}?token={}", base, token),
+        None => base,
     }
-    url.to_string()
 }
 
 /// Subscribe to the events server WebSocket and handle mailbox lifecycle events.

@@ -342,6 +342,10 @@ impl Default for MediaSection {
 pub struct EventsSection {
     pub server_url: Option<String>,
 
+    /// Optional bearer token for authenticating to fcp-events-server.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+
     /// HTTP timeout for event forwarding requests (default: 5s).
     #[serde(default = "default_events_timeout_secs")]
     pub timeout_secs: u64,
@@ -383,6 +387,7 @@ impl Default for EventsSection {
     fn default() -> Self {
         Self {
             server_url: None,
+            auth_token: None,
             timeout_secs: default_events_timeout_secs(),
             max_retries: default_events_max_retries(),
             circuit_breaker_threshold: default_events_cb_threshold(),

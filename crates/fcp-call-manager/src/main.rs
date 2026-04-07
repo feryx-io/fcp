@@ -302,7 +302,9 @@ async fn main() -> Result<()> {
                             }
                         }
                         "events" => {
-                            if let Ok(v) = serde_json::from_value(entry.value) {
+                            if let Ok(mut v) = serde_json::from_value::<config::EventsSection>(entry.value) {
+                                // Preserve auth_token from TOML
+                                if v.auth_token.is_none() { v.auth_token = config.events.auth_token.clone(); }
                                 config.events = v;
                             }
                         }

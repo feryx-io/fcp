@@ -592,12 +592,11 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
 }
 
 fn build_events_ws_url(base_url: &str, tenant_id: &str, auth_token: Option<&str>) -> String {
-    let mut url = reqwest::Url::parse(&format!("{}/ws/{}", base_url, tenant_id))
-        .expect("events server base URL should be valid");
-    if let Some(token) = auth_token {
-        url.query_pairs_mut().append_pair("token", token);
+    let base = format!("{}/ws/{}", base_url, tenant_id);
+    match auth_token {
+        Some(token) => format!("{}?token={}", base, token),
+        None => base,
     }
-    url.to_string()
 }
 
 /// Extract the IP:port from a SIP contact URI like "sip:alice@192.168.1.80:5060"
