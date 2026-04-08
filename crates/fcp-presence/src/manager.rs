@@ -1079,14 +1079,14 @@ impl PresenceManager {
         self.auth_policies.get(aor).map(|p| p.clone())
     }
 
-    /// Remove authorization policy for a presentity (reverts to default-allow).
+    /// Remove authorization policy for a presentity (reverts to self-only access).
     pub fn remove_auth_policy(&self, aor: &str) {
         self.auth_policies.remove(aor);
     }
 
     /// Check if a watcher is authorized to subscribe to a presentity for a specific event package.
     ///
-    /// If no policy is set, all watchers are allowed (default open).
+    /// If no policy is set, only self-subscriptions are allowed.
     pub fn is_watcher_authorized(
         &self,
         watcher_aor: &str,
@@ -1102,7 +1102,7 @@ impl PresenceManager {
                 }
                 allowed
             }
-            None => true, // No policy = allow all
+            None => watcher_aor.eq_ignore_ascii_case(presentity_aor),
         }
     }
 

@@ -199,6 +199,7 @@ impl TestHarnessBuilder {
             None,                    // cluster_parking
             String::new(),           // node_id
         )
+        .map(|handler| handler.with_default_tenant_id(fcp_core::TenantId::nil()))
         .expect("Failed to create SipMessageHandler");
 
         TestHarness {

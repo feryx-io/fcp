@@ -277,6 +277,10 @@ pub struct SipMessageHandler {
     /// Optional storage for line binding lookups
     storage: Option<Arc<fcp_core::DynStorage>>,
 
+    /// Explicit default tenant for deployments without tenant-specific SIP domains.
+    /// When unset, inbound requests must derive a tenant from SIP addressing.
+    default_tenant_id: Option<fcp_core::TenantId>,
+
     /// Media manager for RTP handling
     media_manager: Option<Arc<fcp_media::MediaManager>>,
 
@@ -660,6 +664,7 @@ impl SipMessageHandler {
             call_manager,
             uac,
             storage,
+            default_tenant_id: None,
             media_manager,
             media_config,
             mid_dialog_lock: Arc::new(dashmap::DashMap::new()),
@@ -702,6 +707,12 @@ impl SipMessageHandler {
         this.spawn_subscription_expiry_monitor();
 
         Ok(this)
+    }
+
+    /// Set the explicit default tenant used when SIP addressing carries no tenant domain.
+    pub fn with_default_tenant_id(mut self, tenant_id: fcp_core::TenantId) -> Self {
+        self.default_tenant_id = Some(tenant_id);
+        self
     }
 
     /// Get a reference to the B2BUA policy configuration.
@@ -1278,43 +1289,60 @@ impl SipMessageHandler {
 
         // Extract tenant for multi-tenant isolation
         // Try to extract domain from INVITE and look up tenant in storage
-        let tenant_id = if let Some(storage) = &self.storage {
-            if let Some(domain) = extract_tenant_from_invite(request) {
-                // Look up tenant by domain name
-                match storage.get_tenant_by_name(&domain).await {
-                    Ok(Some(tenant)) => {
-                        debug!(
-                            domain = %domain,
-                            tenant_id = %tenant.id,
-                            tenant_name = %tenant.name,
-                            "Resolved tenant from INVITE domain"
-                        );
-                        tenant.id
-                    }
-                    Ok(None) => {
-                        debug!(
-                            domain = %domain,
-                            "Domain in INVITE not found in tenant store, using default tenant"
-                        );
-                        fcp_core::TenantId::nil()
-                    }
-                    Err(e) => {
-                        warn!(
-                            domain = %domain,
-                            error = %e,
-                            "Failed to lookup tenant by domain, using default tenant"
-                        );
-                        fcp_core::TenantId::nil()
-                    }
+        let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
+            let Some(storage) = &self.storage else {
+                warn!(
+                    domain = %domain,
+                    "Rejecting INVITE: tenant domain present but no tenant store configured"
+                );
+                let response = self.create_simple_response(
+                    request,
+                    503,
+                    "Tenant resolution unavailable",
+                );
+                handle.send_final(response).await;
+                return Ok(());
+            };
+
+            match storage.get_tenant_by_name(&domain).await {
+                Ok(Some(tenant)) => {
+                    debug!(
+                        domain = %domain,
+                        tenant_id = %tenant.id,
+                        tenant_name = %tenant.name,
+                        "Resolved tenant from INVITE domain"
+                    );
+                    tenant.id
                 }
-            } else {
-                // No domain found in INVITE, use default tenant
-                debug!("No domain found in INVITE for tenant resolution, using default tenant");
-                fcp_core::TenantId::nil()
+                Ok(None) => {
+                    warn!(domain = %domain, "Rejecting INVITE: unknown tenant domain");
+                    let response =
+                        self.create_simple_response(request, 403, "Unknown tenant domain");
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(
+                        domain = %domain,
+                        error = %e,
+                        "Rejecting INVITE: tenant lookup failed"
+                    );
+                    let response = self.create_simple_response(
+                        request,
+                        503,
+                        "Tenant lookup unavailable",
+                    );
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
             }
+        } else if let Some(default_tenant_id) = self.default_tenant_id {
+            default_tenant_id
         } else {
-            // No storage available, use default tenant
-            fcp_core::TenantId::nil()
+            warn!("Rejecting INVITE: no tenant context could be derived from SIP addressing");
+            let response = self.create_simple_response(request, 403, "Tenant context required");
+            handle.send_final(response).await;
+            return Ok(());
         };
 
         // Create Call object from the incoming INVITE with tenant context
@@ -10692,31 +10720,22 @@ fn extract_tag_value(value: Option<&SmolStr>) -> Option<String> {
 /// Extract tenant identifier from an INVITE request.
 ///
 /// Multi-tenant isolation strategy (priority order):
-/// 1. X-Tenant-ID header (explicit tenant override for authenticated requests)
-/// 2. Domain from Request-URI (e.g., user@tenant1.example.com -> "tenant1.example.com")
-/// 3. Domain from To header (fallback if Request-URI has no domain)
+/// 1. Domain from Request-URI (e.g., user@tenant1.example.com -> "tenant1.example.com")
+/// 2. Domain from To header (fallback if Request-URI has no domain)
 ///
 /// Returns the domain/tenant name as a String for lookup in TenantStore.get_tenant_by_name().
 /// The caller should convert this to a TenantId via storage lookup.
 ///
 /// # Returns
 /// - Some(String) if a domain/tenant can be extracted
-/// - None if no tenant context is available (use TenantId::nil() as fallback)
+/// - None if no tenant context is available
 fn extract_tenant_from_invite(request: &sip_core::Request) -> Option<String> {
-    // Priority 1: Check for explicit X-Tenant-ID header (for authenticated requests)
-    if let Some(tenant_header) = request.headers().get("X-Tenant-ID") {
-        let tenant_id = tenant_header.trim();
-        if !tenant_id.is_empty() {
-            return Some(tenant_id.to_string());
-        }
-    }
-
-    // Priority 2: Extract domain from Request-URI
+    // Priority 1: Extract domain from Request-URI
     if let Some(domain) = extract_domain_from_uri(request.uri()) {
         return Some(domain);
     }
 
-    // Priority 3: Extract domain from To header
+    // Priority 2: Extract domain from To header
     if let Some(to_header) = request.headers().get("To") {
         // Parse To header: "Display Name" <sip:user@domain>;tag=xyz
         // Extract the URI part between < and >

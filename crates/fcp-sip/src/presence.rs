@@ -140,8 +140,13 @@ use sip_core::SipUri;
 use tracing::{debug, info, warn};
 
 use crate::uac::SipUserAgentClient;
-use fcp_core::TenantId;
+use fcp_core::{CredentialStore, TenantId};
 use fcp_presence::{PresenceManager, Watcher};
+
+#[derive(Clone)]
+struct PresenceDigestAuth {
+    authenticator: Arc<crate::auth::Ha1Authenticator<crate::registrar::CredentialStoreAdapter>>,
+}
 
 /// SIP presence handler that bridges SIP signaling with PresenceManager.
 pub struct SipPresenceHandler {
@@ -157,6 +162,8 @@ pub struct SipPresenceHandler {
     subscribe_limiter: Arc<sip_ratelimit::RateLimiter>,
     /// Rate limiter for PUBLISH requests (keyed by source IP and AOR)
     publish_limiter: Arc<sip_ratelimit::RateLimiter>,
+    /// Optional digest authenticator for SUBSCRIBE/PUBLISH identity checks.
+    auth: Option<PresenceDigestAuth>,
 }
 
 /// Parsed SUBSCRIBE context for easier dispatch.
@@ -191,6 +198,31 @@ impl SipPresenceHandler {
             default_expires,
             subscribe_limiter,
             publish_limiter,
+            auth: None,
+        }
+    }
+
+    pub fn with_digest_auth(
+        mut self,
+        credential_store: Arc<dyn CredentialStore>,
+        realm: String,
+    ) -> Self {
+        let adapter = crate::registrar::CredentialStoreAdapter::new(credential_store, realm.clone());
+        self.auth = Some(PresenceDigestAuth {
+            authenticator: Arc::new(crate::auth::Ha1Authenticator::new(realm, adapter)),
+        });
+        self
+    }
+
+    fn clone_for_async(&self) -> Self {
+        Self {
+            presence: self.presence.clone(),
+            uac: Arc::clone(&self.uac),
+            tenant_id: self.tenant_id,
+            default_expires: self.default_expires,
+            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
+            publish_limiter: Arc::clone(&self.publish_limiter),
+            auth: self.auth.clone(),
         }
     }
 
@@ -262,6 +294,61 @@ impl SipPresenceHandler {
         sip_parse::header(request.headers(), "SIP-If-Match").map(|v| v.trim().to_string())
     }
 
+    fn extract_authorization_username(request: &sip_core::Request) -> Option<String> {
+        let header = request
+            .headers()
+            .get_smol("Authorization")
+            .or_else(|| request.headers().get_smol("Proxy-Authorization"))?;
+        let auth = sip_parse::parse_authorization_header(header)?;
+        Some(
+            auth.param("username")?
+                .as_str()
+                .trim_end_matches('@')
+                .to_string(),
+        )
+    }
+
+    fn extract_aor_username(aor: &str) -> Option<&str> {
+        aor.split('@').next().filter(|user| !user.is_empty())
+    }
+
+    async fn authenticate_request_identity(
+        &self,
+        request: &sip_core::Request,
+        handle: &sip_transaction::ServerTransactionHandle,
+        expected_aor: &str,
+    ) -> Result<bool> {
+        let Some(auth) = &self.auth else {
+            return Ok(true);
+        };
+
+        let challenge = || auth.authenticator.challenge(request);
+
+        let Some(username) = Self::extract_authorization_username(request) else {
+            handle.send_final(challenge()?).await;
+            return Ok(false);
+        };
+
+        match auth.authenticator.verify(request).await {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                handle.send_final(challenge()?).await;
+                return Ok(false);
+            }
+        }
+
+        let expected_username = Self::extract_aor_username(expected_aor)
+            .ok_or_else(|| anyhow::anyhow!("Invalid AOR '{}'", expected_aor))?;
+        if username != expected_username {
+            let response =
+                sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
+            handle.send_final(response).await;
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
     /// Send 200 OK for PUBLISH with SIP-ETag and Expires.
     async fn send_publish_ok(
         request: &sip_core::Request,
@@ -284,14 +371,7 @@ impl SipPresenceHandler {
     /// Spawn a background task to notify watchers of a state change.
     fn spawn_notify_watchers(&self, aor: &str) {
         let delay = self.presence.notify_delay();
-        let handler = SipPresenceHandler {
-            presence: self.presence.clone(),
-            uac: Arc::clone(&self.uac),
-            tenant_id: self.tenant_id.clone(),
-            default_expires: self.default_expires,
-            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
-            publish_limiter: Arc::clone(&self.publish_limiter),
-        };
+        let handler = self.clone_for_async();
         let aor = aor.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
@@ -599,8 +679,8 @@ impl SipPresenceHandler {
         let presentity_aor = Self::extract_presentity_aor(request)
             .ok_or_else(|| anyhow::anyhow!("Cannot extract presentity AOR from Request-URI"))?;
 
-        let watcher_aor =
-            Self::extract_watcher_aor(request).unwrap_or_else(|| "unknown".to_string());
+        let watcher_aor = Self::extract_watcher_aor(request)
+            .ok_or_else(|| anyhow::anyhow!("Missing or invalid From header in SUBSCRIBE"))?;
 
         let contact_uri = Self::extract_contact_uri(request)
             .ok_or_else(|| anyhow::anyhow!("Missing Contact header in SUBSCRIBE"))?;
@@ -624,6 +704,13 @@ impl SipPresenceHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<bool> {
+        if !self
+            .authenticate_request_identity(request, handle, &ctx.watcher_aor)
+            .await?
+        {
+            return Ok(false);
+        }
+
         if !self
             .presence
             .is_watcher_authorized(&ctx.watcher_aor, &ctx.presentity_aor, &ctx.event)
@@ -703,14 +790,7 @@ impl SipPresenceHandler {
         {
             let sub_state = Self::subscription_state_active(w);
             let delay = self.presence.notify_delay();
-            let handler = SipPresenceHandler {
-                presence: self.presence.clone(),
-                uac: Arc::clone(&self.uac),
-                tenant_id: self.tenant_id.clone(),
-                default_expires: self.default_expires,
-                subscribe_limiter: Arc::clone(&self.subscribe_limiter),
-                publish_limiter: Arc::clone(&self.publish_limiter),
-            };
+            let handler = self.clone_for_async();
             let watcher_clone = w.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
@@ -779,14 +859,7 @@ impl SipPresenceHandler {
         // Send initial NOTIFY with watcherinfo XML
         let sub_state = Self::subscription_state_active(&watcher);
         let delay = self.presence.notify_delay();
-        let handler = SipPresenceHandler {
-            presence: self.presence.clone(),
-            uac: Arc::clone(&self.uac),
-            tenant_id: self.tenant_id.clone(),
-            default_expires: self.default_expires,
-            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
-            publish_limiter: Arc::clone(&self.publish_limiter),
-        };
+        let handler = self.clone_for_async();
 
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
@@ -847,14 +920,7 @@ impl SipPresenceHandler {
         // Send initial NOTIFY with current state and active Subscription-State
         let sub_state = Self::subscription_state_active(&watcher);
         let delay = self.presence.notify_delay();
-        let handler = SipPresenceHandler {
-            presence: self.presence.clone(),
-            uac: Arc::clone(&self.uac),
-            tenant_id: self.tenant_id.clone(),
-            default_expires: self.default_expires,
-            subscribe_limiter: Arc::clone(&self.subscribe_limiter),
-            publish_limiter: Arc::clone(&self.publish_limiter),
-        };
+        let handler = self.clone_for_async();
 
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
@@ -908,6 +974,10 @@ impl PresenceHandler for SipPresenceHandler {
             "Handling presence SUBSCRIBE"
         );
 
+        if !self.check_subscribe_auth(&ctx, request, handle).await? {
+            return Ok(());
+        }
+
         // Watcher-info event package (RFC 3857/3858)
         if ctx.event == "presence.winfo" {
             if !self.presence.is_winfo_enabled() {
@@ -916,10 +986,6 @@ impl PresenceHandler for SipPresenceHandler {
                 return Ok(());
             }
             return self.handle_winfo_subscribe(&ctx, request, handle).await;
-        }
-
-        if !self.check_subscribe_auth(&ctx, request, handle).await? {
-            return Ok(());
         }
 
         if ctx.expires == 0 {
@@ -983,6 +1049,13 @@ impl PresenceHandler for SipPresenceHandler {
             std::str::from_utf8(request.body()).context("PUBLISH body is not valid UTF-8")?;
         let has_body = !body.is_empty();
 
+        if !self
+            .authenticate_request_identity(request, handle, &presentity_aor)
+            .await?
+        {
+            return Ok(());
+        }
+
         match (has_body, &if_match) {
             // Initial PUBLISH: body present, no SIP-If-Match
             (true, None) => {
@@ -990,6 +1063,13 @@ impl PresenceHandler for SipPresenceHandler {
                     .presence
                     .parse_pidf(body)
                     .context("Failed to parse PIDF XML from PUBLISH body")?;
+
+                if update.aor != presentity_aor {
+                    let response =
+                        sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
 
                 info!(
                     aor = %update.aor,

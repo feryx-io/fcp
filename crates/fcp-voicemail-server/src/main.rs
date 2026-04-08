@@ -482,7 +482,7 @@ async fn main() -> Result<()> {
     // Auto-discover mailboxes from DB and register routes by extension, username,
     // phone number E.164, and any dial plan extensions that target the same phone number.
     {
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = config.service.default_tenant_id;
 
         // Pre-load extensions for alias resolution
         let all_extensions: Vec<fcp_core::Extension> =
@@ -644,36 +644,39 @@ async fn main() -> Result<()> {
     );
 
     // 19. Create SipMessageHandler — flow_handler = Some(...)
-    let handler = Arc::new(SipMessageHandler::new(
-        Arc::clone(&transaction_manager_ref),
-        Arc::clone(&dialog_manager_ref),
-        local_uri,
-        Some(MediaProfileBuilder::audio_only()),
-        local_addr,
-        config.media.rtp_port_start,
-        None, // registrar = None
-        None, // routing_service = None
-        Arc::clone(&call_manager),
-        Some(Arc::clone(&uac)),
-        Some(Arc::clone(&dyn_storage)),
-        Some(Arc::clone(&media_manager)),
-        Some(fcp_core::config::MediaConfig {
-            enabled: true,
-            rtp_port_start: config.media.rtp_port_start,
-            rtp_port_end: config.media.rtp_port_end,
-            public_ip: config.media.public_ip.clone(),
-            ..Default::default()
-        }),
-        Some(Arc::clone(&flow_handler)),
-        config.b2bua.clone(),
-        outbound_route_provider,
-        None,          // No PBX handler
-        None,          // No conference handler
-        None,          // No queue handler
-        None,          // presence_handler
-        None,          // cluster_parking
-        String::new(), // node_id
-    )?);
+    let handler = Arc::new(
+        SipMessageHandler::new(
+            Arc::clone(&transaction_manager_ref),
+            Arc::clone(&dialog_manager_ref),
+            local_uri,
+            Some(MediaProfileBuilder::audio_only()),
+            local_addr,
+            config.media.rtp_port_start,
+            None, // registrar = None
+            None, // routing_service = None
+            Arc::clone(&call_manager),
+            Some(Arc::clone(&uac)),
+            Some(Arc::clone(&dyn_storage)),
+            Some(Arc::clone(&media_manager)),
+            Some(fcp_core::config::MediaConfig {
+                enabled: true,
+                rtp_port_start: config.media.rtp_port_start,
+                rtp_port_end: config.media.rtp_port_end,
+                public_ip: config.media.public_ip.clone(),
+                ..Default::default()
+            }),
+            Some(Arc::clone(&flow_handler)),
+            config.b2bua.clone(),
+            outbound_route_provider,
+            None,          // No PBX handler
+            None,          // No conference handler
+            None,          // No queue handler
+            None,          // presence_handler
+            None,          // cluster_parking
+            String::new(), // node_id
+        )?
+        .with_default_tenant_id(config.service.default_tenant_id),
+    );
 
     // 20. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
@@ -772,8 +775,8 @@ async fn main() -> Result<()> {
             .trim_end_matches('/')
             .replace("http://", "ws://")
             .replace("https://", "wss://");
-        let tenant_id = "tenant-00000000-0000-0000-0000-000000000000";
-        let ws_url = build_events_ws_url(&ws_url, tenant_id, config.events.auth_token.as_deref());
+        let tenant_id = config.service.default_tenant_id.to_string();
+        let ws_url = build_events_ws_url(&ws_url, &tenant_id, config.events.auth_token.as_deref());
 
         let sub_flow_store = Arc::clone(&flow_store);
         let sub_flow_handler = Arc::clone(&flow_handler);
@@ -786,6 +789,7 @@ async fn main() -> Result<()> {
                 sub_flow_store,
                 sub_flow_handler,
                 sub_storage,
+                config.service.default_tenant_id,
                 sub_max_duration,
                 sub_play_beep,
             )
@@ -1273,6 +1277,7 @@ async fn run_events_subscriber(
     flow_store: Arc<dyn fcp_flow::FlowStore>,
     flow_handler: Arc<fcp_sip::flow_handler::FlowCallHandler>,
     storage: Arc<fcp_core::DynStorage>,
+    tenant_id: fcp_core::TenantId,
     max_message_duration: u32,
     play_beep: bool,
 ) {
@@ -1307,6 +1312,7 @@ async fn run_events_subscriber(
                                                             &flow_store,
                                                             &flow_handler,
                                                             &storage,
+                                                            tenant_id,
                                                             max_message_duration,
                                                             play_beep,
                                                         ).await;
@@ -1330,6 +1336,7 @@ async fn run_events_subscriber(
                                                             &flow_store,
                                                             &flow_handler,
                                                             &storage,
+                                                            tenant_id,
                                                             max_message_duration,
                                                             play_beep,
                                                         ).await;
@@ -1369,6 +1376,7 @@ async fn handle_mailbox_created(
     flow_store: &Arc<dyn fcp_flow::FlowStore>,
     flow_handler: &Arc<fcp_sip::flow_handler::FlowCallHandler>,
     storage: &Arc<fcp_core::DynStorage>,
+    tenant_id: fcp_core::TenantId,
     max_message_duration: u32,
     play_beep: bool,
 ) {
@@ -1445,7 +1453,6 @@ async fn handle_mailbox_created(
             }
 
             // Register dial plan extensions targeting this phone number
-            let tenant_id = fcp_core::TenantId::nil();
             if let Ok(exts) = storage.list_extensions(&tenant_id).await {
                 for ext in &exts {
                     if ext.enabled {

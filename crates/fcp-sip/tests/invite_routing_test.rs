@@ -12,7 +12,7 @@ use std::time::Duration;
 async fn test_invite_sends_100_trying() {
     let harness = TestHarness::builder().with_registrar().build().await;
     let request =
-        build_invite_with_sdp("alice@example.com", "bob@example.com", Some(minimal_sdp()));
+        build_invite_with_sdp("alice@127.0.0.1", "bob@127.0.0.1", Some(minimal_sdp()));
 
     harness.send_request(&request).await;
 
@@ -36,7 +36,7 @@ async fn test_invite_sends_100_trying() {
 async fn test_invite_creates_call_in_call_manager() {
     let harness = TestHarness::builder().with_registrar().build().await;
     let request =
-        build_invite_with_sdp("alice@example.com", "bob@example.com", Some(minimal_sdp()));
+        build_invite_with_sdp("alice@127.0.0.1", "bob@127.0.0.1", Some(minimal_sdp()));
 
     assert_eq!(
         harness.call_manager.active_calls().len(),
@@ -61,7 +61,7 @@ async fn test_invite_uas_mode_accepts_with_sdp() {
     // In UAS mode (no UAC), a valid INVITE with SDP is accepted with 200 OK
     let harness = TestHarness::builder().with_registrar().build().await;
     let request =
-        build_invite_with_sdp("alice@example.com", "bob@example.com", Some(minimal_sdp()));
+        build_invite_with_sdp("alice@127.0.0.1", "bob@127.0.0.1", Some(minimal_sdp()));
 
     harness.send_request(&request).await;
 
@@ -84,7 +84,7 @@ async fn test_invite_uas_mode_empty_body_accepted() {
     // In UAS mode, empty body INVITE still generates a 200 OK because UAS mode
     // doesn't perform B2BUA-style SDP validation
     let harness = TestHarness::builder().with_registrar().build().await;
-    let request = build_invite_request("alice@example.com", "bob@example.com");
+    let request = build_invite_request("alice@127.0.0.1", "bob@127.0.0.1");
 
     harness.send_request(&request).await;
 
@@ -107,7 +107,7 @@ async fn test_invite_uas_mode_empty_body_accepted() {
 async fn test_invite_preserves_call_id_header() {
     let harness = TestHarness::builder().with_registrar().build().await;
     let request =
-        build_invite_with_sdp("alice@example.com", "bob@example.com", Some(minimal_sdp()));
+        build_invite_with_sdp("alice@127.0.0.1", "bob@127.0.0.1", Some(minimal_sdp()));
     let original_call_id = sip_parse::header(request.headers(), "Call-ID")
         .expect("request should have Call-ID")
         .to_string();
@@ -130,7 +130,7 @@ async fn test_invite_preserves_call_id_header() {
 async fn test_invite_preserves_via_header() {
     let harness = TestHarness::builder().with_registrar().build().await;
     let request =
-        build_invite_with_sdp("alice@example.com", "bob@example.com", Some(minimal_sdp()));
+        build_invite_with_sdp("alice@127.0.0.1", "bob@127.0.0.1", Some(minimal_sdp()));
     let original_via = sip_parse::header(request.headers(), "Via")
         .expect("request should have Via")
         .to_string();

@@ -1656,6 +1656,9 @@ pub trait ApiTokenStore: Send + Sync {
     /// List all API tokens for a tenant.
     async fn list_api_tokens(&self, tenant_id: &crate::TenantId) -> Result<Vec<ApiToken>>;
 
+    /// Look up an API token by ID.
+    async fn get_api_token(&self, id: &crate::ApiTokenId) -> Result<Option<ApiToken>>;
+
     /// Look up an API token by its hash (for authentication).
     async fn get_api_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>>;
 

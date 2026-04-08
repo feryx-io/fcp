@@ -530,30 +530,33 @@ async fn main() -> Result<()> {
 
     // 15. Create SipMessageHandler (with B2buaConfig from SbcConfig)
     let media_profile = Some(MediaProfileBuilder::audio_only());
-    let handler = Arc::new(SipMessageHandler::new(
-        Arc::clone(&transaction_manager_ref),
-        Arc::clone(&dialog_manager_ref),
-        local_uri,
-        media_profile,
-        effective_ip,
-        sbc_config.nat.rtp_port_start,
-        Some(registrar),
-        None, // no routing service
-        Arc::clone(&call_manager),
-        Some(Arc::clone(&uac)),
-        dyn_storage,
-        media_manager,
-        media_config,
-        None, // no flow handler
-        sbc_config.b2bua.clone(),
-        Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
-        None,          // No PBX handler
-        None,          // No conference handler
-        None,          // No queue handler
-        None,          // presence_handler
-        None,          // cluster_parking
-        String::new(), // node_id
-    )?);
+    let handler = Arc::new(
+        SipMessageHandler::new(
+            Arc::clone(&transaction_manager_ref),
+            Arc::clone(&dialog_manager_ref),
+            local_uri,
+            media_profile,
+            effective_ip,
+            sbc_config.nat.rtp_port_start,
+            Some(registrar),
+            None, // no routing service
+            Arc::clone(&call_manager),
+            Some(Arc::clone(&uac)),
+            dyn_storage,
+            media_manager,
+            media_config,
+            None, // no flow handler
+            sbc_config.b2bua.clone(),
+            Some(trunk_router as Arc<dyn fcp_sip::OutboundRouteProvider>),
+            None,          // No PBX handler
+            None,          // No conference handler
+            None,          // No queue handler
+            None,          // presence_handler
+            None,          // cluster_parking
+            String::new(), // node_id
+        )?
+        .with_default_tenant_id(fcp_core::TenantId::nil()),
+    );
 
     // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared
     //     implementation that also resolves FQDN hosts via DNS)

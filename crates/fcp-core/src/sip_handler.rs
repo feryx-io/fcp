@@ -578,9 +578,17 @@ impl InviteHandler {
         // In production, this would create a new INVITE
         info!("Forwarding call to {}", forward_to);
 
+        let redirect_uri = if forward_to.starts_with("sip:") || forward_to.starts_with("sips:") {
+            forward_to.to_string()
+        } else if forward_to.contains('@') {
+            format!("sip:{}", forward_to.trim_start_matches("sip:"))
+        } else {
+            format!("sip:{}@fcp.local", forward_to)
+        };
+
         Ok(InviteResponse::Redirect {
             call_id: CallId::new(),
-            redirect_uri: format!("sip:{}@fcp.local", forward_to),
+            redirect_uri,
         })
     }
 }

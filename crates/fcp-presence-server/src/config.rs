@@ -97,10 +97,26 @@ pub struct SipSection {
 
     /// Explicit local SIP URI override.
     pub local_uri: Option<String>,
+
+    /// Enable SIP Digest authentication for SUBSCRIBE/PUBLISH.
+    #[serde(default = "default_true")]
+    pub auth_enabled: bool,
+
+    /// Authentication realm for SIP Digest.
+    #[serde(default = "default_realm")]
+    pub realm: String,
 }
 
 fn default_sip_bind() -> String {
-    "0.0.0.0:5060".to_string()
+    "127.0.0.1:5060".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_realm() -> String {
+    "fcp.local".to_string()
 }
 
 impl Default for SipSection {
@@ -110,6 +126,8 @@ impl Default for SipSection {
             tcp_bind: default_sip_bind(),
             local_ip: None,
             local_uri: None,
+            auth_enabled: default_true(),
+            realm: default_realm(),
         }
     }
 }
@@ -366,6 +384,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<PresenceServerConfig> {
 /// Validate configuration for logical consistency.
 pub fn validate_config(config: &PresenceServerConfig) -> Result<()> {
     validate_http_config(&config.http)?;
+    validate_sip_config(&config.sip)?;
     Ok(())
 }
 
@@ -387,6 +406,28 @@ fn validate_http_config(http: &HttpSection) -> Result<()> {
     Ok(())
 }
 
+fn validate_sip_config(sip: &SipSection) -> Result<()> {
+    let udp_bind: SocketAddr = sip
+        .udp_bind
+        .parse()
+        .context("Invalid SIP UDP bind address")?;
+    let tcp_bind: SocketAddr = sip
+        .tcp_bind
+        .parse()
+        .context("Invalid SIP TCP bind address")?;
+    let public_bind = !udp_bind.ip().is_loopback() || !tcp_bind.ip().is_loopback();
+
+    if public_bind && !sip.auth_enabled {
+        anyhow::bail!(
+            "sip.auth_enabled must be true when binding the presence SIP server to a non-loopback address (udp={}, tcp={})",
+            udp_bind,
+            tcp_bind
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,8 +436,10 @@ mod tests {
     fn test_default_config() {
         let config = PresenceServerConfig::default();
         assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
-        assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
-        assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
+        assert_eq!(config.sip.udp_bind, "127.0.0.1:5060");
+        assert_eq!(config.sip.tcp_bind, "127.0.0.1:5060");
+        assert!(config.sip.auth_enabled);
+        assert_eq!(config.sip.realm, "fcp.local");
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address, "127.0.0.1:8080".parse().unwrap());
         assert!(config.http.api_token.is_none());
@@ -413,6 +456,8 @@ default_tenant_id = "00000000-0000-0000-0000-000000000456"
 udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
 local_ip = "192.168.1.100"
+auth_enabled = true
+realm = "presence.local"
 
 [storage]
 database_url = "postgresql://localhost/fcp"
@@ -436,6 +481,8 @@ format = "compact"
             "00000000-0000-0000-0000-000000000456".parse().unwrap()
         );
         assert_eq!(config.sip.local_ip.as_deref(), Some("192.168.1.100"));
+        assert!(config.sip.auth_enabled);
+        assert_eq!(config.sip.realm, "presence.local");
         assert_eq!(config.presence.max_subscriptions, 5000);
         assert_eq!(config.http.bind_address.port(), 9090);
         assert_eq!(config.http.api_token.as_deref(), Some("secret"));
@@ -454,5 +501,24 @@ format = "compact"
             api_token: Some("secret".to_string()),
         };
         assert!(validate_http_config(&http).is_ok());
+    }
+
+    #[test]
+    fn test_public_sip_bind_requires_auth() {
+        let sip = SipSection {
+            udp_bind: "0.0.0.0:5060".to_string(),
+            tcp_bind: "0.0.0.0:5060".to_string(),
+            auth_enabled: false,
+            ..Default::default()
+        };
+        assert!(validate_sip_config(&sip).is_err());
+
+        let sip = SipSection {
+            udp_bind: "0.0.0.0:5060".to_string(),
+            tcp_bind: "0.0.0.0:5060".to_string(),
+            auth_enabled: true,
+            ..Default::default()
+        };
+        assert!(validate_sip_config(&sip).is_ok());
     }
 }

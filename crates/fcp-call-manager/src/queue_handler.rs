@@ -7,7 +7,7 @@ use crate::queue_audio::{AnnouncementCache, MohCache, PromptCache};
 use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
 use fcp_core::storage::{CallDetailRecord, CallDisposition, CdrStore, HangupCause};
-use fcp_core::TenantId;
+use fcp_core::{TenantId, TenantStore};
 use fcp_events::EventPublisher;
 use fcp_media::{construct_answer_for_a_leg, extract_telephone_event_pt, parse_sdp_codecs};
 use fcp_queue::{QueueManager, QueueSystemConfig, QueuedCall};
@@ -149,6 +149,7 @@ struct AnnounceConfig {
 pub struct QueueCallHandler {
     queue_manager: Arc<QueueManager>,
     config: QueueSystemConfig,
+    default_tenant_id: TenantId,
     sessions: Arc<DashMap<String, QueueSession>>,
     local_uri: String,
     local_addr: String,
@@ -173,6 +174,7 @@ impl QueueCallHandler {
     pub fn new(
         queue_manager: Arc<QueueManager>,
         config: QueueSystemConfig,
+        default_tenant_id: TenantId,
         local_uri: String,
         local_addr: String,
         port_pool: Arc<PortPool>,
@@ -260,6 +262,7 @@ impl QueueCallHandler {
         let handler = Self {
             queue_manager,
             config: config.clone(),
+            default_tenant_id,
             sessions: Arc::new(DashMap::new()),
             local_uri,
             local_addr,
@@ -392,16 +395,52 @@ impl QueueCallHandler {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
     }
 
-    /// Extract tenant ID from the X-Tenant-ID header.
-    fn extract_tenant(request: &sip_core::Request) -> TenantId {
-        for header in request.headers() {
-            if header.name().eq_ignore_ascii_case("X-Tenant-ID") {
-                if let Ok(tid) = header.value().parse::<TenantId>() {
-                    return tid;
-                }
+    /// Extract a tenant domain from SIP addressing.
+    fn extract_tenant_domain(request: &sip_core::Request) -> Option<String> {
+        let request_uri = request.uri().to_string();
+        let uri_str = request_uri
+            .strip_prefix("sip:")
+            .or_else(|| request_uri.strip_prefix("sips:"))
+            .unwrap_or(&request_uri);
+
+        if let Some(domain) = uri_str.split('@').nth(1) {
+            let domain = domain.split(';').next().unwrap_or(domain).trim();
+            if !domain.is_empty() && domain != "localhost" && domain != "127.0.0.1" {
+                return Some(domain.to_string());
             }
         }
-        TenantId::nil()
+
+        let to_header = request.headers().get("To")?;
+        let to_str = to_header.to_string();
+        let uri_str = if let Some(start) = to_str.find('<') {
+            if let Some(end) = to_str.find('>') {
+                &to_str[start + 1..end]
+            } else {
+                &to_str
+            }
+        } else {
+            &to_str
+        };
+
+        let parsed = sip_core::SipUri::parse(uri_str.trim()).ok()?;
+        let domain = parsed.host().to_string();
+        if domain.is_empty() || domain == "localhost" || domain == "127.0.0.1" {
+            None
+        } else {
+            Some(domain)
+        }
+    }
+
+    async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
+        if let Some(domain) = Self::extract_tenant_domain(request) {
+            return match self.storage.get_tenant_by_name(&domain).await {
+                Ok(Some(tenant)) => Ok(tenant.id),
+                Ok(None) => bail!("Unknown tenant domain '{}'", domain),
+                Err(e) => Err(e).context("failed to resolve tenant from SIP domain"),
+            };
+        }
+
+        Ok(self.default_tenant_id)
     }
 
     /// Extract caller info (display_name, caller_uri) from From header.
@@ -621,13 +660,7 @@ impl QueueCallHandler {
         let prompt_cache = self.prompt_cache.clone();
         let recording_dir = self.config.recording_dir.clone();
         let campaign_call_id_map = Arc::clone(&self.campaign_call_id_map);
-        // Derive tenant_id from config, falling back to nil
-        let campaign_tenant_id: TenantId = self
-            .config
-            .default_tenant_id
-            .as_ref()
-            .and_then(|s| s.parse::<TenantId>().ok())
-            .unwrap_or_else(TenantId::nil);
+        let campaign_tenant_id = self.default_tenant_id;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -820,6 +853,7 @@ impl QueueCallHandler {
                         Arc::clone(&uac),
                         Arc::clone(&event_bus),
                         queue_name.clone(),
+                        campaign_tenant_id,
                     );
                 }
 
@@ -1881,7 +1915,25 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             .context("No queue found for extension")?;
 
         let call_id = Self::extract_call_id(request);
-        let tenant_id = Self::extract_tenant(request);
+        let tenant_id = match self.resolve_tenant(request).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(call_id = %call_id, error = %e, "Rejecting queue INVITE: tenant resolution failed");
+                let status = if e.to_string().contains("Unknown tenant domain") {
+                    403
+                } else {
+                    503
+                };
+                let reason = if status == 403 {
+                    "Unknown tenant domain"
+                } else {
+                    "Tenant lookup unavailable"
+                };
+                let response = sip_uas::UserAgentServer::create_response(request, status, reason);
+                handle.send_final(response).await;
+                return Ok(());
+            }
+        };
         let (caller_display, caller_uri) = Self::extract_caller_info(request);
 
         info!(
@@ -2186,6 +2238,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 self.local_addr.clone(),
                 self.local_uri.clone(),
                 Arc::clone(&self.event_bus),
+                self.default_tenant_id,
             ))
         } else {
             None
@@ -3013,6 +3066,7 @@ fn spawn_callback_ring(
     uac: Arc<SipUserAgentClient>,
     event_bus: Arc<dyn EventPublisher>,
     queue_name: String,
+    default_tenant_id: TenantId,
 ) {
     tokio::spawn(async move {
         let agent_id = plan.agent_id.clone();
@@ -3024,8 +3078,8 @@ fn spawn_callback_ring(
         // Look up tenant_id from the queued call
         let tenant_id = queue_manager
             .get_queued_call(&call_id)
-            .map(|c| c.tenant_id.clone())
-            .unwrap_or_else(fcp_core::TenantId::nil);
+            .map(|c| c.tenant_id)
+            .unwrap_or(default_tenant_id);
 
         // 1. Allocate agent B-leg RTP ports
         let agent_port_pair = match port_pool.allocate().await {
@@ -3327,6 +3381,7 @@ fn spawn_dtmf_listener(
     local_addr: String,
     local_uri: String,
     event_bus: Arc<dyn EventPublisher>,
+    default_tenant_id: TenantId,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut detector = Rfc2833Detector::new(8000);
@@ -3407,7 +3462,7 @@ fn spawn_dtmf_listener(
                                 &queue_manager
                                     .get_queued_call(&call_id)
                                     .map(|c| c.tenant_id)
-                                    .unwrap_or_else(fcp_core::TenantId::nil),
+                                    .unwrap_or(default_tenant_id),
                             )
                             .await;
 

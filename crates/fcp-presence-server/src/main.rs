@@ -268,38 +268,51 @@ async fn main() -> Result<()> {
     ));
     let local_uri = create_local_uri(&config)?;
     let local_addr = derive_local_addr(&config)?;
-    let concrete_presence_handler = Arc::new(SipPresenceHandler::new(
-        manager.clone(),
-        Arc::clone(&uac),
-        config.service.default_tenant_id,
-        config.presence.default_subscription_expiry_secs,
-    ));
+    let concrete_presence_handler = Arc::new({
+        let handler = SipPresenceHandler::new(
+            manager.clone(),
+            Arc::clone(&uac),
+            config.service.default_tenant_id,
+            config.presence.default_subscription_expiry_secs,
+        );
+        if config.sip.auth_enabled {
+            handler.with_digest_auth(
+                Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
+                config.sip.realm.clone(),
+            )
+        } else {
+            handler
+        }
+    });
     let presence_handler: Arc<dyn fcp_sip::presence::PresenceHandler> =
         Arc::clone(&concrete_presence_handler) as Arc<dyn fcp_sip::presence::PresenceHandler>;
-    let handler = Arc::new(fcp_sip::handler::SipMessageHandler::new(
-        Arc::clone(&transaction_manager),
-        Arc::clone(&dialog_manager),
-        local_uri,
-        None,
-        local_addr,
-        10000,
-        None,
-        None,
-        call_manager,
-        Some(Arc::clone(&uac)),
-        Some(Arc::clone(&dyn_storage)),
-        None,
-        None,
-        None,
-        B2buaConfig::default(),
-        None,
-        None,
-        None,
-        None,
-        Some(Arc::clone(&presence_handler)),
-        None,
-        config.service.node_id.clone(),
-    )?);
+    let handler = Arc::new(
+        fcp_sip::handler::SipMessageHandler::new(
+            Arc::clone(&transaction_manager),
+            Arc::clone(&dialog_manager),
+            local_uri,
+            None,
+            local_addr,
+            10000,
+            None,
+            None,
+            call_manager,
+            Some(Arc::clone(&uac)),
+            Some(Arc::clone(&dyn_storage)),
+            None,
+            None,
+            None,
+            B2buaConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(Arc::clone(&presence_handler)),
+            None,
+            config.service.node_id.clone(),
+        )?
+        .with_default_tenant_id(config.service.default_tenant_id),
+    );
 
     let udp_bind: std::net::SocketAddr = config
         .sip

@@ -84,6 +84,9 @@ pub struct ServiceSection {
 
     #[serde(default = "default_node_id")]
     pub node_id: String,
+
+    #[serde(default = "default_tenant_id")]
+    pub default_tenant_id: fcp_core::TenantId,
 }
 
 fn default_service_type() -> String {
@@ -94,11 +97,16 @@ fn default_node_id() -> String {
     format!("cm-{}", uuid::Uuid::new_v4())
 }
 
+fn default_tenant_id() -> fcp_core::TenantId {
+    fcp_core::TenantId::nil()
+}
+
 impl Default for ServiceSection {
     fn default() -> Self {
         Self {
             service_type: default_service_type(),
             node_id: default_node_id(),
+            default_tenant_id: default_tenant_id(),
         }
     }
 }
@@ -610,6 +618,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
 
     info!(
         node_id = %config.service.node_id,
+        default_tenant_id = %config.service.default_tenant_id,
         udp_bind = %config.sip.udp_bind,
         tcp_bind = %config.sip.tcp_bind,
         registrar_enabled = config.registrar.enabled,
@@ -695,6 +704,7 @@ mod tests {
     fn test_default_config() {
         let config = CallManagerConfig::default();
         assert_eq!(config.service.service_type, "call-manager");
+        assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
         assert!(config.registrar.enabled);
@@ -774,6 +784,7 @@ mod tests {
 [service]
 service_type = "call-manager"
 node_id = "cm-test-01"
+default_tenant_id = "00000000-0000-0000-0000-000000000123"
 
 [sip]
 udp_bind = "0.0.0.0:5060"
@@ -823,6 +834,10 @@ url = "https://hooks.example.com/all-events"
 "#;
         let config: CallManagerConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.service.node_id, "cm-test-01");
+        assert_eq!(
+            config.service.default_tenant_id,
+            "00000000-0000-0000-0000-000000000123".parse().unwrap()
+        );
         assert!(config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "test.local");
         assert_eq!(config.registrar.default_expires, 1800);

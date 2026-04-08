@@ -415,36 +415,39 @@ async fn main() -> Result<()> {
     );
 
     // 18. Create SipMessageHandler — THE KEY DIFFERENCE: flow_handler = Some(...)
-    let handler = Arc::new(SipMessageHandler::new(
-        Arc::clone(&transaction_manager_ref),
-        Arc::clone(&dialog_manager_ref),
-        local_uri,
-        Some(MediaProfileBuilder::audio_only()),
-        local_addr,
-        config.media.rtp_port_start,
-        None, // registrar = None (no registration)
-        None, // routing_service = None (no LCR)
-        Arc::clone(&call_manager),
-        Some(Arc::clone(&uac)),
-        Some(Arc::clone(&dyn_storage)),
-        Some(Arc::clone(&media_manager)),
-        Some(fcp_core::config::MediaConfig {
-            enabled: true,
-            rtp_port_start: config.media.rtp_port_start,
-            rtp_port_end: config.media.rtp_port_end,
-            public_ip: config.media.public_ip.clone(),
-            ..Default::default()
-        }),
-        Some(Arc::clone(&flow_handler)), // ← THE KEY DIFFERENCE
-        config.b2bua.clone(),
-        outbound_route_provider,
-        None,          // No PBX handler
-        None,          // No conference handler
-        None,          // No queue handler
-        None,          // presence_handler
-        None,          // cluster_parking
-        String::new(), // node_id
-    )?);
+    let handler = Arc::new(
+        SipMessageHandler::new(
+            Arc::clone(&transaction_manager_ref),
+            Arc::clone(&dialog_manager_ref),
+            local_uri,
+            Some(MediaProfileBuilder::audio_only()),
+            local_addr,
+            config.media.rtp_port_start,
+            None, // registrar = None (no registration)
+            None, // routing_service = None (no LCR)
+            Arc::clone(&call_manager),
+            Some(Arc::clone(&uac)),
+            Some(Arc::clone(&dyn_storage)),
+            Some(Arc::clone(&media_manager)),
+            Some(fcp_core::config::MediaConfig {
+                enabled: true,
+                rtp_port_start: config.media.rtp_port_start,
+                rtp_port_end: config.media.rtp_port_end,
+                public_ip: config.media.public_ip.clone(),
+                ..Default::default()
+            }),
+            Some(Arc::clone(&flow_handler)), // ← THE KEY DIFFERENCE
+            config.b2bua.clone(),
+            outbound_route_provider,
+            None,          // No PBX handler
+            None,          // No conference handler
+            None,          // No queue handler
+            None,          // presence_handler
+            None,          // cluster_parking
+            String::new(), // node_id
+        )?
+        .with_default_tenant_id(fcp_core::TenantId::nil()),
+    );
 
     // 19. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config

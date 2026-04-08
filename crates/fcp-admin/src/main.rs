@@ -153,30 +153,33 @@ async fn main() -> Result<()> {
     ));
 
     let local_uri = fcp_sip::exports::SipUri::parse("sip:admin@127.0.0.1").unwrap();
-    let handler = Arc::new(SipMessageHandler::new(
-        transaction_manager,
-        dialog_manager.clone(),
-        local_uri,
-        None,                    // media_profile
-        "127.0.0.1".to_string(), // local_addr
-        10000,                   // rtp_port
-        None,                    // registrar
-        None,                    // routing_service
-        call_manager.clone(),
-        None, // uac (no outbound SIP needed)
-        Some(storage.clone()),
-        None, // media_manager
-        None, // media_config
-        None, // flow_handler
-        B2buaConfig::default(),
-        None,          // outbound_route_provider
-        None,          // pbx_handler
-        None,          // conference_handler
-        None,          // queue_handler
-        None,          // presence_handler
-        None,          // cluster_parking
-        String::new(), // node_id
-    )?);
+    let handler = Arc::new(
+        SipMessageHandler::new(
+            transaction_manager,
+            dialog_manager.clone(),
+            local_uri,
+            None,                    // media_profile
+            "127.0.0.1".to_string(), // local_addr
+            10000,                   // rtp_port
+            None,                    // registrar
+            None,                    // routing_service
+            call_manager.clone(),
+            None, // uac (no outbound SIP needed)
+            Some(storage.clone()),
+            None, // media_manager
+            None, // media_config
+            None, // flow_handler
+            B2buaConfig::default(),
+            None,          // outbound_route_provider
+            None,          // pbx_handler
+            None,          // conference_handler
+            None,          // queue_handler
+            None,          // presence_handler
+            None,          // cluster_parking
+            String::new(), // node_id
+        )?
+        .with_default_tenant_id(config.service.default_tenant_id),
+    );
 
     let api_config = fcp_core::ApiConfig {
         enabled: true,

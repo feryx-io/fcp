@@ -12,7 +12,7 @@ use axum::{
 };
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
-use fcp_core::{CallId, DynStorage};
+use fcp_core::{CallId, DynStorage, TenantId};
 use fcp_events::filter::EventType;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus, PlatformEvent};
 use fcp_media::MediaManager;
@@ -27,6 +27,7 @@ use tracing::{info, warn};
 pub struct AppState {
     pub call_manager: Arc<CallManager>,
     pub storage: Arc<DynStorage>,
+    pub default_tenant_id: TenantId,
     pub media_manager: Arc<MediaManager>,
     pub queue_manager: Option<Arc<QueueManager>>,
     pub queue_handler: Option<Arc<QueueCallHandler>>,
@@ -574,8 +575,7 @@ async fn create_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    let tenant_id = fcp_core::TenantId::nil();
-    match qm.create_queue(body.key.clone(), body.config, tenant_id) {
+    match qm.create_queue(body.key.clone(), body.config, state.default_tenant_id) {
         Ok(()) => Json(serde_json::json!({
             "status": "created",
             "queue": body.key,
@@ -797,8 +797,6 @@ async fn login_agent_handler(
     let extension = body.extension.as_deref().unwrap_or(&id);
     let queues = body.queues.unwrap_or_default();
     let skills = body.skills.unwrap_or_default();
-    let tenant_id = fcp_core::TenantId::nil();
-
     if queues.is_empty() {
         // Auto-discover queues from config (same as feature code login)
         let config = qm.get_system_config();
@@ -814,7 +812,13 @@ async fn login_agent_handler(
             }));
         }
         match qm
-            .agent_login(&id, extension, &auto_queues, tenant_id, skills)
+            .agent_login(
+                &id,
+                extension,
+                &auto_queues,
+                state.default_tenant_id,
+                skills,
+            )
             .await
         {
             Ok(()) => Json(serde_json::json!({
@@ -826,7 +830,7 @@ async fn login_agent_handler(
         }
     } else {
         match qm
-            .agent_login(&id, extension, &queues, tenant_id, skills)
+            .agent_login(&id, extension, &queues, state.default_tenant_id, skills)
             .await
         {
             Ok(()) => Json(serde_json::json!({
@@ -1378,8 +1382,7 @@ async fn update_presence_handler(
         note,
     };
 
-    let tenant_id = fcp_core::TenantId::nil();
-    match pm.update_presence(update, &tenant_id).await {
+    match pm.update_presence(update, &state.default_tenant_id).await {
         Ok(info) => Json(serde_json::json!({
             "aor": info.aor,
             "state": info.state.to_string(),

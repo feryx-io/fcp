@@ -2,7 +2,7 @@
 //!
 //! Provides create/list/delete for API tokens used for programmatic access.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{auth::TenantContext, error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -77,7 +77,10 @@ pub struct CreateApiTokenResponse {
 /// List all API tokens for the default tenant.
 ///
 /// GET /api/v1/api-tokens
-pub async fn list_api_tokens(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_api_tokens(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
     let storage = state
         .storage
         .as_ref()
@@ -88,7 +91,7 @@ pub async fn list_api_tokens(State(state): State<ApiState>) -> Result<impl IntoR
         .ok_or_else(|| ApiError::Internal("API token store not configured".to_string()))?;
 
     let tokens = store
-        .list_api_tokens(&state.default_tenant_id)
+        .list_api_tokens(&tenant.0)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list API tokens: {}", e)))?;
 
@@ -101,6 +104,7 @@ pub async fn list_api_tokens(State(state): State<ApiState>) -> Result<impl IntoR
 /// POST /api/v1/api-tokens
 pub async fn create_api_token(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Json(req): Json<CreateApiTokenRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     if req.name.is_empty() || req.name.len() > 64 {
@@ -164,7 +168,7 @@ pub async fn create_api_token(
         token_hash,
         prefix: prefix.clone(),
         user_id: String::new(),
-        tenant_id: state.default_tenant_id,
+        tenant_id: tenant.0,
         permissions: req.permissions,
         expires_at,
         created_at: now,
@@ -189,6 +193,7 @@ pub async fn create_api_token(
 /// DELETE /api/v1/api-tokens/:id
 pub async fn delete_api_token(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = state
@@ -203,6 +208,16 @@ pub async fn delete_api_token(
     let token_id: fcp_core::ApiTokenId = id
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid token ID".to_string()))?;
+
+    let token = store
+        .get_api_token(&token_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to look up API token: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound("API token not found".to_string()))?;
+
+    if token.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound("API token not found".to_string()));
+    }
 
     store
         .delete_api_token(&token_id)

@@ -68,6 +68,19 @@ impl ApiTokenStore for PostgresApiTokenStore {
         Ok(rows.iter().map(row_to_api_token).collect())
     }
 
+    async fn get_api_token(&self, id: &ApiTokenId) -> anyhow::Result<Option<ApiToken>> {
+        let row = sqlx::query(
+            "SELECT id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at, last_used_at
+             FROM api_tokens
+             WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.as_ref().map(row_to_api_token))
+    }
+
     async fn get_api_token_by_hash(&self, token_hash: &str) -> anyhow::Result<Option<ApiToken>> {
         let row = sqlx::query(
             "SELECT id, name, token_hash, prefix, user_id, tenant_id, permissions, expires_at, created_at, last_used_at

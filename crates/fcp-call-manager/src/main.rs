@@ -623,14 +623,14 @@ async fn main() -> Result<()> {
         .clone()
         .or_else(|| config.media.public_ip.clone())
         .unwrap_or_else(|| derive_local_ip(&config.sip.udp_bind));
+    let default_tenant_id = config.service.default_tenant_id;
 
     // 17a. Create QueueManager and QueueCallHandler (if queue system is enabled)
     let queue_manager: Option<Arc<fcp_queue::QueueManager>> = if config.queue.enabled {
-        let tenant_id = fcp_core::TenantId::nil(); // Default tenant for single-node
         let mut qm = fcp_queue::QueueManager::new(
             config.queue.clone(),
             Some(Arc::clone(&event_publisher)),
-            tenant_id.clone(),
+            default_tenant_id,
         );
 
         // Set up queue persistence and restore agents
@@ -640,7 +640,7 @@ async fn main() -> Result<()> {
         let qm = Arc::new(qm);
 
         // Restore agent state from storage
-        match qm.restore_agents(queue_store.as_ref(), &tenant_id).await {
+        match qm.restore_agents(queue_store.as_ref(), &default_tenant_id).await {
             Ok(count) if count > 0 => {
                 info!(restored = count, "Restored agent state from storage");
             }
@@ -658,8 +658,7 @@ async fn main() -> Result<()> {
     // Start queue stats publisher (for wallboard WebSocket consumers)
     if let Some(ref qm) = queue_manager {
         if config.queue.stats_publish_interval_secs > 0 {
-            let tenant_id = fcp_core::TenantId::nil();
-            qm.start_stats_publisher(config.queue.stats_publish_interval_secs, tenant_id);
+            qm.start_stats_publisher(config.queue.stats_publish_interval_secs, default_tenant_id);
             info!(
                 interval_secs = config.queue.stats_publish_interval_secs,
                 "Queue stats publisher started"
@@ -677,6 +676,7 @@ async fn main() -> Result<()> {
         let handler = queue_handler::QueueCallHandler::new(
             Arc::clone(qm),
             config.queue.clone(),
+            default_tenant_id,
             local_uri.as_str().to_string(),
             local_addr.clone(),
             queue_port_pool,
@@ -747,13 +747,20 @@ async fn main() -> Result<()> {
     // 17c. Create SIP presence handler (if enabled)
     let concrete_presence_handler: Option<Arc<SipPresenceHandler>> =
         if let Some(ref pm) = presence_manager {
-            let pres_tenant = fcp_core::TenantId::nil();
             let handler = SipPresenceHandler::new(
                 pm.clone(),
                 Arc::clone(&uac),
-                pres_tenant,
+                default_tenant_id,
                 config.presence.default_subscription_expiry_secs,
             );
+            let handler = if config.registrar.auth_enabled {
+                handler.with_digest_auth(
+                    Arc::clone(&dyn_storage) as Arc<dyn fcp_core::CredentialStore>,
+                    config.registrar.realm.clone(),
+                )
+            } else {
+                handler
+            };
             Some(Arc::new(handler))
         } else {
             None
@@ -806,10 +813,9 @@ async fn main() -> Result<()> {
 
     // 17e. Create PromptService for system prompt resolution (WAV file → TTS fallback)
     let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {
-        let default_tenant_id = fcp_core::TenantId::from_uuid(uuid::Uuid::nil());
         let prompt_service = Arc::new(fcp_core::PromptService::new(
             Arc::clone(prompt_store),
-            default_tenant_id.clone(),
+            default_tenant_id,
             "en-US",
         ));
 
@@ -836,7 +842,7 @@ async fn main() -> Result<()> {
                 continue;
             }
             let mut prompt = fcp_core::Prompt::new_tts(
-                default_tenant_id.clone(),
+                default_tenant_id,
                 *name,
                 fcp_core::PromptCategory::System,
                 "en-US",
@@ -915,7 +921,8 @@ async fn main() -> Result<()> {
         presence_handler.clone(),
         cluster_parking.clone(),
         config.service.node_id.clone(),
-    )?;
+    )?
+    .with_default_tenant_id(default_tenant_id);
 
     // Set up SIP trace channel for raw message capture to PostgreSQL
     let sip_trace_store: Option<Arc<dyn fcp_core::SipTraceStore>> =
@@ -1085,6 +1092,7 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(health::AppState {
         call_manager: Arc::clone(&call_manager),
         storage: Arc::clone(&dyn_storage),
+        default_tenant_id,
         media_manager: Arc::clone(&media_manager),
         queue_manager: queue_manager.clone(),
         queue_handler: queue_call_handler.clone(),
@@ -1223,10 +1231,15 @@ async fn main() -> Result<()> {
     if let Some(ref pm) = presence_manager {
         let pm_clone = pm.clone();
         let event_bus_clone = Arc::clone(&event_bus);
-        let tenant_id = fcp_core::TenantId::nil();
         let storage_for_presence = Arc::clone(&dyn_storage);
         tokio::spawn(async move {
-            run_presence_listener(event_bus_clone, pm_clone, tenant_id, storage_for_presence).await;
+            run_presence_listener(
+                event_bus_clone,
+                pm_clone,
+                default_tenant_id,
+                storage_for_presence,
+            )
+            .await;
         });
         info!("Presence event listener started");
 

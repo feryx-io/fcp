@@ -4,7 +4,10 @@ use crate::{
     call_state::CallStateManager,
     forwarding::{ForwardType, ForwardingRulesManager},
     routing::{RoutingDestination, RoutingEngine, RoutingError, RoutingResult, RoutingTarget},
-    storage::{DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore},
+    storage::{
+        ConferenceStore, DeviceStore, ExtensionStore, LineBindingStore, PhoneNumberStore,
+        VoicemailStore,
+    },
     ExtensionTarget, LineBinding, PhoneNumberId, RingStrategy, TenantId, UserId,
 };
 use async_trait::async_trait;
@@ -23,6 +26,10 @@ pub struct DefaultRoutingEngine {
     line_binding_store: Arc<dyn LineBindingStore>,
     extension_store: Arc<dyn ExtensionStore>,
     device_store: Arc<dyn DeviceStore>,
+    voicemail_store: Option<Arc<dyn VoicemailStore>>,
+    conference_store: Option<Arc<dyn ConferenceStore>>,
+    voicemail_service_uri: Option<String>,
+    conference_service_uri: Option<String>,
     #[allow(dead_code)] // TODO: Implement round-robin and longest-idle ring strategies
     call_state_manager: Arc<CallStateManager>,
     forwarding_rules_manager: Arc<tokio::sync::RwLock<ForwardingRulesManager>>,
@@ -43,9 +50,33 @@ impl DefaultRoutingEngine {
             line_binding_store,
             extension_store,
             device_store,
+            voicemail_store: None,
+            conference_store: None,
+            voicemail_service_uri: None,
+            conference_service_uri: None,
             call_state_manager,
             forwarding_rules_manager,
         }
+    }
+
+    pub fn with_voicemail_service(
+        mut self,
+        store: Arc<dyn VoicemailStore>,
+        service_uri: impl Into<String>,
+    ) -> Self {
+        self.voicemail_store = Some(store);
+        self.voicemail_service_uri = Some(service_uri.into());
+        self
+    }
+
+    pub fn with_conference_service(
+        mut self,
+        store: Arc<dyn ConferenceStore>,
+        service_uri: impl Into<String>,
+    ) -> Self {
+        self.conference_store = Some(store);
+        self.conference_service_uri = Some(service_uri.into());
+        self
     }
 
     /// Converts a line binding and its devices into routing targets.
@@ -189,6 +220,29 @@ impl DefaultRoutingEngine {
         });
         targets
     }
+
+    fn build_service_forward_uri(service_uri: &str, extension: &str) -> String {
+        let host = service_uri
+            .strip_prefix("sip:")
+            .or_else(|| service_uri.strip_prefix("sips:"))
+            .unwrap_or(service_uri)
+            .split('@')
+            .last()
+            .unwrap_or(service_uri)
+            .trim();
+        format!("sip:{}@{}", extension, host)
+    }
+
+    fn service_routing_result(forward_to: String) -> RoutingResult {
+        RoutingResult {
+            phone_number: None,
+            line_binding: None,
+            targets: Vec::new(),
+            ring_strategy: RingStrategy::Simultaneous,
+            forward_to: Some(forward_to),
+            no_answer_timeout: Duration::from_secs(60),
+        }
+    }
 }
 
 #[async_trait]
@@ -275,9 +329,46 @@ impl RoutingEngine for DefaultRoutingEngine {
                         })
                     }
                     ExtensionTarget::Service(_service_id) => {
-                        // Service routing would be implemented here
+                        if let Some(voicemail_store) = &self.voicemail_store {
+                            let mailbox = voicemail_store
+                                .get_mailbox_by_extension(tenant_id, ext)
+                                .await
+                                .map_err(|e| RoutingError::Storage(e.to_string()))?;
+                            if let Some(mailbox) = mailbox {
+                                if mailbox.enabled {
+                                    if let Some(service_uri) = &self.voicemail_service_uri {
+                                        return Ok(Self::service_routing_result(
+                                            Self::build_service_forward_uri(service_uri, ext),
+                                        ));
+                                    }
+                                    return Err(RoutingError::NoRoute(
+                                        "Voicemail service URI not configured".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+
+                        if let Some(conference_store) = &self.conference_store {
+                            let meeting = conference_store
+                                .get_meeting_by_room_number(tenant_id, ext)
+                                .await
+                                .map_err(|e| RoutingError::Storage(e.to_string()))?;
+                            if let Some(meeting) = meeting {
+                                if meeting.enabled {
+                                    if let Some(service_uri) = &self.conference_service_uri {
+                                        return Ok(Self::service_routing_result(
+                                            Self::build_service_forward_uri(service_uri, ext),
+                                        ));
+                                    }
+                                    return Err(RoutingError::NoRoute(
+                                        "Conference service URI not configured".to_string(),
+                                    ));
+                                }
+                            }
+                        }
+
                         Err(RoutingError::NoRoute(
-                            "Service routing not yet implemented".to_string(),
+                            format!("No routable service target found for extension {}", ext),
                         ))
                     }
                 }

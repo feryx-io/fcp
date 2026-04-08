@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use fcp_core::storage::ApiTokenStore;
-use fcp_core::{AccountStatus, CredentialStore};
+use fcp_core::{AccountStatus, CredentialStore, TenantId};
 use std::sync::Arc;
 
 /// Identity of the authenticated caller, inserted into request extensions
@@ -17,9 +17,16 @@ pub enum AuthIdentity {
     /// Static config token — full admin access.
     StaticToken,
     /// Database API token with stored permissions.
-    ApiToken { permissions: Vec<String> },
+    ApiToken {
+        tenant_id: TenantId,
+        permissions: Vec<String>,
+    },
     /// JWT session token with role from claims.
-    Session { username: String, role: String },
+    Session {
+        username: String,
+        role: String,
+        tenant_id: Option<TenantId>,
+    },
 }
 
 impl AuthIdentity {
@@ -32,7 +39,9 @@ impl AuthIdentity {
     pub fn is_admin(&self) -> bool {
         match self {
             Self::StaticToken => true,
-            Self::ApiToken { permissions } => permissions.iter().any(|p| p == "admin" || p == "*"),
+            Self::ApiToken { permissions, .. } => {
+                permissions.iter().any(|p| p == "admin" || p == "*")
+            }
             Self::Session { role, .. } => role != "end_user",
         }
     }
@@ -45,9 +54,18 @@ impl AuthIdentity {
     pub fn has_permission(&self, permission: &str) -> bool {
         match self {
             Self::StaticToken | Self::Session { .. } => true,
-            Self::ApiToken { permissions } => permissions
+            Self::ApiToken { permissions, .. } => permissions
                 .iter()
                 .any(|p| p == permission || p == "admin" || p == "*"),
+        }
+    }
+
+    /// Returns the tenant scope carried by the authenticated identity, if any.
+    pub fn tenant_id(&self) -> Option<&TenantId> {
+        match self {
+            Self::StaticToken => None,
+            Self::ApiToken { tenant_id, .. } => Some(tenant_id),
+            Self::Session { tenant_id, .. } => tenant_id.as_ref(),
         }
     }
 }
@@ -139,6 +157,7 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
                         return Some(AuthIdentity::Session {
                             username: claims.sub,
                             role: current_role,
+                            tenant_id: Some(user.tenant_id),
                         });
                     }
                     Ok(None) => {
@@ -156,6 +175,7 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
             return Some(AuthIdentity::Session {
                 username: claims.sub,
                 role: claims.role,
+                tenant_id: claims.tenant_id.parse().ok(),
             });
         }
     }
@@ -254,6 +274,7 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Opti
     }
 
     let permissions = api_token.permissions.clone();
+    let tenant_id = api_token.tenant_id;
 
     // Update last_used_at in the background (non-blocking)
     let store = Arc::clone(store);
@@ -264,7 +285,10 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Opti
         }
     });
 
-    Some(AuthIdentity::ApiToken { permissions })
+    Some(AuthIdentity::ApiToken {
+        tenant_id,
+        permissions,
+    })
 }
 
 /// Constant-time string comparison to prevent timing attacks.
@@ -296,13 +320,18 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(
-        _parts: &mut axum::http::request::Parts,
+        parts: &mut axum::http::request::Parts,
         state: &crate::state::ApiState,
     ) -> Result<Self, Self::Rejection> {
-        // SECURITY: Use server-configured default tenant only.
-        // X-Tenant-Id header is NOT trusted — tenant must come from
-        // authenticated session context (JWT claims in multi-tenant mode).
-        Ok(TenantContext(state.default_tenant_id.clone()))
+        if let Some(identity) = parts.extensions.get::<AuthIdentity>() {
+            if let Some(tenant_id) = identity.tenant_id() {
+                return Ok(TenantContext(*tenant_id));
+            }
+        }
+
+        // Fall back to the server-configured tenant for static tokens and
+        // single-tenant deployments where the auth layer carries no tenant scope.
+        Ok(TenantContext(state.default_tenant_id))
     }
 }
 
@@ -375,6 +404,9 @@ mod tests {
         }
         async fn list_api_tokens(&self, _tenant_id: &TenantId) -> anyhow::Result<Vec<ApiToken>> {
             Ok(self.tokens.clone())
+        }
+        async fn get_api_token(&self, id: &ApiTokenId) -> anyhow::Result<Option<ApiToken>> {
+            Ok(self.tokens.iter().find(|t| t.id == *id).cloned())
         }
         async fn get_api_token_by_hash(
             &self,

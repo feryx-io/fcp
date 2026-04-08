@@ -167,8 +167,9 @@ async fn test_publish_etag_full_lifecycle() {
 async fn test_auth_policy_enforcement() {
     let mgr = PresenceManager::new(test_config(), None);
 
-    // No policy = allow all
-    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    // No policy = self-only
+    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    assert!(mgr.is_watcher_authorized("alice@example.com", "alice@example.com", "presence"));
 
     // Set policy blocking bob
     let policy = PresenceAuthPolicy {
@@ -192,9 +193,10 @@ async fn test_auth_policy_enforcement() {
     assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
     assert!(mgr.is_watcher_authorized("charlie@example.com", "alice@example.com", "presence"));
 
-    // Remove policy → revert to default-allow
+    // Remove policy → revert to self-only access
     mgr.remove_auth_policy("alice@example.com");
-    assert!(mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    assert!(!mgr.is_watcher_authorized("bob@example.com", "alice@example.com", "presence"));
+    assert!(mgr.is_watcher_authorized("alice@example.com", "alice@example.com", "presence"));
 }
 
 /// Test: cross-tenant watcher subscription is rejected.

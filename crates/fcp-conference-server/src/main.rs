@@ -814,30 +814,33 @@ async fn main() -> Result<()> {
     // 18. Create SipMessageHandler
     //     flow_handler = None (conference doesn't use flows)
     //     The conference handler is wired via the conference_handler field
-    let handler = Arc::new(SipMessageHandler::new(
-        Arc::clone(&transaction_manager_ref),
-        Arc::clone(&dialog_manager_ref),
-        local_uri,
-        None, // No media profile — conference server handles RTP directly, no B2BUA anchoring
-        local_addr,
-        config.media.rtp_port_start,
-        None, // registrar = None
-        None, // routing_service = None
-        Arc::clone(&call_manager),
-        Some(Arc::clone(&uac)),
-        Some(Arc::clone(&dyn_storage)),
-        None, // No media manager — prevents evaluate_media_anchoring from anchoring
-        None, // No media config — conference handles its own RTP
-        None, // flow_handler = None
-        config.b2bua.clone(),
-        outbound_route_provider,
-        None, // No PBX handler
-        Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
-        None,          // No queue handler
-        None,          // presence_handler
-        None,          // cluster_parking
-        String::new(), // node_id
-    )?);
+    let handler = Arc::new(
+        SipMessageHandler::new(
+            Arc::clone(&transaction_manager_ref),
+            Arc::clone(&dialog_manager_ref),
+            local_uri,
+            None, // No media profile — conference server handles RTP directly, no B2BUA anchoring
+            local_addr,
+            config.media.rtp_port_start,
+            None, // registrar = None
+            None, // routing_service = None
+            Arc::clone(&call_manager),
+            Some(Arc::clone(&uac)),
+            Some(Arc::clone(&dyn_storage)),
+            None, // No media manager — prevents evaluate_media_anchoring from anchoring
+            None, // No media config — conference handles its own RTP
+            None, // flow_handler = None
+            config.b2bua.clone(),
+            outbound_route_provider,
+            None, // No PBX handler
+            Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
+            None,          // No queue handler
+            None,          // presence_handler
+            None,          // cluster_parking
+            String::new(), // node_id
+        )?
+        .with_default_tenant_id(config.service.default_tenant_id),
+    );
 
     // 19. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
