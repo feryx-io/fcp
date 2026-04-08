@@ -4,24 +4,35 @@
 //! providing better security by never storing or handling plaintext SIP passwords.
 
 use anyhow::{anyhow, Result};
-use sip_auth::{AsyncCredentialStore, DigestAlgorithm, Qop};
+use async_trait::async_trait;
+use sip_auth::{DigestAlgorithm, Qop};
 use sip_core::{Headers, Method, Request, Response, StatusLine};
 use sip_parse::parse_authorization_header;
 use smol_str::SmolStr;
+
+#[async_trait]
+pub trait Ha1CredentialStore: Send + Sync {
+    async fn fetch(
+        &self,
+        username: &str,
+        realm: &str,
+        request: &Request,
+    ) -> Option<sip_auth::Credentials>;
+}
 
 /// Custom authenticator that uses pre-computed HA1 hashes.
 ///
 /// Unlike the standard siphon-rs authenticator which expects plaintext passwords
 /// and computes HA1, this authenticator accepts pre-computed HA1 hashes directly.
 /// This is more secure because we never store plaintext passwords in the database.
-pub struct Ha1Authenticator<S: AsyncCredentialStore> {
+pub struct Ha1Authenticator<S: Ha1CredentialStore> {
     realm: String,
     store: S,
     algorithm: DigestAlgorithm,
     qop: Qop,
 }
 
-impl<S: AsyncCredentialStore> Ha1Authenticator<S> {
+impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
     pub fn new(realm: String, store: S) -> Self {
         Self {
             realm,
@@ -157,7 +168,7 @@ impl<S: AsyncCredentialStore> Ha1Authenticator<S> {
         // Fetch pre-computed HA1 from store
         let creds = self
             .store
-            .fetch(username_str, realm.as_str())
+            .fetch(username_str, realm.as_str(), request)
             .await
             .ok_or_else(|| anyhow!("User not found: {}", username_str))?;
 

@@ -163,6 +163,11 @@ impl YamlRoutingStore {
 
 #[async_trait]
 impl RoutingStore for YamlRoutingStore {
+    async fn find_user(&self, user_id: &str) -> Result<Option<User>> {
+        let data = self.data.read().await;
+        Ok(data.users.iter().find(|u| u.id == user_id).cloned())
+    }
+
     async fn get_user(&self, user_id: &str, tenant_id: &TenantId) -> Result<Option<User>> {
         let data = self.data.read().await;
         Ok(data

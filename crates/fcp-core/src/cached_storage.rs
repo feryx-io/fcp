@@ -63,6 +63,14 @@ pub struct CachedCredentialStore {
 }
 
 impl CachedCredentialStore {
+    fn global_cache_key(username: &str) -> String {
+        format!("global:{username}")
+    }
+
+    fn tenant_cache_key(username: &str, tenant_id: &crate::TenantId) -> String {
+        format!("tenant:{tenant_id}:{username}")
+    }
+
     /// Create a new cached credential store.
     pub fn new(inner: Arc<dyn CredentialStore>, ttl: Duration, max_entries: usize) -> Self {
         Self {
@@ -78,7 +86,10 @@ impl CachedCredentialStore {
 
     /// Evict a specific user from the cache.
     pub fn evict(&self, username: &str) {
-        self.cache.remove(username);
+        let global_key = Self::global_cache_key(username);
+        self.cache.remove(&global_key);
+        self.cache
+            .retain(|key, _| !key.ends_with(&format!(":{username}")));
         debug!(username = %username, "Evicted credential cache entry");
     }
 
@@ -139,8 +150,10 @@ impl CachedCredentialStore {
 #[async_trait]
 impl CredentialStore for CachedCredentialStore {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
+        let cache_key = Self::global_cache_key(username);
+
         // Check cache
-        if let Some(entry) = self.cache.get(username) {
+        if let Some(entry) = self.cache.get(&cache_key) {
             if !entry.is_expired(self.ttl) {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 debug!(username = %username, "Credential cache HIT");
@@ -148,7 +161,7 @@ impl CredentialStore for CachedCredentialStore {
             }
             // Expired — drop ref before removing
             drop(entry);
-            self.cache.remove(username);
+            self.cache.remove(&cache_key);
         }
 
         // Cache miss — query inner store
@@ -158,23 +171,65 @@ impl CredentialStore for CachedCredentialStore {
 
         // Cache the result (including None for negative caching)
         self.cache
-            .insert(username.to_string(), CacheEntry::new(result.clone()));
+            .insert(cache_key, CacheEntry::new(result.clone()));
         self.enforce_capacity();
 
         Ok(result)
     }
 
+    async fn get_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>> {
+        let cache_key = Self::tenant_cache_key(username, tenant_id);
+
+        if let Some(entry) = self.cache.get(&cache_key) {
+            if !entry.is_expired(self.ttl) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                debug!(username = %username, tenant_id = %tenant_id, "Credential cache HIT");
+                return Ok(entry.value.clone());
+            }
+            drop(entry);
+            self.cache.remove(&cache_key);
+        }
+
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        debug!(username = %username, tenant_id = %tenant_id, "Credential cache MISS");
+        let result = self.inner.get_user_in_tenant(username, tenant_id).await?;
+
+        self.cache.insert(cache_key, CacheEntry::new(result.clone()));
+        self.enforce_capacity();
+
+        Ok(result)
+    }
+
+    async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>> {
+        self.inner.list_users_by_username(username).await
+    }
+
     async fn put_user(&self, user: User) -> Result<()> {
         let username = user.username.clone();
         self.inner.put_user(user).await?;
-        // Evict to force re-fetch on next access
-        self.cache.remove(&username);
+        self.evict(&username);
         Ok(())
     }
 
     async fn delete_user(&self, username: &str) -> Result<()> {
         self.inner.delete_user(username).await?;
-        self.cache.remove(username);
+        self.evict(username);
+        Ok(())
+    }
+
+    async fn delete_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<()> {
+        self.inner.delete_user_in_tenant(username, tenant_id).await?;
+        self.cache.remove(&Self::tenant_cache_key(username, tenant_id));
+        self.cache.remove(&Self::global_cache_key(username));
+        self.enforce_capacity();
         Ok(())
     }
 
@@ -502,11 +557,32 @@ mod tests {
             Ok(None)
         }
 
+        async fn get_user_in_tenant(
+            &self,
+            _username: &str,
+            _tenant_id: &crate::TenantId,
+        ) -> Result<Option<User>> {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            Ok(None)
+        }
+
+        async fn list_users_by_username(&self, _username: &str) -> Result<Vec<User>> {
+            Ok(Vec::new())
+        }
+
         async fn put_user(&self, _user: User) -> Result<()> {
             Ok(())
         }
 
         async fn delete_user(&self, _username: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_user_in_tenant(
+            &self,
+            _username: &str,
+            _tenant_id: &crate::TenantId,
+        ) -> Result<()> {
             Ok(())
         }
 

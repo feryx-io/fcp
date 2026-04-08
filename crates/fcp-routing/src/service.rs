@@ -52,16 +52,11 @@ impl RoutingService {
     /// This method searches across all tenants. In production, you might want to
     /// narrow the search based on domain or other criteria for better performance.
     pub async fn get_user_tenant(&self, user_id: &str) -> Result<TenantId> {
-        // For now, try default tenant first (common case optimization)
-        let default_tenant = TenantId::nil();
-        if let Some(user) = self.store.get_user(user_id, &default_tenant).await? {
-            return Ok(user.tenant_id);
-        }
-
-        // If not found in default tenant, return default tenant anyway
-        // This supports single-tenant deployments and all_users policies where
-        // users are managed via fcp-admin API rather than the YAML routing store
-        Ok(default_tenant)
+        self.store
+            .find_user(user_id)
+            .await?
+            .map(|user| user.tenant_id)
+            .ok_or_else(|| anyhow::anyhow!("user '{}' not found in routing store", user_id))
     }
 
     /// Evaluate if a call is allowed.
@@ -132,6 +127,10 @@ mod tests {
 
     #[async_trait]
     impl RoutingStore for MockStore {
+        async fn find_user(&self, user_id: &str) -> Result<Option<User>> {
+            Ok(self.users.iter().find(|u| u.id == user_id).cloned())
+        }
+
         async fn get_user(&self, user_id: &str, tenant_id: &TenantId) -> Result<Option<User>> {
             Ok(self
                 .users

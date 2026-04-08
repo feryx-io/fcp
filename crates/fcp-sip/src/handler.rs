@@ -175,7 +175,7 @@
 //! 5. Automatic NOTIFY retransmission handling
 //! 6. Fork detection (multiple 2xx to SUBSCRIBE)
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use sip_dialog::session_timer_manager::{SessionTimerEvent, SessionTimerManager};
@@ -793,6 +793,38 @@ impl SipMessageHandler {
         }
 
         None
+    }
+
+    async fn resolve_runtime_tenant(
+        &self,
+        request: &sip_core::Request,
+        call_id: &fcp_b2bua_core::CallId,
+    ) -> Result<fcp_core::TenantId> {
+        if let Some(call) = self.call_manager.get_call(call_id) {
+            return Ok(call.tenant_id);
+        }
+
+        if let Some(domain) = extract_tenant_from_invite(request) {
+            if let Some(storage) = &self.storage {
+                return match storage.get_tenant_by_name(&domain).await {
+                    Ok(Some(tenant)) => Ok(tenant.id),
+                    Ok(None) => Err(anyhow::anyhow!("unknown tenant domain '{}'", domain)),
+                    Err(e) => Err(e).context("failed to resolve tenant from SIP domain"),
+                };
+            }
+
+            if let Some(default_tenant_id) = self.default_tenant_id {
+                return Ok(default_tenant_id);
+            }
+
+            return Err(anyhow::anyhow!(
+                "tenant store unavailable for domain '{}'",
+                domain
+            ));
+        }
+
+        self.default_tenant_id
+            .ok_or_else(|| anyhow::anyhow!("tenant context required"))
     }
 
     /// Extract display name from a SIP From/To header value.
@@ -3161,13 +3193,29 @@ impl SipMessageHandler {
             // Try extension lookup if storage is available
             let mut extension_contacts = Vec::new();
             if let Some(storage) = &self.storage {
-                // Get tenant ID from the call (already stored when call was created)
-                // TODO: Phase 2 - Extract tenant from INVITE domain/headers/auth
-                let tenant_id = self
+                let tenant_id = match self
                     .call_manager
                     .get_call(&call_id)
                     .map(|call| call.tenant_id)
-                    .unwrap_or_else(|| fcp_core::TenantId::nil());
+                    .or(self.default_tenant_id)
+                {
+                    Some(tenant_id) => tenant_id,
+                    None => {
+                        warn!(
+                            call_id = %call_id,
+                            extension = %extension_number,
+                            "Rejecting call: no tenant context available for extension lookup"
+                        );
+                        let response =
+                            self.create_simple_response(request, 403, "Tenant context required");
+                        a_leg_handle.send_final(response).await;
+                        let _ = self.call_manager.terminate_call(
+                            &call_id,
+                            Some("Tenant context required".to_string()),
+                        );
+                        return Ok(());
+                    }
+                };
 
                 debug!(
                     call_id = %call_id,
@@ -3892,25 +3940,35 @@ impl SipMessageHandler {
                                     .split('@')
                                     .next()
                                     .unwrap_or(destination_aor);
-                                if let Ok(Some(user)) = storage.get_user(callee_username).await {
-                                    if let Ok(lbs) =
-                                        storage.list_line_bindings_by_user(&user.id).await
+                                if let Some(tenant_id) = self
+                                    .call_manager
+                                    .get_call(&call_id)
+                                    .map(|call| call.tenant_id)
+                                    .or(self.default_tenant_id)
+                                {
+                                    if let Ok(Some(user)) =
+                                        storage.get_user_in_tenant(callee_username, &tenant_id).await
                                     {
-                                        if let Some(lb) = lbs.first() {
-                                            let lb_id = lb.id;
-                                            let callee = destination_aor.to_string();
-                                            let rna_timeout = lb.no_answer_timeout;
-                                            debug!(
-                                                call_id = %call_id,
-                                                line_binding_id = %lb_id,
-                                                "Stored line binding for direct-registration callee"
-                                            );
-                                            let _ =
-                                                self.call_manager.update_call(&call_id, |call| {
-                                                    call.line_binding_id = Some(lb_id);
-                                                    call.original_callee = Some(callee);
-                                                    call.no_answer_timeout = Some(rna_timeout);
-                                                });
+                                        if let Ok(lbs) =
+                                            storage.list_line_bindings_by_user(&user.id).await
+                                        {
+                                            if let Some(lb) = lbs.first() {
+                                                let lb_id = lb.id;
+                                                let callee = destination_aor.to_string();
+                                                let rna_timeout = lb.no_answer_timeout;
+                                                debug!(
+                                                    call_id = %call_id,
+                                                    line_binding_id = %lb_id,
+                                                    tenant_id = %tenant_id,
+                                                    "Stored line binding for direct-registration callee"
+                                                );
+                                                let _ =
+                                                    self.call_manager.update_call(&call_id, |call| {
+                                                        call.line_binding_id = Some(lb_id);
+                                                        call.original_callee = Some(callee);
+                                                        call.no_answer_timeout = Some(rna_timeout);
+                                                    });
+                                            }
                                         }
                                     }
                                 }
@@ -9435,7 +9493,31 @@ impl SipMessageHandler {
             .and_then(|from| Self::extract_did_from_uri(from.as_str()))
             .unwrap_or_default();
 
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = match self.resolve_runtime_tenant(request, call_id).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(call_id = %call_id, extension = %caller_ext, error = %e, "Agent login failed: tenant resolution failed");
+                let status = if e.to_string().contains("unknown tenant domain")
+                    || e.to_string().contains("tenant context required")
+                {
+                    403
+                } else {
+                    503
+                };
+                let reason = if status == 403 {
+                    "Tenant context required"
+                } else {
+                    "Tenant lookup unavailable"
+                };
+                let response = self.create_simple_response(request, status, reason);
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    call_id,
+                    Some("Agent login tenant resolution failed".to_string()),
+                );
+                return Ok(());
+            }
+        };
 
         match queue_handler.agent_login(&caller_ext, &tenant_id).await {
             Ok(()) => {
@@ -9530,9 +9612,12 @@ impl SipMessageHandler {
         // Resolve the actual extension from the User record (the SIP username
         // may differ from the extension, e.g. "polycom" vs "1556").
         let caller_ext = if let Some(storage) = &self.storage {
-            match storage.get_user(&sip_username).await {
-                Ok(Some(user)) => user.extension.unwrap_or_else(|| sip_username.clone()),
-                _ => sip_username.clone(),
+            match self.resolve_runtime_tenant(request, call_id).await {
+                Ok(tenant_id) => match storage.get_user_in_tenant(&sip_username, &tenant_id).await {
+                    Ok(Some(user)) => user.extension.unwrap_or_else(|| sip_username.clone()),
+                    _ => sip_username.clone(),
+                },
+                Err(_) => sip_username.clone(),
             }
         } else {
             sip_username.clone()
@@ -11916,7 +12001,10 @@ mod tests {
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
         // Create registrar (without authentication)
-        let registrar = Arc::new(FcpRegistrar::new(storage.clone(), None, None, false));
+        let registrar = Arc::new(
+            FcpRegistrar::new(storage.clone(), None, None, false)
+                .with_default_tenant_id(fcp_core::TenantId::nil()),
+        );
 
         // Create dependencies
         let dispatcher = Arc::new(

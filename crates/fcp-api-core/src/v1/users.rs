@@ -240,7 +240,7 @@ pub async fn get_user(
 
     let storage = require_storage!(state);
     let user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
@@ -275,7 +275,7 @@ pub async fn create_user(
     let sip_ha1_hash = password::compute_ha1(&req.username, &state.realm, &req.password);
 
     // Check if user already exists
-    if let Some(_) = storage.get_user(&req.username).await? {
+    if let Some(_) = storage.get_user_in_tenant(&req.username, &tenant.0).await? {
         // Use generic error message to avoid user enumeration
         return Err(ApiError::Conflict(
             "Unable to create user with provided credentials".to_string(),
@@ -415,7 +415,7 @@ pub async fn update_user(
     // Get existing user
     let storage = require_storage!(state);
     let mut user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
@@ -571,7 +571,7 @@ pub async fn update_password(
     // Get existing user
     let storage = require_storage!(state);
     let mut user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
@@ -640,7 +640,7 @@ pub async fn update_digest_password(
     // Get existing user
     let storage = require_storage!(state);
     let mut user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
@@ -700,7 +700,7 @@ pub async fn delete_digest_password(
     // Get existing user
     let storage = require_storage!(state);
     let mut user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
@@ -763,7 +763,7 @@ pub async fn unlock_user(
 
     let storage = require_storage!(state);
     let mut user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
@@ -797,13 +797,13 @@ pub async fn delete_user(
     // Get user before deletion for event data
     let storage = require_storage!(state);
     let user = storage
-        .get_user(&username)
+        .get_user_in_tenant(&username, &tenant.0)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("User '{}' not found", username)))
         .and_then(|user| ensure_user_in_tenant(user, &tenant.0, &username))?;
 
     // Delete user
-    storage.delete_user(&username).await?;
+    storage.delete_user_in_tenant(&username, &tenant.0).await?;
 
     // Publish user deleted event
     let _ = state

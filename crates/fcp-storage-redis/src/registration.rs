@@ -74,6 +74,18 @@ impl RegistrationStore for RedisRegistrationStore {
         Ok(registrations)
     }
 
+    async fn get_registrations_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
+        let registrations = self.get_registrations(aor).await?;
+        Ok(registrations
+            .into_iter()
+            .filter(|registration| registration.tenant_id == *tenant_id)
+            .collect())
+    }
+
     async fn put_registration(&self, registration: Registration) -> Result<()> {
         let key = self.reg_key(&registration.aor);
         let mut conn = self.storage.connection();
@@ -141,6 +153,23 @@ impl RegistrationStore for RedisRegistrationStore {
         Ok(())
     }
 
+    async fn delete_registration_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()> {
+        let registrations = self.get_registrations(aor).await?;
+        for registration in registrations
+            .into_iter()
+            .filter(|registration| registration.contact == contact && registration.tenant_id == *tenant_id)
+        {
+            self.delete_registration(&registration.aor, &registration.contact)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
         let key = self.reg_key(aor);
         let mut conn = self.storage.connection();
@@ -151,6 +180,22 @@ impl RegistrationStore for RedisRegistrationStore {
             .map_err(|e| anyhow::anyhow!("Redis DEL failed: {}", e))?;
 
         debug!(aor = %aor, "Deleted all registrations from Redis");
+        Ok(())
+    }
+
+    async fn delete_all_registrations_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        let registrations = self.get_registrations(aor).await?;
+        for registration in registrations
+            .into_iter()
+            .filter(|registration| registration.tenant_id == *tenant_id)
+        {
+            self.delete_registration(&registration.aor, &registration.contact)
+                .await?;
+        }
         Ok(())
     }
 
@@ -243,6 +288,17 @@ impl RegistrationStore for RedisRegistrationStore {
 
         Ok(all_registrations)
     }
+
+    async fn get_all_registrations_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<Registration>> {
+        let registrations = self.get_all_registrations().await?;
+        Ok(registrations
+            .into_iter()
+            .filter(|registration| registration.tenant_id == *tenant_id)
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +308,7 @@ mod tests {
 
     fn make_registration(aor: &str, contact: &str, ttl_secs: u64) -> Registration {
         Registration {
+            tenant_id: fcp_core::TenantId::nil(),
             aor: aor.to_string(),
             contact: contact.to_string(),
             expires_at: SystemTime::now() + Duration::from_secs(ttl_secs),

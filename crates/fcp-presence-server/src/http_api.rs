@@ -142,7 +142,10 @@ async fn get_presence(
     State(state): State<Arc<AppState>>,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
-    match state.manager.get_presence(&aor) {
+    match state
+        .manager
+        .get_presence_for_tenant(&aor, &state.default_tenant_id)
+    {
         Some(info) => (
             StatusCode::OK,
             Json(serde_json::json!(PresenceResponse {

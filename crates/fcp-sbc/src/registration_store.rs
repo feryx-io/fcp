@@ -48,6 +48,18 @@ impl RegistrationStore for InMemoryRegistrationStore {
             .unwrap_or_default())
     }
 
+    async fn get_registrations_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
+        let registrations = self.get_registrations(aor).await?;
+        Ok(registrations
+            .into_iter()
+            .filter(|registration| registration.tenant_id == *tenant_id)
+            .collect())
+    }
+
     async fn put_registration(&self, registration: Registration) -> Result<()> {
         let mut entry = self.inner.entry(registration.aor.clone()).or_default();
         entry.retain(|r| r.contact != registration.contact);
@@ -66,12 +78,58 @@ impl RegistrationStore for InMemoryRegistrationStore {
         Ok(())
     }
 
+    async fn delete_registration_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()> {
+        if let Some(mut entry) = self.inner.get_mut(aor) {
+            entry.retain(|registration| {
+                !(registration.contact == contact && registration.tenant_id == *tenant_id)
+            });
+            if entry.is_empty() {
+                drop(entry);
+                self.inner.remove(aor);
+            }
+        }
+        Ok(())
+    }
+
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
         self.inner.remove(aor);
         Ok(())
     }
 
+    async fn delete_all_registrations_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        if let Some(mut entry) = self.inner.get_mut(aor) {
+            entry.retain(|registration| registration.tenant_id != *tenant_id);
+            if entry.is_empty() {
+                drop(entry);
+                self.inner.remove(aor);
+            }
+        }
+        Ok(())
+    }
+
     async fn cleanup_expired(&self) -> Result<usize> {
         Ok(self.remove_expired())
+    }
+
+    async fn get_all_registrations_in_tenant(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+    ) -> Result<Vec<Registration>> {
+        self.remove_expired();
+        Ok(self
+            .inner
+            .iter()
+            .flat_map(|entry| entry.value().clone())
+            .filter(|registration| registration.tenant_id == *tenant_id)
+            .collect())
     }
 }

@@ -276,7 +276,7 @@ impl PostgresStorage {
 #[async_trait]
 impl CredentialStore for PostgresStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
-        let row = sqlx::query(
+        let rows = sqlx::query(
             "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
@@ -288,6 +288,30 @@ impl CredentialStore for PostgresStorage {
              WHERE username = $1",
         )
         .bind(username)
+        .fetch_all(&self.pool)
+        .await?;
+
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(Some(row_to_user(rows.into_iter().next().unwrap())?)),
+            _ => anyhow::bail!("username '{}' exists in multiple tenants", username),
+        }
+    }
+
+    async fn get_user_in_tenant(&self, username: &str, tenant_id: &TenantId) -> Result<Option<User>> {
+        let row = sqlx::query(
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, location_id, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id, profile_picture,
+                    failed_login_attempts, account_locked_until
+             FROM users
+             WHERE username = $1 AND tenant_id = $2",
+        )
+        .bind(username)
+        .bind(tenant_id.to_string())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -295,6 +319,31 @@ impl CredentialStore for PostgresStorage {
             Some(row) => Ok(Some(row_to_user(row)?)),
             None => Ok(None),
         }
+    }
+
+    async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>> {
+        let rows = sqlx::query(
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                    role, department_id, enabled, created_at, updated_at, media_preferences,
+                    email, password_last_reset, phone_number, mobile_number, pin,
+                    extension, department, job_title, location, location_id, language, timezone,
+                    account_status, last_login, emergency_contact_json,
+                    primary_phone_number_id, voicemail_box_id, profile_picture,
+                    failed_login_attempts, account_locked_until
+             FROM users
+             WHERE username = $1
+             ORDER BY tenant_id",
+        )
+        .bind(username)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let users = rows
+            .into_iter()
+            .filter_map(|row| row_to_user(row).ok())
+            .collect();
+
+        Ok(users)
     }
 
     async fn get_user_by_id(&self, user_id: &fcp_core::UserId) -> Result<Option<User>> {
@@ -420,12 +469,32 @@ impl CredentialStore for PostgresStorage {
     }
 
     async fn delete_user(&self, username: &str) -> Result<()> {
+        let rows = sqlx::query("SELECT tenant_id FROM users WHERE username = $1")
+            .bind(username)
+            .fetch_all(&self.pool)
+            .await?;
+
+        if rows.len() > 1 {
+            anyhow::bail!("username '{}' exists in multiple tenants", username);
+        }
+
         sqlx::query("DELETE FROM users WHERE username = $1")
             .bind(username)
             .execute(&self.pool)
             .await?;
 
         debug!(username = %username, "User deleted");
+        Ok(())
+    }
+
+    async fn delete_user_in_tenant(&self, username: &str, tenant_id: &TenantId) -> Result<()> {
+        sqlx::query("DELETE FROM users WHERE username = $1 AND tenant_id = $2")
+            .bind(username)
+            .bind(tenant_id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        debug!(username = %username, tenant_id = %tenant_id, "User deleted");
         Ok(())
     }
 
@@ -461,11 +530,35 @@ impl CredentialStore for PostgresStorage {
 impl RegistrationStore for PostgresStorage {
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
              FROM registrations
              WHERE aor = $1
              ORDER BY q DESC NULLS LAST",
         )
+        .bind(aor)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let registrations = rows
+            .into_iter()
+            .filter_map(|row| row_to_registration(row).ok())
+            .collect();
+
+        Ok(registrations)
+    }
+
+    async fn get_registrations_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
+             FROM registrations
+             WHERE tenant_id = $1 AND aor = $2
+             ORDER BY q DESC NULLS LAST",
+        )
+        .bind(tenant_id.to_string())
         .bind(aor)
         .fetch_all(&self.pool)
         .await?;
@@ -483,9 +576,9 @@ impl RegistrationStore for PostgresStorage {
         let registered_at = system_time_to_datetime(registration.registered_at);
 
         sqlx::query(
-            "INSERT INTO registrations (aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT (aor, contact)
+            "INSERT INTO registrations (tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT (tenant_id, aor, contact)
              DO UPDATE SET
                  expires_at = EXCLUDED.expires_at,
                  call_id = EXCLUDED.call_id,
@@ -493,8 +586,10 @@ impl RegistrationStore for PostgresStorage {
                  user_agent = EXCLUDED.user_agent,
                  q = EXCLUDED.q,
                  registered_at = EXCLUDED.registered_at,
-                 path = EXCLUDED.path",
+                 path = EXCLUDED.path,
+                 flow_token = EXCLUDED.flow_token",
         )
+        .bind(registration.tenant_id.to_string())
         .bind(&registration.aor)
         .bind(&registration.contact)
         .bind(expires_at)
@@ -504,6 +599,7 @@ impl RegistrationStore for PostgresStorage {
         .bind(registration.q)
         .bind(registered_at)
         .bind(&registration.path)
+        .bind(&registration.flow_token)
         .execute(&self.pool)
         .await?;
 
@@ -522,6 +618,23 @@ impl RegistrationStore for PostgresStorage {
         Ok(())
     }
 
+    async fn delete_registration_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM registrations WHERE tenant_id = $1 AND aor = $2 AND contact = $3")
+            .bind(tenant_id.to_string())
+            .bind(aor)
+            .bind(contact)
+            .execute(&self.pool)
+            .await?;
+
+        debug!(tenant_id = %tenant_id, aor = %aor, contact = %contact, "Registration deleted");
+        Ok(())
+    }
+
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
         sqlx::query("DELETE FROM registrations WHERE aor = $1")
             .bind(aor)
@@ -529,6 +642,21 @@ impl RegistrationStore for PostgresStorage {
             .await?;
 
         debug!(aor = %aor, "All registrations for AOR deleted");
+        Ok(())
+    }
+
+    async fn delete_all_registrations_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM registrations WHERE tenant_id = $1 AND aor = $2")
+            .bind(tenant_id.to_string())
+            .bind(aor)
+            .execute(&self.pool)
+            .await?;
+
+        debug!(tenant_id = %tenant_id, aor = %aor, "All registrations for AOR deleted");
         Ok(())
     }
 
@@ -555,11 +683,33 @@ impl RegistrationStore for PostgresStorage {
 
     async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
         let rows = sqlx::query(
-            "SELECT aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
              FROM registrations
              WHERE expires_at > NOW()
              ORDER BY aor, q DESC NULLS LAST",
         )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let registrations = rows
+            .into_iter()
+            .filter_map(|row| row_to_registration(row).ok())
+            .collect();
+
+        Ok(registrations)
+    }
+
+    async fn get_all_registrations_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<Registration>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, aor, contact, expires_at, call_id, cseq, user_agent, q, registered_at, path, flow_token
+             FROM registrations
+             WHERE tenant_id = $1 AND expires_at > NOW()
+             ORDER BY aor, q DESC NULLS LAST",
+        )
+        .bind(tenant_id.to_string())
         .fetch_all(&self.pool)
         .await?;
 
@@ -1064,6 +1214,8 @@ fn row_to_registration(row: sqlx::postgres::PgRow) -> Result<Registration> {
     let registered_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("registered_at"));
 
     Ok(Registration {
+        tenant_id: TenantId::from_str(&row.get::<String, _>("tenant_id"))
+            .unwrap_or_else(|_| TenantId::nil()),
         aor: row.get("aor"),
         contact: row.get("contact"),
         expires_at,

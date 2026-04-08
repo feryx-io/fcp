@@ -167,12 +167,16 @@ fn create_registrar(
         Some(Arc::clone(storage) as _);
     let realm = Some(config.registrar.realm.clone());
 
-    Arc::new(FcpRegistrar::new(
+    Arc::new(
+        FcpRegistrar::new(
         registration_store,
         credential_store,
         realm,
         config.registrar.auth_enabled,
-    ))
+    )
+        .with_tenant_store(Arc::clone(storage) as _)
+        .with_default_tenant_id(config.service.default_tenant_id),
+    )
 }
 
 /// Handle an incoming SIP packet from the transport layer.

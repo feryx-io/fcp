@@ -1565,7 +1565,9 @@ fn create_registrar(
         realm,
         event_publisher,
         config.registrar.auth_enabled,
-    );
+    )
+    .with_tenant_store(Arc::clone(storage) as _)
+    .with_default_tenant_id(config.service.default_tenant_id);
 
     // Add domain aliases if configured
     let registrar = if !config.registrar.domain_aliases.is_empty() {
@@ -2905,7 +2907,9 @@ async fn run_presence_listener(
                         if *new_messages > 0 {
                             let aor = resolve_mailbox_aor(mailbox_id, &presence);
                             if let Some(aor) = aor {
-                                if let Some(info) = presence.get_presence(&aor) {
+                                if let Some(info) =
+                                    presence.get_presence_for_tenant(&aor, &tenant_id)
+                                {
                                     let note = format!("{} new voicemail(s)", new_messages);
                                     let update = fcp_presence::PresenceUpdate {
                                         aor,

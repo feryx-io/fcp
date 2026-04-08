@@ -584,6 +584,10 @@ fn default_true() -> bool {
 /// A SIP registration binding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registration {
+    /// Tenant ID for multi-tenant isolation.
+    #[serde(default = "default_tenant_id")]
+    pub tenant_id: crate::TenantId,
+
     /// Address-of-Record (To URI)
     pub aor: String,
 
@@ -626,14 +630,35 @@ pub struct Registration {
 /// Storage backend for user credentials.
 #[async_trait]
 pub trait CredentialStore: Send + Sync {
-    /// Get a user by username.
+    /// Get a globally-unique user by username.
+    ///
+    /// Backends must fail closed if the username exists in multiple tenants.
     async fn get_user(&self, username: &str) -> Result<Option<User>>;
+
+    /// Get a user by username within a tenant.
+    async fn get_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>>;
+
+    /// List all users that share a username across tenants.
+    async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>>;
 
     /// Create or update a user.
     async fn put_user(&self, user: User) -> Result<()>;
 
-    /// Delete a user by username.
+    /// Delete a globally-unique user by username.
+    ///
+    /// Backends must fail closed if the username exists in multiple tenants.
     async fn delete_user(&self, username: &str) -> Result<()>;
+
+    /// Delete a user by username within a tenant.
+    async fn delete_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<()>;
 
     /// List all users.
     async fn list_users(&self) -> Result<Vec<User>>;
@@ -732,14 +757,36 @@ pub trait RegistrationStore: Send + Sync {
     /// Get all registrations for an Address-of-Record.
     async fn get_registrations(&self, aor: &str) -> Result<Vec<Registration>>;
 
+    /// Get all registrations for an Address-of-Record scoped to a tenant.
+    async fn get_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>>;
+
     /// Add or update a registration.
     async fn put_registration(&self, registration: Registration) -> Result<()>;
 
     /// Remove a specific registration by Contact URI.
     async fn delete_registration(&self, aor: &str, contact: &str) -> Result<()>;
 
+    /// Remove a specific registration by Contact URI within a tenant.
+    async fn delete_registration_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()>;
+
     /// Remove all registrations for an AOR.
     async fn delete_all_registrations(&self, aor: &str) -> Result<()>;
+
+    /// Remove all registrations for an AOR within a tenant.
+    async fn delete_all_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<()>;
 
     /// Remove expired registrations.
     async fn cleanup_expired(&self) -> Result<usize>;
@@ -752,6 +799,18 @@ pub trait RegistrationStore: Send + Sync {
     /// Get all active registrations across all AORs.
     async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
         Ok(Vec::new())
+    }
+
+    /// Get all active registrations for a tenant.
+    async fn get_all_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<Registration>> {
+        let registrations = self.get_all_registrations().await?;
+        Ok(registrations
+            .into_iter()
+            .filter(|registration| registration.tenant_id == *tenant_id)
+            .collect())
     }
 }
 
@@ -1763,6 +1822,10 @@ pub struct FileBackedStorage {
 }
 
 impl FileBackedStorage {
+    fn user_key(tenant_id: &crate::TenantId, username: &str) -> String {
+        format!("{}:{}", tenant_id, username)
+    }
+
     /// Create a new file-backed storage.
     ///
     /// # Arguments
@@ -1791,7 +1854,10 @@ impl FileBackedStorage {
         if path.exists() {
             let data = tokio::fs::read_to_string(path).await?;
             let users: Vec<User> = serde_json::from_str(&data)?;
-            Ok(users.into_iter().map(|u| (u.username.clone(), u)).collect())
+            Ok(users
+                .into_iter()
+                .map(|u| (Self::user_key(&u.tenant_id, &u.username), u))
+                .collect())
         } else {
             Ok(HashMap::new())
         }
@@ -1837,12 +1903,40 @@ impl FileBackedStorage {
 impl CredentialStore for FileBackedStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let users = self.users.read().await;
-        Ok(users.get(username).cloned())
+        let mut matches = users
+            .values()
+            .filter(|user| user.username == username)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if matches.len() > 1 {
+            anyhow::bail!("username '{}' exists in multiple tenants", username);
+        }
+
+        Ok(matches.pop())
+    }
+
+    async fn get_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>> {
+        let users = self.users.read().await;
+        Ok(users.get(&Self::user_key(tenant_id, username)).cloned())
+    }
+
+    async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>> {
+        let users = self.users.read().await;
+        Ok(users
+            .values()
+            .filter(|user| user.username == username)
+            .cloned()
+            .collect())
     }
 
     async fn put_user(&self, user: User) -> Result<()> {
         let mut users = self.users.write().await;
-        users.insert(user.username.clone(), user);
+        users.insert(Self::user_key(&user.tenant_id, &user.username), user);
         drop(users);
 
         // Save to file
@@ -1852,7 +1946,33 @@ impl CredentialStore for FileBackedStorage {
 
     async fn delete_user(&self, username: &str) -> Result<()> {
         let mut users = self.users.write().await;
-        users.remove(username);
+        let matching_keys = users
+            .iter()
+            .filter(|(_, user)| user.username == username)
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+
+        if matching_keys.len() > 1 {
+            anyhow::bail!("username '{}' exists in multiple tenants", username);
+        }
+
+        if let Some(key) = matching_keys.first() {
+            users.remove(key);
+        }
+        drop(users);
+
+        // Save to file
+        self.save_users().await?;
+        Ok(())
+    }
+
+    async fn delete_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<()> {
+        let mut users = self.users.write().await;
+        users.remove(&Self::user_key(tenant_id, username));
         drop(users);
 
         // Save to file
@@ -1873,12 +1993,29 @@ impl RegistrationStore for FileBackedStorage {
         Ok(registrations.get(aor).cloned().unwrap_or_default())
     }
 
+    async fn get_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
+        let registrations = self.registrations.read().await;
+        Ok(registrations
+            .get(aor)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|registration| registration.tenant_id == *tenant_id)
+            .collect())
+    }
+
     async fn put_registration(&self, registration: Registration) -> Result<()> {
         let mut registrations = self.registrations.write().await;
         let aor_regs = registrations.entry(registration.aor.clone()).or_default();
 
-        // Remove existing registration with same contact
-        aor_regs.retain(|r| r.contact != registration.contact);
+        // Remove existing registration with the same contact in the same tenant
+        aor_regs.retain(|r| {
+            !(r.contact == registration.contact && r.tenant_id == registration.tenant_id)
+        });
 
         // Add new registration
         aor_regs.push(registration);
@@ -1904,12 +2041,49 @@ impl RegistrationStore for FileBackedStorage {
         Ok(())
     }
 
+    async fn delete_registration_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()> {
+        let mut registrations = self.registrations.write().await;
+        if let Some(aor_regs) = registrations.get_mut(aor) {
+            aor_regs.retain(|r| !(r.contact == contact && r.tenant_id == *tenant_id));
+            if aor_regs.is_empty() {
+                registrations.remove(aor);
+            }
+        }
+        drop(registrations);
+
+        self.save_registrations().await?;
+        Ok(())
+    }
+
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
         let mut registrations = self.registrations.write().await;
         registrations.remove(aor);
         drop(registrations);
 
         // Save to file
+        self.save_registrations().await?;
+        Ok(())
+    }
+
+    async fn delete_all_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        let mut registrations = self.registrations.write().await;
+        if let Some(aor_regs) = registrations.get_mut(aor) {
+            aor_regs.retain(|registration| registration.tenant_id != *tenant_id);
+            if aor_regs.is_empty() {
+                registrations.remove(aor);
+            }
+        }
+        drop(registrations);
+
         self.save_registrations().await?;
         Ok(())
     }
@@ -1950,6 +2124,22 @@ impl RegistrationStore for FileBackedStorage {
             .values()
             .flatten()
             .filter(|r| r.expires_at > now)
+            .cloned()
+            .collect())
+    }
+
+    async fn get_all_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<Registration>> {
+        let regs = self.registrations.read().await;
+        let now = SystemTime::now();
+        Ok(regs
+            .values()
+            .flatten()
+            .filter(|registration| {
+                registration.expires_at > now && registration.tenant_id == *tenant_id
+            })
             .cloned()
             .collect())
     }
@@ -2264,12 +2454,36 @@ impl CredentialStore for DynStorage {
         self.credential_store.get_user(username).await
     }
 
+    async fn get_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<User>> {
+        self.credential_store
+            .get_user_in_tenant(username, tenant_id)
+            .await
+    }
+
+    async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>> {
+        self.credential_store.list_users_by_username(username).await
+    }
+
     async fn put_user(&self, user: User) -> Result<()> {
         self.credential_store.put_user(user).await
     }
 
     async fn delete_user(&self, username: &str) -> Result<()> {
         self.credential_store.delete_user(username).await
+    }
+
+    async fn delete_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &crate::TenantId,
+    ) -> Result<()> {
+        self.credential_store
+            .delete_user_in_tenant(username, tenant_id)
+            .await
     }
 
     async fn list_users(&self) -> Result<Vec<User>> {
@@ -2287,6 +2501,16 @@ impl RegistrationStore for DynStorage {
         self.registration_store.get_registrations(aor).await
     }
 
+    async fn get_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<Vec<Registration>> {
+        self.registration_store
+            .get_registrations_in_tenant(tenant_id, aor)
+            .await
+    }
+
     async fn put_registration(&self, registration: Registration) -> Result<()> {
         self.registration_store.put_registration(registration).await
     }
@@ -2297,8 +2521,29 @@ impl RegistrationStore for DynStorage {
             .await
     }
 
+    async fn delete_registration_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()> {
+        self.registration_store
+            .delete_registration_in_tenant(tenant_id, aor, contact)
+            .await
+    }
+
     async fn delete_all_registrations(&self, aor: &str) -> Result<()> {
         self.registration_store.delete_all_registrations(aor).await
+    }
+
+    async fn delete_all_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        self.registration_store
+            .delete_all_registrations_in_tenant(tenant_id, aor)
+            .await
     }
 
     async fn cleanup_expired(&self) -> Result<usize> {
@@ -2311,6 +2556,15 @@ impl RegistrationStore for DynStorage {
 
     async fn get_all_registrations(&self) -> Result<Vec<Registration>> {
         self.registration_store.get_all_registrations().await
+    }
+
+    async fn get_all_registrations_in_tenant(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<Registration>> {
+        self.registration_store
+            .get_all_registrations_in_tenant(tenant_id)
+            .await
     }
 }
 
@@ -3040,6 +3294,7 @@ mod tests {
 
         // Create registration
         let reg = Registration {
+            tenant_id: crate::TenantId::nil(),
             aor: "sip:alice@example.com".to_string(),
             contact: "sip:alice@192.168.1.100:5060".to_string(),
             expires_at: SystemTime::now() + Duration::from_secs(3600),

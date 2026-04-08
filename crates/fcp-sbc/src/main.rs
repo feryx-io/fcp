@@ -492,7 +492,8 @@ async fn main() -> Result<()> {
         Some(sbc_config.external_domain.clone()),
         sbc_hooks,
         false, // SBC does not authenticate registrations itself
-    ));
+    )
+    .with_default_tenant_id(sbc_config.default_tenant_id));
 
     // 13. Create TrunkRouter with LCR support (provides outbound routing when registrar lookup fails)
     let trunk_router = if sbc_config.lcr.enabled {

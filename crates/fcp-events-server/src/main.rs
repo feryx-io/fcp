@@ -732,9 +732,10 @@ async fn authenticate_request_token(
 async fn validate_session_token(auth: &EventsAuthState, token: &str) -> Option<AuthPrincipal> {
     let secret = auth.jwt_secret.as_deref()?;
     let claims = decode_jwt(token, secret).ok()?;
+    let tenant_id = claims.tenant_id.parse().ok()?;
 
     if let Some(store) = auth.credential_store.as_ref() {
-        match store.get_user(&claims.sub).await {
+        match store.get_user_in_tenant(&claims.sub, &tenant_id).await {
             Ok(Some(user)) => {
                 if !user.enabled
                     || user.account_status == AccountStatus::Locked

@@ -313,6 +313,10 @@ mod tests {
 
     #[async_trait]
     impl RoutingStore for MockStore {
+        async fn find_user(&self, user_id: &str) -> Result<Option<User>> {
+            Ok(self.users.iter().find(|u| u.id == user_id).cloned())
+        }
+
         async fn get_user(&self, user_id: &str, tenant_id: &TenantId) -> Result<Option<User>> {
             Ok(self
                 .users

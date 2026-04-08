@@ -5,7 +5,7 @@
 
 use crate::error::ApiError;
 use crate::state::ApiState;
-use crate::v1::auth_session::{extract_claims, extract_claims_from_headers};
+use crate::v1::auth_session::{extract_claims, extract_claims_from_headers, Claims};
 use axum::{
     extract::{Multipart, Path, State},
     http::{HeaderMap, StatusCode},
@@ -30,6 +30,19 @@ macro_rules! require_storage {
             .as_ref()
             .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?
     };
+}
+
+async fn load_claims_user(
+    storage: &std::sync::Arc<fcp_core::DynStorage>,
+    claims: &Claims,
+    state: &ApiState,
+) -> Result<fcp_core::User, ApiError> {
+    let tenant_id = resolve_tenant_from_claims(claims, state);
+    storage
+        .get_user_in_tenant(&claims.sub, &tenant_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))
 }
 
 // ---- Profile Endpoints ----
@@ -59,11 +72,7 @@ pub async fn get_profile(
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
 
-    let user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let user = load_claims_user(storage, &claims, &state).await?;
 
     let has_profile_picture = user.profile_picture.is_some();
     Ok(Json(ProfileResponse {
@@ -100,11 +109,7 @@ pub async fn update_profile(
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
-    let mut user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let mut user = load_claims_user(storage, &claims, &state).await?;
 
     if let Some(display_name) = body.display_name {
         user.display_name = Some(display_name);
@@ -162,11 +167,7 @@ pub async fn change_password(
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
-    let mut user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let mut user = load_claims_user(storage, &claims, &state).await?;
 
     // Verify current password
     let valid = password::verify_password(&body.current_password, &user.password)
@@ -222,7 +223,12 @@ pub async fn get_voicemail(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     Ok(Json(MailboxResponse {
         id: mailbox.id,
@@ -253,7 +259,12 @@ pub async fn update_voicemail(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
-    let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mut mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     if let Some(pin) = body.pin {
         mailbox.pin = pin;
@@ -306,7 +317,12 @@ pub async fn get_voicemail_stats(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let messages = storage
         .list_messages(&mailbox.id)
@@ -359,7 +375,12 @@ pub async fn list_voicemail_messages(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let messages = storage
         .list_messages(&mailbox.id)
@@ -384,7 +405,12 @@ pub async fn update_voicemail_message(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let mut message = storage
         .get_message(&message_id)
@@ -430,7 +456,12 @@ pub async fn delete_voicemail_message(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let message = storage
         .get_message(&message_id)
@@ -463,7 +494,12 @@ pub async fn get_message_audio(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let message = storage
         .get_message(&message_id)
@@ -510,7 +546,12 @@ pub async fn list_voicemail_greetings(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let responses: Vec<GreetingResponse> = mailbox
         .greetings
@@ -535,7 +576,12 @@ pub async fn upload_voicemail_greeting(
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let greetings_dir = require_greetings_dir(&state)?;
-    let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mut mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     // Parse multipart fields
     let mut greeting_type_str: Option<String> = None;
@@ -633,7 +679,12 @@ pub async fn synthesize_voicemail_greeting(
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
     let greetings_dir = require_greetings_dir(&state)?;
-    let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mut mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let tts_service = state
         .tts_service
@@ -716,7 +767,12 @@ pub async fn delete_voicemail_greeting(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mut mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
@@ -769,7 +825,12 @@ pub async fn set_voicemail_greeting_active(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
-    let (mut mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mut mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
@@ -805,7 +866,12 @@ pub async fn download_voicemail_greeting_audio(
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
-    let (mailbox, _user_id) = get_user_mailbox(&claims.sub, storage).await?;
+    let (mailbox, _user_id) = get_user_mailbox(
+        &claims.sub,
+        &resolve_tenant_from_claims(&claims, &state),
+        storage,
+    )
+    .await?;
 
     let greeting_type = parse_greeting_type(&greeting_type_str)?;
 
@@ -851,11 +917,7 @@ pub async fn get_forwarding(
     let claims = extract_claims(&req, &state)?;
     let storage = require_storage!(state);
 
-    let user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let user = load_claims_user(storage, &claims, &state).await?;
 
     let bindings = storage
         .list_line_bindings_by_user(&user.id)
@@ -904,11 +966,7 @@ pub async fn update_forwarding(
     let claims = extract_claims_from_headers(&headers, &state)?;
     let storage = require_storage!(state);
 
-    let user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let user = load_claims_user(storage, &claims, &state).await?;
 
     let lb_id = fcp_core::LineBindingId::from_str(&binding_id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid binding ID: {}", e)))?;
@@ -972,10 +1030,11 @@ pub async fn update_forwarding(
 /// Get the authenticated user's mailbox, verifying ownership.
 async fn get_user_mailbox(
     username: &str,
+    tenant_id: &fcp_core::TenantId,
     storage: &std::sync::Arc<fcp_core::DynStorage>,
 ) -> Result<(fcp_core::VoicemailMailbox, UserId), ApiError> {
     let user = storage
-        .get_user(username)
+        .get_user_in_tenant(username, tenant_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
@@ -1026,11 +1085,7 @@ pub async fn upload_avatar(
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
-    let mut user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let mut user = load_claims_user(storage, &claims, &state).await?;
 
     let mut image_data: Option<Vec<u8>> = None;
     let mut content_type: Option<String> = None;
@@ -1117,11 +1172,7 @@ pub async fn get_avatar(
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
-    let user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let user = load_claims_user(storage, &claims, &state).await?;
 
     let filename = user
         .profile_picture
@@ -1159,11 +1210,7 @@ pub async fn delete_avatar(
     let storage = require_storage!(state);
     let pictures_dir = require_profile_pictures_dir(&state)?;
 
-    let mut user = storage
-        .get_user(&claims.sub)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    let mut user = load_claims_user(storage, &claims, &state).await?;
 
     if let Some(ref filename) = user.profile_picture {
         let file_path = pictures_dir.join(filename);

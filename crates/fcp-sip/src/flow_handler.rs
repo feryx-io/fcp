@@ -702,30 +702,30 @@ impl FlowCallHandler {
                     if let (Some(ref storage), Some(ref registrar)) =
                         (&self.storage, &self.registrar)
                     {
-                        let tenant_id = self
+                        if let Some(tenant_id) = self
                             .call_manager
                             .as_ref()
                             .and_then(|cm| cm.get_call(&a_leg_call_id).map(|c| c.tenant_id))
-                            .unwrap_or_else(|| fcp_core::TenantId::nil());
-
-                        debug!(
-                            a_leg_call_id = %a_leg_call_id,
-                            destination = %destination,
-                            "Looking up extension via storage (extension → device chain)"
-                        );
-
-                        if let Ok(Some(extension)) = storage
-                            .get_extension_by_number(&tenant_id, &destination)
-                            .await
                         {
-                            info!(
+                            debug!(
                                 a_leg_call_id = %a_leg_call_id,
                                 destination = %destination,
-                                target = %extension.target,
-                                "Found extension in storage"
+                                tenant_id = %tenant_id,
+                                "Looking up extension via storage (extension → device chain)"
                             );
 
-                            match &extension.target {
+                            if let Ok(Some(extension)) = storage
+                                .get_extension_by_number(&tenant_id, &destination)
+                                .await
+                            {
+                                info!(
+                                    a_leg_call_id = %a_leg_call_id,
+                                    destination = %destination,
+                                    target = %extension.target,
+                                    "Found extension in storage"
+                                );
+
+                                match &extension.target {
                                 fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
                                     match storage.get_phone_number(phone_number_id).await {
                                         Ok(Some(phone_number)) => {
@@ -852,6 +852,13 @@ impl FlowCallHandler {
                                     );
                                 }
                             }
+                            }
+                        } else {
+                            warn!(
+                                a_leg_call_id = %a_leg_call_id,
+                                destination = %destination,
+                                "Skipping tenant-scoped extension lookup: no tenant context available"
+                            );
                         }
                     }
                 }

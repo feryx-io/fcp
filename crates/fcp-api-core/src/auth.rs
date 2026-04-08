@@ -145,7 +145,12 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
             // fetch current role from DB so demotions take effect immediately
             // (not after JWT expiry).
             if let Some(ref cred_store) = config.credential_store {
-                match cred_store.get_user(&claims.sub).await {
+                let tenant_id = match claims.tenant_id.parse::<TenantId>() {
+                    Ok(tenant_id) => tenant_id,
+                    Err(_) => return None,
+                };
+
+                match cred_store.get_user_in_tenant(&claims.sub, &tenant_id).await {
                     Ok(Some(user)) => {
                         if !user.enabled
                             || user.account_status == AccountStatus::Locked
@@ -164,7 +169,7 @@ pub async fn validate_token(token: &str, config: &AuthConfig) -> Option<AuthIden
                         return Some(AuthIdentity::Session {
                             username: claims.sub,
                             role: current_role,
-                            tenant_id: Some(user.tenant_id),
+                            tenant_id: Some(tenant_id),
                         });
                     }
                     Ok(None) => {

@@ -20,6 +20,9 @@ use fcp_core::TenantId;
 pub trait RoutingStore: Send + Sync {
     // === Identity Layer ===
 
+    /// Find a user across all tenants.
+    async fn find_user(&self, user_id: &str) -> Result<Option<User>>;
+
     /// Get a user by ID and tenant
     async fn get_user(&self, user_id: &str, tenant_id: &TenantId) -> Result<Option<User>>;
 

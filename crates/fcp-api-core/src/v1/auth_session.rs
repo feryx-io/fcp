@@ -35,6 +35,8 @@ pub fn role_to_string(role: &UserRole) -> String {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,6 +70,52 @@ pub struct ChangeExpiredPasswordRequest {
     pub username: String,
     pub current_password: String,
     pub new_password: String,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+}
+
+fn parse_tenant_id(tenant_id: Option<&str>) -> Result<Option<fcp_core::TenantId>, ApiError> {
+    tenant_id
+        .filter(|tenant_id| !tenant_id.trim().is_empty())
+        .map(|tenant_id| {
+            tenant_id
+                .parse::<fcp_core::TenantId>()
+                .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))
+        })
+        .transpose()
+}
+
+async fn load_user_for_login(
+    storage: &std::sync::Arc<fcp_core::DynStorage>,
+    username: &str,
+    tenant_id: Option<&fcp_core::TenantId>,
+) -> Result<Option<fcp_core::User>, ApiError> {
+    if let Some(tenant_id) = tenant_id {
+        return storage
+            .get_user_in_tenant(username, tenant_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()));
+    }
+
+    let users = storage
+        .list_users_by_username(username)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    match users.len() {
+        0 => Ok(None),
+        1 => Ok(users.into_iter().next()),
+        _ => Err(ApiError::BadRequest(
+            "tenant_id is required for usernames that exist in multiple tenants".to_string(),
+        )),
+    }
+}
+
+fn claims_tenant_id(claims: &Claims) -> Result<fcp_core::TenantId, ApiError> {
+    claims
+        .tenant_id
+        .parse::<fcp_core::TenantId>()
+        .map_err(|e| ApiError::Unauthorized(format!("Invalid tenant in token: {}", e)))
 }
 
 /// POST /api/v1/auth/login
@@ -81,9 +129,12 @@ pub async fn login(
         .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
 
     // Get user first (we need to check lock status before password verification)
-    let mut user = match storage.get_user(&req.username).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
+    let requested_tenant = parse_tenant_id(req.tenant_id.as_deref())?;
+
+    let mut user = match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await?
+    {
+        Some(u) => u,
+        None => {
             // Constant-time: still do a bcrypt check to prevent timing attacks
             let _ = password::verify_password(
                 &req.password,
@@ -93,7 +144,6 @@ pub async fn login(
                 "Invalid username or password".to_string(),
             ));
         }
-        Err(e) => return Err(ApiError::Internal(e.to_string())),
     };
 
     let now = SystemTime::now();
@@ -247,10 +297,11 @@ pub async fn me(
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
+    let tenant_id = claims_tenant_id(&claims)?;
 
     // Optionally refresh user data from storage
     if let Some(storage) = &state.storage {
-        if let Ok(Some(user)) = storage.get_user(&claims.sub).await {
+        if let Ok(Some(user)) = storage.get_user_in_tenant(&claims.sub, &tenant_id).await {
             return Ok(Json(AuthUserResponse {
                 username: user.username,
                 role: role_to_string(&user.role),
@@ -275,11 +326,12 @@ pub async fn refresh(
     req: axum::extract::Request,
 ) -> Result<impl IntoResponse, ApiError> {
     let claims = extract_claims(&req, &state)?;
+    let tenant_id = claims_tenant_id(&claims)?;
 
     // Verify user still exists and is active
     if let Some(storage) = &state.storage {
         let user = storage
-            .get_user(&claims.sub)
+            .get_user_in_tenant(&claims.sub, &tenant_id)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::Unauthorized("User no longer exists".to_string()))?;
@@ -353,9 +405,12 @@ pub async fn change_expired_password(
     }
 
     // Get user (with constant-time bcrypt on miss to prevent timing attacks)
-    let mut user = match storage.get_user(&req.username).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
+    let requested_tenant = parse_tenant_id(req.tenant_id.as_deref())?;
+
+    let mut user = match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await?
+    {
+        Some(u) => u,
+        None => {
             let _ = password::verify_password(
                 &req.current_password,
                 "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
@@ -364,7 +419,6 @@ pub async fn change_expired_password(
                 "Invalid username or password".to_string(),
             ));
         }
-        Err(e) => return Err(ApiError::Internal(e.to_string())),
     };
 
     let now = SystemTime::now();

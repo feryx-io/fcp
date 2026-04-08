@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use fcp_core::{CredentialStore, Registration, RegistrationStore, TenantId};
+use fcp_core::{CredentialStore, Registration, RegistrationStore, TenantId, TenantStore};
 use fcp_events::{EventPublisher, PlatformEvent, RegistrationEvent};
 use sip_core::{Request, Response};
 use sip_registrar::{AsyncLocationStore, Binding};
@@ -12,9 +12,90 @@ use smol_str::SmolStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::auth::Ha1Authenticator;
+use crate::auth::{Ha1Authenticator, Ha1CredentialStore};
+
+fn extract_aor_from_request(request: &Request) -> Option<String> {
+    let to_header = request.headers().get_smol("To")?;
+    let to = sip_parse::parse_to_header(to_header)?;
+    Some(
+        sip_registrar::normalize_aor(to.inner().uri())
+            .unwrap_or_else(|_| to.inner().uri().to_string()),
+    )
+}
+
+fn extract_username_from_aor(aor: &str) -> Option<String> {
+    let without_scheme = aor
+        .strip_prefix("sip:")
+        .or_else(|| aor.strip_prefix("sips:"))
+        .unwrap_or(aor);
+    let username = without_scheme.split('@').next()?.trim();
+    if username.is_empty() {
+        None
+    } else {
+        Some(username.to_string())
+    }
+}
+
+fn extract_domain_from_aor(aor: &str) -> Option<String> {
+    let (_, domain) = FcpRegistrar::split_aor(aor)?;
+    if domain.is_empty() {
+        None
+    } else {
+        Some(domain.to_string())
+    }
+}
+
+async fn resolve_tenant_for_inputs(
+    tenant_store: Option<&Arc<dyn TenantStore>>,
+    credential_store: Option<&Arc<dyn CredentialStore>>,
+    default_tenant_id: Option<TenantId>,
+    aor: Option<&str>,
+    username_hint: Option<&str>,
+) -> Result<TenantId> {
+    if let Some(domain) = aor.and_then(extract_domain_from_aor) {
+        if let Some(store) = tenant_store {
+            return match store.get_tenant_by_name(&domain).await? {
+                Some(tenant) => Ok(tenant.id),
+                None => Err(anyhow!("unknown tenant domain '{}'", domain)),
+            };
+        }
+
+        if let Some(default_tenant_id) = default_tenant_id {
+            return Ok(default_tenant_id);
+        }
+
+        return Err(anyhow!(
+            "tenant store unavailable for domain '{}'",
+            domain
+        ));
+    }
+
+    let username = username_hint
+        .map(str::to_string)
+        .or_else(|| aor.and_then(extract_username_from_aor));
+
+    if let (Some(store), Some(username)) = (credential_store, username) {
+        let users = store.list_users_by_username(&username).await?;
+        match users.len() {
+            1 => return Ok(users[0].tenant_id),
+            0 => {}
+            _ => {
+                return Err(anyhow!(
+                    "ambiguous username '{}' across multiple tenants",
+                    username
+                ))
+            }
+        }
+    }
+
+    if let Some(default_tenant_id) = default_tenant_id {
+        Ok(default_tenant_id)
+    } else {
+        Err(anyhow!("tenant context required"))
+    }
+}
 
 /// Adapter that implements siphon-rs LocationStore using FCP RegistrationStore.
 pub struct LocationStoreAdapter {
@@ -24,6 +105,60 @@ pub struct LocationStoreAdapter {
 impl LocationStoreAdapter {
     pub fn new(store: Arc<dyn RegistrationStore>) -> Self {
         Self { store }
+    }
+
+    async fn upsert_in_tenant(&self, binding: Binding, tenant_id: TenantId) -> Result<()> {
+        let mut registration = Self::from_binding(&binding);
+        registration.tenant_id = tenant_id;
+        registration.contact =
+            crate::registrar::FcpRegistrar::normalize_contact_for_matching(&registration.contact);
+        self.store.put_registration(registration).await
+    }
+
+    async fn remove_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+        contact: &str,
+    ) -> Result<()> {
+        let registrations = self.store.get_registrations_in_tenant(tenant_id, aor).await?;
+
+        let normalized_requested =
+            crate::registrar::FcpRegistrar::normalize_contact_for_matching(contact);
+
+        let mut removed_any = false;
+        for reg in registrations {
+            let normalized_stored =
+                crate::registrar::FcpRegistrar::normalize_contact_for_matching(&reg.contact);
+            if normalized_stored == normalized_requested {
+                self.store
+                    .delete_registration_in_tenant(tenant_id, aor, &reg.contact)
+                    .await?;
+                removed_any = true;
+            }
+        }
+
+        if !removed_any {
+            info!(aor = %aor, contact = %contact, normalized = %normalized_requested, "No matching registration to remove");
+        }
+
+        Ok(())
+    }
+
+    async fn remove_all_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<()> {
+        self.store
+            .delete_all_registrations_in_tenant(tenant_id, aor)
+            .await
+    }
+
+    async fn lookup_in_tenant(&self, tenant_id: &TenantId, aor: &str) -> Result<Vec<Binding>> {
+        let registrations = self.store.get_registrations_in_tenant(tenant_id, aor).await?;
+        let now = SystemTime::now();
+        registrations
+            .iter()
+            .filter(|r| r.expires_at > now)
+            .map(Self::to_binding)
+            .collect()
     }
 
     /// Convert FCP Registration to siphon-rs Binding.
@@ -87,6 +222,7 @@ impl LocationStoreAdapter {
     /// Convert siphon-rs Binding to FCP Registration.
     fn from_binding(binding: &Binding) -> Registration {
         Registration {
+            tenant_id: TenantId::nil(),
             aor: binding.aor().to_string(),
             contact: binding.contact().to_string(),
             expires_at: SystemTime::now() + binding.expires(),
@@ -198,18 +334,60 @@ impl AsyncLocationStore for LocationStoreAdapter {
 pub struct CredentialStoreAdapter {
     store: Arc<dyn CredentialStore>,
     realm: String,
+    tenant_store: Option<Arc<dyn TenantStore>>,
+    default_tenant_id: Option<TenantId>,
 }
 
 impl CredentialStoreAdapter {
     pub fn new(store: Arc<dyn CredentialStore>, realm: String) -> Self {
-        Self { store, realm }
+        Self {
+            store,
+            realm,
+            tenant_store: None,
+            default_tenant_id: None,
+        }
+    }
+
+    pub fn with_tenant_context(
+        mut self,
+        tenant_store: Option<Arc<dyn TenantStore>>,
+        default_tenant_id: Option<TenantId>,
+    ) -> Self {
+        self.tenant_store = tenant_store;
+        self.default_tenant_id = default_tenant_id;
+        self
+    }
+
+    async fn resolve_tenant(&self, request: &Request, username: &str) -> Result<TenantId> {
+        let aor = extract_aor_from_request(request);
+        resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            Some(&self.store),
+            self.default_tenant_id,
+            aor.as_deref(),
+            Some(username),
+        )
+        .await
     }
 }
 
 #[async_trait]
-impl sip_auth::AsyncCredentialStore for CredentialStoreAdapter {
-    async fn fetch(&self, username: &str, _realm: &str) -> Option<sip_auth::Credentials> {
-        if let Ok(Some(user)) = self.store.get_user(username).await {
+impl Ha1CredentialStore for CredentialStoreAdapter {
+    async fn fetch(
+        &self,
+        username: &str,
+        _realm: &str,
+        request: &Request,
+    ) -> Option<sip_auth::Credentials> {
+        let tenant_id = match self.resolve_tenant(request, username).await {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                debug!(username = %username, error = %e, "Failed to resolve tenant for SIP digest auth");
+                return None;
+            }
+        };
+
+        if let Ok(Some(user)) = self.store.get_user_in_tenant(username, &tenant_id).await {
             if user.enabled {
                 // Use pre-computed HA1 hash for SIP Digest authentication
                 // We pass the HA1 hash as the "password" - it will be used directly without re-hashing
@@ -259,6 +437,12 @@ pub struct FcpRegistrar {
     /// Realm for extracting tenant context (used in events)
     realm: String,
 
+    /// Tenant store used to resolve REGISTER requests to tenant scope.
+    tenant_store: Option<Arc<dyn TenantStore>>,
+
+    /// Explicit default tenant for single-tenant deployments without tenant domains.
+    default_tenant_id: Option<TenantId>,
+
     /// Domain aliases - list of domains that should be treated as equivalent.
     /// When looking up registrations, all aliased domains are checked.
     domain_aliases: Vec<String>,
@@ -281,19 +465,9 @@ impl FcpRegistrar {
         let location_store = LocationStoreAdapter::new(registration_store);
         let realm_str = realm.unwrap_or_else(|| "fcp.local".to_string());
 
-        // Always create the authenticator if credential store is available.
-        // The auth_enabled flag controls whether it's actually used.
-        let authenticator = if let Some(ref cred_store) = credential_store {
-            let cred_adapter =
-                CredentialStoreAdapter::new(Arc::clone(cred_store), realm_str.clone());
-            Some(Ha1Authenticator::new(realm_str.clone(), cred_adapter))
-        } else {
-            None
-        };
-
-        Self {
+        let mut registrar = Self {
             location_store,
-            authenticator,
+            authenticator: None,
             auth_enabled: AtomicBool::new(auth_enabled),
             credential_store,
             default_expires: 3600,
@@ -301,8 +475,12 @@ impl FcpRegistrar {
             max_expires: 86400,
             event_publisher: None,
             realm: realm_str,
+            tenant_store: None,
+            default_tenant_id: None,
             domain_aliases: Vec::new(),
-        }
+        };
+        registrar.refresh_authenticator();
+        registrar
     }
 
     /// Set domain aliases for registration lookups.
@@ -311,6 +489,20 @@ impl FcpRegistrar {
     /// registrations for alice@domain1, we also check alice@domain2, etc.
     pub fn with_domain_aliases(mut self, aliases: Vec<String>) -> Self {
         self.domain_aliases = aliases;
+        self
+    }
+
+    /// Attach a tenant store for tenant-aware REGISTER auth and persistence.
+    pub fn with_tenant_store(mut self, tenant_store: Arc<dyn TenantStore>) -> Self {
+        self.tenant_store = Some(tenant_store);
+        self.refresh_authenticator();
+        self
+    }
+
+    /// Set the explicit default tenant used when SIP addressing carries no tenant domain.
+    pub fn with_default_tenant_id(mut self, tenant_id: TenantId) -> Self {
+        self.default_tenant_id = Some(tenant_id);
+        self.refresh_authenticator();
         self
     }
 
@@ -332,6 +524,14 @@ impl FcpRegistrar {
         let mut registrar = Self::new(registration_store, credential_store, realm, auth_enabled);
         registrar.event_publisher = Some(event_publisher);
         registrar
+    }
+
+    fn refresh_authenticator(&mut self) {
+        self.authenticator = self.credential_store.as_ref().map(|cred_store| {
+            let cred_adapter = CredentialStoreAdapter::new(Arc::clone(cred_store), self.realm.clone())
+                .with_tenant_context(self.tenant_store.clone(), self.default_tenant_id);
+            Ha1Authenticator::new(self.realm.clone(), cred_adapter)
+        });
     }
 
     /// Enable authentication at runtime.
@@ -396,6 +596,11 @@ impl FcpRegistrar {
     ) -> Response {
         // Extract AOR early for event emission
         let aor = self.extract_aor_from_request(request).unwrap_or_default();
+        let username_hint = extract_username_from_aor(&aor);
+        let tenant_id = self
+            .resolve_tenant(request, Some(&aor), username_hint.as_deref())
+            .await
+            .ok();
 
         // Handle authentication if enabled (toggled at runtime via AtomicBool)
         if self.auth_enabled.load(Ordering::Relaxed) {
@@ -436,7 +641,7 @@ impl FcpRegistrar {
                         // Emit registration failed event
                         self.publish_event(RegistrationEvent::Failed {
                             aor: aor.clone(),
-                            tenant_id: TenantId::nil(),
+                            tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
                             reason: "authentication_failed".to_string(),
                             timestamp: SystemTime::now(),
                         });
@@ -457,7 +662,7 @@ impl FcpRegistrar {
                         // Emit registration failed event
                         self.publish_event(RegistrationEvent::Failed {
                             aor,
-                            tenant_id: TenantId::nil(),
+                            tenant_id: tenant_id.unwrap_or_else(TenantId::nil),
                             reason: format!("authentication_error: {}", e),
                             timestamp: SystemTime::now(),
                         });
@@ -477,12 +682,23 @@ impl FcpRegistrar {
 
     /// Extract AOR from a REGISTER request's To header.
     fn extract_aor_from_request(&self, request: &Request) -> Option<String> {
-        let to_header = request.headers().get_smol("To")?;
-        let to = sip_parse::parse_to_header(to_header)?;
-        Some(
-            sip_registrar::normalize_aor(to.inner().uri())
-                .unwrap_or_else(|_| to.inner().uri().to_string()),
+        extract_aor_from_request(request)
+    }
+
+    async fn resolve_tenant(
+        &self,
+        _request: &Request,
+        aor_hint: Option<&str>,
+        username_hint: Option<&str>,
+    ) -> Result<TenantId> {
+        resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            self.credential_store.as_ref(),
+            self.default_tenant_id,
+            aor_hint,
+            username_hint,
         )
+        .await
     }
 
     /// Process the actual registration logic
@@ -504,6 +720,30 @@ impl FcpRegistrar {
 
         let aor = sip_registrar::normalize_aor(to.inner().uri())
             .unwrap_or_else(|_| to.inner().uri().to_string());
+        let username_hint = extract_username_from_aor(&aor);
+        let tenant_id = match self
+            .resolve_tenant(request, Some(&aor), username_hint.as_deref())
+            .await
+        {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                warn!(aor = %aor, error = %e, "Rejecting REGISTER: tenant resolution failed");
+                let code = if e.to_string().contains("unknown tenant domain")
+                    || e.to_string().contains("ambiguous username")
+                    || e.to_string().contains("tenant context required")
+                {
+                    403
+                } else {
+                    503
+                };
+                let reason = if code == 403 {
+                    "Forbidden - tenant resolution failed"
+                } else {
+                    "Tenant lookup unavailable"
+                };
+                return self.create_error_response(request, code, reason);
+            }
+        };
 
         // Extract Contact header
         let contact_header = request.headers().get_smol("Contact");
@@ -515,14 +755,14 @@ impl FcpRegistrar {
         if let Some(contact) = contact_header {
             if contact.trim() == "*" {
                 // Delete all bindings
-                match self.location_store.remove_all(&aor).await {
+                match self.location_store.remove_all_in_tenant(&tenant_id, &aor).await {
                     Ok(_) => {
                         info!(aor = %aor, "Deregistered all contacts");
                         // Emit unregistration event for wildcard deregistration
                         self.publish_event(RegistrationEvent::Unregistered {
                             aor: aor.clone(),
                             contact: "*".to_string(),
-                            tenant_id: TenantId::nil(),
+                            tenant_id,
                             reason: "wildcard_deregistration".to_string(),
                             timestamp: SystemTime::now(),
                         });
@@ -545,14 +785,18 @@ impl FcpRegistrar {
                 // Strip contact-params (;expires=0, etc.) for matching
                 let contact_uri = Self::extract_contact_uri(contact_str.as_str());
                 // LocationStoreAdapter.remove() handles normalization internally
-                match self.location_store.remove(&aor, contact_uri).await {
+                match self
+                    .location_store
+                    .remove_in_tenant(&tenant_id, &aor, contact_uri)
+                    .await
+                {
                     Ok(_) => {
                         info!(aor = %aor, contact = %contact_uri, "Deregistered contact");
                         // Emit unregistration event
                         self.publish_event(RegistrationEvent::Unregistered {
                             aor: aor.clone(),
                             contact: contact_uri.to_string(),
-                            tenant_id: TenantId::nil(),
+                            tenant_id,
                             reason: "explicit".to_string(),
                             timestamp: SystemTime::now(),
                         });
@@ -579,14 +823,14 @@ impl FcpRegistrar {
                     }
                 };
 
-            match self.location_store.upsert(binding).await {
+            match self.location_store.upsert_in_tenant(binding, tenant_id).await {
                 Ok(_) => {
                     info!(aor = %aor, contact = %contact_uri, expires = expires, "Registration successful");
                     // Emit registration event
                     self.publish_event(RegistrationEvent::Registered {
                         aor: aor.clone(),
                         contact: contact_uri.to_string(),
-                        tenant_id: TenantId::nil(),
+                        tenant_id,
                         expires_secs: expires,
                         user_agent: user_agent.clone(),
                         timestamp: SystemTime::now(),
@@ -600,7 +844,7 @@ impl FcpRegistrar {
         }
 
         // Retrieve all current bindings and return in response
-        match self.location_store.lookup(&aor).await {
+        match self.location_store.lookup_in_tenant(&tenant_id, &aor).await {
             Ok(bindings) => self.create_ok_response(request, bindings),
             Err(e) => {
                 tracing::error!("Failed to lookup registrations: {}", e);
@@ -924,6 +1168,15 @@ impl FcpRegistrar {
     /// If domain aliases are configured, this will also look up registrations
     /// for the same user at aliased domains.
     pub async fn get_registrations(&self, aor: &str) -> Result<Vec<Binding>> {
+        let tenant_id = resolve_tenant_for_inputs(
+            self.tenant_store.as_ref(),
+            self.credential_store.as_ref(),
+            self.default_tenant_id,
+            Some(aor),
+            None,
+        )
+        .await?;
+
         // Normalize AOR so lookups match stored keys even if clients send
         // params or percent-encoded users.
         let normalized = match sip_core::Uri::parse(aor) {
@@ -933,7 +1186,7 @@ impl FcpRegistrar {
         };
 
         // Look up the primary AOR
-        let mut all_bindings = self.location_store.lookup(&normalized).await?;
+        let mut all_bindings = self.location_store.lookup_in_tenant(&tenant_id, &normalized).await?;
 
         // If domain aliases are configured, check for registrations at aliased domains
         if !self.domain_aliases.is_empty() {
@@ -950,7 +1203,10 @@ impl FcpRegistrar {
                     for alias in &self.domain_aliases {
                         if alias.to_lowercase() != domain_lower {
                             let aliased_aor = format!("sip:{}@{}", user, alias);
-                            if let Ok(mut bindings) = self.location_store.lookup(&aliased_aor).await
+                            if let Ok(mut bindings) = self
+                                .location_store
+                                .lookup_in_tenant(&tenant_id, &aliased_aor)
+                                .await
                             {
                                 debug!(
                                     original_aor = %normalized,
@@ -1030,7 +1286,10 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("fcp-test-registrar");
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
+        let registrar =
+            FcpRegistrar::new(storage.clone(), None, None, false).with_default_tenant_id(
+                fcp_core::TenantId::nil(),
+            );
 
         // Create a simple REGISTER request
         let mut headers = sip_core::Headers::new();
@@ -1144,7 +1403,8 @@ mod tests {
             Some(storage.clone()), // Use storage as credential store
             Some("test.local".to_string()),
             true, // auth enabled
-        );
+        )
+        .with_default_tenant_id(fcp_core::TenantId::nil());
 
         // First request without auth - should get 401
         let mut headers = sip_core::Headers::new();
@@ -1202,7 +1462,10 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await; // Clean up from previous runs
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
+        let registrar =
+            FcpRegistrar::new(storage.clone(), None, None, false).with_default_tenant_id(
+                fcp_core::TenantId::nil(),
+            );
 
         // First REGISTER with rinstance=aaa
         let mut headers = sip_core::Headers::new();
@@ -1316,7 +1579,10 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
+        let registrar =
+            FcpRegistrar::new(storage.clone(), None, None, false).with_default_tenant_id(
+                fcp_core::TenantId::nil(),
+            );
 
         // Register first
         let mut headers = sip_core::Headers::new();
@@ -1411,7 +1677,10 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
         let storage = Arc::new(FileBackedStorage::new(temp_dir.clone()).await.unwrap());
 
-        let registrar = FcpRegistrar::new(storage.clone(), None, None, false);
+        let registrar =
+            FcpRegistrar::new(storage.clone(), None, None, false).with_default_tenant_id(
+                fcp_core::TenantId::nil(),
+            );
 
         // Register a contact
         let mut headers = sip_core::Headers::new();
