@@ -1315,11 +1315,13 @@ impl SipMessageHandler {
                     tenant.id
                 }
                 Ok(None) => {
-                    warn!(domain = %domain, "Rejecting INVITE: unknown tenant domain");
-                    let response =
-                        self.create_simple_response(request, 403, "Unknown tenant domain");
-                    handle.send_final(response).await;
-                    return Ok(());
+                    // Fall back to default tenant for single-tenant deployments
+                    // where the domain is the server IP, not a registered tenant name
+                    debug!(
+                        domain = %domain,
+                        "Domain not found in tenant store, using default tenant"
+                    );
+                    fcp_core::TenantId::nil()
                 }
                 Err(e) => {
                     warn!(
