@@ -115,6 +115,8 @@ async fn main() -> Result<()> {
         config.api.auth_token = Some(auth_token);
     }
 
+    config::validate_config(&config)?;
+
     // Initialize tracing/logging
     init_tracing(&config).context("Failed to initialize tracing")?;
 
@@ -185,6 +187,7 @@ async fn main() -> Result<()> {
         metrics_path: "/metrics".to_string(),
     };
     let realm = "fcp.local".to_string();
+    let default_tenant_id = config.service.default_tenant_id;
 
     info!(node_id = %config.service.node_id, "SIP components initialized (lightweight, no transport)");
 
@@ -241,7 +244,7 @@ async fn main() -> Result<()> {
     // with registration/call events received via the events server WebSocket.
     {
         let pm_clone = presence_manager.clone();
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = default_tenant_id;
         let storage_for_presence = Arc::clone(&storage);
         tokio::spawn(async move {
             run_presence_listener(
@@ -260,7 +263,7 @@ async fn main() -> Result<()> {
     {
         let storage_for_health = Arc::clone(&storage);
         let health_map_clone = Arc::clone(&trunk_health_map);
-        let tenant_id = fcp_core::TenantId::nil();
+        let tenant_id = default_tenant_id;
         tokio::spawn(fcp_api_core::trunk_health::run_trunk_health_probes(
             storage_for_health,
             health_map_clone,
@@ -282,7 +285,7 @@ async fn main() -> Result<()> {
         None, // queue_manager (admin doesn't use queues)
         Some(presence_manager),
         realm,
-        fcp_core::TenantId::nil(),
+        default_tenant_id,
     )
     .with_events_server_url(events_server_url.clone())
     .with_events_server_auth_token(config.events.auth_token.clone())
@@ -490,7 +493,7 @@ async fn main() -> Result<()> {
         let ws_url = events_url
             .replace("http://", "ws://")
             .replace("https://", "wss://");
-        let tenant_id = "tenant-00000000-0000-0000-0000-000000000000";
+        let tenant_id = default_tenant_id.to_string();
         let ws_url = build_events_ws_url(&ws_url, tenant_id, config.events.auth_token.as_deref());
         let event_bus_sub = Arc::clone(&event_bus_for_subscribe);
         tokio::spawn(async move {
@@ -591,8 +594,8 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
     }
 }
 
-fn build_events_ws_url(base_url: &str, tenant_id: &str, auth_token: Option<&str>) -> String {
-    let base = format!("{}/ws/{}", base_url, tenant_id);
+fn build_events_ws_url(base_url: &str, tenant_id: impl AsRef<str>, auth_token: Option<&str>) -> String {
+    let base = format!("{}/ws/{}", base_url, tenant_id.as_ref());
     match auth_token {
         Some(token) => format!("{}?token={}", base, token),
         None => base,

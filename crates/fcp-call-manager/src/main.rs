@@ -86,6 +86,8 @@ async fn main() -> Result<()> {
         config.sip.tls_key_path = Some(tls_key.display().to_string());
     }
 
+    config::validate_config(&config)?;
+
     // Auto-detect local IP if not explicitly configured and bind is 0.0.0.0
     // This prevents using unroutable addresses (0.0.0.0, 127.0.0.1) in SIP
     // messages when running inside Docker or binding to all interfaces.

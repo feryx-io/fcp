@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
-fcp-sip = { path = "../fcp-sip" }
+fcp-sip = { path = "../fcp-sip", features = ["tls"] }
 fcp-presence = { path = "../fcp-presence" }
 fcp-events = { path = "../fcp-events" }
 
@@ -28,6 +28,13 @@ fcp-events = { path = "../fcp-events" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
+
+# SIP stack from siphon-rs
+sip-dns = { path = "../../external/siphon-rs/crates/sip-dns" }
+sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
+sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
+sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
+sip-uac = { path = "../../external/siphon-rs/crates/sip-uac" }
 
 # HTTP API
 axum = "0.7"
@@ -54,4 +61,5 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 
 # Utilities
+socket2 = "0.5"
 uuid = { workspace = true }

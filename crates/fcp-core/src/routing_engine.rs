@@ -8,6 +8,7 @@ use crate::{
     ExtensionTarget, LineBinding, PhoneNumberId, RingStrategy, TenantId, UserId,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, info, warn};
@@ -135,6 +136,58 @@ impl DefaultRoutingEngine {
             }
             _ => Ok(targets),
         }
+    }
+
+    fn resolve_user_ring_strategy(&self, line_bindings: &[LineBinding]) -> RingStrategy {
+        let Some(first) = line_bindings.first() else {
+            return RingStrategy::Simultaneous;
+        };
+
+        if line_bindings
+            .iter()
+            .all(|binding| binding.ring_strategy == first.ring_strategy)
+        {
+            first.ring_strategy
+        } else {
+            warn!(
+                user_bindings = line_bindings.len(),
+                "Mixed ring strategies across user line bindings; falling back to simultaneous"
+            );
+            RingStrategy::Simultaneous
+        }
+    }
+
+    fn merge_routing_targets(&self, targets: Vec<RoutingTarget>) -> Vec<RoutingTarget> {
+        let mut merged: HashMap<crate::DeviceId, RoutingTarget> = HashMap::new();
+
+        for target in targets {
+            merged
+                .entry(target.device_id)
+                .and_modify(|existing| {
+                    if target.priority < existing.priority {
+                        existing.priority = target.priority;
+                    }
+                    if target.timeout > existing.timeout {
+                        existing.timeout = target.timeout;
+                    }
+                    if target.line_appearance < existing.line_appearance {
+                        existing.line_appearance = target.line_appearance;
+                    }
+                    existing.shared_line |= target.shared_line;
+                    existing.enabled |= target.enabled;
+                })
+                .or_insert(target);
+        }
+
+        let mut targets: Vec<_> = merged.into_values().collect();
+        targets.sort_by_key(|target| {
+            (
+                target.priority,
+                target.line_appearance,
+                target.device_id.to_string(),
+            )
+        });
+        targets
     }
 }
 
@@ -296,35 +349,59 @@ impl RoutingEngine for DefaultRoutingEngine {
             )));
         }
 
-        // Use the first line binding
-        // TODO: Handle multiple line bindings (hunt groups, etc.)
-        let line_binding = &line_bindings[0];
+        let primary_line_binding = line_bindings[0].clone();
 
-        // Check for call forwarding
-        if let Some(forward_to) = self
-            .check_call_forward(line_binding, tenant_id, caller)
-            .await
-        {
-            return Ok(RoutingResult {
-                phone_number: None,
-                line_binding: Some(line_binding.clone()),
-                targets: Vec::new(),
-                ring_strategy: line_binding.ring_strategy,
-                forward_to: Some(forward_to),
-                no_answer_timeout: line_binding.no_answer_timeout,
-            });
+        // Honor the first applicable forwarding rule across all of the user's bindings.
+        for line_binding in &line_bindings {
+            if let Some(forward_to) = self
+                .check_call_forward(line_binding, tenant_id, caller)
+                .await
+            {
+                return Ok(RoutingResult {
+                    phone_number: None,
+                    line_binding: Some(primary_line_binding.clone()),
+                    targets: Vec::new(),
+                    ring_strategy: self.resolve_user_ring_strategy(&line_bindings),
+                    forward_to: Some(forward_to),
+                    no_answer_timeout: line_bindings
+                        .iter()
+                        .map(|binding| binding.no_answer_timeout)
+                        .max()
+                        .unwrap_or(primary_line_binding.no_answer_timeout),
+                });
+            }
         }
 
-        // Convert line binding to targets
-        let targets = self.line_binding_to_targets(line_binding).await?;
+        let mut all_targets = Vec::new();
+        for line_binding in &line_bindings {
+            match self.line_binding_to_targets(line_binding).await {
+                Ok(mut targets) => all_targets.append(&mut targets),
+                Err(RoutingError::NoDevicesAvailable) => {
+                    debug!(
+                        line_binding_id = %line_binding.id,
+                        "Skipping user line binding with no available devices"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let targets = self.merge_routing_targets(all_targets);
+        if targets.is_empty() {
+            return Err(RoutingError::NoDevicesAvailable);
+        }
 
         Ok(RoutingResult {
             phone_number: None,
-            line_binding: Some(line_binding.clone()),
+            line_binding: Some(primary_line_binding),
             targets,
-            ring_strategy: line_binding.ring_strategy,
+            ring_strategy: self.resolve_user_ring_strategy(&line_bindings),
             forward_to: None,
-            no_answer_timeout: line_binding.no_answer_timeout,
+            no_answer_timeout: line_bindings
+                .iter()
+                .map(|binding| binding.no_answer_timeout)
+                .max()
+                .unwrap_or(Duration::from_secs(30)),
         })
     }
 

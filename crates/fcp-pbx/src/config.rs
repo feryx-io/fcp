@@ -53,6 +53,37 @@ impl Default for PbxConfig {
     }
 }
 
+/// Validate PBX configuration for unsupported or inconsistent options.
+pub fn validate_config(config: &PbxConfig) -> Result<(), String> {
+    let feature_codes = &config.feature_codes;
+
+    reject_unsupported_feature_code("pbx.feature_codes.group_pickup", &feature_codes.group_pickup)?;
+    reject_unsupported_feature_code(
+        "pbx.feature_codes.directed_pickup",
+        &feature_codes.directed_pickup,
+    )?;
+    reject_unsupported_feature_code(
+        "pbx.feature_codes.intercom_oneway",
+        &feature_codes.intercom_oneway,
+    )?;
+    reject_unsupported_feature_code(
+        "pbx.feature_codes.intercom_twoway",
+        &feature_codes.intercom_twoway,
+    )?;
+
+    Ok(())
+}
+
+fn reject_unsupported_feature_code(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{field} is configured but that feature code path is not implemented yet"
+        ))
+    }
+}
+
 /// Feature code (star code) prefix mappings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeatureCodeConfig {
@@ -373,5 +404,19 @@ digits = 4
         assert!(cfg.cmc.enabled);
         assert!(cfg.fac.enabled);
         assert_eq!(cfg.fac.valid_codes.len(), 2);
+    }
+
+    #[test]
+    fn test_rejects_unsupported_feature_codes() {
+        let mut cfg = PbxConfig::default();
+        cfg.feature_codes.group_pickup = "*8".to_string();
+        assert!(validate_config(&cfg).is_err());
+
+        let mut cfg = PbxConfig::default();
+        cfg.feature_codes.intercom_twoway = "*81".to_string();
+        assert!(validate_config(&cfg).is_err());
+
+        let cfg = PbxConfig::default();
+        assert!(validate_config(&cfg).is_ok());
     }
 }

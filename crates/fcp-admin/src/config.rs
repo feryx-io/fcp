@@ -145,6 +145,10 @@ pub struct ServiceConfig {
     /// Node identifier
     #[serde(default = "default_node_id")]
     pub node_id: String,
+
+    /// Default tenant scope for tenant-scoped admin operations.
+    #[serde(default = "default_tenant_id")]
+    pub default_tenant_id: fcp_core::TenantId,
 }
 
 fn default_service_type() -> String {
@@ -155,11 +159,16 @@ fn default_node_id() -> String {
     format!("admin-{}", uuid::Uuid::new_v4())
 }
 
+fn default_tenant_id() -> fcp_core::TenantId {
+    fcp_core::TenantId::nil()
+}
+
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             service_type: default_service_type(),
             node_id: default_node_id(),
+            default_tenant_id: default_tenant_id(),
         }
     }
 }
@@ -181,7 +190,7 @@ pub struct ApiConfig {
 }
 
 fn default_bind_address() -> SocketAddr {
-    "0.0.0.0:8080".parse().unwrap()
+    "127.0.0.1:8080".parse().unwrap()
 }
 
 fn default_true() -> bool {
@@ -193,7 +202,7 @@ impl Default for ApiConfig {
         Self {
             bind_address: default_bind_address(),
             auth_enabled: true,
-            auth_token: None,
+            auth_token: Some(uuid::Uuid::new_v4().to_string()),
         }
     }
 }
@@ -337,6 +346,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
         }
     };
 
+    validate_config(&config)?;
+
     info!(
         bind_address = %config.api.bind_address,
         auth_enabled = config.api.auth_enabled,
@@ -344,6 +355,38 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
     );
 
     Ok(config)
+}
+
+pub fn validate_config(config: &AdminConfig) -> Result<()> {
+    let public_bind = !config.api.bind_address.ip().is_loopback();
+    let has_token = config
+        .api
+        .auth_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if config.api.auth_enabled && !has_token {
+        anyhow::bail!(
+            "api.auth_token must be set when api.auth_enabled = true"
+        );
+    }
+
+    if public_bind && !config.api.auth_enabled {
+        anyhow::bail!(
+            "api.auth_enabled must be true when binding the admin API to a non-loopback address ({})",
+            config.api.bind_address
+        );
+    }
+
+    if public_bind && !has_token {
+        anyhow::bail!(
+            "api.auth_token must be set when binding the admin API to a non-loopback address ({})",
+            config.api.bind_address
+        );
+    }
+
+    Ok(())
 }
 
 /// Load configuration from a specific file.
@@ -366,7 +409,11 @@ mod tests {
     fn test_default_config() {
         let config = AdminConfig::default();
         assert_eq!(config.service.service_type, "admin");
+        assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
         assert_eq!(config.api.bind_address.port(), 8080);
+        assert!(config.api.bind_address.ip().is_loopback());
+        assert!(config.api.auth_enabled);
+        assert!(config.api.auth_token.as_deref().is_some_and(|token| !token.is_empty()));
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.logging.level, "info");
     }
@@ -376,5 +423,20 @@ mod tests {
         // Should not fail when no config file exists
         let result = load_config(None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_public_bind_requires_auth() {
+        let mut config = AdminConfig::default();
+        config.api.bind_address = "0.0.0.0:8080".parse().unwrap();
+        config.api.auth_enabled = false;
+        assert!(validate_config(&config).is_err());
+
+        config.api.auth_enabled = true;
+        config.api.auth_token = None;
+        assert!(validate_config(&config).is_err());
+
+        config.api.auth_token = Some("secret".to_string());
+        assert!(validate_config(&config).is_ok());
     }
 }

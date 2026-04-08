@@ -162,7 +162,7 @@ pub struct RegistrarSection {
     pub enabled: bool,
 
     /// Enable SIP Digest authentication
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auth_enabled: bool,
 
     /// Authentication realm
@@ -210,7 +210,7 @@ impl Default for RegistrarSection {
     fn default() -> Self {
         Self {
             enabled: true,
-            auth_enabled: false,
+            auth_enabled: true,
             realm: default_realm(),
             default_expires: default_expires(),
             min_expires: default_min_expires(),
@@ -606,7 +606,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
         }
     };
 
-    validate_http_config(&config.http)?;
+    validate_config(&config)?;
 
     info!(
         node_id = %config.service.node_id,
@@ -625,6 +625,13 @@ pub fn load_config(config_path: Option<&Path>) -> Result<CallManagerConfig> {
     Ok(config)
 }
 
+pub fn validate_config(config: &CallManagerConfig) -> Result<()> {
+    validate_http_config(&config.http)?;
+    validate_registrar_config(&config.sip, &config.registrar)?;
+    fcp_pbx::config::validate_config(&config.pbx).map_err(anyhow::Error::msg)?;
+    Ok(())
+}
+
 fn validate_http_config(http: &HttpSection) -> Result<()> {
     let public_bind = !http.bind_address.ip().is_loopback();
     let has_token = http
@@ -641,6 +648,32 @@ fn validate_http_config(http: &HttpSection) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_registrar_config(sip: &SipSection, registrar: &RegistrarSection) -> Result<()> {
+    if !registrar.enabled {
+        return Ok(());
+    }
+
+    let public_udp = bind_is_public(&sip.udp_bind)
+        .with_context(|| format!("Invalid SIP UDP bind address '{}'", sip.udp_bind))?;
+    let public_tcp = bind_is_public(&sip.tcp_bind)
+        .with_context(|| format!("Invalid SIP TCP bind address '{}'", sip.tcp_bind))?;
+
+    if (public_udp || public_tcp) && !registrar.auth_enabled {
+        anyhow::bail!(
+            "registrar.auth_enabled must be true when the call-manager registrar binds to a non-loopback SIP address (udp={}, tcp={})",
+            sip.udp_bind,
+            sip.tcp_bind
+        );
+    }
+
+    Ok(())
+}
+
+fn bind_is_public(bind: &str) -> Result<bool> {
+    let addr: std::net::SocketAddr = bind.parse()?;
+    Ok(!addr.ip().is_loopback())
 }
 
 fn load_config_from_file(path: &Path) -> Result<CallManagerConfig> {
@@ -665,7 +698,7 @@ mod tests {
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
         assert!(config.registrar.enabled);
-        assert!(!config.registrar.auth_enabled);
+        assert!(config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "fcp.local");
         assert_eq!(config.registrar.default_expires, 3600);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
@@ -704,6 +737,35 @@ mod tests {
             api_token: Some("secret".to_string()),
         };
         assert!(validate_http_config(&http).is_ok());
+    }
+
+    #[test]
+    fn test_public_registrar_bind_requires_auth() {
+        let sip = SipSection {
+            udp_bind: "0.0.0.0:5060".to_string(),
+            tcp_bind: "0.0.0.0:5060".to_string(),
+            local_ip: None,
+            sips_bind: default_sips_bind(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            local_uri: None,
+        };
+        let registrar = RegistrarSection {
+            enabled: true,
+            auth_enabled: false,
+            realm: default_realm(),
+            default_expires: default_expires(),
+            min_expires: default_min_expires(),
+            max_expires: default_max_expires(),
+            domain_aliases: Vec::new(),
+        };
+        assert!(validate_registrar_config(&sip, &registrar).is_err());
+
+        let registrar = RegistrarSection {
+            auth_enabled: true,
+            ..registrar
+        };
+        assert!(validate_registrar_config(&sip, &registrar).is_ok());
     }
 
     #[test]

@@ -13,6 +13,9 @@ pub struct PresenceServerConfig {
     pub service: ServiceSection,
 
     #[serde(default)]
+    pub sip: SipSection,
+
+    #[serde(default)]
     pub storage: StorageSection,
 
     #[serde(default)]
@@ -75,6 +78,38 @@ impl Default for ServiceSection {
             node_id: default_node_id(),
             default_tenant_id: default_tenant_id(),
             shutdown_timeout_secs: default_shutdown_timeout_secs(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SipSection {
+    /// UDP bind address.
+    #[serde(default = "default_sip_bind")]
+    pub udp_bind: String,
+
+    /// TCP bind address.
+    #[serde(default = "default_sip_bind")]
+    pub tcp_bind: String,
+
+    /// Advertised local IP for Contact/Via when the bind address is unspecified.
+    pub local_ip: Option<String>,
+
+    /// Explicit local SIP URI override.
+    pub local_uri: Option<String>,
+}
+
+fn default_sip_bind() -> String {
+    "0.0.0.0:5060".to_string()
+}
+
+impl Default for SipSection {
+    fn default() -> Self {
+        Self {
+            udp_bind: default_sip_bind(),
+            tcp_bind: default_sip_bind(),
+            local_ip: None,
+            local_uri: None,
         }
     }
 }
@@ -318,6 +353,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<PresenceServerConfig> {
     info!(
         node_id = %config.service.node_id,
         default_tenant_id = %config.service.default_tenant_id,
+        udp_bind = %config.sip.udp_bind,
+        tcp_bind = %config.sip.tcp_bind,
         database_url = %config.storage.database_url,
         http_bind = %config.http.bind_address,
         "Configuration loaded"
@@ -358,6 +395,8 @@ mod tests {
     fn test_default_config() {
         let config = PresenceServerConfig::default();
         assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
+        assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
+        assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.http.bind_address, "127.0.0.1:8080".parse().unwrap());
         assert!(config.http.api_token.is_none());
@@ -369,6 +408,11 @@ mod tests {
 [service]
 node_id = "pres-01"
 default_tenant_id = "00000000-0000-0000-0000-000000000456"
+
+[sip]
+udp_bind = "0.0.0.0:5060"
+tcp_bind = "0.0.0.0:5060"
+local_ip = "192.168.1.100"
 
 [storage]
 database_url = "postgresql://localhost/fcp"
@@ -391,6 +435,7 @@ format = "compact"
             config.service.default_tenant_id,
             "00000000-0000-0000-0000-000000000456".parse().unwrap()
         );
+        assert_eq!(config.sip.local_ip.as_deref(), Some("192.168.1.100"));
         assert_eq!(config.presence.max_subscriptions, 5000);
         assert_eq!(config.http.bind_address.port(), 9090);
         assert_eq!(config.http.api_token.as_deref(), Some("secret"));

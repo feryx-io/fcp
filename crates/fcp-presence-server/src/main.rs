@@ -6,9 +6,21 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use fcp_events::filter::EventType;
+use fcp_events::{EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus};
+use fcp_sip::exports::IntegratedUAC;
+use fcp_sip::listener::{InboundMessageHandler, ListenerConfig, TransportListener};
+use fcp_sip::presence::{PresenceHandler, SipPresenceHandler};
+use fcp_sip::transport::ConnectionPool;
+use fcp_sip::uac::SipUserAgentClient;
+use fcp_sip::{B2buaConfig, CallManager};
+use sip_dns::SipResolver;
+use sip_observe::{set_transport_metrics, TracingTransportMetrics};
+use sip_transaction::TransactionManager;
+use sip_transport::TransportKind as SipTransportKind;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{info, warn};
 
 mod config;
 mod http_api;
@@ -40,10 +52,28 @@ async fn main() -> Result<()> {
         config.logging.level = level.clone();
     }
 
+    if config.sip.local_ip.is_none() {
+        let bind_unspecified = config
+            .sip
+            .udp_bind
+            .parse::<std::net::SocketAddr>()
+            .map(|a| a.ip().is_unspecified())
+            .unwrap_or(true);
+        if bind_unspecified {
+            if let Some(detected_ip) = auto_detect_local_ip() {
+                config.sip.local_ip = Some(detected_ip);
+            }
+        }
+    }
+
     config::validate_config(&config)?;
 
     // Initialize tracing
     init_tracing(&config);
+
+    if !set_transport_metrics(Arc::new(TracingTransportMetrics)) {
+        warn!("transport metrics already configured");
+    }
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -157,6 +187,19 @@ async fn main() -> Result<()> {
     // Create event bus for presence events + analytics
     let event_bus = Arc::new(fcp_events::InMemoryEventBus::new());
 
+    // Create SIP infrastructure for SUBSCRIBE/PUBLISH/NOTIFY.
+    let dialog_manager = Arc::new(fcp_sip::exports::DialogManager::new());
+    let tcp_pool = Arc::new(ConnectionPool::new());
+    let (client_tx, client_rx) = tokio::sync::mpsc::channel(1024);
+    tcp_pool.set_inbound_tx(client_tx).await;
+
+    let dispatcher = create_transport_dispatcher(&config, Arc::clone(&tcp_pool)).await?;
+    let transaction_manager = Arc::new(TransactionManager::new_with_pool(
+        dispatcher.clone(),
+        tcp_pool,
+    ));
+    let uac = create_uac(&config, Arc::clone(&transaction_manager), dispatcher).await?;
+
     // Initialize cluster membership (if configured)
     #[cfg(feature = "storage-redis")]
     let _cluster_manager = if config.cluster.enabled {
@@ -172,7 +215,11 @@ async fn main() -> Result<()> {
                         node_id: config.service.node_id.clone(),
                         node_type: config.service.service_type.clone(),
                         http_address: config.http.bind_address,
-                        sip_address: "0.0.0.0:0".parse().unwrap(),
+                        sip_address: config
+                            .sip
+                            .udp_bind
+                            .parse()
+                            .unwrap_or_else(|_| "0.0.0.0:5060".parse().unwrap()),
                         capabilities: vec!["presence".to_string(), "blf".to_string()],
                         active_calls: 0,
                         started_at: std::time::SystemTime::now()
@@ -215,6 +262,98 @@ async fn main() -> Result<()> {
     // Set up resource list store
     manager.set_resource_list_store(Arc::clone(dyn_storage.resource_list_store()));
 
+    let call_manager = Arc::new(CallManager::with_storage_and_events(
+        Arc::clone(&dyn_storage),
+        Arc::clone(&event_bus) as Arc<dyn EventPublisher>,
+    ));
+    let local_uri = create_local_uri(&config)?;
+    let local_addr = derive_local_addr(&config)?;
+    let concrete_presence_handler = Arc::new(SipPresenceHandler::new(
+        manager.clone(),
+        Arc::clone(&uac),
+        config.service.default_tenant_id,
+        config.presence.default_subscription_expiry_secs,
+    ));
+    let presence_handler: Arc<dyn fcp_sip::presence::PresenceHandler> =
+        Arc::clone(&concrete_presence_handler) as Arc<dyn fcp_sip::presence::PresenceHandler>;
+    let handler = Arc::new(fcp_sip::handler::SipMessageHandler::new(
+        Arc::clone(&transaction_manager),
+        Arc::clone(&dialog_manager),
+        local_uri,
+        None,
+        local_addr,
+        10000,
+        None,
+        None,
+        call_manager,
+        Some(Arc::clone(&uac)),
+        Some(Arc::clone(&dyn_storage)),
+        None,
+        None,
+        None,
+        B2buaConfig::default(),
+        None,
+        None,
+        None,
+        None,
+        Some(Arc::clone(&presence_handler)),
+        None,
+        config.service.node_id.clone(),
+    )?);
+
+    let udp_bind: std::net::SocketAddr = config
+        .sip
+        .udp_bind
+        .parse()
+        .context("Invalid UDP bind address")?;
+    let tcp_bind: std::net::SocketAddr = config
+        .sip
+        .tcp_bind
+        .parse()
+        .context("Invalid TCP bind address")?;
+    let listener_config = ListenerConfig {
+        udp_bind: Some(udp_bind),
+        tcp_bind: Some(tcp_bind),
+        tls_bind: None,
+        tls_cert: None,
+        tls_key: None,
+    };
+    let handler_dyn: Arc<dyn InboundMessageHandler> =
+        Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;
+    let mut listener = TransportListener::new(listener_config, handler_dyn);
+    listener
+        .start()
+        .await
+        .context("Failed to start transport listeners")?;
+
+    let handler_clone = Arc::clone(&handler);
+    let mut client_rx = client_rx;
+    tokio::spawn(async move {
+        while let Some(packet) = client_rx.recv().await {
+            let txn_transport = match packet.transport() {
+                SipTransportKind::Udp => sip_transaction::TransportKind::Udp,
+                SipTransportKind::Tcp => sip_transaction::TransportKind::Tcp,
+                SipTransportKind::Tls => sip_transaction::TransportKind::Tls,
+                SipTransportKind::Ws => sip_transaction::TransportKind::Ws,
+                SipTransportKind::Wss => sip_transaction::TransportKind::Wss,
+                SipTransportKind::Sctp => sip_transaction::TransportKind::Sctp,
+                SipTransportKind::TlsSctp => sip_transaction::TransportKind::TlsSctp,
+            };
+
+            if let Err(e) = handler_clone
+                .handle_inbound(
+                    txn_transport,
+                    packet.peer(),
+                    packet.payload().clone(),
+                    packet.stream().cloned(),
+                )
+                .await
+            {
+                tracing::error!("Failed to handle inbound TCP response: {}", e);
+            }
+        }
+    });
+
     // Redis clustering (if configured)
     #[cfg(feature = "redis")]
     if let Some(ref redis_config) = config.redis {
@@ -254,19 +393,33 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "webhook"))]
     let _webhook_dispatcher: Option<()> = None;
 
-    // Start background expiry cleanup
+    // Start background expiry cleanup and NOTIFY retry processing.
     let cleanup_manager = manager.clone();
     let cleanup_interval = config.presence.cleanup_interval_secs;
+    let cleanup_presence_handler = Arc::clone(&presence_handler);
+    let cleanup_concrete_handler = Arc::clone(&concrete_presence_handler);
     let mut shutdown_rx = manager.shutdown_receiver();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(cleanup_interval));
+        let mut retry_interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    let expired = cleanup_manager.cleanup_expired_watchers();
+                    if !expired.is_empty() {
+                        if let Err(e) = cleanup_presence_handler
+                            .send_terminated_notifies(&expired, "timeout")
+                            .await
+                        {
+                            warn!(error = %e, "Failed to send terminated NOTIFYs for expired watchers");
+                        }
+                    }
                     cleanup_manager.cleanup_expired_subscriptions_from_store().await;
-                    cleanup_manager.cleanup_expired_watchers();
                     cleanup_manager.check_publish_expiry_warnings().await;
                     cleanup_manager.cleanup_expired_publishes().await;
+                }
+                _ = retry_interval.tick() => {
+                    cleanup_concrete_handler.process_retry_queue().await;
                 }
                 _ = shutdown_rx.changed() => {
                     break;
@@ -275,10 +428,19 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Send NOTIFYs whenever presence state changes.
+    {
+        let event_bus_notify = Arc::clone(&event_bus);
+        let notifier_handler = Arc::clone(&presence_handler);
+        tokio::spawn(async move {
+            run_presence_notifier(event_bus_notify, notifier_handler).await;
+        });
+    }
+
     // Start HTTP API
     let app_state = Arc::new(http_api::AppState {
         manager: manager.clone(),
-        sip_handler: None, // SIP transport setup is a follow-up task
+        sip_handler: Some(Arc::clone(&concrete_presence_handler)),
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
         resource_list_store: Arc::clone(dyn_storage.resource_list_store()),
@@ -309,6 +471,8 @@ async fn main() -> Result<()> {
 
     // Log startup summary
     info!(
+        udp = %config.sip.udp_bind,
+        tcp = %config.sip.tcp_bind,
         http = %config.http.bind_address,
         storage = "postgres",
         redis = config.redis.is_some(),
@@ -362,7 +526,17 @@ async fn main() -> Result<()> {
     }
 
     // Graceful shutdown
+    let all_watchers = manager.get_all_watchers_including_winfo();
+    if !all_watchers.is_empty() {
+        if let Err(e) = concrete_presence_handler
+            .send_terminated_notifies(&all_watchers, "probation")
+            .await
+        {
+            warn!(error = %e, "Failed to send shutdown NOTIFYs");
+        }
+    }
     manager.shutdown().await;
+    listener.stop().await?;
     http_handle.abort();
     info!("Shutdown complete");
 
@@ -464,6 +638,165 @@ fn init_tracing(config: &PresenceServerConfig) {
                 .with_level(true)
                 .with_env_filter(env_filter)
                 .init();
+        }
+    }
+}
+
+/// Create a transport dispatcher with a shared TCP pool.
+async fn create_transport_dispatcher(
+    config: &PresenceServerConfig,
+    tcp_pool: Arc<ConnectionPool>,
+) -> Result<Arc<fcp_sip::transport::RealTransportDispatcher>> {
+    use fcp_sip::transport::RealTransportDispatcher;
+
+    let bind_addr: std::net::SocketAddr = config
+        .sip
+        .udp_bind
+        .parse()
+        .context("Invalid UDP bind address")?;
+
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .context("Failed to create UDP socket")?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&bind_addr.into())?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
+
+    let dispatcher = RealTransportDispatcher::new_with_pool(Some(Arc::new(udp_socket)), tcp_pool);
+    Ok(Arc::new(dispatcher))
+}
+
+/// Create a UAC for outbound NOTIFY delivery.
+async fn create_uac(
+    config: &PresenceServerConfig,
+    transaction_manager: Arc<TransactionManager>,
+    dispatcher: Arc<fcp_sip::transport::RealTransportDispatcher>,
+) -> Result<Arc<SipUserAgentClient>> {
+    let local_uri = create_local_uri(config)?;
+    let local_addr = derive_local_addr(config)?;
+    let resolver = Arc::new(SipResolver::from_system().context("Failed to create DNS resolver")?);
+
+    let mut builder = IntegratedUAC::builder();
+    builder = builder
+        .local_uri(local_uri.as_str())
+        .local_addr(&local_addr)?
+        .via_advertised_addr(&local_addr)?
+        .transaction_manager(transaction_manager)
+        .resolver(resolver)
+        .dispatcher(dispatcher);
+
+    let integrated_uac = builder.build().context("Failed to build IntegratedUAC")?;
+    Ok(Arc::new(SipUserAgentClient::new(Arc::new(integrated_uac))))
+}
+
+fn create_local_uri(config: &PresenceServerConfig) -> Result<fcp_sip::exports::SipUri> {
+    let bind_addr: std::net::SocketAddr = config
+        .sip
+        .udp_bind
+        .parse()
+        .context("Invalid UDP bind address")?;
+
+    if let Some(ref uri_str) = config.sip.local_uri {
+        let uri = fcp_sip::exports::Uri::parse(uri_str)
+            .context("Failed to parse configured local_uri")?;
+        return uri
+            .as_sip()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Configured local_uri is not a SIP URI"));
+    }
+
+    let domain = if bind_addr.ip().is_unspecified() {
+        config
+            .sip
+            .local_ip
+            .as_ref()
+            .filter(|ip| !ip.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    } else {
+        bind_addr.ip().to_string()
+    };
+
+    let uri_str = if bind_addr.port() != 0 && bind_addr.port() != 5060 {
+        format!("sip:presence@{}:{}", domain, bind_addr.port())
+    } else {
+        format!("sip:presence@{}", domain)
+    };
+
+    let uri = fcp_sip::exports::Uri::parse(&uri_str).context("Failed to parse local URI")?;
+    uri.as_sip()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("Not a SIP URI"))
+}
+
+fn derive_local_addr(config: &PresenceServerConfig) -> Result<String> {
+    let bind_addr: std::net::SocketAddr = config
+        .sip
+        .udp_bind
+        .parse()
+        .context("Invalid UDP bind address")?;
+    let port = if bind_addr.port() == 0 { 5060 } else { bind_addr.port() };
+
+    let host = if let Some(ref local_ip) = config.sip.local_ip {
+        local_ip.clone()
+    } else if bind_addr.ip().is_unspecified() {
+        auto_detect_local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
+    } else {
+        bind_addr.ip().to_string()
+    };
+
+    Ok(format!("{}:{}", host, port))
+}
+
+fn auto_detect_local_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:53").ok()?;
+    let addr = socket.local_addr().ok()?;
+    if addr.ip().is_unspecified() || addr.ip().is_loopback() {
+        return None;
+    }
+    Some(addr.ip().to_string())
+}
+
+async fn run_presence_notifier(
+    event_bus: Arc<InMemoryEventBus>,
+    presence_handler: Arc<dyn fcp_sip::presence::PresenceHandler>,
+) {
+    use fcp_events::PlatformEvent;
+
+    let filter = EventFilter::new().types(vec![EventType::Presence]);
+    let mut stream = match event_bus.subscribe(filter.clone()).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::error!(%e, "Failed to subscribe to event bus for presence NOTIFY");
+            return;
+        }
+    };
+
+    loop {
+        match stream.next().await {
+            Some(event) => match &event {
+                PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { aor, .. })
+                | PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged { aor, .. }) => {
+                    if let Err(e) = presence_handler.notify_watchers(aor).await {
+                        warn!(aor = %aor, error = %e, "Failed to notify watchers");
+                    }
+                }
+                _ => {}
+            },
+            None => {
+                warn!("Presence NOTIFY stream ended, resubscribing...");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match event_bus.subscribe(filter.clone()).await {
+                    Ok(new_stream) => stream = new_stream,
+                    Err(e) => warn!(error = %e, "Failed to resubscribe presence NOTIFY stream"),
+                }
+            }
         }
     }
 }

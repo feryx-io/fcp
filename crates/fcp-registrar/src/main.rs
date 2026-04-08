@@ -58,6 +58,8 @@ async fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Invalid HTTP bind address '{}': {}", bind, e))?;
     }
 
+    config::validate_config(&config)?;
+
     // 3. Initialize tracing
     init_tracing(&config);
 

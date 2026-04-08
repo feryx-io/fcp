@@ -91,7 +91,7 @@ impl Default for SipSection {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RegistrarSection {
     /// Enable SIP Digest authentication
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auth_enabled: bool,
 
     /// Authentication realm
@@ -115,6 +115,10 @@ fn default_realm() -> String {
     "fcp.local".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_expires() -> u32 {
     3600
 }
@@ -130,7 +134,7 @@ fn default_max_expires() -> u32 {
 impl Default for RegistrarSection {
     fn default() -> Self {
         Self {
-            auth_enabled: false,
+            auth_enabled: true,
             realm: default_realm(),
             default_expires: default_expires(),
             min_expires: default_min_expires(),
@@ -237,6 +241,8 @@ pub fn load_config(config_path: Option<&Path>) -> Result<RegistrarConfig> {
         }
     };
 
+    validate_config(&config)?;
+
     info!(
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
@@ -248,6 +254,28 @@ pub fn load_config(config_path: Option<&Path>) -> Result<RegistrarConfig> {
     );
 
     Ok(config)
+}
+
+pub fn validate_config(config: &RegistrarConfig) -> Result<()> {
+    let public_udp = bind_is_public(&config.sip.udp_bind)
+        .with_context(|| format!("Invalid SIP UDP bind address '{}'", config.sip.udp_bind))?;
+    let public_tcp = bind_is_public(&config.sip.tcp_bind)
+        .with_context(|| format!("Invalid SIP TCP bind address '{}'", config.sip.tcp_bind))?;
+
+    if (public_udp || public_tcp) && !config.registrar.auth_enabled {
+        anyhow::bail!(
+            "registrar.auth_enabled must be true when binding the standalone registrar to a non-loopback SIP address (udp={}, tcp={})",
+            config.sip.udp_bind,
+            config.sip.tcp_bind
+        );
+    }
+
+    Ok(())
+}
+
+fn bind_is_public(bind: &str) -> Result<bool> {
+    let addr: std::net::SocketAddr = bind.parse()?;
+    Ok(!addr.ip().is_loopback())
 }
 
 fn load_config_from_file(path: &Path) -> Result<RegistrarConfig> {
@@ -271,7 +299,7 @@ mod tests {
         assert_eq!(config.service.service_type, "registrar");
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
-        assert!(!config.registrar.auth_enabled);
+        assert!(config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "fcp.local");
         assert_eq!(config.registrar.default_expires, 3600);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
@@ -310,5 +338,16 @@ format = "pretty"
         assert_eq!(config.registrar.realm, "test.local");
         assert_eq!(config.registrar.default_expires, 1800);
         assert_eq!(config.http.bind_address.port(), 9090);
+    }
+
+    #[test]
+    fn test_public_sip_bind_requires_auth() {
+        let mut config = RegistrarConfig::default();
+        config.registrar.auth_enabled = false;
+        assert!(validate_config(&config).is_err());
+
+        config.sip.udp_bind = "127.0.0.1:5060".to_string();
+        config.sip.tcp_bind = "127.0.0.1:5060".to_string();
+        assert!(validate_config(&config).is_ok());
     }
 }

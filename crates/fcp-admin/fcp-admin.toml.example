@@ -8,8 +8,12 @@ service_type = "admin"
 # Unique node identifier (auto-generated if not specified)
 # node_id = "admin-01"
 
+# Default tenant scope for tenant-scoped admin APIs.
+# default_tenant_id = "00000000-0000-0000-0000-000000000000"
+
 [api]
-# API bind address (internal only, behind gateway)
+# API bind address. Defaults are loopback-only unless you intentionally expose it
+# behind an authenticated gateway or load balancer.
 bind_address = "0.0.0.0:8080"
 
 # Enable bearer token authentication
