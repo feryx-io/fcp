@@ -18,6 +18,7 @@ import {
 import { lineBindings, users, devices, phoneNumbers, flows } from '@/api/endpoints'
 import type { LineBinding, DeviceBinding, UpdateLineBindingRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
+import { TenantField } from '@/components/TenantSelector'
 
 const BINDING_TYPES = [
   { value: 'user', label: 'User' },
@@ -54,6 +55,7 @@ const createSchema = z.object({
   binding_type: z.string().min(1, 'Binding type is required'),
   ring_strategy: z.string().default('simultaneous'),
   no_answer_timeout_secs: z.coerce.number().min(5).max(300).default(30),
+  tenant_id: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -266,6 +268,7 @@ export function LineBindingsPage() {
       no_answer_timeout_secs: data.no_answer_timeout_secs,
       devices: validDevices.length > 0 ? validDevices : undefined,
       flow_id: data.binding_type === 'ivr' && createFlowId ? createFlowId : undefined,
+      tenant_id: data.tenant_id || undefined,
     })
   }
 
@@ -388,6 +391,7 @@ export function LineBindingsPage() {
               </Select>
               {createForm.formState.errors.phone_number_id && <p className="text-sm text-destructive">{createForm.formState.errors.phone_number_id.message}</p>}
             </div>
+            <TenantField value={createForm.watch('tenant_id') ?? ''} onChange={(v) => createForm.setValue('tenant_id', v)} />
             <div className="space-y-2">
               <Label>Owner User</Label>
               <Select onValueChange={(v) => createForm.setValue('owner_user_id', v === '__none__' ? '' : v)}>

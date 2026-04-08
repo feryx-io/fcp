@@ -19,12 +19,14 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { phoneNumbers, locations } from '@/api/endpoints'
 import type { PhoneNumber, CreatePhoneNumberRequest } from '@/types'
+import { TenantField } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   e164: z.string().min(1, 'E.164 number is required').regex(/^\+?[0-9]+$/, 'Invalid phone number format'),
   cnam: z.string().optional(),
   carrier: z.string().optional(),
   location_id: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -192,6 +194,7 @@ export function PhoneNumbersPage() {
       cnam: data.cnam || undefined,
       carrier: data.carrier || undefined,
       location_id: data.location_id || undefined,
+      tenant_id: data.tenant_id || undefined,
     })
   }
 
@@ -249,6 +252,7 @@ export function PhoneNumbersPage() {
               <Input id="c-e164" placeholder="+15551234567" {...createForm.register('e164')} />
               {createForm.formState.errors.e164 && <p className="text-sm text-destructive">{createForm.formState.errors.e164.message}</p>}
             </div>
+            <TenantField value={createForm.watch('tenant_id') ?? ''} onChange={(v) => createForm.setValue('tenant_id', v)} />
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="c-cnam">CNAM</Label>

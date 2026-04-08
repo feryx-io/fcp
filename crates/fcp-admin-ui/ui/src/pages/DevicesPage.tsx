@@ -19,6 +19,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { devices, locations } from '@/api/endpoints'
 import type { Device, CreateDeviceRequest } from '@/types'
+import { TenantField } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -28,6 +29,7 @@ const createSchema = z.object({
   model: z.string().optional(),
   location: z.string().optional(),
   location_id: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -219,6 +221,7 @@ export function DevicesPage() {
       model: data.model || undefined,
       location: data.location || undefined,
       location_id: data.location_id || undefined,
+      tenant_id: data.tenant_id || undefined,
     })
   }
 
@@ -284,6 +287,7 @@ export function DevicesPage() {
               <Input id="c-name" placeholder="e.g., Lobby Phone" {...createForm.register('name')} />
               {createForm.formState.errors.name && <p className="text-sm text-destructive">{createForm.formState.errors.name.message}</p>}
             </div>
+            <TenantField value={createForm.watch('tenant_id') ?? ''} onChange={(v) => createForm.setValue('tenant_id', v)} />
             <div className="space-y-2">
               <Label>Device Type *</Label>
               <Select onValueChange={(v) => createForm.setValue('device_type', v)}>

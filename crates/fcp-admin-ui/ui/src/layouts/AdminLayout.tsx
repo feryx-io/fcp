@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { useAuthStore } from '@/stores/auth'
+import { TenantContextPicker } from '@/components/TenantSelector'
 import { useThemeStore } from '@/stores/theme'
 import { useWebSocketStore } from '@/stores/websocket'
 import { ToastContainer } from '@/components/ToastContainer'
@@ -315,6 +316,7 @@ export function AdminLayout() {
               <Breadcrumbs />
             </div>
             <div className="flex items-center gap-2 md:gap-4">
+              <TenantContextPicker />
               {/* Search hint */}
               <button
                 className="hidden md:flex items-center gap-2 text-xs text-muted-foreground bg-muted rounded-md px-3 py-1.5 hover:bg-accent transition-colors"

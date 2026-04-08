@@ -21,6 +21,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { locations } from '@/api/endpoints'
 import type { Location, CreateLocationRequest } from '@/types'
+import { TenantField } from '@/components/TenantSelector'
 
 const TIMEZONES: Record<string, string[]> = (() => {
   const grouped: Record<string, string[]> = {}
@@ -48,6 +49,7 @@ const createSchema = z.object({
   timezone: z.string().optional(),
   emergency_contact_name: z.string().optional(),
   emergency_contact_phone: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 const editSchema = createSchema
@@ -205,7 +207,10 @@ export function LocationsPage() {
   })
 
   const onCreateSubmit = (data: CreateForm) => {
-    createMutation.mutate(formToRequest(data))
+    createMutation.mutate({
+      ...formToRequest(data),
+      tenant_id: data.tenant_id || undefined,
+    })
   }
 
   const onEditSubmit = (data: EditForm) => {
@@ -354,6 +359,7 @@ export function LocationsPage() {
             <DialogDescription>Create a new office location or site.</DialogDescription>
           </DialogHeader>
           <form onSubmit={createForm.handleSubmit(onCreateSubmit)} className="space-y-4">
+            <TenantField value={createForm.watch('tenant_id') ?? ''} onChange={(v) => createForm.setValue('tenant_id', v)} />
             {locationFormFields(createForm)}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>

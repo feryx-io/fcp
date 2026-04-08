@@ -19,6 +19,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { extensions, users, locations, devices, phoneNumbers } from '@/api/endpoints'
 import type { Extension, CreateExtensionRequest, UpdateExtensionRequest, User, Location } from '@/types'
+import { TenantField } from '@/components/TenantSelector'
 
 const TARGET_TYPES = [
   { value: 'user', label: 'User' },
@@ -38,6 +39,7 @@ const createSchema = z.object({
   target_id: z.string().min(1, 'Target is required'),
   description: z.string().optional(),
   location_id: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -214,6 +216,7 @@ export function ExtensionsPage() {
       target: { type: data.target_type as CreateExtensionRequest['target']['type'], id: data.target_id },
       description: data.description || undefined,
       location_id: data.location_id || undefined,
+      tenant_id: data.tenant_id || undefined,
     })
   }
 
@@ -283,6 +286,7 @@ export function ExtensionsPage() {
               <Label htmlFor="c-description">Description</Label>
               <Input id="c-description" placeholder="Front desk, conference room, etc." {...createForm.register('description')} />
             </div>
+            <TenantField value={createForm.watch('tenant_id') ?? ''} onChange={(v) => createForm.setValue('tenant_id', v)} />
             <div className="space-y-2">
               <Label>Target Type *</Label>
               <Select

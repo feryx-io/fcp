@@ -23,6 +23,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users, locations } from '@/api/endpoints'
 import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
+import { TenantField } from '@/components/TenantSelector'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -33,6 +34,7 @@ const createUserSchema = z.object({
   extension: z.string().optional(),
   department: z.string().optional(),
   location_id: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 const editUserSchema = z.object({
@@ -344,6 +346,7 @@ function CreateUserDialog({
     handleSubmit,
     reset,
     setValue,
+    watch,
     formState: { errors },
   } = useForm<CreateUserForm>({
     resolver: zodResolver(createUserSchema),
@@ -358,6 +361,7 @@ function CreateUserDialog({
       extension: data.extension || undefined,
       department: data.department || undefined,
       location_id: data.location_id || undefined,
+      tenant_id: data.tenant_id || undefined,
     })
   }
 
@@ -402,6 +406,7 @@ function CreateUserDialog({
               </SelectContent>
             </Select>
           </div>
+          <TenantField value={watch('tenant_id') ?? ''} onChange={(v) => setValue('tenant_id', v)} />
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="create-extension">Extension</Label>
