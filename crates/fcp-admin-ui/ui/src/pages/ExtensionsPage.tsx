@@ -47,6 +47,7 @@ const editSchema = z.object({
   target_id: z.string().optional(),
   description: z.string().optional(),
   location_id: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -207,6 +208,7 @@ export function ExtensionsPage() {
       target_id: editItem.target.id,
       description: editItem.description || '',
       location_id: editItem.location_id || '',
+      tenant_id: editItem.tenant_id ?? '',
     })
   }
 
@@ -225,6 +227,7 @@ export function ExtensionsPage() {
     const updateData: UpdateExtensionRequest = {
       description: data.description || undefined,
       location_id: data.location_id || undefined,
+      tenant_id: data.tenant_id || undefined,
     }
     if (data.target_type && data.target_id) {
       updateData.target = { type: data.target_type as UpdateExtensionRequest['target'] extends undefined ? never : NonNullable<UpdateExtensionRequest['target']>['type'], id: data.target_id }
@@ -351,6 +354,7 @@ export function ExtensionsPage() {
               <Label htmlFor="e-description">Description</Label>
               <Input id="e-description" {...editForm.register('description')} />
             </div>
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
             <div className="space-y-2">
               <Label>Target Type</Label>
               <Select

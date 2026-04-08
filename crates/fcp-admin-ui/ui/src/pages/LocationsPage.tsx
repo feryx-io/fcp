@@ -184,6 +184,7 @@ export function LocationsPage() {
       timezone: editItem.timezone || '',
       emergency_contact_name: editItem.emergency_contact_name || '',
       emergency_contact_phone: editItem.emergency_contact_phone || '',
+      tenant_id: editItem.tenant_id ?? '',
     })
   }
 
@@ -215,7 +216,7 @@ export function LocationsPage() {
 
   const onEditSubmit = (data: EditForm) => {
     if (!editItem) return
-    updateMutation.mutate({ id: editItem.id, data: formToRequest(data) })
+    updateMutation.mutate({ id: editItem.id, data: { ...formToRequest(data), tenant_id: data.tenant_id || undefined } })
   }
 
   const locationFormFields = (form: ReturnType<typeof useForm<CreateForm>>) => (
@@ -382,6 +383,7 @@ export function LocationsPage() {
             <DialogDescription>Update location details.</DialogDescription>
           </DialogHeader>
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
             {locationFormFields(editForm)}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

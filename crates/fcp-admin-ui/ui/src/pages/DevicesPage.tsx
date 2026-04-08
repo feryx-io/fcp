@@ -41,6 +41,7 @@ const editSchema = z.object({
   location: z.string().optional(),
   location_id: z.string().optional(),
   enabled: z.boolean().optional(),
+  tenant_id: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -209,6 +210,7 @@ export function DevicesPage() {
       location: editItem.location || '',
       location_id: editItem.location_id || '',
       enabled: editItem.enabled,
+      tenant_id: editItem.tenant_id ?? '',
     })
   }
 
@@ -238,6 +240,7 @@ export function DevicesPage() {
         location: data.location || undefined,
         location_id: data.location_id || undefined,
         enabled: data.enabled,
+        tenant_id: data.tenant_id || undefined,
       },
     })
   }
@@ -362,6 +365,7 @@ export function DevicesPage() {
               <Input id="e-name" {...editForm.register('name')} />
               {editForm.formState.errors.name && <p className="text-sm text-destructive">{editForm.formState.errors.name.message}</p>}
             </div>
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
             <div className="space-y-2">
               <Label htmlFor="e-sip_uri">SIP URI</Label>
               <Input id="e-sip_uri" placeholder="sip:username@domain" {...editForm.register('sip_uri')} />

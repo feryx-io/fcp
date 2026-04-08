@@ -45,6 +45,7 @@ const editUserSchema = z.object({
   department: z.string().optional(),
   location_id: z.string().optional(),
   account_status: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 const changePasswordSchema = z.object({
@@ -459,6 +460,7 @@ function EditUserDialog({
     register,
     handleSubmit,
     setValue,
+    watch,
     reset,
     formState: { errors },
   } = useForm<EditUserForm>({
@@ -477,6 +479,7 @@ function EditUserDialog({
       department: user.department || '',
       location_id: user.location_id || '',
       account_status: user.account_status || 'active',
+      tenant_id: user.tenant_id ?? '',
     })
   }
 
@@ -491,6 +494,7 @@ function EditUserDialog({
         extension: data.extension || undefined,
         department: data.department || undefined,
         location_id: data.location_id || undefined,
+        tenant_id: data.tenant_id || undefined,
       },
     })
   }
@@ -539,6 +543,7 @@ function EditUserDialog({
               </Select>
             </div>
           </div>
+          <TenantField value={watch('tenant_id') ?? ''} onChange={(v) => setValue('tenant_id', v)} />
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="edit-extension">Extension</Label>

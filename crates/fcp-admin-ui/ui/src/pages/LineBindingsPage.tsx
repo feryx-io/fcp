@@ -69,6 +69,7 @@ const editSchema = z.object({
   vm_forward_on_no_answer: z.boolean().optional(),
   outbound_caller_id: z.string().optional(),
   outbound_cnam: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -255,6 +256,7 @@ export function LineBindingsPage() {
       forward_on_no_answer: editItem.forward_on_no_answer?.toLowerCase() === 'voicemail' ? '' : (editItem.forward_on_no_answer || ''),
       outbound_caller_id: editItem.outbound_caller_id || '',
       outbound_cnam: editItem.outbound_cnam || '',
+      tenant_id: editItem.tenant_id ?? '',
     })
   }
 
@@ -287,6 +289,7 @@ export function LineBindingsPage() {
         outbound_caller_id: data.outbound_caller_id || undefined,
         outbound_cnam: data.outbound_cnam || undefined,
         flow_id: editItem.binding_type === 'ivr' ? (editFlowId || undefined) : undefined,
+        tenant_id: data.tenant_id || undefined,
       },
     })
   }
@@ -500,6 +503,7 @@ export function LineBindingsPage() {
           )}
 
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
             {editItem?.binding_type === 'ivr' && (
               <div className="space-y-2">
                 <Label>IVR Flow</Label>

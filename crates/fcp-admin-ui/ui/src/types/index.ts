@@ -54,6 +54,7 @@ export interface UpdateUserRequest {
   location_id?: string
   enabled?: boolean
   account_status?: string
+  tenant_id?: string
 }
 
 export interface Tenant {
@@ -115,6 +116,7 @@ export interface UpdateExtensionRequest {
   description?: string
   location_id?: string
   enabled?: boolean
+  tenant_id?: string
 }
 
 export interface Device {
@@ -258,6 +260,7 @@ export interface UpdateLineBindingRequest {
   outbound_caller_id?: string
   outbound_cnam?: string
   flow_id?: string
+  tenant_id?: string
 }
 
 export interface CallDetailRecord {

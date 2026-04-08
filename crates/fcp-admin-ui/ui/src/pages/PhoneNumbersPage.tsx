@@ -34,6 +34,7 @@ const editSchema = z.object({
   recording_enabled: z.boolean().optional(),
   block_anonymous: z.boolean().optional(),
   location_id: z.string().optional(),
+  tenant_id: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
@@ -185,6 +186,7 @@ export function PhoneNumbersPage() {
       recording_enabled: editItem.recording_enabled,
       block_anonymous: editItem.block_anonymous,
       location_id: editItem.location_id || '',
+      tenant_id: editItem.tenant_id ?? '',
     })
   }
 
@@ -207,6 +209,7 @@ export function PhoneNumbersPage() {
         recording_enabled: data.recording_enabled,
         block_anonymous: data.block_anonymous,
         location_id: data.location_id || undefined,
+        tenant_id: data.tenant_id || undefined,
       },
     })
   }
@@ -300,6 +303,7 @@ export function PhoneNumbersPage() {
               <Label htmlFor="e-cnam">CNAM</Label>
               <Input id="e-cnam" placeholder="Caller ID name" {...editForm.register('cnam')} />
             </div>
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" {...editForm.register('recording_enabled')} className="rounded" />
