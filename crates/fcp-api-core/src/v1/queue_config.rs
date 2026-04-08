@@ -1,7 +1,6 @@
 //! Queue configuration CRUD API endpoints.
 
-use crate::error::ApiError;
-use crate::state::ApiState;
+use crate::{auth::TenantContext, error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -21,6 +20,16 @@ macro_rules! require_storage {
             ApiError::NotFound("Storage is required but not configured".to_string())
         })?
     };
+}
+
+fn ensure_queue_config_tenant(
+    config: QueueConfigRecord,
+    tenant_id: &fcp_core::TenantId,
+) -> Result<QueueConfigRecord, ApiError> {
+    if config.tenant_id != *tenant_id {
+        return Err(ApiError::NotFound("Queue config not found".to_string()));
+    }
+    Ok(config)
 }
 
 /// Queue config response.
@@ -154,16 +163,20 @@ pub async fn list_queue_configs(
 /// Get a single queue config.
 pub async fn get_queue_config(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let config_id = QueueConfigId::from_string(id);
 
-    let config = storage
-        .get_queue_config(&config_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?;
+    let config = ensure_queue_config_tenant(
+        storage
+            .get_queue_config(&config_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?,
+        &tenant.0,
+    )?;
 
     Ok(Json(QueueConfigResponse::from(config)))
 }
@@ -242,17 +255,21 @@ pub async fn create_queue_config(
 /// Update an existing queue config.
 pub async fn update_queue_config(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateQueueConfigRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let config_id = QueueConfigId::from_string(id);
 
-    let mut config = storage
-        .get_queue_config(&config_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?;
+    let mut config = ensure_queue_config_tenant(
+        storage
+            .get_queue_config(&config_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?,
+        &tenant.0,
+    )?;
 
     if let Some(name) = req.name {
         config.name = name;
@@ -321,17 +338,21 @@ pub async fn update_queue_config(
 /// Delete a queue config.
 pub async fn delete_queue_config(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
     let config_id = QueueConfigId::from_string(id);
 
     // Verify it exists
-    let config = storage
-        .get_queue_config(&config_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
-        .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?;
+    let config = ensure_queue_config_tenant(
+        storage
+            .get_queue_config(&config_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get queue config: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound("Queue config not found".to_string()))?,
+        &tenant.0,
+    )?;
 
     info!(queue_name = %config.name, queue_id = %config.id, "Deleting queue config");
 

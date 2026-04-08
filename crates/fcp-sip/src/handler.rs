@@ -1164,6 +1164,70 @@ impl SipMessageHandler {
             }
         }
 
+        // Extract tenant for multi-tenant isolation
+        // Try to extract domain from INVITE and look up tenant in storage
+        let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
+            let Some(storage) = &self.storage else {
+                warn!(
+                    domain = %domain,
+                    "Rejecting INVITE: tenant domain present but no tenant store configured"
+                );
+                let response =
+                    self.create_simple_response(request, 503, "Tenant resolution unavailable");
+                handle.send_final(response).await;
+                return Ok(());
+            };
+
+            match storage.get_tenant_by_name(&domain).await {
+                Ok(Some(tenant)) => {
+                    debug!(
+                        domain = %domain,
+                        tenant_id = %tenant.id,
+                        tenant_name = %tenant.name,
+                        "Resolved tenant from INVITE domain"
+                    );
+                    tenant.id
+                }
+                Ok(None) => {
+                    if let Some(default_tenant_id) = self.default_tenant_id {
+                        debug!(
+                            domain = %domain,
+                            tenant_id = %default_tenant_id,
+                            "Domain not found in tenant store, using configured default tenant"
+                        );
+                        default_tenant_id
+                    } else {
+                        warn!(
+                            domain = %domain,
+                            "Rejecting INVITE: domain not found and no default tenant is configured"
+                        );
+                        let response =
+                            self.create_simple_response(request, 403, "Unknown tenant domain");
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        domain = %domain,
+                        error = %e,
+                        "Rejecting INVITE: tenant lookup failed"
+                    );
+                    let response =
+                        self.create_simple_response(request, 503, "Tenant lookup unavailable");
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+            }
+        } else if let Some(default_tenant_id) = self.default_tenant_id {
+            default_tenant_id
+        } else {
+            warn!("Rejecting INVITE: no tenant context could be derived from SIP addressing");
+            let response = self.create_simple_response(request, 403, "Tenant context required");
+            handle.send_final(response).await;
+            return Ok(());
+        };
+
         // Trunk admission control: check if source IP is allowed
         // Local registered devices are always allowed; external sources must match an enabled trunk
         if let Some(storage) = &self.storage {
@@ -1212,10 +1276,8 @@ impl SipMessageHandler {
                 };
 
                 if !is_registered_device {
-                    // Check if source IP matches any enabled trunk
                     let peer_ip_str = peer_ip.to_string();
-                    let trunk_allowed = match storage.list_trunks(&fcp_core::TenantId::nil()).await
-                    {
+                    let trunk_allowed = match storage.list_trunks(&tenant_id).await {
                         Ok(trunks) => trunks.iter().any(|t| {
                             t.enabled
                                 && t.hosts.iter().any(|h| {
@@ -1224,7 +1286,7 @@ impl SipMessageHandler {
                                 })
                         }),
                         Err(e) => {
-                            warn!(error = %e, "Failed to query trunks for admission check, denying");
+                            warn!(error = %e, tenant_id = %tenant_id, "Failed to query trunks for admission check, denying");
                             false
                         }
                     };
@@ -1232,6 +1294,7 @@ impl SipMessageHandler {
                     if !trunk_allowed {
                         info!(
                             source = %peer,
+                            tenant_id = %tenant_id,
                             "Rejecting INVITE: source IP does not match any enabled trunk"
                         );
                         let response = self.create_simple_response(
@@ -1242,7 +1305,7 @@ impl SipMessageHandler {
                         handle.send_final(response).await;
                         return Ok(());
                     }
-                    debug!(source = %peer, "INVITE admitted via trunk");
+                    debug!(source = %peer, tenant_id = %tenant_id, "INVITE admitted via trunk");
                 }
             }
         }
@@ -1286,66 +1349,6 @@ impl SipMessageHandler {
                 }
             }
         }
-
-        // Extract tenant for multi-tenant isolation
-        // Try to extract domain from INVITE and look up tenant in storage
-        let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
-            let Some(storage) = &self.storage else {
-                warn!(
-                    domain = %domain,
-                    "Rejecting INVITE: tenant domain present but no tenant store configured"
-                );
-                let response = self.create_simple_response(
-                    request,
-                    503,
-                    "Tenant resolution unavailable",
-                );
-                handle.send_final(response).await;
-                return Ok(());
-            };
-
-            match storage.get_tenant_by_name(&domain).await {
-                Ok(Some(tenant)) => {
-                    debug!(
-                        domain = %domain,
-                        tenant_id = %tenant.id,
-                        tenant_name = %tenant.name,
-                        "Resolved tenant from INVITE domain"
-                    );
-                    tenant.id
-                }
-                Ok(None) => {
-                    // Fall back to default tenant for single-tenant deployments
-                    // where the domain is the server IP, not a registered tenant name
-                    debug!(
-                        domain = %domain,
-                        "Domain not found in tenant store, using default tenant"
-                    );
-                    fcp_core::TenantId::nil()
-                }
-                Err(e) => {
-                    warn!(
-                        domain = %domain,
-                        error = %e,
-                        "Rejecting INVITE: tenant lookup failed"
-                    );
-                    let response = self.create_simple_response(
-                        request,
-                        503,
-                        "Tenant lookup unavailable",
-                    );
-                    handle.send_final(response).await;
-                    return Ok(());
-                }
-            }
-        } else if let Some(default_tenant_id) = self.default_tenant_id {
-            default_tenant_id
-        } else {
-            warn!("Rejecting INVITE: no tenant context could be derived from SIP addressing");
-            let response = self.create_simple_response(request, 403, "Tenant context required");
-            handle.send_final(response).await;
-            return Ok(());
-        };
 
         // Create Call object from the incoming INVITE with tenant context
         let mut call = fcp_b2bua_core::Call::from_invite(request.clone(), peer, tenant_id);
@@ -2733,14 +2736,20 @@ impl SipMessageHandler {
                                             .await
                                         {
                                             Ok(Some(m)) => Ok(Some(m)),
-                                            Ok(None) if !line_binding.tenant_id.is_nil() => {
-                                                storage
-                                                    .get_meeting_by_room_number(
-                                                        &fcp_core::TenantId::nil(),
-                                                        room_number,
-                                                    )
-                                                    .await
-                                            }
+                                            Ok(None) => match self.default_tenant_id {
+                                                Some(default_tenant_id)
+                                                    if default_tenant_id
+                                                        != line_binding.tenant_id =>
+                                                {
+                                                    storage
+                                                        .get_meeting_by_room_number(
+                                                            &default_tenant_id,
+                                                            room_number,
+                                                        )
+                                                        .await
+                                                }
+                                                _ => Ok(None),
+                                            },
                                             other => other,
                                         };
 
@@ -3596,14 +3605,19 @@ impl SipMessageHandler {
                                     .await
                                 {
                                     Ok(Some(m)) => Ok(Some(m)),
-                                    Ok(None) if !tenant_id.is_nil() => {
-                                        storage
-                                            .get_meeting_by_room_number(
-                                                &fcp_core::TenantId::nil(),
-                                                extension_number,
-                                            )
-                                            .await
-                                    }
+                                    Ok(None) => match self.default_tenant_id {
+                                        Some(default_tenant_id)
+                                            if default_tenant_id != tenant_id =>
+                                        {
+                                            storage
+                                                .get_meeting_by_room_number(
+                                                    &default_tenant_id,
+                                                    extension_number,
+                                                )
+                                                .await
+                                        }
+                                        _ => Ok(None),
+                                    },
                                     other => other,
                                 };
 
@@ -3727,20 +3741,24 @@ impl SipMessageHandler {
                                 .await
                             {
                                 Ok(Some(m)) => Ok(Some(m)),
-                                Ok(None) if !tenant_id.is_nil() => {
-                                    debug!(
-                                        call_id = %call_id,
-                                        tenant_id = %tenant_id,
-                                        room = %extension_number,
-                                        "Conference room not found for tenant, trying default tenant"
-                                    );
-                                    storage
-                                        .get_meeting_by_room_number(
-                                            &fcp_core::TenantId::nil(),
-                                            extension_number,
-                                        )
-                                        .await
-                                }
+                                Ok(None) => match self.default_tenant_id {
+                                    Some(default_tenant_id) if default_tenant_id != tenant_id => {
+                                        debug!(
+                                            call_id = %call_id,
+                                            tenant_id = %tenant_id,
+                                            default_tenant_id = %default_tenant_id,
+                                            room = %extension_number,
+                                            "Conference room not found for tenant, trying configured default tenant"
+                                        );
+                                        storage
+                                            .get_meeting_by_room_number(
+                                                &default_tenant_id,
+                                                extension_number,
+                                            )
+                                            .await
+                                    }
+                                    _ => Ok(None),
+                                },
                                 other => other,
                             };
 

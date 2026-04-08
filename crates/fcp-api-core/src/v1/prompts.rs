@@ -1,6 +1,6 @@
 //! Audio prompt management API endpoints.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{auth::TenantContext, error::ApiError, state::ApiState};
 use axum::{
     extract::{Multipart, Path, Query, State},
     http::StatusCode,
@@ -28,6 +28,17 @@ fn system_time_to_epoch_secs(st: SystemTime) -> f64 {
     st.duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
+}
+
+fn ensure_prompt_tenant(
+    prompt: Prompt,
+    tenant_id: &fcp_core::TenantId,
+    id: &str,
+) -> Result<Prompt, ApiError> {
+    if prompt.tenant_id != *tenant_id {
+        return Err(ApiError::NotFound(format!("Prompt {} not found", id)));
+    }
+    Ok(prompt)
 }
 
 // ── Response types ────────────────────────────────────────────────────
@@ -115,6 +126,7 @@ pub struct UpdatePromptRequest {
 /// GET /api/v1/prompts
 pub async fn list_prompts(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Query(query): Query<ListPromptsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
@@ -128,11 +140,7 @@ pub async fn list_prompts(
     };
 
     let prompts = prompt_store
-        .list_prompts(
-            &state.default_tenant_id,
-            category,
-            query.language.as_deref(),
-        )
+        .list_prompts(&tenant.0, category, query.language.as_deref())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -143,6 +151,7 @@ pub async fn list_prompts(
 /// GET /api/v1/prompts/:id
 pub async fn get_prompt(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
@@ -151,11 +160,15 @@ pub async fn get_prompt(
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
-    let prompt = prompt_store
-        .get_prompt(&prompt_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+    let prompt = ensure_prompt_tenant(
+        prompt_store
+            .get_prompt(&prompt_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+        &tenant.0,
+        &id,
+    )?;
 
     Ok(Json(PromptResponse::from(prompt)))
 }
@@ -163,6 +176,7 @@ pub async fn get_prompt(
 /// POST /api/v1/prompts
 pub async fn create_prompt(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Json(req): Json<CreatePromptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
@@ -192,16 +206,10 @@ pub async fn create_prompt(
             let tts_text = req.tts_text.ok_or_else(|| {
                 ApiError::BadRequest("tts_text is required for TTS prompts".to_string())
             })?;
-            Prompt::new_tts(
-                state.default_tenant_id.clone(),
-                &req.name,
-                category,
-                language,
-                &tts_text,
-            )
+            Prompt::new_tts(tenant.0, &req.name, category, language, &tts_text)
         }
         PromptSourceType::File => Prompt::new_file(
-            state.default_tenant_id.clone(),
+            tenant.0,
             &req.name,
             category,
             language,
@@ -256,6 +264,7 @@ pub async fn create_prompt(
 /// PUT /api/v1/prompts/:id
 pub async fn update_prompt(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdatePromptRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -265,11 +274,15 @@ pub async fn update_prompt(
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
-    let mut prompt = prompt_store
-        .get_prompt(&prompt_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+    let mut prompt = ensure_prompt_tenant(
+        prompt_store
+            .get_prompt(&prompt_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+        &tenant.0,
+        &id,
+    )?;
 
     // Track if TTS parameters changed (invalidates cached audio)
     let tts_changed = (req.tts_text.is_some() && req.tts_text != prompt.tts_text)
@@ -348,6 +361,7 @@ pub async fn update_prompt(
 /// POST /api/v1/prompts/:id/audio — Upload/replace audio WAV file
 pub async fn upload_audio(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -362,11 +376,15 @@ pub async fn upload_audio(
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
-    let mut prompt = prompt_store
-        .get_prompt(&prompt_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+    let mut prompt = ensure_prompt_tenant(
+        prompt_store
+            .get_prompt(&prompt_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+        &tenant.0,
+        &id,
+    )?;
 
     // Read audio data from multipart
     let mut audio_data: Option<Vec<u8>> = None;
@@ -423,6 +441,7 @@ pub async fn upload_audio(
 /// GET /api/v1/prompts/:id/audio — Download/stream audio file
 pub async fn download_audio(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
@@ -431,11 +450,15 @@ pub async fn download_audio(
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
-    let prompt = prompt_store
-        .get_prompt(&prompt_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+    let prompt = ensure_prompt_tenant(
+        prompt_store
+            .get_prompt(&prompt_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+        &tenant.0,
+        &id,
+    )?;
 
     let audio_path = prompt
         .audio_path
@@ -458,6 +481,7 @@ pub async fn download_audio(
 /// POST /api/v1/prompts/:id/synthesize — Generate TTS audio for a prompt
 pub async fn synthesize_prompt(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
@@ -476,11 +500,15 @@ pub async fn synthesize_prompt(
         .parse()
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
-    let mut prompt = prompt_store
-        .get_prompt(&prompt_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+    let mut prompt = ensure_prompt_tenant(
+        prompt_store
+            .get_prompt(&prompt_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+        &tenant.0,
+        &id,
+    )?;
 
     let tts_text = prompt
         .tts_text
@@ -532,6 +560,7 @@ pub async fn synthesize_prompt(
 /// DELETE /api/v1/prompts/:id
 pub async fn delete_prompt(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let prompt_store = require_prompt_store(&state)?;
@@ -541,11 +570,15 @@ pub async fn delete_prompt(
         .map_err(|_| ApiError::BadRequest("Invalid prompt ID".to_string()))?;
 
     // Check if prompt exists and is not a system prompt
-    let prompt = prompt_store
-        .get_prompt(&prompt_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?;
+    let prompt = ensure_prompt_tenant(
+        prompt_store
+            .get_prompt(&prompt_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Prompt {} not found", id)))?,
+        &tenant.0,
+        &id,
+    )?;
 
     if prompt.is_system {
         return Err(ApiError::Forbidden(

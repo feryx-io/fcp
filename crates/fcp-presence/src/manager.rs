@@ -35,6 +35,8 @@ pub struct PresenceManager {
     events: Option<Arc<dyn EventPublisher>>,
     /// Per-presentity authorization policies (AOR → policy)
     auth_policies: Arc<DashMap<String, PresenceAuthPolicy>>,
+    /// Tenant ownership for each authorization policy (AOR → tenant)
+    auth_policy_tenants: Arc<DashMap<String, TenantId>>,
     /// RFC 3903 PUBLISH ETag → Event State Composition tracking
     publish_etags: Arc<DashMap<String, EventStateComposition>>,
     /// RFC 4235 dialog-info version counter per presentity AOR
@@ -96,6 +98,7 @@ impl PresenceManager {
             config: Arc::new(parking_lot::RwLock::new(config)),
             events,
             auth_policies: Arc::new(DashMap::new()),
+            auth_policy_tenants: Arc::new(DashMap::new()),
             publish_etags: Arc::new(DashMap::new()),
             dialog_versions: Arc::new(DashMap::new()),
             metrics,
@@ -188,7 +191,17 @@ impl PresenceManager {
             bail!("Max presentities limit reached ({max_presentities})");
         }
 
-        let old_state = self.presentities.get(&update.aor).map(|p| p.state);
+        let old_state = match self.presentities.get(&update.aor) {
+            Some(existing) if existing.tenant_id != *tenant_id => {
+                bail!(
+                    "Presentity '{}' belongs to tenant {}",
+                    update.aor,
+                    existing.tenant_id
+                );
+            }
+            Some(existing) => Some(existing.state),
+            None => None,
+        };
 
         let update_aor = update.aor.clone();
         let update_state = update.state;
@@ -263,6 +276,12 @@ impl PresenceManager {
         None
     }
 
+    /// Get current presence info for an AOR scoped to a tenant.
+    pub fn get_presence_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> Option<PresenceInfo> {
+        self.get_presence(aor)
+            .filter(|presence| presence.tenant_id == *tenant_id)
+    }
+
     /// Get the federation manager (if enabled).
     pub fn federation(&self) -> Option<&Arc<crate::federation::FederationManager>> {
         self.federation.as_ref()
@@ -290,7 +309,11 @@ impl PresenceManager {
     /// Publishes a StatusChanged event (→ Closed) so watchers are notified,
     /// and removes from persistent storage.
     pub async fn remove_presence(&self, aor: &str, tenant_id: &TenantId) {
-        let old_state = self.presentities.get(aor).map(|p| p.state);
+        let old_state = match self.presentities.get(aor) {
+            Some(existing) if existing.tenant_id != *tenant_id => return,
+            Some(existing) => Some(existing.state),
+            None => None,
+        };
 
         self.presentities.remove(aor);
 
@@ -1070,8 +1093,10 @@ impl PresenceManager {
     }
 
     /// Set authorization policy for a presentity.
-    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, _tenant_id: &TenantId) {
+    pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, tenant_id: &TenantId) {
         self.auth_policies.insert(aor.to_string(), policy);
+        self.auth_policy_tenants
+            .insert(aor.to_string(), tenant_id.clone());
     }
 
     /// Get authorization policy for a presentity.
@@ -1079,9 +1104,35 @@ impl PresenceManager {
         self.auth_policies.get(aor).map(|p| p.clone())
     }
 
+    /// Get authorization policy for a presentity scoped to a tenant.
+    pub fn get_auth_policy_for_tenant(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> Option<PresenceAuthPolicy> {
+        let owner = self.auth_policy_tenants.get(aor)?;
+        if *owner != *tenant_id {
+            return None;
+        }
+        self.auth_policies.get(aor).map(|p| p.clone())
+    }
+
     /// Remove authorization policy for a presentity (reverts to self-only access).
     pub fn remove_auth_policy(&self, aor: &str) {
         self.auth_policies.remove(aor);
+        self.auth_policy_tenants.remove(aor);
+    }
+
+    /// Remove authorization policy for a presentity only if it belongs to the tenant.
+    pub fn remove_auth_policy_for_tenant(&self, aor: &str, tenant_id: &TenantId) {
+        if self
+            .auth_policy_tenants
+            .get(aor)
+            .map(|owner| *owner == *tenant_id)
+            .unwrap_or(false)
+        {
+            self.remove_auth_policy(aor);
+        }
     }
 
     /// Check if a watcher is authorized to subscribe to a presentity for a specific event package.

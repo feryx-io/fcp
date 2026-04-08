@@ -1,6 +1,6 @@
 //! Presence management API endpoints.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{auth::TenantContext, error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -72,9 +72,12 @@ pub struct UpdatePresenceRequest {
 ///
 /// Device AORs that belong to an extension are merged into the extension entry
 /// so each extension appears as a single card in the UI.
-pub async fn list_presences(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_presences(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
-    let tenant_id = &state.default_tenant_id;
+    let tenant_id = &tenant.0;
 
     let presences = pm.get_presences_by_tenant(tenant_id);
 
@@ -244,24 +247,33 @@ async fn resolve_ext_to_device_aors(
 }
 
 /// GET /presence/stats — Presentity and watcher counts.
-pub async fn get_stats(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_stats(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
+    let presences = pm.get_presences_by_tenant(&tenant.0);
+    let total_watchers = presences
+        .iter()
+        .map(|presence| pm.get_watchers(&presence.aor).len())
+        .sum();
 
     Ok(Json(PresenceStatsResponse {
-        total_presentities: pm.presentity_count(),
-        total_watchers: pm.total_watcher_count(),
+        total_presentities: presences.len(),
+        total_watchers,
     }))
 }
 
 /// GET /presence/:aor — Get a single presentity with its watchers.
 pub async fn get_presence(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
     let info = pm
-        .get_presence(&aor)
+        .get_presence_for_tenant(&aor, &tenant.0)
         .ok_or_else(|| ApiError::NotFound(format!("Presentity '{}' not found", aor)))?;
 
     let now = Instant::now();
@@ -297,6 +309,7 @@ pub async fn get_presence(
 /// PUT /presence/:aor — Set presence state via API.
 pub async fn update_presence(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
     Json(req): Json<UpdatePresenceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -310,9 +323,8 @@ pub async fn update_presence(
         note: req.note,
     };
 
-    let tenant_id = state.default_tenant_id.clone();
     let info = pm
-        .update_presence(update, &tenant_id)
+        .update_presence(update, &tenant.0)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -331,19 +343,19 @@ pub async fn update_presence(
 /// DELETE /presence/:aor — Remove a presentity.
 pub async fn delete_presence(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    if pm.get_presence(&aor).is_none() {
+    if pm.get_presence_for_tenant(&aor, &tenant.0).is_none() {
         return Err(ApiError::NotFound(format!(
             "Presentity '{}' not found",
             aor
         )));
     }
 
-    let tenant_id = state.default_tenant_id.clone();
-    pm.remove_presence(&aor, &tenant_id).await;
+    pm.remove_presence(&aor, &tenant.0).await;
 
     info!(aor = %aor, "Presentity removed via API");
 
@@ -353,12 +365,13 @@ pub async fn delete_presence(
 /// GET /presence/:aor/watchers — List SIP watchers for an AOR.
 pub async fn list_watchers(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
     // Verify presentity exists
-    if pm.get_presence(&aor).is_none() {
+    if pm.get_presence_for_tenant(&aor, &tenant.0).is_none() {
         return Err(ApiError::NotFound(format!(
             "Presentity '{}' not found",
             aor
@@ -383,11 +396,12 @@ pub async fn list_watchers(
 /// GET /presence/:aor/policy — Get authorization policy for a presentity.
 pub async fn get_policy(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    match pm.get_auth_policy(&aor) {
+    match pm.get_auth_policy_for_tenant(&aor, &tenant.0) {
         Some(policy) => Ok(Json(policy)),
         None => {
             // Return default open policy
@@ -402,12 +416,13 @@ pub async fn get_policy(
 /// PUT /presence/:aor/policy — Set authorization policy for a presentity.
 pub async fn set_policy(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
     Json(policy): Json<PresenceAuthPolicy>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    pm.set_auth_policy(&aor, policy.clone(), &state.default_tenant_id);
+    pm.set_auth_policy(&aor, policy.clone(), &tenant.0);
 
     info!(aor = %aor, default_allow = policy.default_allow, "Presence auth policy updated via API");
 
@@ -417,11 +432,12 @@ pub async fn set_policy(
 /// DELETE /presence/:aor/policy — Remove authorization policy (revert to default-allow).
 pub async fn delete_policy(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    pm.remove_auth_policy(&aor);
+    pm.remove_auth_policy_for_tenant(&aor, &tenant.0);
 
     info!(aor = %aor, "Presence auth policy removed via API");
 
@@ -431,14 +447,17 @@ pub async fn delete_policy(
 /// GET /presence/:aor/pres-rules — Get authorization policy as XCAP pres-rules XML (RFC 5025).
 pub async fn get_pres_rules(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    let policy = pm.get_auth_policy(&aor).unwrap_or(PresenceAuthPolicy {
-        default_allow: true,
-        ..Default::default()
-    });
+    let policy = pm
+        .get_auth_policy_for_tenant(&aor, &tenant.0)
+        .unwrap_or(PresenceAuthPolicy {
+            default_allow: true,
+            ..Default::default()
+        });
 
     let xml = fcp_presence::xcap::generate_pres_rules(&policy);
 
@@ -452,6 +471,7 @@ pub async fn get_pres_rules(
 /// PUT /presence/:aor/pres-rules — Set authorization policy from XCAP pres-rules XML (RFC 5025).
 pub async fn set_pres_rules(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(aor): Path<String>,
     body: String,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -460,7 +480,7 @@ pub async fn set_pres_rules(
     let policy = fcp_presence::xcap::parse_pres_rules(&body)
         .map_err(|e| ApiError::BadRequest(format!("Invalid pres-rules XML: {e}")))?;
 
-    pm.set_auth_policy(&aor, policy.clone(), &state.default_tenant_id);
+    pm.set_auth_policy(&aor, policy.clone(), &tenant.0);
 
     info!(aor = %aor, default_allow = policy.default_allow, "Presence auth policy updated via XCAP pres-rules");
 
@@ -477,11 +497,12 @@ pub async fn set_pres_rules(
 /// `terminated;reason=forced` if the SipPresenceHandler is wired up.
 pub async fn delete_subscription(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path((aor, subscription_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let pm = require_presence_manager!(state);
 
-    if pm.get_presence(&aor).is_none() {
+    if pm.get_presence_for_tenant(&aor, &tenant.0).is_none() {
         return Err(ApiError::NotFound(format!(
             "Presentity '{}' not found",
             aor

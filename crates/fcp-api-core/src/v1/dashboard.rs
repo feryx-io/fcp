@@ -2,12 +2,14 @@
 //!
 //! GET /api/v1/dashboard/summary — returns aggregated stats for the admin UI.
 
+use crate::auth::TenantContext;
 use crate::error::ApiError;
 use crate::state::ApiState;
 use axum::{extract::State, response::IntoResponse, Json};
-use fcp_core::storage::{ExtensionStore, PhoneNumberStore};
+use fcp_core::storage::{DeviceStore, ExtensionStore, PhoneNumberStore};
 use fcp_core::{CdrQuery, CdrStore, CredentialStore, RegistrationStore};
 use serde::Serialize;
+use std::collections::HashSet;
 
 #[derive(Debug, Serialize)]
 pub struct DashboardSummary {
@@ -21,7 +23,10 @@ pub struct DashboardSummary {
 }
 
 /// GET /api/v1/dashboard/summary
-pub async fn summary(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn summary(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
     let mut summary = DashboardSummary {
         active_calls: 0,
         registered_devices: 0,
@@ -32,34 +37,23 @@ pub async fn summary(State(state): State<ApiState>) -> Result<impl IntoResponse,
         avg_call_duration_secs: 0.0,
     };
 
-    // Active calls: try events server first, fall back to local call manager
-    if let Some(ref events_url) = state.events_server_url {
-        let url = format!("{}/stats", events_url);
-        let client = reqwest::Client::new();
-        let mut request = client.get(&url);
-        if let Some(token) = state.events_server_auth_token.as_deref() {
-            request = request.bearer_auth(token);
-        }
-
-        if let Ok(resp) = request.send().await {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if let Some(count) = body.pointer("/calls/active").and_then(|v| v.as_u64()) {
-                    summary.active_calls = count as usize;
-                }
-            }
-        }
-    }
-    if summary.active_calls == 0 {
-        summary.active_calls = state.call_manager.active_call_count();
-    }
+    summary.active_calls = state
+        .call_manager
+        .active_calls()
+        .into_iter()
+        .filter(|call| call.tenant_id == tenant.0)
+        .count();
 
     // Get counts from storage
     if let Some(storage) = &state.storage {
-        let tenant_id = &state.default_tenant_id;
+        let tenant_id = &tenant.0;
 
         // Users
         if let Ok(users) = storage.list_users().await {
-            summary.total_users = users.len();
+            summary.total_users = users
+                .into_iter()
+                .filter(|user| user.tenant_id == *tenant_id)
+                .count();
         }
 
         // Extensions
@@ -73,8 +67,26 @@ pub async fn summary(State(state): State<ApiState>) -> Result<impl IntoResponse,
         }
 
         // Registered devices (from registrations)
-        if let Ok(registrations) = storage.get_all_registrations().await {
-            summary.registered_devices = registrations.len();
+        if let (Ok(devices), Ok(registrations)) = (
+            storage.list_devices(tenant_id).await,
+            storage.get_all_registrations().await,
+        ) {
+            let device_aors: HashSet<String> = devices
+                .into_iter()
+                .filter_map(|device| device.sip_uri)
+                .filter_map(|sip_uri| fcp_sip::presence::extract_aor(&sip_uri))
+                .collect();
+
+            summary.registered_devices = registrations
+                .into_iter()
+                .filter(|registration| {
+                    let aor = registration
+                        .aor
+                        .trim_start_matches("sip:")
+                        .trim_start_matches("sips:");
+                    device_aors.contains(aor)
+                })
+                .count();
         }
 
         // CDR stats - calls today
@@ -86,6 +98,7 @@ pub async fn summary(State(state): State<ApiState>) -> Result<impl IntoResponse,
             now - Duration::from_secs(day_secs)
         };
         let query = CdrQuery {
+            tenant_id: Some(*tenant_id),
             start_time_from: Some(today_start),
             ..Default::default()
         };

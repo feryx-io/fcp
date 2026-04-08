@@ -1,13 +1,13 @@
 //! Queue/ACD management API endpoints.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{auth::TenantContext, error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use fcp_queue::AgentState;
+use fcp_queue::{Agent, AgentState};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -19,6 +19,72 @@ macro_rules! require_queue_manager {
             .as_ref()
             .ok_or_else(|| ApiError::NotFound("Queue system is not configured".to_string()))?
     };
+}
+
+fn ensure_queue_access(
+    qm: &fcp_queue::QueueManager,
+    queue_name: &str,
+    tenant_id: &fcp_core::TenantId,
+) -> Result<(), ApiError> {
+    if qm
+        .get_queue_config_for_tenant(queue_name, tenant_id)
+        .is_none()
+    {
+        return Err(ApiError::NotFound(format!(
+            "Queue '{}' not found",
+            queue_name
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_agent_access(
+    qm: &fcp_queue::QueueManager,
+    queue_name: &str,
+    agent_id: &str,
+    tenant_id: &fcp_core::TenantId,
+) -> Result<Agent, ApiError> {
+    let agent = qm
+        .get_agent_for_tenant(agent_id, tenant_id)
+        .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", agent_id)))?;
+
+    if !agent.queues.iter().any(|queue| queue == queue_name) {
+        return Err(ApiError::NotFound(format!(
+            "Agent '{}' is not assigned to queue '{}'",
+            agent_id, queue_name
+        )));
+    }
+
+    Ok(agent)
+}
+
+fn queue_response(
+    name: String,
+    config: fcp_queue::config::QueueConfig,
+    calls_waiting: usize,
+) -> QueueResponse {
+    QueueResponse {
+        name,
+        display_name: config.name,
+        extension: config.extension,
+        strategy: format!("{:?}", config.strategy),
+        max_wait_time_secs: config.max_wait_time_secs,
+        max_queue_depth: config.max_queue_depth,
+        overflow_destination: config.overflow_destination,
+        agents_configured: config.agents.len(),
+        calls_waiting,
+    }
+}
+
+fn agent_response(agent: Agent) -> AgentResponse {
+    AgentResponse {
+        id: agent.id,
+        extension: agent.extension,
+        state: agent.state.to_string(),
+        queues: agent.queues,
+        calls_handled: agent.calls_handled,
+        priority: agent.priority,
+    }
 }
 
 // ---- Response types ----
@@ -83,25 +149,22 @@ pub struct UpdateAgentStateRequest {
 // ---- Handlers ----
 
 /// GET /queues — List all configured queues.
-pub async fn list_queues(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_queues(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    let queue_names = qm.list_queue_names();
+    let queue_names = qm.list_queue_names_for_tenant(&tenant.0);
     let mut responses = Vec::with_capacity(queue_names.len());
 
     for name in &queue_names {
-        if let Some(config) = qm.get_queue_config(name) {
-            responses.push(QueueResponse {
-                name: name.clone(),
-                display_name: config.name,
-                extension: config.extension,
-                strategy: format!("{:?}", config.strategy),
-                max_wait_time_secs: config.max_wait_time_secs,
-                max_queue_depth: config.max_queue_depth,
-                overflow_destination: config.overflow_destination,
-                agents_configured: config.agents.len(),
-                calls_waiting: qm.get_queue_waiting_count(name),
-            });
+        if let Some(config) = qm.get_queue_config_for_tenant(name, &tenant.0) {
+            responses.push(queue_response(
+                name.clone(),
+                config,
+                qm.get_queue_waiting_count_for_tenant(name, &tenant.0),
+            ));
         }
     }
 
@@ -111,36 +174,32 @@ pub async fn list_queues(State(state): State<ApiState>) -> Result<impl IntoRespo
 /// GET /queues/:name — Get a single queue's info.
 pub async fn get_queue(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
     let config = qm
-        .get_queue_config(&name)
+        .get_queue_config_for_tenant(&name, &tenant.0)
         .ok_or_else(|| ApiError::NotFound(format!("Queue '{}' not found", name)))?;
 
-    Ok(Json(QueueResponse {
-        name: name.clone(),
-        display_name: config.name,
-        extension: config.extension,
-        strategy: format!("{:?}", config.strategy),
-        max_wait_time_secs: config.max_wait_time_secs,
-        max_queue_depth: config.max_queue_depth,
-        overflow_destination: config.overflow_destination,
-        agents_configured: config.agents.len(),
-        calls_waiting: qm.get_queue_waiting_count(&name),
-    }))
+    Ok(Json(queue_response(
+        name.clone(),
+        config,
+        qm.get_queue_waiting_count_for_tenant(&name, &tenant.0),
+    )))
 }
 
 /// GET /queues/:name/stats — Real-time stats for a single queue.
 pub async fn get_queue_stats(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
     let stats = qm
-        .queue_stats(&name)
+        .queue_stats_for_tenant(&name, &tenant.0)
         .ok_or_else(|| ApiError::NotFound(format!("Queue '{}' not found", name)))?;
 
     Ok(Json(QueueStatsResponse {
@@ -160,10 +219,11 @@ pub async fn get_queue_stats(
 /// GET /queues/stats — Real-time stats for all queues.
 pub async fn get_all_queue_stats(
     State(state): State<ApiState>,
+    tenant: TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    let all_stats = qm.all_queue_stats();
+    let all_stats = qm.all_queue_stats_for_tenant(&tenant.0);
     let responses: Vec<QueueStatsResponse> = all_stats
         .into_iter()
         .map(|s| QueueStatsResponse {
@@ -186,27 +246,15 @@ pub async fn get_all_queue_stats(
 /// GET /queues/:name/agents — List agents in a queue.
 pub async fn list_queue_agents(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    // Verify queue exists
-    if qm.get_queue_config(&name).is_none() {
-        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
-    }
+    ensure_queue_access(qm, &name, &tenant.0)?;
 
-    let agents = qm.list_agents_for_queue(&name);
-    let responses: Vec<AgentResponse> = agents
-        .into_iter()
-        .map(|a| AgentResponse {
-            id: a.id,
-            extension: a.extension,
-            state: a.state.to_string(),
-            queues: a.queues,
-            calls_handled: a.calls_handled,
-            priority: a.priority,
-        })
-        .collect();
+    let agents = qm.list_agents_for_queue_and_tenant(&name, &tenant.0);
+    let responses: Vec<AgentResponse> = agents.into_iter().map(agent_response).collect();
 
     Ok(Json(responses))
 }
@@ -214,23 +262,19 @@ pub async fn list_queue_agents(
 /// POST /queues/:name/agents — Log an agent into a queue.
 pub async fn agent_login(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path(name): Path<String>,
     Json(req): Json<AgentLoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    // Verify queue exists
-    if qm.get_queue_config(&name).is_none() {
-        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
-    }
-
-    let tenant_id = state.default_tenant_id.clone();
+    ensure_queue_access(qm, &name, &tenant.0)?;
 
     qm.agent_login(
         &req.agent_id,
         &req.extension,
         &[name.clone()],
-        tenant_id,
+        tenant.0,
         req.skills.clone(),
     )
     .await
@@ -245,33 +289,22 @@ pub async fn agent_login(
 
     // Return the agent state
     let agent = qm
-        .get_agent(&req.agent_id)
+        .get_agent_for_tenant(&req.agent_id, &tenant.0)
         .ok_or_else(|| ApiError::Internal("Agent not found after login".to_string()))?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(AgentResponse {
-            id: agent.id,
-            extension: agent.extension,
-            state: agent.state.to_string(),
-            queues: agent.queues,
-            calls_handled: agent.calls_handled,
-            priority: agent.priority,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(agent_response(agent))))
 }
 
 /// DELETE /queues/:name/agents/:id — Log an agent out.
 pub async fn agent_logout(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    // Verify queue exists
-    if qm.get_queue_config(&name).is_none() {
-        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
-    }
+    ensure_queue_access(qm, &name, &tenant.0)?;
+    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
 
     qm.agent_logout(&id)
         .await
@@ -285,14 +318,13 @@ pub async fn agent_logout(
 /// POST /queues/:name/agents/:id/pause — Pause an agent.
 pub async fn pause_agent(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    // Verify queue exists
-    if qm.get_queue_config(&name).is_none() {
-        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
-    }
+    ensure_queue_access(qm, &name, &tenant.0)?;
+    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
 
     qm.set_agent_state(&id, AgentState::Paused)
         .await
@@ -301,30 +333,22 @@ pub async fn pause_agent(
     info!(agent_id = %id, queue = %name, "Agent paused via API");
 
     let agent = qm
-        .get_agent(&id)
+        .get_agent_for_tenant(&id, &tenant.0)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
 
-    Ok(Json(AgentResponse {
-        id: agent.id,
-        extension: agent.extension,
-        state: agent.state.to_string(),
-        queues: agent.queues,
-        calls_handled: agent.calls_handled,
-        priority: agent.priority,
-    }))
+    Ok(Json(agent_response(agent)))
 }
 
 /// POST /queues/:name/agents/:id/resume — Resume a paused agent.
 pub async fn resume_agent(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    // Verify queue exists
-    if qm.get_queue_config(&name).is_none() {
-        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
-    }
+    ensure_queue_access(qm, &name, &tenant.0)?;
+    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
 
     qm.set_agent_state(&id, AgentState::Available)
         .await
@@ -333,31 +357,23 @@ pub async fn resume_agent(
     info!(agent_id = %id, queue = %name, "Agent resumed via API");
 
     let agent = qm
-        .get_agent(&id)
+        .get_agent_for_tenant(&id, &tenant.0)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
 
-    Ok(Json(AgentResponse {
-        id: agent.id,
-        extension: agent.extension,
-        state: agent.state.to_string(),
-        queues: agent.queues,
-        calls_handled: agent.calls_handled,
-        priority: agent.priority,
-    }))
+    Ok(Json(agent_response(agent)))
 }
 
 /// PATCH /queues/:name/agents/:id — Update agent state.
 pub async fn update_agent_state(
     State(state): State<ApiState>,
+    tenant: TenantContext,
     Path((name, id)): Path<(String, String)>,
     Json(req): Json<UpdateAgentStateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let qm = require_queue_manager!(state);
 
-    // Verify queue exists
-    if qm.get_queue_config(&name).is_none() {
-        return Err(ApiError::NotFound(format!("Queue '{}' not found", name)));
-    }
+    ensure_queue_access(qm, &name, &tenant.0)?;
+    let _ = ensure_agent_access(qm, &name, &id, &tenant.0)?;
 
     let new_state = match req.state.as_str() {
         "available" => AgentState::Available,
@@ -377,15 +393,8 @@ pub async fn update_agent_state(
     info!(agent_id = %id, queue = %name, new_state = %req.state, "Agent state updated via API");
 
     let agent = qm
-        .get_agent(&id)
+        .get_agent_for_tenant(&id, &tenant.0)
         .ok_or_else(|| ApiError::NotFound(format!("Agent '{}' not found", id)))?;
 
-    Ok(Json(AgentResponse {
-        id: agent.id,
-        extension: agent.extension,
-        state: agent.state.to_string(),
-        queues: agent.queues,
-        calls_handled: agent.calls_handled,
-        priority: agent.priority,
-    }))
+    Ok(Json(agent_response(agent)))
 }

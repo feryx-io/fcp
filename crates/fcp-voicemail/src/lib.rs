@@ -520,29 +520,38 @@ impl VoicemailService {
     /// Resolves a mailbox by ID or extension.
     ///
     /// Tries lookup by mailbox ID first, then falls back to extension-based
-    /// lookup (using the nil tenant).
-    pub async fn resolve_mailbox(&self, id_or_extension: &str) -> Result<Option<VoicemailMailbox>> {
+    /// lookup within the caller's tenant.
+    pub async fn resolve_mailbox(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        id_or_extension: &str,
+    ) -> Result<Option<VoicemailMailbox>> {
         if let Some(mb) = self.storage.get_mailbox(id_or_extension).await? {
             return Ok(Some(mb));
         }
         debug!(id_or_extension = %id_or_extension, "Mailbox not found by ID, trying extension lookup");
         self.storage
-            .get_mailbox_by_extension(&fcp_core::TenantId::nil(), id_or_extension)
+            .get_mailbox_by_extension(tenant_id, id_or_extension)
             .await
     }
 
     /// Verifies a PIN against a mailbox.
     ///
     /// Tries lookup by mailbox ID first, then falls back to extension-based
-    /// lookup (using the nil tenant). This allows callers to pass either a
+    /// lookup within the caller's tenant. This allows callers to pass either a
     /// mailbox UUID or an extension number.
     ///
     /// # Returns
     /// - `Ok(Some(mailbox_id))` if the PIN matches (returns the resolved mailbox ID)
     /// - `Ok(None)` if the PIN is wrong or the mailbox is not found/disabled
     /// - `Err(...)` on storage errors
-    pub async fn verify_pin(&self, mailbox_id: &str, pin: &str) -> Result<Option<String>> {
-        let mailbox = match self.resolve_mailbox(mailbox_id).await? {
+    pub async fn verify_pin(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        mailbox_id: &str,
+        pin: &str,
+    ) -> Result<Option<String>> {
+        let mailbox = match self.resolve_mailbox(tenant_id, mailbox_id).await? {
             Some(mb) => mb,
             None => return Ok(None),
         };

@@ -14,7 +14,8 @@ redis_url = "redis://localhost:6379"
 
 [http]
 bind_address = "0.0.0.0:8090"
-auth_enabled = false
+auth_enabled = true
+auth_token = "svc-local-secret"
 
 [media]
 rtp_port_start = 26000

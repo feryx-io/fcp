@@ -1,0 +1,241 @@
+2026/04/08 07:46:12.642144 192.168.1.155:44587 -> 192.168.1.225:5060
+REGISTER sip:192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.155:43493;branch=z9hG4bK-524287-1---9a6e48193b1f0522;rport
+Max-Forwards: 70
+Contact: <sip:jerry@192.168.1.155:43493;rinstance=c609bc88950ae5aa;transport=tcp>
+To: <sip:jerry@192.168.1.225;transport=TCP>
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=d6186930
+Call-ID: SAcfl-WXQsPLUVcXIHIoQA..
+CSeq: 1 REGISTER
+Expires: 600
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/04/08 07:46:12.642469 192.168.1.225:5060 -> 192.168.1.155:44587
+SIP/2.0 401 Unauthorized
+Via: SIP/2.0/TCP 192.168.1.155:43493;branch=z9hG4bK-524287-1---9a6e48193b1f0522;rport
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=d6186930
+To: <sip:jerry@192.168.1.225;transport=TCP>;tag=HWvjek06IM
+Call-ID: SAcfl-WXQsPLUVcXIHIoQA..
+CSeq: 1 REGISTER
+WWW-Authenticate: Digest realm="fcp.local", nonce="DezuMEc7aeEyX3SExGDUl7ta9rgmjcWk", algorithm=MD5, qop="auth"
+Content-Length: 0
+
+
+
+2026/04/08 07:46:12.758972 192.168.1.155:44587 -> 192.168.1.225:5060
+REGISTER sip:192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.155:43493;branch=z9hG4bK-524287-1---4ed5ec2ebd32f0c0;rport
+Max-Forwards: 70
+Contact: <sip:jerry@192.168.1.155:43493;rinstance=c609bc88950ae5aa;transport=tcp>
+To: <sip:jerry@192.168.1.225;transport=TCP>
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=d6186930
+Call-ID: SAcfl-WXQsPLUVcXIHIoQA..
+CSeq: 2 REGISTER
+Expires: 600
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Authorization: Digest username="jerry",realm="fcp.local",nonce="DezuMEc7aeEyX3SExGDUl7ta9rgmjcWk",uri="sip:192.168.1.225;transport=TCP",response="b312d5a4905487b3390d4578d292f047",cnonce="122e46a47859a9ff3d52299eab7e4ccc",nc=00000001,qop=auth,algorithm=MD5
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/04/08 07:46:12.763108 192.168.1.225:5060 -> 192.168.1.155:44587
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.155:43493;branch=z9hG4bK-524287-1---4ed5ec2ebd32f0c0;rport
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=d6186930
+To: <sip:jerry@192.168.1.225;transport=TCP>;tag=IHKxr5cL0x
+Call-ID: SAcfl-WXQsPLUVcXIHIoQA..
+CSeq: 2 REGISTER
+Contact: <sip:jerry@192.168.1.155:43493;transport=tcp>;expires=599
+Content-Length: 0
+
+
+
+2026/04/08 07:46:53.005851 192.168.1.155:44587 -> 192.168.1.225:5060
+REGISTER sip:192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.155:43493;branch=z9hG4bK-524287-1---5eb028e6244c664a;rport
+Max-Forwards: 70
+Contact: <sip:jerry@192.168.1.155:43493;rinstance=c609bc88950ae5aa;transport=tcp>;expires=0
+To: <sip:jerry@192.168.1.225;transport=TCP>
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=d6186930
+Call-ID: SAcfl-WXQsPLUVcXIHIoQA..
+CSeq: 3 REGISTER
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Authorization: Digest username="jerry",realm="fcp.local",nonce="DezuMEc7aeEyX3SExGDUl7ta9rgmjcWk",uri="sip:192.168.1.225;transport=TCP",response="7d163152ff1dc02c6b376e3bf1b29457",cnonce="a553e0c07dbaf47be1b5edf976f27050",nc=00000002,qop=auth,algorithm=MD5
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/04/08 07:46:53.009849 192.168.1.225:5060 -> 192.168.1.155:44587
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.155:43493;branch=z9hG4bK-524287-1---5eb028e6244c664a;rport
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=d6186930
+To: <sip:jerry@192.168.1.225;transport=TCP>;tag=FWHQUKX90c
+Call-ID: SAcfl-WXQsPLUVcXIHIoQA..
+CSeq: 3 REGISTER
+Content-Length: 0
+
+
+
+2026/04/08 07:46:28.759194 192.168.1.225:37603 -> 192.168.1.226:5060
+OPTIONS sip:ping@192.168.1.226:5060 SIP/2.0
+Via: SIP/2.0/UDP 0.0.0.0:37603;branch=z9hG4bK030ef175-667;rport
+From: <sip:healthcheck@fcp.local>;tag=030ef175
+To: <sip:ping@192.168.1.226:5060>
+Call-ID: 030ef175-6671-409c-b8a5-f81c4a162a3c@fcp.local
+CSeq: 1 OPTIONS
+Max-Forwards: 70
+User-Agent: FCP-HealthProbe/1.0
+Content-Length: 0
+
+
+
+2026/04/08 07:46:28.759763 192.168.1.226:5060 -> 192.168.1.225:37603
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 0.0.0.0:37603;branch=z9hG4bK030ef175-667;rport=37603;received=192.168.1.225
+From: <sip:healthcheck@fcp.local>;tag=030ef175
+To: <sip:ping@192.168.1.226:5060>;tag=0Npp3KD602g5g
+Call-ID: 030ef175-6671-409c-b8a5-f81c4a162a3c@fcp.local
+CSeq: 1 OPTIONS
+Contact: <sip:74.77.29.230>
+User-Agent: FreeSWITCH-mod_sofia/1.10.12-release+git~20240802T210227Z~a88d069d6f~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, presence, as-feature-event, dialog, line-seize, call-info, sla, include-session-description, presence.winfo, message-summary, refer
+Content-Length: 0
+
+
+
+2026/04/08 07:47:03.759658 192.168.1.225:53668 -> 192.168.1.226:5060
+OPTIONS sip:ping@192.168.1.226:5060 SIP/2.0
+Via: SIP/2.0/UDP 0.0.0.0:53668;branch=z9hG4bKfe4240cb-8a9;rport
+From: <sip:healthcheck@fcp.local>;tag=fe4240cb
+To: <sip:ping@192.168.1.226:5060>
+Call-ID: fe4240cb-8a91-428b-8b7b-129bd5fb9e22@fcp.local
+CSeq: 1 OPTIONS
+Max-Forwards: 70
+User-Agent: FCP-HealthProbe/1.0
+Content-Length: 0
+
+
+
+2026/04/08 07:47:03.760290 192.168.1.226:5060 -> 192.168.1.225:53668
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 0.0.0.0:53668;branch=z9hG4bKfe4240cb-8a9;rport=53668;received=192.168.1.225
+From: <sip:healthcheck@fcp.local>;tag=fe4240cb
+To: <sip:ping@192.168.1.226:5060>;tag=1yFF5ey9XB7Qc
+Call-ID: fe4240cb-8a91-428b-8b7b-129bd5fb9e22@fcp.local
+CSeq: 1 OPTIONS
+Contact: <sip:74.77.29.230>
+User-Agent: FreeSWITCH-mod_sofia/1.10.12-release+git~20240802T210227Z~a88d069d6f~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, presence, as-feature-event, dialog, line-seize, call-info, sla, include-session-description, presence.winfo, message-summary, refer
+Content-Length: 0
+
+
+
+2026/04/08 07:47:31.172380 192.168.1.155:34247 -> 192.168.1.225:5060
+REGISTER sip:192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.155:50801;branch=z9hG4bK-524287-1---6c899bc65d756346;rport
+Max-Forwards: 70
+Contact: <sip:jerry@192.168.1.155:50801;rinstance=6baa496884723ea3;transport=tcp>
+To: <sip:jerry@192.168.1.225;transport=TCP>
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=b7bc2a0b
+Call-ID: D_gAPub6SaZ0jvkzSZV3Ig..
+CSeq: 1 REGISTER
+Expires: 600
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/04/08 07:47:31.172856 192.168.1.225:5060 -> 192.168.1.155:34247
+SIP/2.0 401 Unauthorized
+Via: SIP/2.0/TCP 192.168.1.155:50801;branch=z9hG4bK-524287-1---6c899bc65d756346;rport
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=b7bc2a0b
+To: <sip:jerry@192.168.1.225;transport=TCP>;tag=NkaukWf9id
+Call-ID: D_gAPub6SaZ0jvkzSZV3Ig..
+CSeq: 1 REGISTER
+WWW-Authenticate: Digest realm="fcp.local", nonce="m6lyjZaHsSvJzfyuUewBpja7qsiAO6UN", algorithm=MD5, qop="auth"
+Content-Length: 0
+
+
+
+2026/04/08 07:47:31.282873 192.168.1.155:34247 -> 192.168.1.225:5060
+REGISTER sip:192.168.1.225;transport=TCP SIP/2.0
+Via: SIP/2.0/TCP 192.168.1.155:50801;branch=z9hG4bK-524287-1---714cb50aadbbf2e9;rport
+Max-Forwards: 70
+Contact: <sip:jerry@192.168.1.155:50801;rinstance=6baa496884723ea3;transport=tcp>
+To: <sip:jerry@192.168.1.225;transport=TCP>
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=b7bc2a0b
+Call-ID: D_gAPub6SaZ0jvkzSZV3Ig..
+CSeq: 2 REGISTER
+Expires: 600
+Allow: INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE
+Supported: replaces, norefersub, extended-refer, timer, sec-agree, outbound, path, X-cisco-serviceuri
+User-Agent: Zoiper v2.10.20.11
+Authorization: Digest username="jerry",realm="fcp.local",nonce="m6lyjZaHsSvJzfyuUewBpja7qsiAO6UN",uri="sip:192.168.1.225;transport=TCP",response="3b1f7e1390f4fc363ea3bc85e15ec05c",cnonce="174b2aa682a6ebb1c6a2acdab5d59c60",nc=00000001,qop=auth,algorithm=MD5
+Allow-Events: presence, kpml, talk, as-feature-event
+Content-Length: 0
+
+
+
+2026/04/08 07:47:31.287147 192.168.1.225:5060 -> 192.168.1.155:34247
+SIP/2.0 200 OK
+Via: SIP/2.0/TCP 192.168.1.155:50801;branch=z9hG4bK-524287-1---714cb50aadbbf2e9;rport
+From: <sip:jerry@192.168.1.225;transport=TCP>;tag=b7bc2a0b
+To: <sip:jerry@192.168.1.225;transport=TCP>;tag=RmMN0J071W
+Call-ID: D_gAPub6SaZ0jvkzSZV3Ig..
+CSeq: 2 REGISTER
+Contact: <sip:jerry@192.168.1.155:50801;transport=tcp>;expires=599
+Content-Length: 0
+
+
+
+2026/04/08 07:47:38.759556 192.168.1.225:39461 -> 192.168.1.226:5060
+OPTIONS sip:ping@192.168.1.226:5060 SIP/2.0
+Via: SIP/2.0/UDP 0.0.0.0:39461;branch=z9hG4bK5784f435-ab6;rport
+From: <sip:healthcheck@fcp.local>;tag=5784f435
+To: <sip:ping@192.168.1.226:5060>
+Call-ID: 5784f435-ab65-48a5-a8ec-6f46a9b93041@fcp.local
+CSeq: 1 OPTIONS
+Max-Forwards: 70
+User-Agent: FCP-HealthProbe/1.0
+Content-Length: 0
+
+
+
+2026/04/08 07:47:38.760319 192.168.1.226:5060 -> 192.168.1.225:39461
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 0.0.0.0:39461;branch=z9hG4bK5784f435-ab6;rport=39461;received=192.168.1.225
+From: <sip:healthcheck@fcp.local>;tag=5784f435
+To: <sip:ping@192.168.1.226:5060>;tag=278769eDUmXar
+Call-ID: 5784f435-ab65-48a5-a8ec-6f46a9b93041@fcp.local
+CSeq: 1 OPTIONS
+Contact: <sip:74.77.29.230>
+User-Agent: FreeSWITCH-mod_sofia/1.10.12-release+git~20240802T210227Z~a88d069d6f~64bit
+Accept: application/sdp
+Allow: INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE
+Supported: timer, path, replaces
+Allow-Events: talk, hold, conference, presence, as-feature-event, dialog, line-seize, call-info, sla, include-session-description, presence.winfo, message-summary, refer
+Content-Length: 0
+
+
+

@@ -306,7 +306,10 @@ async fn get_pres_rules(
     Path(xui): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let policy = state.manager.get_auth_policy(&xui).unwrap_or_default();
+    let policy = state
+        .manager
+        .get_auth_policy_for_tenant(&xui, &state.default_tenant_id)
+        .unwrap_or_default();
     let xml = generate_pres_rules(&policy);
     let etag = compute_etag(&xml);
 
@@ -353,7 +356,9 @@ async fn put_pres_rules(
     };
 
     // Check If-Match against existing policy
-    let existing = state.manager.get_auth_policy(&xui);
+    let existing = state
+        .manager
+        .get_auth_policy_for_tenant(&xui, &state.default_tenant_id);
     if let Some(ref existing_policy) = existing {
         let existing_xml = generate_pres_rules(existing_policy);
         let current_etag = compute_etag(&existing_xml);
@@ -392,7 +397,9 @@ async fn delete_pres_rules(
     headers: HeaderMap,
 ) -> Response {
     // Check If-Match against existing policy
-    let existing = state.manager.get_auth_policy(&xui);
+    let existing = state
+        .manager
+        .get_auth_policy_for_tenant(&xui, &state.default_tenant_id);
     match existing {
         Some(ref existing_policy) => {
             let existing_xml = generate_pres_rules(existing_policy);
@@ -404,7 +411,9 @@ async fn delete_pres_rules(
         None => return StatusCode::NOT_FOUND.into_response(),
     }
 
-    state.manager.remove_auth_policy(&xui);
+    state
+        .manager
+        .remove_auth_policy_for_tenant(&xui, &state.default_tenant_id);
     StatusCode::OK.into_response()
 }
 

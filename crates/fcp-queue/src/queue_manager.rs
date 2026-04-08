@@ -1451,9 +1451,30 @@ impl QueueManager {
             .collect()
     }
 
+    /// List queue names visible to a tenant.
+    pub fn list_queue_names_for_tenant(&self, tenant_id: &TenantId) -> Vec<String> {
+        self.queues
+            .iter()
+            .filter(|entry| entry.value().tenant_id == *tenant_id)
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Get the configuration for a specific queue.
     pub fn get_queue_config(&self, name: &str) -> Option<QueueConfig> {
         self.queues.get(name).map(|q| q.config.clone())
+    }
+
+    /// Get the configuration for a tenant-scoped queue.
+    pub fn get_queue_config_for_tenant(
+        &self,
+        name: &str,
+        tenant_id: &TenantId,
+    ) -> Option<QueueConfig> {
+        self.queues
+            .get(name)
+            .filter(|queue| queue.tenant_id == *tenant_id)
+            .map(|queue| queue.config.clone())
     }
 
     /// Get the merged overflow destinations for a queue (legacy single + list).
@@ -1473,9 +1494,33 @@ impl QueueManager {
             .collect()
     }
 
+    /// List agents for a queue that belongs to a specific tenant.
+    pub fn list_agents_for_queue_and_tenant(
+        &self,
+        queue_name: &str,
+        tenant_id: &TenantId,
+    ) -> Vec<Agent> {
+        self.agents
+            .iter()
+            .filter(|entry| {
+                let agent = entry.value();
+                agent.tenant_id == *tenant_id && agent.queues.contains(&queue_name.to_string())
+            })
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
     /// Get a specific agent by ID.
     pub fn get_agent(&self, agent_id: &str) -> Option<Agent> {
         self.agents.get(agent_id).map(|a| a.clone())
+    }
+
+    /// Get a specific agent by ID scoped to a tenant.
+    pub fn get_agent_for_tenant(&self, agent_id: &str, tenant_id: &TenantId) -> Option<Agent> {
+        self.agents
+            .get(agent_id)
+            .filter(|agent| agent.tenant_id == *tenant_id)
+            .map(|agent| agent.clone())
     }
 
     /// Get the number of callers waiting in a specific queue.
@@ -1483,6 +1528,19 @@ impl QueueManager {
         self.queues
             .get(queue_name)
             .map(|q| q.waiting_calls.len())
+            .unwrap_or(0)
+    }
+
+    /// Get the number of callers waiting in a tenant-scoped queue.
+    pub fn get_queue_waiting_count_for_tenant(
+        &self,
+        queue_name: &str,
+        tenant_id: &TenantId,
+    ) -> usize {
+        self.queues
+            .get(queue_name)
+            .filter(|queue| queue.tenant_id == *tenant_id)
+            .map(|queue| queue.waiting_calls.len())
             .unwrap_or(0)
     }
 
@@ -1578,10 +1636,31 @@ impl QueueManager {
         })
     }
 
+    /// Get real-time statistics for a queue scoped to a tenant.
+    pub fn queue_stats_for_tenant(
+        &self,
+        queue_name: &str,
+        tenant_id: &TenantId,
+    ) -> Option<QueueStats> {
+        self.queues
+            .get(queue_name)
+            .filter(|queue| queue.tenant_id == *tenant_id)?;
+        self.queue_stats(queue_name)
+    }
+
     /// Get statistics for all configured queues.
     pub fn all_queue_stats(&self) -> Vec<QueueStats> {
         self.queues
             .iter()
+            .filter_map(|entry| self.queue_stats(entry.key()))
+            .collect()
+    }
+
+    /// Get statistics for all queues visible to a tenant.
+    pub fn all_queue_stats_for_tenant(&self, tenant_id: &TenantId) -> Vec<QueueStats> {
+        self.queues
+            .iter()
+            .filter(|entry| entry.value().tenant_id == *tenant_id)
             .filter_map(|entry| self.queue_stats(entry.key()))
             .collect()
     }

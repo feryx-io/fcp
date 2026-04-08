@@ -1741,6 +1741,23 @@ impl FlowCallHandler {
             }
         };
 
+        let tenant_id = match self
+            .call_manager
+            .as_ref()
+            .and_then(|call_manager| call_manager.get_call(&call_id))
+        {
+            Some(call) => call.tenant_id,
+            None => {
+                warn!(call_id = %call_id, "Call missing during voicemail access PIN verification");
+                let mut context_guard = context.write().await;
+                context_guard
+                    .set_variable("voicemail_access_status".to_string(), "error".to_string());
+                context_guard.current_node = next;
+                drop(context_guard);
+                return Box::pin(self.execute_next_node(call_id)).await;
+            }
+        };
+
         // 2. PIN authentication loop
         let mut authenticated = false;
         for attempt in 1..=max_pin_attempts {
@@ -1766,7 +1783,7 @@ impl FlowCallHandler {
 
             // Verify PIN via VoicemailService (returns resolved mailbox ID on success)
             match voicemail_service
-                .verify_pin(&target_mailbox, pin_digits)
+                .verify_pin(&tenant_id, &target_mailbox, pin_digits)
                 .await
             {
                 Ok(Some(resolved_id)) => {
