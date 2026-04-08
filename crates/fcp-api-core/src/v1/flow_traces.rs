@@ -10,8 +10,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::CdrStore;
 use fcp_core::flow_trace::{FlowTraceEventType, FlowTraceQuery};
+use fcp_core::CdrStore;
 use serde::{Deserialize, Serialize};
 use std::time::UNIX_EPOCH;
 use tracing::{debug, warn};
@@ -202,13 +202,19 @@ pub async fn list_flow_traces(
         }
     }
 
-    let traces: Vec<FlowTraceResponse> =
-        scoped_entries.into_iter().map(FlowTraceResponse::from).collect();
+    let traces: Vec<FlowTraceResponse> = scoped_entries
+        .into_iter()
+        .map(FlowTraceResponse::from)
+        .collect();
     let scoped_total = traces.len();
 
     Ok(Json(ListFlowTracesResponse {
         traces,
-        total: if allow_all_tenants { total } else { scoped_total },
+        total: if allow_all_tenants {
+            total
+        } else {
+            scoped_total
+        },
         limit,
         offset: params.offset,
     }))

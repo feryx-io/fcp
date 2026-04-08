@@ -1,13 +1,28 @@
 //! Prometheus metrics endpoint
 
-use crate::{error::ApiError, state::ApiState};
-use axum::{extract::State, http::header, response::IntoResponse};
+use crate::{
+    auth::{can_access_all_tenants, AuthIdentity},
+    error::ApiError,
+    state::ApiState,
+};
+use axum::{
+    extract::{Extension, State},
+    http::header,
+    response::IntoResponse,
+};
 
 /// GET /metrics
 /// Prometheus metrics endpoint
 pub async fn prometheus_metrics(
     State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if identity.is_some() && !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+        return Err(ApiError::Forbidden(
+            "Metrics endpoint requires platform-admin scope".to_string(),
+        ));
+    }
+
     // Collect metrics
     let mut buffer = String::new();
 

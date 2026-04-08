@@ -76,7 +76,6 @@ pub fn router() -> Router<ApiState> {
         .route("/auth/refresh", post(auth_session::refresh))
         // System endpoints (health checks — useful for all users)
         .route("/health", get(system::health))
-        .route("/status", get(system::status))
         // Self-service (end-user portal)
         .route(
             "/me/profile",
@@ -143,6 +142,7 @@ pub fn router() -> Router<ApiState> {
     let admin_routes = Router::new()
         // Dashboard
         .route("/dashboard/summary", get(dashboard::summary))
+        .route("/status", get(system::status_scoped))
         // NOTE: /events WebSocket is registered separately via ws_router()
         // Debug endpoints
         .route("/debug/summary", get(debug::debug_summary))

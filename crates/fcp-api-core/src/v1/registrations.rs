@@ -161,7 +161,10 @@ pub async fn get_registrations(
     if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !registration_visible_to_tenant(&state, &tenant.0, &aor).await?
     {
-        return Err(ApiError::NotFound(format!("Registrations not found for '{}'", aor)));
+        return Err(ApiError::NotFound(format!(
+            "Registrations not found for '{}'",
+            aor
+        )));
     }
 
     let storage = state
@@ -196,7 +199,10 @@ pub async fn delete_registrations(
     if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !registration_visible_to_tenant(&state, &tenant.0, &aor).await?
     {
-        return Err(ApiError::NotFound(format!("Registrations not found for '{}'", aor)));
+        return Err(ApiError::NotFound(format!(
+            "Registrations not found for '{}'",
+            aor
+        )));
     }
 
     let storage = state
@@ -223,7 +229,10 @@ pub async fn delete_registration(
     if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
         && !registration_visible_to_tenant(&state, &tenant.0, &aor).await?
     {
-        return Err(ApiError::NotFound(format!("Registration not found for '{}'", aor)));
+        return Err(ApiError::NotFound(format!(
+            "Registration not found for '{}'",
+            aor
+        )));
     }
 
     let storage = state

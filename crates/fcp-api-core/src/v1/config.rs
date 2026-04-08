@@ -168,7 +168,11 @@ pub async fn list_configs(
     Query(params): Query<ListConfigsQuery>,
 ) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
-    let tid = scoped_config_tenant_id(&tenant, identity.as_ref().map(|ext| &ext.0), params.tenant_id.as_deref());
+    let tid = scoped_config_tenant_id(
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+        params.tenant_id.as_deref(),
+    );
     let entries = store
         .list_configs(params.service.as_deref(), Some(&tid))
         .await

@@ -48,7 +48,8 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     let mut router = Router::new()
         .route(
             "/metrics",
-            axum::routing::get(v1::metrics::prometheus_metrics),
+            axum::routing::get(v1::metrics::prometheus_metrics)
+                .route_layer(middleware::from_fn(auth::require_admin)),
         )
         .nest("/api/v1", v1::router());
 

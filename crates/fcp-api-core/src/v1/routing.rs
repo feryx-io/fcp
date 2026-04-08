@@ -144,6 +144,7 @@ pub async fn list_routing_rules(
 
 pub async fn get_routing_rule(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -152,6 +153,7 @@ pub async fn get_routing_rule(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get routing rule: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Routing rule not found".to_string()))?;
+    ensure_rule_visible_to_tenant(&rule, &tenant)?;
     Ok(Json(RoutingRuleResponse::from(rule)))
 }
 
@@ -209,6 +211,7 @@ pub async fn create_routing_rule(
 
 pub async fn update_routing_rule(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateRoutingRuleRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -220,6 +223,7 @@ pub async fn update_routing_rule(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get routing rule: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Routing rule not found".to_string()))?;
+    ensure_rule_visible_to_tenant(&rule, &tenant)?;
 
     if let Some(name) = req.name {
         rule.name = name;
@@ -291,6 +295,7 @@ pub async fn update_routing_rule(
 
 pub async fn delete_routing_rule(
     State(state): State<ApiState>,
+    tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -301,6 +306,7 @@ pub async fn delete_routing_rule(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to get routing rule: {}", e)))?
         .ok_or_else(|| ApiError::NotFound("Routing rule not found".to_string()))?;
+    ensure_rule_visible_to_tenant(&rule, &tenant)?;
 
     info!(rule_name = %rule.name, rule_id = %rule.id, "Deleting routing rule");
 
@@ -310,4 +316,15 @@ pub async fn delete_routing_rule(
         .map_err(|e| ApiError::Internal(format!("Failed to delete routing rule: {}", e)))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn ensure_rule_visible_to_tenant(
+    rule: &RoutingRule,
+    tenant: &crate::auth::TenantContext,
+) -> Result<(), ApiError> {
+    if rule.tenant_id == tenant.0 {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound("Routing rule not found".to_string()))
+    }
 }

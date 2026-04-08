@@ -1,5 +1,6 @@
 //! Media and recording control API endpoints
 
+use crate::auth::{can_access_all_tenants, AuthIdentity, TenantContext};
 use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Extension, Path, State},
@@ -7,7 +8,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use crate::auth::{can_access_all_tenants, AuthIdentity, TenantContext};
 use fcp_sip::CallId;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -56,7 +56,12 @@ pub async fn start_recording(
     let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
 
-    scoped_call(&state, &sip_call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
+    scoped_call(
+        &state,
+        &sip_call_id,
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+    )?;
 
     // Convert to fcp_core::CallId for media manager
     let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
@@ -95,7 +100,12 @@ pub async fn stop_recording(
     let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
 
-    scoped_call(&state, &sip_call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
+    scoped_call(
+        &state,
+        &sip_call_id,
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+    )?;
 
     // Convert to fcp_core::CallId for media manager
     let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
@@ -278,7 +288,12 @@ pub async fn get_call(
     let call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
 
-    let call = scoped_call(&state, &call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
+    let call = scoped_call(
+        &state,
+        &call_id,
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+    )?;
 
     Ok(Json(CallInfo::from_call(&call)))
 }
@@ -343,7 +358,12 @@ pub async fn hangup_call(
     let call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
 
-    scoped_call(&state, &call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
+    scoped_call(
+        &state,
+        &call_id,
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+    )?;
 
     // Send BYE on both legs and terminate the call
     state

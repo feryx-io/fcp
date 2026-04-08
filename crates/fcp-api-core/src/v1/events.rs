@@ -85,6 +85,7 @@ pub async fn event_stream_websocket(
 /// Handle WebSocket connection.
 async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: ApiState) {
     let (mut sender, mut receiver) = socket.split();
+    let mut identity: Option<AuthIdentity> = None;
 
     // --- First-message authentication ---
     // When auth is configured, the client must send {"type":"auth","token":"..."}
@@ -92,7 +93,7 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
     if let Some(ref auth_config) = state.auth_config {
         let auth_result = tokio::time::timeout(Duration::from_secs(5), receiver.next()).await;
 
-        let identity: Option<AuthIdentity> = match auth_result {
+        identity = match auth_result {
             Ok(Some(Ok(Message::Text(text)))) => {
                 match serde_json::from_str::<WsAuthMessage>(&text) {
                     Ok(msg) if msg.msg_type == "auth" => {
@@ -144,7 +145,7 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
     }
 
     // Parse filter parameters
-    let filter = match build_event_filter(&params) {
+    let filter = match build_event_filter(&params, identity.as_ref()) {
         Ok(filter) => filter,
         Err(e) => {
             error!(error = %e, "Failed to build event filter");
@@ -245,11 +246,25 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
 }
 
 /// Build an EventFilter from query parameters.
-fn build_event_filter(params: &EventStreamQuery) -> Result<EventFilter, String> {
+fn build_event_filter(
+    params: &EventStreamQuery,
+    identity: Option<&AuthIdentity>,
+) -> Result<EventFilter, String> {
     let mut filter = EventFilter::new();
 
-    // Parse tenant_id if provided
-    if let Some(ref tenant_id_str) = params.tenant_id {
+    if let Some(scoped_tenant_id) = identity.and_then(AuthIdentity::tenant_id) {
+        let requested_tenant_id = if let Some(ref tenant_id_str) = params.tenant_id {
+            let tenant_id = TenantId::from_str(tenant_id_str)
+                .map_err(|e| format!("Invalid tenant_id: {}", e))?;
+            if tenant_id != *scoped_tenant_id {
+                return Err("tenant_id outside authenticated tenant scope".to_string());
+            }
+            tenant_id
+        } else {
+            *scoped_tenant_id
+        };
+        filter = filter.tenant(requested_tenant_id);
+    } else if let Some(ref tenant_id_str) = params.tenant_id {
         let tenant_id =
             TenantId::from_str(tenant_id_str).map_err(|e| format!("Invalid tenant_id: {}", e))?;
         filter = filter.tenant(tenant_id);
@@ -293,5 +308,46 @@ fn parse_event_type(s: &str) -> Result<EventType, String> {
         "flow" => Ok(EventType::Flow),
         "sip" => Ok(EventType::Sip),
         _ => Err(format!("Invalid event type: {}", s)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tenant_scoped_identity_forces_filter_to_authenticated_tenant() {
+        let tenant_id = TenantId::new();
+        let params = EventStreamQuery {
+            tenant_id: None,
+            call_id: None,
+            event_types: None,
+        };
+        let identity = AuthIdentity::ApiToken {
+            tenant_id,
+            permissions: vec!["admin".to_string()],
+        };
+
+        let filter = build_event_filter(&params, Some(&identity)).expect("filter should build");
+
+        assert_eq!(filter.tenant_id, Some(tenant_id));
+    }
+
+    #[test]
+    fn tenant_scoped_identity_rejects_other_tenant() {
+        let scoped_tenant = TenantId::new();
+        let params = EventStreamQuery {
+            tenant_id: Some(TenantId::new().to_string()),
+            call_id: None,
+            event_types: None,
+        };
+        let identity = AuthIdentity::ApiToken {
+            tenant_id: scoped_tenant,
+            permissions: vec!["admin".to_string()],
+        };
+
+        let err = build_event_filter(&params, Some(&identity)).expect_err("filter should fail");
+
+        assert!(err.contains("tenant scope"));
     }
 }

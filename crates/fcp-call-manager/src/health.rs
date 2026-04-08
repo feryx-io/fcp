@@ -12,12 +12,13 @@ use axum::{
 };
 use fcp_b2bua_core::CallManager;
 use fcp_core::storage::{CallDisposition, CdrQuery, CdrStore};
-use fcp_core::{CallId, DynStorage, TenantId};
+use fcp_core::{CallId, CredentialStore, DynStorage, TenantId};
 use fcp_events::filter::EventType;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus, PlatformEvent};
 use fcp_media::MediaManager;
 use fcp_queue::QueueManager;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,6 +28,7 @@ use tracing::{info, warn};
 pub struct AppState {
     pub call_manager: Arc<CallManager>,
     pub storage: Arc<DynStorage>,
+    pub realm: String,
     pub default_tenant_id: TenantId,
     pub media_manager: Arc<MediaManager>,
     pub queue_manager: Option<Arc<QueueManager>>,
@@ -47,7 +49,8 @@ fn queue_visible_to_service_tenant(
     tenant_id: &TenantId,
     queue_name: &str,
 ) -> bool {
-    qm.get_queue_config_for_tenant(queue_name, tenant_id).is_some()
+    qm.get_queue_config_for_tenant(queue_name, tenant_id)
+        .is_some()
 }
 
 fn queue_not_found(queue_name: &str) -> Json<serde_json::Value> {
@@ -197,7 +200,12 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::
 }
 
 async fn calls_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let calls = state.call_manager.all_calls();
+    let calls: Vec<_> = state
+        .call_manager
+        .all_calls()
+        .into_iter()
+        .filter(|call| call.tenant_id == state.default_tenant_id)
+        .collect();
     let call_list: Vec<serde_json::Value> = calls
         .iter()
         .map(|call| {
@@ -227,10 +235,38 @@ async fn registrations_handler(
 ) -> Json<serde_json::Value> {
     use fcp_core::RegistrationStore;
 
+    let visible_aors = match service_visible_aors(&state).await {
+        Ok(visible_aors) => visible_aors,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("Failed to resolve tenant-visible registrations: {}", e),
+                "registrations": []
+            }));
+        }
+    };
+
+    if let Some(ref aor) = query.aor {
+        if !visible_aors.contains(&normalize_aor(aor)) {
+            return Json(serde_json::json!({
+                "registrations": [],
+                "count": 0
+            }));
+        }
+    }
+
     // If AOR is provided, filter by that AOR; otherwise return all registrations
     let registrations_result = match query.aor {
         Some(ref aor) => state.storage.get_registrations(aor).await,
-        None => state.storage.get_all_registrations().await,
+        None => state
+            .storage
+            .get_all_registrations()
+            .await
+            .map(|registrations| {
+                registrations
+                    .into_iter()
+                    .filter(|registration| visible_aors.contains(&normalize_aor(&registration.aor)))
+                    .collect()
+            }),
     };
 
     match registrations_result {
@@ -310,10 +346,18 @@ async fn cdrs_handler(
         }
     }
 
+    query.tenant_id = Some(state.default_tenant_id);
+
     // Parse tenant_id if provided
     if let Some(ref tenant_id_str) = params.tenant_id {
         match tenant_id_str.parse::<TenantId>() {
-            Ok(tenant_id) => query.tenant_id = Some(tenant_id),
+            Ok(tenant_id) if tenant_id == state.default_tenant_id => {}
+            Ok(_) => {
+                return Json(serde_json::json!({
+                    "error": "tenant_id outside service tenant scope",
+                    "cdrs": []
+                }));
+            }
             Err(_) => {
                 return Json(serde_json::json!({
                     "error": format!("Invalid tenant_id format: {}", tenant_id_str),
@@ -424,6 +468,44 @@ async fn cdrs_handler(
             "cdrs": []
         })),
     }
+}
+
+fn normalize_aor(aor: &str) -> String {
+    fcp_sip::presence::extract_aor(aor)
+        .unwrap_or_else(|| {
+            aor.trim_start_matches("sip:")
+                .trim_start_matches("sips:")
+                .to_string()
+        })
+        .to_ascii_lowercase()
+}
+
+async fn service_visible_aors(state: &AppState) -> anyhow::Result<HashSet<String>> {
+    use fcp_core::storage::DeviceStore;
+
+    let mut visible = HashSet::new();
+
+    for device in state.storage.list_devices(&state.default_tenant_id).await? {
+        if let Some(sip_uri) = device.sip_uri {
+            visible.insert(normalize_aor(&sip_uri));
+        }
+    }
+
+    for user in state
+        .storage
+        .list_users()
+        .await?
+        .into_iter()
+        .filter(|user| user.tenant_id == state.default_tenant_id)
+    {
+        visible.insert(format!(
+            "{}@{}",
+            user.username.to_ascii_lowercase(),
+            state.realm.to_ascii_lowercase()
+        ));
+    }
+
+    Ok(visible)
 }
 
 /// List all active RTP/media sessions with details
@@ -591,7 +673,11 @@ async fn create_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.create_queue(body.key.clone(), body.config, state.default_tenant_id.clone()) {
+    match qm.create_queue(
+        body.key.clone(),
+        body.config,
+        state.default_tenant_id.clone(),
+    ) {
         Ok(()) => Json(serde_json::json!({
             "status": "created",
             "queue": body.key,
@@ -1484,10 +1570,7 @@ async fn update_presence_handler(
         note,
     };
 
-    match pm
-        .update_presence(update, &state.default_tenant_id)
-        .await
-    {
+    match pm.update_presence(update, &state.default_tenant_id).await {
         Ok(info) => Json(serde_json::json!({
             "aor": info.aor,
             "state": info.state.to_string(),

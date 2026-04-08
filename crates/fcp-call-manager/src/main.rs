@@ -640,7 +640,10 @@ async fn main() -> Result<()> {
         let qm = Arc::new(qm);
 
         // Restore agent state from storage
-        match qm.restore_agents(queue_store.as_ref(), &default_tenant_id).await {
+        match qm
+            .restore_agents(queue_store.as_ref(), &default_tenant_id)
+            .await
+        {
             Ok(count) if count > 0 => {
                 info!(restored = count, "Restored agent state from storage");
             }
@@ -1092,6 +1095,7 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(health::AppState {
         call_manager: Arc::clone(&call_manager),
         storage: Arc::clone(&dyn_storage),
+        realm: config.registrar.realm.clone(),
         default_tenant_id,
         media_manager: Arc::clone(&media_manager),
         queue_manager: queue_manager.clone(),
