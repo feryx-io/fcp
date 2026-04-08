@@ -4,11 +4,12 @@
 //! entries, plus audit log access and validation.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     Json,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::auth::{can_access_all_tenants, AuthIdentity, TenantContext};
 use crate::error::ApiError;
 use crate::state::ApiState;
 
@@ -21,6 +22,18 @@ fn get_store(
         .config_store
         .as_ref()
         .ok_or_else(|| ApiError::Internal("config store not available".into()))
+}
+
+fn scoped_config_tenant_id(
+    tenant: &TenantContext,
+    identity: Option<&AuthIdentity>,
+    requested_tenant_id: Option<&str>,
+) -> String {
+    if can_access_all_tenants(identity) {
+        requested_tenant_id.unwrap_or("_system").to_string()
+    } else {
+        tenant.0.to_string()
+    }
 }
 
 // ── Request/Response Types ───────────────────────────────────────────────────
@@ -141,14 +154,14 @@ pub struct SectionQuery {
 /// GET /api/v1/config -- list all config entries
 pub async fn list_configs(
     State(state): State<ApiState>,
-    _tenant: crate::auth::TenantContext,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Query(params): Query<ListConfigsQuery>,
 ) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
-    // Config uses "_system" tenant for global settings
-    let tid = params.tenant_id.as_deref().unwrap_or("_system");
+    let tid = scoped_config_tenant_id(&tenant, identity.as_ref().map(|ext| &ext.0), params.tenant_id.as_deref());
     let entries = store
-        .list_configs(params.service.as_deref(), Some(tid))
+        .list_configs(params.service.as_deref(), Some(&tid))
         .await
         .map_err(|e| ApiError::Internal(format!("failed to list configs: {e}")))?;
 
@@ -158,14 +171,19 @@ pub async fn list_configs(
 /// GET /api/v1/config/:service -- list sections for a service
 pub async fn list_service_config(
     State(state): State<ApiState>,
-    _tenant: crate::auth::TenantContext,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(service): Path<String>,
     Query(params): Query<SectionQuery>,
 ) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
-    // Config uses "_system" tenant for global settings, not the auth tenant
+    let scoped_tenant_id = scoped_config_tenant_id(
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+        Some(&params.tenant_id),
+    );
     let entries = store
-        .get_service_config(&service, &params.tenant_id)
+        .get_service_config(&service, &scoped_tenant_id)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get service config: {e}")))?;
 
@@ -175,19 +193,25 @@ pub async fn list_service_config(
 /// GET /api/v1/config/:service/:section -- get specific section
 pub async fn get_config(
     State(state): State<ApiState>,
-    _tenant: crate::auth::TenantContext,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path((service, section)): Path<(String, String)>,
     Query(params): Query<SectionQuery>,
 ) -> Result<Json<ConfigEntryResponse>, ApiError> {
     let store = get_store(&state)?;
+    let scoped_tenant_id = scoped_config_tenant_id(
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+        Some(&params.tenant_id),
+    );
     let entry = store
-        .get_config(&service, &section, &params.tenant_id)
+        .get_config(&service, &section, &scoped_tenant_id)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get config: {e}")))?
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "config not found: {service}/{section} (tenant: {})",
-                params.tenant_id
+                scoped_tenant_id
             ))
         })?;
 
@@ -197,12 +221,17 @@ pub async fn get_config(
 /// PUT /api/v1/config/:service/:section -- update/create section
 pub async fn update_config(
     State(state): State<ApiState>,
-    _tenant: crate::auth::TenantContext,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path((service, section)): Path<(String, String)>,
     Json(req): Json<UpdateConfigRequest>,
 ) -> Result<Json<UpdateConfigResponse>, ApiError> {
     let store = get_store(&state)?;
-    let tenant_id = &req.tenant_id;
+    let tenant_id = scoped_config_tenant_id(
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+        Some(&req.tenant_id),
+    );
 
     // Validate that value is a JSON object
     if !req.value.is_object() {
@@ -215,7 +244,7 @@ pub async fn update_config(
         .set_config(
             &service,
             &section,
-            tenant_id,
+            &tenant_id,
             req.value,
             req.updated_by.as_deref(),
         )
@@ -226,20 +255,26 @@ pub async fn update_config(
         version,
         service,
         section,
-        tenant_id: tenant_id.clone(),
+        tenant_id,
     }))
 }
 
 /// DELETE /api/v1/config/:service/:section -- delete config entry
 pub async fn delete_config(
     State(state): State<ApiState>,
-    _tenant: crate::auth::TenantContext,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path((service, section)): Path<(String, String)>,
     Query(params): Query<SectionQuery>,
 ) -> Result<Json<DeleteConfigResponse>, ApiError> {
     let store = get_store(&state)?;
+    let scoped_tenant_id = scoped_config_tenant_id(
+        &tenant,
+        identity.as_ref().map(|ext| &ext.0),
+        Some(&params.tenant_id),
+    );
     let deleted = store
-        .delete_config(&service, &section, &params.tenant_id)
+        .delete_config(&service, &section, &scoped_tenant_id)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to delete config: {e}")))?;
 
@@ -249,17 +284,19 @@ pub async fn delete_config(
 /// GET /api/v1/config/audit -- audit log
 pub async fn get_audit_log(
     State(state): State<ApiState>,
-    tenant: crate::auth::TenantContext,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Query(params): Query<AuditLogQuery>,
 ) -> Result<Json<Vec<AuditEntryResponse>>, ApiError> {
     let store = get_store(&state)?;
 
     let service = params.service.as_deref().unwrap_or("_global");
+    let tenant_id = scoped_config_tenant_id(&tenant, identity.as_ref().map(|ext| &ext.0), None);
 
     let limit = params.limit.min(500).max(1);
 
     let entries = store
-        .get_audit_log(service, params.section.as_deref(), limit)
+        .get_audit_log(service, &tenant_id, params.section.as_deref(), limit)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to get audit log: {e}")))?;
 

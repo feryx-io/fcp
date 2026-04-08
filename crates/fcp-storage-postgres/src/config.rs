@@ -282,6 +282,7 @@ impl ConfigStore for PostgresStorage {
     async fn get_audit_log(
         &self,
         service: &str,
+        tenant_id: &str,
         section: Option<&str>,
         limit: i64,
     ) -> fcp_core::Result<Vec<AuditEntry>> {
@@ -290,11 +291,12 @@ impl ConfigStore for PostgresStorage {
                 sqlx::query(
                     "SELECT id, service, section, tenant_id, old_value, new_value, changed_by, changed_at, version
                      FROM config_audit_log
-                     WHERE service = $1 AND section = $2
+                     WHERE service = $1 AND tenant_id = $2 AND section = $3
                      ORDER BY changed_at DESC
-                     LIMIT $3",
+                     LIMIT $4",
                 )
                 .bind(service)
+                .bind(tenant_id)
                 .bind(sec)
                 .bind(limit)
                 .fetch_all(self.pool())
@@ -304,11 +306,12 @@ impl ConfigStore for PostgresStorage {
                 sqlx::query(
                     "SELECT id, service, section, tenant_id, old_value, new_value, changed_by, changed_at, version
                      FROM config_audit_log
-                     WHERE service = $1
+                     WHERE service = $1 AND tenant_id = $2
                      ORDER BY changed_at DESC
-                     LIMIT $2",
+                     LIMIT $3",
                 )
                 .bind(service)
+                .bind(tenant_id)
                 .bind(limit)
                 .fetch_all(self.pool())
                 .await

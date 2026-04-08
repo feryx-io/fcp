@@ -555,7 +555,7 @@ async fn main() -> Result<()> {
             None,          // cluster_parking
             String::new(), // node_id
         )?
-        .with_default_tenant_id(fcp_core::TenantId::nil()),
+        .with_default_tenant_id(sbc_config.default_tenant_id),
     );
 
     // 19. Build peer-trunk IP map for ingress trunk identification (reuses shared

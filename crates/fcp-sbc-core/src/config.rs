@@ -12,6 +12,7 @@ use fcp_b2bua_core::media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
 use fcp_b2bua_core::session::{B2buaConfig, SessionTimerConfig};
 use fcp_b2bua_core::topology::{TopologyHidingConfig, TopologyHidingMode};
 use fcp_b2bua_core::transfer::TransferConfig;
+use fcp_core::TenantId;
 use fcp_core::transport::TransportType;
 use serde::{Deserialize, Serialize};
 
@@ -115,6 +116,14 @@ pub struct SbcConfig {
     /// Path to PEM private key file for TLS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_key: Option<String>,
+
+    /// Default tenant used when ingress SIP cannot be resolved to a named tenant.
+    #[serde(default = "default_tenant_id")]
+    pub default_tenant_id: TenantId,
+}
+
+fn default_tenant_id() -> TenantId {
+    TenantId::nil()
 }
 
 impl Default for SbcConfig {
@@ -168,6 +177,7 @@ impl Default for SbcConfig {
             tls_bind: None,
             tls_cert: None,
             tls_key: None,
+            default_tenant_id: default_tenant_id(),
         }
     }
 }

@@ -63,6 +63,9 @@ pub struct ServiceSection {
 
     #[serde(default = "default_node_id")]
     pub node_id: String,
+
+    #[serde(default = "default_tenant_id")]
+    pub default_tenant_id: fcp_core::TenantId,
 }
 
 fn default_service_type() -> String {
@@ -73,11 +76,16 @@ fn default_node_id() -> String {
     format!("ivr-{}", uuid::Uuid::new_v4())
 }
 
+fn default_tenant_id() -> fcp_core::TenantId {
+    fcp_core::TenantId::nil()
+}
+
 impl Default for ServiceSection {
     fn default() -> Self {
         Self {
             service_type: default_service_type(),
             node_id: default_node_id(),
+            default_tenant_id: default_tenant_id(),
         }
     }
 }

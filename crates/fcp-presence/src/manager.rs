@@ -278,8 +278,23 @@ impl PresenceManager {
 
     /// Get current presence info for an AOR scoped to a tenant.
     pub fn get_presence_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> Option<PresenceInfo> {
-        self.get_presence(aor)
-            .filter(|presence| presence.tenant_id == *tenant_id)
+        if let Some(presence) = self.presentities.get(aor) {
+            let presence = presence.clone();
+            if presence.tenant_id == *tenant_id {
+                return Some(presence);
+            }
+            return None;
+        }
+
+        self.federation.as_ref().and_then(|fm| {
+            fm.get_federated_presence(aor).map(|state| PresenceInfo {
+                aor: aor.to_string(),
+                state,
+                note: None,
+                tenant_id: *tenant_id,
+                updated_at: Instant::now(),
+            })
+        })
     }
 
     /// Get the federation manager (if enabled).

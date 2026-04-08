@@ -1475,7 +1475,8 @@ async fn main() -> Result<()> {
                 match config::load_config(cli.config.as_deref()) {
                     Ok(new_config) => {
                         if let Some(ref qm) = queue_manager {
-                            let new_queues = qm.reload_config(new_config.queue.clone());
+                            let new_queues =
+                                qm.reload_config(new_config.queue.clone(), default_tenant_id);
                             if let Some(ref qh) = queue_call_handler {
                                 for name in new_queues {
                                     info!(queue = %name, "Spawning distribution loop for new queue");

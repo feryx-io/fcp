@@ -446,7 +446,7 @@ async fn main() -> Result<()> {
             None,          // cluster_parking
             String::new(), // node_id
         )?
-        .with_default_tenant_id(fcp_core::TenantId::nil()),
+        .with_default_tenant_id(config.service.default_tenant_id),
     );
 
     // 19. Create and start TransportListener

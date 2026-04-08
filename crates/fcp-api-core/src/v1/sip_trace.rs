@@ -3,9 +3,13 @@
 //! Provides access to captured SIP messages for call debugging and
 //! ladder diagram visualization in the admin UI.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    error::ApiError,
+    state::ApiState,
+};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     response::IntoResponse,
     Json,
 };
@@ -78,6 +82,8 @@ pub struct SipTraceQuery {
 /// - sip_call_id: Alternative lookup by SIP Call-ID header value
 pub async fn get_sip_messages(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id): Path<String>,
     Query(params): Query<SipTraceQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -97,6 +103,9 @@ pub async fn get_sip_messages(
         .to_string();
 
     debug!(call_id = %normalized_call_id, sip_call_id = ?params.sip_call_id, "Retrieving SIP trace messages");
+
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    let tenant_id = tenant.0.to_string();
 
     let messages = if let Some(ref sip_call_id) = params.sip_call_id {
         // Look up by SIP Call-ID header
@@ -144,6 +153,11 @@ pub async fn get_sip_messages(
 
         traces
     };
+
+    let messages: Vec<_> = messages
+        .into_iter()
+        .filter(|msg| allow_all_tenants || msg.tenant_id == tenant_id)
+        .collect();
 
     let responses: Vec<SipTraceResponse> =
         messages.into_iter().map(SipTraceResponse::from).collect();

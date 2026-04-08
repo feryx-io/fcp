@@ -1,15 +1,51 @@
 //! Flow execution trace API endpoints.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    error::ApiError,
+    state::ApiState,
+};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     response::IntoResponse,
     Json,
 };
+use fcp_core::CdrStore;
 use fcp_core::flow_trace::{FlowTraceEventType, FlowTraceQuery};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use tracing::{debug, warn};
+
+async fn call_is_visible_to_tenant(
+    state: &ApiState,
+    tenant: &TenantContext,
+    call_id: &str,
+) -> Result<bool, ApiError> {
+    if let Some(active_call) = state
+        .call_manager
+        .all_calls()
+        .into_iter()
+        .find(|call| call.id.to_string() == call_id)
+    {
+        return Ok(active_call.tenant_id == tenant.0);
+    }
+
+    let Some(storage) = &state.storage else {
+        return Ok(false);
+    };
+
+    let parsed_call_id = match call_id.parse::<fcp_core::CallId>() {
+        Ok(call_id) => call_id,
+        Err(_) => return Ok(false),
+    };
+
+    Ok(storage
+        .get_cdr(&parsed_call_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to resolve flow trace tenant: {e}")))?
+        .map(|cdr| cdr.tenant_id == tenant.0)
+        .unwrap_or(false))
+}
 
 /// Flow trace response model.
 #[derive(Debug, Serialize)]
@@ -88,6 +124,8 @@ pub struct ListFlowTracesResponse {
 /// GET /api/v1/flow-traces
 pub async fn list_flow_traces(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Query(params): Query<ListFlowTracesQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = state
@@ -156,11 +194,21 @@ pub async fn list_flow_traces(
         ApiError::Internal("Failed to query flow traces".to_string())
     })?;
 
-    let traces: Vec<FlowTraceResponse> = entries.into_iter().map(FlowTraceResponse::from).collect();
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    let mut scoped_entries = Vec::new();
+    for entry in entries {
+        if allow_all_tenants || call_is_visible_to_tenant(&state, &tenant, &entry.call_id).await? {
+            scoped_entries.push(entry);
+        }
+    }
+
+    let traces: Vec<FlowTraceResponse> =
+        scoped_entries.into_iter().map(FlowTraceResponse::from).collect();
+    let scoped_total = traces.len();
 
     Ok(Json(ListFlowTracesResponse {
         traces,
-        total,
+        total: if allow_all_tenants { total } else { scoped_total },
         limit,
         offset: params.offset,
     }))
@@ -171,8 +219,16 @@ pub async fn list_flow_traces(
 /// GET /api/v1/flow-traces/:call_id
 pub async fn get_call_flow_traces(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0))
+        && !call_is_visible_to_tenant(&state, &tenant, &call_id).await?
+    {
+        return Err(ApiError::NotFound("Flow traces not found".to_string()));
+    }
+
     let storage = state
         .storage
         .as_ref()

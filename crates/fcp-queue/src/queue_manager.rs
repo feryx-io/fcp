@@ -297,7 +297,11 @@ impl QueueManager {
     /// Reload queue configuration. Adds new queues, updates existing ones.
     /// Does NOT delete queues that are removed from config (to avoid dropping active calls).
     /// Returns list of newly added queue names (for spawning distribution loops).
-    pub fn reload_config(&self, new_config: QueueSystemConfig) -> Vec<String> {
+    pub fn reload_config(
+        &self,
+        new_config: QueueSystemConfig,
+        default_tenant_id: TenantId,
+    ) -> Vec<String> {
         let mut new_queues = Vec::new();
 
         for (name, qc) in &new_config.queues {
@@ -315,10 +319,9 @@ impl QueueManager {
                 }
             } else {
                 // New queue — insert it
-                let tenant_id = TenantId::nil();
                 self.queues.insert(
                     name.clone(),
-                    Queue::new(name.clone(), tenant_id, qc.clone()),
+                    Queue::new(name.clone(), default_tenant_id, qc.clone()),
                 );
                 self.extension_map
                     .insert(qc.extension.clone(), name.clone());
@@ -1340,6 +1343,15 @@ impl QueueManager {
     pub fn all_agent_stats(&self) -> Vec<AgentStats> {
         self.agents
             .iter()
+            .filter_map(|entry| self.agent_stats(entry.key()))
+            .collect()
+    }
+
+    /// Get statistics for all agents visible to a tenant.
+    pub fn all_agent_stats_for_tenant(&self, tenant_id: &TenantId) -> Vec<AgentStats> {
+        self.agents
+            .iter()
+            .filter(|entry| entry.value().tenant_id == *tenant_id)
             .filter_map(|entry| self.agent_stats(entry.key()))
             .collect()
     }

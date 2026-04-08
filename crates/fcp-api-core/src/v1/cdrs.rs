@@ -1,8 +1,12 @@
 //! CDR (Call Detail Record) API endpoints.
 
-use crate::{error::ApiError, state::ApiState};
+use crate::{
+    auth::{can_access_all_tenants, AuthIdentity, TenantContext},
+    error::ApiError,
+    state::ApiState,
+};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     response::IntoResponse,
     Json,
 };
@@ -150,9 +154,12 @@ pub struct ListCdrsResponse {
 /// GET /api/v1/cdrs
 pub async fn list_cdrs(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Query(params): Query<ListCdrsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
 
     // Validate and cap limit
     let limit = if params.limit > 1000 {
@@ -169,7 +176,7 @@ pub async fn list_cdrs(
 
     // Build CdrQuery from request parameters
     let mut query = CdrQuery {
-        tenant_id: None,
+        tenant_id: Some(tenant.0.clone()),
         call_id: None,
         from_uri: params.from_uri.clone(),
         to_uri: params.to_uri.clone(),
@@ -181,12 +188,24 @@ pub async fn list_cdrs(
     };
 
     // Parse optional tenant_id
-    if let Some(ref tenant_id_str) = params.tenant_id {
-        query.tenant_id = Some(
-            tenant_id_str
-                .parse::<fcp_core::TenantId>()
-                .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?,
-        );
+    if allow_all_tenants {
+        query.tenant_id = None;
+    }
+    if allow_all_tenants {
+        if let Some(ref tenant_id_str) = params.tenant_id {
+            query.tenant_id = Some(
+                tenant_id_str
+                    .parse::<fcp_core::TenantId>()
+                    .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?,
+            );
+        }
+    } else if let Some(ref tenant_id_str) = params.tenant_id {
+        let requested_tenant_id = tenant_id_str
+            .parse::<fcp_core::TenantId>()
+            .map_err(|e| ApiError::BadRequest(format!("Invalid tenant_id: {}", e)))?;
+        if requested_tenant_id != tenant.0 {
+            return Err(ApiError::NotFound("CDRs not found".to_string()));
+        }
     }
 
     // Parse optional call_id
@@ -270,6 +289,8 @@ pub async fn list_cdrs(
 /// GET /api/v1/cdrs/:call_id
 pub async fn get_cdr(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
@@ -290,6 +311,13 @@ pub async fn get_cdr(
             ApiError::Internal("Failed to retrieve CDR".to_string())
         })?
         .ok_or_else(|| ApiError::NotFound(format!("CDR not found for call_id: {}", call_id)))?;
+
+    if !can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) && cdr.tenant_id != tenant.0 {
+        return Err(ApiError::NotFound(format!(
+            "CDR not found for call_id: {}",
+            call_id
+        )));
+    }
 
     Ok(Json(CdrResponse::from(cdr)))
 }

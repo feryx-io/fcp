@@ -42,6 +42,22 @@ pub struct AppState {
     pub cluster_parking: Option<Arc<dyn fcp_core::ClusterParkingStore>>,
 }
 
+fn queue_visible_to_service_tenant(
+    qm: &QueueManager,
+    tenant_id: &TenantId,
+    queue_name: &str,
+) -> bool {
+    qm.get_queue_config_for_tenant(queue_name, tenant_id).is_some()
+}
+
+fn queue_not_found(queue_name: &str) -> Json<serde_json::Value> {
+    Json(serde_json::json!({"error": format!("Queue '{}' not found", queue_name)}))
+}
+
+fn agent_not_found(agent_id: &str) -> Json<serde_json::Value> {
+    Json(serde_json::json!({"error": format!("Agent '{}' not found", agent_id)}))
+}
+
 /// Run the HTTP health/status/calls server.
 pub async fn run_http_server(bind_addr: SocketAddr, state: Arc<AppState>) -> anyhow::Result<()> {
     let protected = Router::new()
@@ -531,7 +547,7 @@ async fn list_queues_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled", "queues": []}));
     };
-    let stats = qm.all_queue_stats();
+    let stats = qm.all_queue_stats_for_tenant(&state.default_tenant_id);
     Json(serde_json::json!({ "queues": stats }))
 }
 
@@ -543,9 +559,9 @@ async fn get_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.queue_stats(&name) {
+    match qm.queue_stats_for_tenant(&name, &state.default_tenant_id) {
         Some(stats) => {
-            let agents = qm.list_agents_for_queue(&name);
+            let agents = qm.list_agents_for_queue_and_tenant(&name, &state.default_tenant_id);
             let is_draining = qm.is_queue_draining(&name);
             let agent_list: Vec<serde_json::Value> = agents
                 .iter()
@@ -563,7 +579,7 @@ async fn get_queue_handler(
                 "is_draining": is_draining,
             }))
         }
-        None => Json(serde_json::json!({"error": format!("Queue '{}' not found", name)})),
+        None => queue_not_found(&name),
     }
 }
 
@@ -575,7 +591,7 @@ async fn create_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.create_queue(body.key.clone(), body.config, state.default_tenant_id) {
+    match qm.create_queue(body.key.clone(), body.config, state.default_tenant_id.clone()) {
         Ok(()) => Json(serde_json::json!({
             "status": "created",
             "queue": body.key,
@@ -593,6 +609,9 @@ async fn update_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
+        return queue_not_found(&name);
+    }
     match qm.update_queue(&name, config) {
         Ok(()) => Json(serde_json::json!({
             "status": "updated",
@@ -610,6 +629,9 @@ async fn delete_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
+        return queue_not_found(&name);
+    }
     match qm.delete_queue(&name) {
         Ok(()) => Json(serde_json::json!({
             "status": "deleted",
@@ -627,6 +649,9 @@ async fn drain_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
+        return queue_not_found(&name);
+    }
     match qm.drain_queue(&name).await {
         Ok(()) => Json(serde_json::json!({
             "status": "draining",
@@ -644,6 +669,9 @@ async fn undrain_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
+        return queue_not_found(&name);
+    }
     match qm.undrain_queue(&name).await {
         Ok(()) => Json(serde_json::json!({
             "status": "active",
@@ -669,7 +697,7 @@ async fn reload_queues_handler(State(state): State<Arc<AppState>>) -> Json<serde
         }
     };
 
-    let new_queues = qm.reload_config(new_config.queue.clone());
+    let new_queues = qm.reload_config(new_config.queue.clone(), state.default_tenant_id.clone());
 
     // Spawn distribution loops for any newly added queues
     if let Some(ref qh) = state.queue_handler {
@@ -697,7 +725,7 @@ async fn list_agents_handler(State(state): State<Arc<AppState>>) -> Json<serde_j
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled", "agents": []}));
     };
-    let stats = qm.all_agent_stats();
+    let stats = qm.all_agent_stats_for_tenant(&state.default_tenant_id);
     Json(serde_json::json!({ "agents": stats }))
 }
 
@@ -709,9 +737,12 @@ async fn get_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.agent_stats(&id) {
-        Some(stats) => Json(serde_json::json!({ "agent": stats })),
-        None => Json(serde_json::json!({"error": format!("Agent '{}' not found", id)})),
+    match qm.get_agent_for_tenant(&id, &state.default_tenant_id) {
+        Some(_) => match qm.agent_stats(&id) {
+            Some(stats) => Json(serde_json::json!({ "agent": stats })),
+            None => agent_not_found(&id),
+        },
+        None => agent_not_found(&id),
     }
 }
 
@@ -730,6 +761,12 @@ async fn pause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if qm
+        .get_agent_for_tenant(&id, &state.default_tenant_id)
+        .is_none()
+    {
+        return agent_not_found(&id);
+    }
     match qm
         .pause_agent(&id, body.duration_secs, body.reason.clone())
         .await
@@ -751,6 +788,12 @@ async fn unpause_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if qm
+        .get_agent_for_tenant(&id, &state.default_tenant_id)
+        .is_none()
+    {
+        return agent_not_found(&id);
+    }
     match qm.unpause_agent(&id).await {
         Ok(()) => Json(serde_json::json!({"status": "available", "agent_id": id})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
@@ -771,6 +814,12 @@ async fn kick_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if qm
+        .get_agent_for_tenant(&id, &state.default_tenant_id)
+        .is_none()
+    {
+        return agent_not_found(&id);
+    }
     let reason = body.reason.as_deref().unwrap_or("admin_kick");
     match qm.kick_agent(&id, reason).await {
         Ok(()) => Json(serde_json::json!({"status": "kicked", "agent_id": id})),
@@ -804,6 +853,7 @@ async fn login_agent_handler(
             .queues
             .iter()
             .filter(|(_, qc)| qc.agents.contains(&extension.to_string()))
+            .filter(|(name, _)| queue_visible_to_service_tenant(qm, &state.default_tenant_id, name))
             .map(|(name, _)| name.clone())
             .collect();
         if auto_queues.is_empty() {
@@ -816,7 +866,7 @@ async fn login_agent_handler(
                 &id,
                 extension,
                 &auto_queues,
-                state.default_tenant_id,
+                state.default_tenant_id.clone(),
                 skills,
             )
             .await
@@ -829,8 +879,20 @@ async fn login_agent_handler(
             Err(e) => Json(serde_json::json!({"error": e.to_string()})),
         }
     } else {
+        if let Some(invalid_queue) = queues
+            .iter()
+            .find(|queue| !queue_visible_to_service_tenant(qm, &state.default_tenant_id, queue))
+        {
+            return queue_not_found(invalid_queue);
+        }
         match qm
-            .agent_login(&id, extension, &queues, state.default_tenant_id, skills)
+            .agent_login(
+                &id,
+                extension,
+                &queues,
+                state.default_tenant_id.clone(),
+                skills,
+            )
             .await
         {
             Ok(()) => Json(serde_json::json!({
@@ -851,6 +913,12 @@ async fn logout_agent_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if qm
+        .get_agent_for_tenant(&id, &state.default_tenant_id)
+        .is_none()
+    {
+        return agent_not_found(&id);
+    }
     match qm.agent_logout(&id).await {
         Ok(()) => Json(serde_json::json!({"status": "logged_out", "agent_id": id})),
         Err(e) => Json(serde_json::json!({"error": e.to_string()})),
@@ -865,6 +933,12 @@ async fn extend_wrapup_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if qm
+        .get_agent_for_tenant(&id, &state.default_tenant_id)
+        .is_none()
+    {
+        return agent_not_found(&id);
+    }
     match qm.extend_wrap_up(&id).await {
         Ok(extensions_used) => Json(serde_json::json!({
             "status": "extended",
@@ -891,6 +965,9 @@ async fn campaign_load_numbers_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
+        return queue_not_found(&queue);
+    }
     let count = body.numbers.len();
     qm.load_campaign_numbers(&queue, body.numbers);
     Json(serde_json::json!({
@@ -908,6 +985,9 @@ async fn campaign_stats_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
+        return queue_not_found(&queue);
+    }
     match qm.campaign_stats(&queue) {
         Some(stats) => Json(serde_json::json!({
             "queue": queue,
@@ -927,6 +1007,9 @@ async fn campaign_start_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
+        return queue_not_found(&queue);
+    }
     qm.set_campaign_running(&queue, true);
     Json(serde_json::json!({
         "status": "started",
@@ -942,6 +1025,9 @@ async fn campaign_stop_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &queue) {
+        return queue_not_found(&queue);
+    }
     qm.set_campaign_running(&queue, false);
     Json(serde_json::json!({
         "status": "stopped",
@@ -965,6 +1051,12 @@ async fn transfer_call_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &from) {
+        return queue_not_found(&from);
+    }
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &body.to_queue) {
+        return queue_not_found(&body.to_queue);
+    }
     match qm.transfer_to_queue(&call_id, &from, &body.to_queue).await {
         Ok(position) => {
             // Update the session's queue_name if a handler is available
@@ -1102,6 +1194,9 @@ async fn queue_history_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
+    if !queue_visible_to_service_tenant(qm, &state.default_tenant_id, &name) {
+        return queue_not_found(&name);
+    }
     let limit = query.limit.unwrap_or(500).min(1440);
     let snapshots = qm.query_stats_history(&name, query.from, query.to, limit);
     Json(serde_json::json!({
@@ -1212,7 +1307,9 @@ async fn wallboard_ws_handler(
 /// Run a wallboard WebSocket session.
 async fn wallboard_ws_session(mut socket: WebSocket, state: Arc<AppState>) {
     // Subscribe to Queue events only
-    let filter = EventFilter::new().types(vec![EventType::Queue]);
+    let filter = EventFilter::new()
+        .tenant(state.default_tenant_id.clone())
+        .types(vec![EventType::Queue]);
     let mut stream = match state.event_bus.subscribe(filter).await {
         Ok(s) => s,
         Err(e) => {
@@ -1282,8 +1379,12 @@ async fn list_presence_handler(State(state): State<Arc<AppState>>) -> Json<serde
         );
     };
 
-    let presences: Vec<serde_json::Value> = pm
-        .get_all_presences()
+    let scoped_presences = pm.get_presences_by_tenant(&state.default_tenant_id);
+    let total_watchers: usize = scoped_presences
+        .iter()
+        .map(|presence| pm.get_watchers(&presence.aor).len())
+        .sum();
+    let presentities: Vec<serde_json::Value> = scoped_presences
         .into_iter()
         .map(|p| {
             serde_json::json!({
@@ -1293,11 +1394,12 @@ async fn list_presence_handler(State(state): State<Arc<AppState>>) -> Json<serde
             })
         })
         .collect();
+    let total_presentities = presentities.len();
 
     Json(serde_json::json!({
-        "presentities": presences,
-        "total": pm.presentity_count(),
-        "total_watchers": pm.total_watcher_count(),
+        "presentities": presentities,
+        "total": total_presentities,
+        "total_watchers": total_watchers,
     }))
 }
 
@@ -1316,7 +1418,7 @@ async fn get_presence_handler(
 
     // URL-decode the AOR (@ may be encoded as %40)
 
-    match pm.get_presence(&aor) {
+    match pm.get_presence_for_tenant(&aor, &state.default_tenant_id) {
         Some(info) => {
             let watchers: Vec<serde_json::Value> = pm
                 .get_watchers(&aor)
@@ -1382,7 +1484,10 @@ async fn update_presence_handler(
         note,
     };
 
-    match pm.update_presence(update, &state.default_tenant_id).await {
+    match pm
+        .update_presence(update, &state.default_tenant_id)
+        .await
+    {
         Ok(info) => Json(serde_json::json!({
             "aor": info.aor,
             "state": info.state.to_string(),

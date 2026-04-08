@@ -12,6 +12,7 @@
 [service]
 service_type = "ivr"
 # node_id = "ivr-01"              # Auto-generated UUID if not set
+# default_tenant_id = "00000000-0000-0000-0000-000000000000"
 
 # -----------------------------------------------------------------------------
 # SIP transport

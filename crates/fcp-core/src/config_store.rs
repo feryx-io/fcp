@@ -103,6 +103,7 @@ pub trait ConfigStore: Send + Sync {
     async fn get_audit_log(
         &self,
         service: &str,
+        tenant_id: &str,
         section: Option<&str>,
         limit: i64,
     ) -> Result<Vec<AuditEntry>>;

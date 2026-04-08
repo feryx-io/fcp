@@ -70,6 +70,13 @@ impl AuthIdentity {
     }
 }
 
+/// Returns true when the caller is allowed to operate outside tenant scope.
+///
+/// Static config tokens are treated as global platform-admin credentials.
+pub fn can_access_all_tenants(identity: Option<&AuthIdentity>) -> bool {
+    matches!(identity, Some(AuthIdentity::StaticToken))
+}
+
 /// Authentication middleware state.
 #[derive(Clone)]
 pub struct AuthConfig {

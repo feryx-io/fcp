@@ -2,14 +2,33 @@
 
 use crate::{error::ApiError, state::ApiState};
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use crate::auth::{can_access_all_tenants, AuthIdentity, TenantContext};
 use fcp_sip::CallId;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+
+fn scoped_call(
+    state: &ApiState,
+    call_id: &CallId,
+    tenant: &TenantContext,
+    identity: Option<&AuthIdentity>,
+) -> Result<fcp_sip::Call, ApiError> {
+    let call = state
+        .call_manager
+        .get_call(call_id)
+        .ok_or_else(|| ApiError::NotFound(format!("Call not found: {}", call_id)))?;
+
+    if can_access_all_tenants(identity) || call.tenant_id == tenant.0 {
+        Ok(call)
+    } else {
+        Err(ApiError::NotFound(format!("Call not found: {}", call_id)))
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct StartRecordingRequest {
@@ -28,12 +47,16 @@ pub struct RecordingResponse {
 /// Start recording a call
 pub async fn start_recording(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
     Json(req): Json<StartRecordingRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Parse call ID (sip-specific)
     let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    scoped_call(&state, &sip_call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
 
     // Convert to fcp_core::CallId for media manager
     let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
@@ -64,11 +87,15 @@ pub async fn start_recording(
 /// Stop recording a call
 pub async fn stop_recording(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Parse call ID (sip-specific)
     let sip_call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    scoped_call(&state, &sip_call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
 
     // Convert to fcp_core::CallId for media manager
     let core_call_id = fcp_core::CallId::from_uuid(*sip_call_id.as_uuid());
@@ -140,7 +167,14 @@ impl CallInfo {
 ///
 /// When an events server URL is configured, proxies to the events server
 /// for a cluster-wide view. Otherwise falls back to the local call manager.
-pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_calls(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
+    let tenant_id = tenant.0.to_string();
+
     // Try events server first for cluster-wide view
     if let Some(ref events_url) = state.events_server_url {
         let url = format!("{}/calls", events_url);
@@ -161,6 +195,13 @@ pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoRespon
                 if let Some(calls) = body.get("calls").and_then(|c| c.as_array()) {
                     let call_infos: Vec<CallInfo> = calls
                         .iter()
+                        .filter(|c| {
+                            allow_all_tenants
+                                || c.get("tenant_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(|v| v == tenant_id.as_str())
+                                    .unwrap_or(false)
+                        })
                         .filter_map(|c| {
                             let state_str = c.get("state")?.as_str()?;
                             if state_str == "ended" || state_str == "failed" {
@@ -216,7 +257,12 @@ pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoRespon
     }
 
     // Fallback: local call manager (works when admin is co-located with call-manager)
-    let calls = state.call_manager.active_calls();
+    let calls: Vec<_> = state
+        .call_manager
+        .active_calls()
+        .into_iter()
+        .filter(|call| allow_all_tenants || call.tenant_id == tenant.0)
+        .collect();
     let call_infos: Vec<CallInfo> = calls.iter().map(CallInfo::from_call).collect();
     Ok(Json(call_infos))
 }
@@ -225,15 +271,14 @@ pub async fn list_calls(State(state): State<ApiState>) -> Result<impl IntoRespon
 /// Get details of a specific call
 pub async fn get_call(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
 
-    let call = state
-        .call_manager
-        .get_call(&call_id)
-        .ok_or_else(|| ApiError::NotFound(format!("Call not found: {}", call_id_str)))?;
+    let call = scoped_call(&state, &call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
 
     Ok(Json(CallInfo::from_call(&call)))
 }
@@ -291,10 +336,14 @@ pub async fn originate_call(
 /// Hangup an active call
 pub async fn hangup_call(
     State(state): State<ApiState>,
+    tenant: TenantContext,
+    identity: Option<Extension<AuthIdentity>>,
     Path(call_id_str): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let call_id = CallId::from_str(&call_id_str)
         .map_err(|_| ApiError::BadRequest(format!("Invalid call ID: {}", call_id_str)))?;
+
+    scoped_call(&state, &call_id, &tenant, identity.as_ref().map(|ext| &ext.0))?;
 
     // Send BYE on both legs and terminate the call
     state
