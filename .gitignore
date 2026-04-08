@@ -34,3 +34,5 @@ deploy/docker-compose/certs/
 .pip-tmp/
 target-review-fix/
 target-review-final/
+.codex
+sngrep.txt
