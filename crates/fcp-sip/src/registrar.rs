@@ -56,10 +56,11 @@ async fn resolve_tenant_for_inputs(
 ) -> Result<TenantId> {
     if let Some(domain) = aor.and_then(extract_domain_from_aor) {
         if let Some(store) = tenant_store {
-            return match store.get_tenant_by_name(&domain).await? {
-                Some(tenant) => Ok(tenant.id),
-                None => Err(anyhow!("unknown tenant domain '{}'", domain)),
-            };
+            if let Some(tenant) = store.get_tenant_by_name(&domain).await? {
+                return Ok(tenant.id);
+            }
+            // Domain not found in tenant store — fall through to default
+            // (single-tenant deployments use server IP as domain)
         }
 
         if let Some(default_tenant_id) = default_tenant_id {
@@ -67,7 +68,7 @@ async fn resolve_tenant_for_inputs(
         }
 
         return Err(anyhow!(
-            "tenant store unavailable for domain '{}'",
+            "unknown tenant domain '{}' and no default tenant configured",
             domain
         ));
     }
