@@ -29,11 +29,20 @@ fn scoped_config_tenant_id(
     identity: Option<&AuthIdentity>,
     requested_tenant_id: Option<&str>,
 ) -> String {
+    // Static tokens (platform admin) can access any tenant's config
     if can_access_all_tenants(identity) {
-        requested_tenant_id.unwrap_or("_system").to_string()
-    } else {
-        tenant.0.to_string()
+        return requested_tenant_id.unwrap_or("_system").to_string();
     }
+
+    // Admin-role JWT sessions can access _system config (service configs
+    // are global, not per-tenant). End-users are scoped to their tenant.
+    if let Some(id) = identity {
+        if id.is_admin() {
+            return requested_tenant_id.unwrap_or("_system").to_string();
+        }
+    }
+
+    tenant.0.to_string()
 }
 
 // ── Request/Response Types ───────────────────────────────────────────────────
