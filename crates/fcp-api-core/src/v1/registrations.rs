@@ -123,23 +123,16 @@ pub async fn list_registrations(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    let registrations = storage.get_all_registrations().await?;
     let allow_all_tenants = can_access_all_tenants(identity.as_ref().map(|ext| &ext.0));
-    let visible_aors = if allow_all_tenants {
-        None
+    let registrations = if allow_all_tenants {
+        storage.get_all_registrations().await?
     } else {
-        Some(tenant_visible_aors(&state, &tenant.0).await?)
+        storage.get_all_registrations_in_tenant(&tenant.0).await?
     };
 
     let now = std::time::SystemTime::now();
     let active: Vec<RegistrationResponse> = registrations
         .into_iter()
-        .filter(|r| {
-            visible_aors
-                .as_ref()
-                .map(|allowed| allowed.contains(&normalize_aor(&r.aor)))
-                .unwrap_or(true)
-        })
         .filter(|r| r.expires_at > now)
         .map(RegistrationResponse::from)
         .collect();
@@ -172,7 +165,11 @@ pub async fn get_registrations(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    let registrations = storage.get_registrations(&aor).await?;
+    let registrations = if can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+        storage.get_registrations(&aor).await?
+    } else {
+        storage.get_registrations_in_tenant(&tenant.0, &aor).await?
+    };
 
     // Filter out expired registrations
     let now = std::time::SystemTime::now();
@@ -210,7 +207,13 @@ pub async fn delete_registrations(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    storage.delete_all_registrations(&aor).await?;
+    if can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+        storage.delete_all_registrations(&aor).await?;
+    } else {
+        storage
+            .delete_all_registrations_in_tenant(&tenant.0, &aor)
+            .await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -240,6 +243,12 @@ pub async fn delete_registration(
         .as_ref()
         .ok_or_else(|| ApiError::NotFound("Registrar not enabled".to_string()))?;
 
-    storage.delete_registration(&aor, &contact).await?;
+    if can_access_all_tenants(identity.as_ref().map(|ext| &ext.0)) {
+        storage.delete_registration(&aor, &contact).await?;
+    } else {
+        storage
+            .delete_registration_in_tenant(&tenant.0, &aor, &contact)
+            .await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }

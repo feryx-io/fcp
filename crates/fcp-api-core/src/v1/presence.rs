@@ -159,7 +159,7 @@ pub async fn list_presences(
         .into_iter()
         .filter(|p| !hidden_aors.contains(&p.aor))
         .map(|p| {
-            let mut watcher_count = pm.get_watchers(&p.aor).len();
+            let mut watcher_count = pm.get_watchers_for_tenant(&p.aor, tenant_id).len();
 
             // Add watcher counts from merged device and phone number AORs
             if ext_aor_info.contains_key(&p.aor) {
@@ -168,7 +168,7 @@ pub async fn list_presences(
                     device_aor_to_ext.iter().chain(phone_aor_to_ext.iter())
                 {
                     if ext_num == Some(num) {
-                        watcher_count += pm.get_watchers(merged_aor).len();
+                        watcher_count += pm.get_watchers_for_tenant(merged_aor, tenant_id).len();
                     }
                 }
             }
@@ -255,7 +255,7 @@ pub async fn get_stats(
     let presences = pm.get_presences_by_tenant(&tenant.0);
     let total_watchers = presences
         .iter()
-        .map(|presence| pm.get_watchers(&presence.aor).len())
+        .map(|presence| pm.get_watchers_for_tenant(&presence.aor, &tenant.0).len())
         .sum();
 
     Ok(Json(PresenceStatsResponse {
@@ -278,7 +278,7 @@ pub async fn get_presence(
 
     let now = Instant::now();
     let watchers: Vec<WatcherResponse> = pm
-        .get_watchers(&aor)
+        .get_watchers_for_tenant(&aor, &tenant.0)
         .into_iter()
         .map(|w| WatcherResponse {
             watcher_aor: w.watcher_aor,
@@ -334,7 +334,7 @@ pub async fn update_presence(
         aor: info.aor,
         state: info.state.to_string(),
         note: info.note,
-        watcher_count: pm.get_watchers(&aor).len(),
+        watcher_count: pm.get_watchers_for_tenant(&aor, &tenant.0).len(),
         extension: None,
         display_name: None,
     }))
@@ -380,7 +380,7 @@ pub async fn list_watchers(
 
     let now = Instant::now();
     let watchers: Vec<WatcherResponse> = pm
-        .get_watchers(&aor)
+        .get_watchers_for_tenant(&aor, &tenant.0)
         .into_iter()
         .map(|w| WatcherResponse {
             watcher_aor: w.watcher_aor,

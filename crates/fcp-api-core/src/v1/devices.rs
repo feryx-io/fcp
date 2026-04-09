@@ -160,7 +160,7 @@ pub async fn list_devices(
         .map_err(|e| ApiError::Internal(format!("Failed to list devices: {}", e)))?;
 
     // Fetch live registrations and build a lookup by AOR
-    let live_regs = match storage.get_all_registrations().await {
+    let live_regs = match storage.get_all_registrations_in_tenant(&tenant_id).await {
         Ok(regs) => {
             info!(
                 "Fetched {} live registrations for device enrichment",

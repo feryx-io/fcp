@@ -3372,8 +3372,15 @@ impl PresenceStore for PostgresStorage {
         Ok(())
     }
 
-    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
-        sqlx::query("DELETE FROM presence_subscriptions WHERE presentity_aor = $1")
+    async fn remove_subscriptions_for_presentity(
+        &self,
+        tenant_id: &TenantId,
+        presentity_aor: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM presence_subscriptions WHERE tenant_id = $1 AND presentity_aor = $2",
+        )
+            .bind(tenant_id.to_string())
             .bind(presentity_aor)
             .execute(&self.pool)
             .await?;
@@ -3399,10 +3406,9 @@ impl PresenceStore for PostgresStorage {
             "INSERT INTO presence_presentities \
              (aor, state, note, tenant_id, updated_at_epoch) \
              VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (aor) DO UPDATE SET \
+             ON CONFLICT (tenant_id, aor) DO UPDATE SET \
                 state = EXCLUDED.state, \
                 note = EXCLUDED.note, \
-                tenant_id = EXCLUDED.tenant_id, \
                 updated_at_epoch = EXCLUDED.updated_at_epoch",
         )
         .bind(&p.aor)
@@ -3441,8 +3447,9 @@ impl PresenceStore for PostgresStorage {
         Ok(result)
     }
 
-    async fn remove_presentity(&self, aor: &str) -> Result<()> {
-        sqlx::query("DELETE FROM presence_presentities WHERE aor = $1")
+    async fn remove_presentity(&self, tenant_id: &TenantId, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_presentities WHERE tenant_id = $1 AND aor = $2")
+            .bind(tenant_id.to_string())
             .bind(aor)
             .execute(&self.pool)
             .await?;
@@ -3456,11 +3463,10 @@ impl PresenceStore for PostgresStorage {
               event_allow_json, event_block_json, time_windows_json, \
               allow_patterns_json, block_patterns_json) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-             ON CONFLICT (aor) DO UPDATE SET \
+             ON CONFLICT (tenant_id, aor) DO UPDATE SET \
                 default_allow = EXCLUDED.default_allow, \
                 allow_list_json = EXCLUDED.allow_list_json, \
                 block_list_json = EXCLUDED.block_list_json, \
-                tenant_id = EXCLUDED.tenant_id, \
                 event_allow_json = EXCLUDED.event_allow_json, \
                 event_block_json = EXCLUDED.event_block_json, \
                 time_windows_json = EXCLUDED.time_windows_json, \
@@ -3515,8 +3521,9 @@ impl PresenceStore for PostgresStorage {
         Ok(policies)
     }
 
-    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
-        sqlx::query("DELETE FROM presence_auth_policies WHERE aor = $1")
+    async fn remove_auth_policy(&self, tenant_id: &TenantId, aor: &str) -> Result<()> {
+        sqlx::query("DELETE FROM presence_auth_policies WHERE tenant_id = $1 AND aor = $2")
+            .bind(tenant_id.to_string())
             .bind(aor)
             .execute(&self.pool)
             .await?;

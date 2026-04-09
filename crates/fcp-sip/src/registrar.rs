@@ -1241,19 +1241,41 @@ impl FcpRegistrar {
         Some((user, domain))
     }
 
-    /// Get media preferences for a user.
+    /// Get media preferences for a user identified by AOR.
     ///
     /// # Arguments
-    /// * `username` - The username to look up
+    /// * `aor` - The SIP AOR used to resolve tenant and username
     ///
     /// # Returns
     /// The user's media preferences, or default preferences if user not found
-    pub async fn get_user_media_preferences(&self, username: &str) -> fcp_core::MediaPreferences {
+    pub async fn get_user_media_preferences(&self, aor: &str) -> fcp_core::MediaPreferences {
         if let Some(ref cred_store) = self.credential_store {
-            match cred_store.get_user(username).await {
+            let Some(username) = extract_username_from_aor(aor) else {
+                debug!(aor = %aor, "Invalid AOR for media preference lookup, using defaults");
+                return fcp_core::MediaPreferences::default();
+            };
+
+            let tenant_id = match resolve_tenant_for_inputs(
+                self.tenant_store.as_ref(),
+                self.credential_store.as_ref(),
+                self.default_tenant_id,
+                Some(aor),
+                Some(&username),
+            )
+            .await
+            {
+                Ok(tenant_id) => tenant_id,
+                Err(e) => {
+                    warn!(aor = %aor, error = %e, "Failed to resolve tenant for media preferences");
+                    return fcp_core::MediaPreferences::default();
+                }
+            };
+
+            match cred_store.get_user_in_tenant(&username, &tenant_id).await {
                 Ok(Some(user)) => {
                     debug!(
-                        username = %username,
+                        aor = %aor,
+                        tenant_id = %tenant_id,
                         force_anchor = %user.media_preferences.force_media_anchoring,
                         dtmf = %user.media_preferences.enable_dtmf_detection,
                         record = %user.media_preferences.record_all_calls,
@@ -1262,10 +1284,19 @@ impl FcpRegistrar {
                     return user.media_preferences;
                 }
                 Ok(None) => {
-                    debug!(username = %username, "User not found, using default media preferences");
+                    debug!(
+                        aor = %aor,
+                        tenant_id = %tenant_id,
+                        "User not found in tenant, using default media preferences"
+                    );
                 }
                 Err(e) => {
-                    tracing::error!(username = %username, error = %e, "Failed to look up user");
+                    tracing::error!(
+                        aor = %aor,
+                        tenant_id = %tenant_id,
+                        error = %e,
+                        "Failed to look up user for media preferences"
+                    );
                 }
             }
         }

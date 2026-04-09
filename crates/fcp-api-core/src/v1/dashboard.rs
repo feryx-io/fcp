@@ -69,7 +69,7 @@ pub async fn summary(
         // Registered devices (from registrations)
         if let (Ok(devices), Ok(registrations)) = (
             storage.list_devices(tenant_id).await,
-            storage.get_all_registrations().await,
+            storage.get_all_registrations_in_tenant(tenant_id).await,
         ) {
             let device_aors: HashSet<String> = devices
                 .into_iter()

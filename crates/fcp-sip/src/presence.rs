@@ -551,13 +551,15 @@ impl SipPresenceHandler {
     ) -> Result<()> {
         let (event, content_type, body) = match watcher.event_package.as_str() {
             "dialog" => {
-                let xml = self.presence.generate_dialog_info(&watcher.presentity_aor);
+                let xml = self
+                    .presence
+                    .generate_dialog_info_for_tenant(&watcher.presentity_aor, &watcher.tenant_id);
                 ("dialog", "application/dialog-info+xml", xml)
             }
             "presence.winfo" => {
                 let xml = self
                     .presence
-                    .generate_watcherinfo(&watcher.presentity_aor)
+                    .generate_watcherinfo_for_tenant(&watcher.presentity_aor, &watcher.tenant_id)
                     .unwrap_or_else(|e| {
                         warn!(error = %e, "Failed to generate watcherinfo XML");
                         "<watcherinfo xmlns=\"urn:ietf:params:xml:ns:watcherinfo\" version=\"0\" state=\"full\"></watcherinfo>".to_string()
@@ -567,7 +569,7 @@ impl SipPresenceHandler {
             _ => {
                 let xml = self
                     .presence
-                    .generate_pidf(&watcher.presentity_aor)
+                    .generate_pidf_for_tenant(&watcher.presentity_aor, &watcher.tenant_id)
                     .unwrap_or_else(|| {
                         fcp_presence::pidf::generate_pidf(
                             &watcher.presentity_aor,
@@ -713,7 +715,12 @@ impl SipPresenceHandler {
 
         if !self
             .presence
-            .is_watcher_authorized(&ctx.watcher_aor, &ctx.presentity_aor, &ctx.event)
+            .is_watcher_authorized_for_tenant(
+                &ctx.watcher_aor,
+                &ctx.presentity_aor,
+                &self.tenant_id,
+                &ctx.event,
+            )
         {
             info!(
                 watcher = %ctx.watcher_aor,
@@ -734,7 +741,9 @@ impl SipPresenceHandler {
         request: &sip_core::Request,
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
-        let watchers = self.presence.get_watchers(&ctx.presentity_aor);
+        let watchers = self
+            .presence
+            .get_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
         for w in &watchers {
             if w.watcher_aor == ctx.watcher_aor && w.event_package == ctx.event {
                 if let Err(e) = self
@@ -770,7 +779,12 @@ impl SipPresenceHandler {
         let new_expires = Instant::now() + Duration::from_secs(ctx.expires as u64);
         if let Err(e) = self
             .presence
-            .refresh_watcher(&ctx.presentity_aor, sub_id, new_expires)
+            .refresh_watcher_for_tenant(
+                &ctx.presentity_aor,
+                &self.tenant_id,
+                sub_id,
+                new_expires,
+            )
         {
             warn!(error = %e, "Failed to refresh existing watcher");
         }
@@ -783,7 +797,9 @@ impl SipPresenceHandler {
         handle.send_final(response).await;
 
         // Send NOTIFY with active state for refreshed subscription
-        let refreshed_watchers = self.presence.get_watchers(&ctx.presentity_aor);
+        let refreshed_watchers = self
+            .presence
+            .get_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
         if let Some(w) = refreshed_watchers
             .iter()
             .find(|w| w.subscription_id == sub_id)
@@ -817,11 +833,17 @@ impl SipPresenceHandler {
 
         if ctx.expires == 0 {
             // Unsubscribe from winfo
-            let winfo_watchers = self.presence.get_winfo_watchers(&ctx.presentity_aor);
+            let winfo_watchers = self
+                .presence
+                .get_winfo_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
             for w in &winfo_watchers {
                 if w.watcher_aor == ctx.watcher_aor {
                     self.presence
-                        .remove_winfo_watcher(&ctx.presentity_aor, &w.subscription_id);
+                        .remove_winfo_watcher_for_tenant(
+                            &ctx.presentity_aor,
+                            &self.tenant_id,
+                            &w.subscription_id,
+                        );
                     break;
                 }
             }
@@ -994,7 +1016,12 @@ impl PresenceHandler for SipPresenceHandler {
 
         if let Some(existing_sub_id) =
             self.presence
-                .find_existing_watcher(&ctx.watcher_aor, &ctx.presentity_aor, &ctx.event)
+                .find_existing_watcher_for_tenant(
+                    &ctx.watcher_aor,
+                    &ctx.presentity_aor,
+                    &self.tenant_id,
+                    &ctx.event,
+                )
         {
             return self
                 .handle_subscribe_refresh(&ctx, &existing_sub_id, request, handle)
@@ -1210,7 +1237,7 @@ impl PresenceHandler for SipPresenceHandler {
     }
 
     async fn notify_watchers(&self, aor: &str) -> Result<()> {
-        let watchers = self.presence.get_watchers(aor);
+        let watchers = self.presence.get_watchers_for_tenant(aor, &self.tenant_id);
 
         if watchers.is_empty() {
             return Ok(());
@@ -1224,13 +1251,18 @@ impl PresenceHandler for SipPresenceHandler {
 
         // Pre-generate XML bodies once per event package to avoid redundant
         // regeneration across N watchers for the same AOR.
-        let pidf_body = self.presence.generate_pidf(aor).unwrap_or_else(|| {
+        let pidf_body = self
+            .presence
+            .generate_pidf_for_tenant(aor, &self.tenant_id)
+            .unwrap_or_else(|| {
             fcp_presence::pidf::generate_pidf(aor, &fcp_presence::PresenceState::Closed, None, None)
         });
-        let dialog_body = self.presence.generate_dialog_info(aor);
+        let dialog_body = self
+            .presence
+            .generate_dialog_info_for_tenant(aor, &self.tenant_id);
         let winfo_body = self
             .presence
-            .generate_watcherinfo(aor)
+            .generate_watcherinfo_for_tenant(aor, &self.tenant_id)
             .unwrap_or_else(|e| {
                 warn!(error = %e, "Failed to generate watcherinfo XML");
                 "<watcherinfo xmlns=\"urn:ietf:params:xml:ns:watcherinfo\" version=\"0\" state=\"full\"></watcherinfo>".to_string()

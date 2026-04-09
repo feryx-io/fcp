@@ -1446,8 +1446,12 @@ pub trait PresenceStore: Send + Sync {
     /// Remove a single subscription by ID.
     async fn remove_subscription(&self, subscription_id: &str) -> Result<()>;
 
-    /// Remove all subscriptions for a presentity AOR.
-    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()>;
+    /// Remove all subscriptions for a presentity AOR within a tenant.
+    async fn remove_subscriptions_for_presentity(
+        &self,
+        tenant_id: &crate::TenantId,
+        presentity_aor: &str,
+    ) -> Result<()>;
 
     /// Delete expired subscriptions and return how many were removed.
     async fn cleanup_expired_subscriptions(&self) -> Result<usize>;
@@ -1467,8 +1471,13 @@ pub trait PresenceStore: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Remove a presentity by AOR.
-    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+    /// Remove a presentity by AOR within a tenant.
+    async fn remove_presentity(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        let _ = tenant_id;
         let _ = aor;
         Ok(())
     }
@@ -1488,8 +1497,13 @@ pub trait PresenceStore: Send + Sync {
         Ok(vec![])
     }
 
-    /// Remove an auth policy by AOR.
-    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
+    /// Remove an auth policy by AOR within a tenant.
+    async fn remove_auth_policy(
+        &self,
+        tenant_id: &crate::TenantId,
+        aor: &str,
+    ) -> Result<()> {
+        let _ = tenant_id;
         let _ = aor;
         Ok(())
     }
@@ -3112,9 +3126,13 @@ impl PresenceStore for DynStorage {
             .await
     }
 
-    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
+    async fn remove_subscriptions_for_presentity(
+        &self,
+        tenant_id: &crate::TenantId,
+        presentity_aor: &str,
+    ) -> Result<()> {
         self.presence_store
-            .remove_subscriptions_for_presentity(presentity_aor)
+            .remove_subscriptions_for_presentity(tenant_id, presentity_aor)
             .await
     }
 
@@ -3133,8 +3151,8 @@ impl PresenceStore for DynStorage {
         self.presence_store.load_presentities(tenant_id).await
     }
 
-    async fn remove_presentity(&self, aor: &str) -> Result<()> {
-        self.presence_store.remove_presentity(aor).await
+    async fn remove_presentity(&self, tenant_id: &crate::TenantId, aor: &str) -> Result<()> {
+        self.presence_store.remove_presentity(tenant_id, aor).await
     }
 
     async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
@@ -3148,8 +3166,8 @@ impl PresenceStore for DynStorage {
         self.presence_store.load_auth_policies(tenant_id).await
     }
 
-    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
-        self.presence_store.remove_auth_policy(aor).await
+    async fn remove_auth_policy(&self, tenant_id: &crate::TenantId, aor: &str) -> Result<()> {
+        self.presence_store.remove_auth_policy(tenant_id, aor).await
     }
 }
 

@@ -80,7 +80,7 @@ async fn status_with_scope(
             let visible_aors = tenant_visible_aors(&state, &tenant.0).await?;
             let now = SystemTime::now();
             storage
-                .get_all_registrations()
+                .get_all_registrations_in_tenant(&tenant.0)
                 .await?
                 .into_iter()
                 .filter(|registration| registration.expires_at > now)

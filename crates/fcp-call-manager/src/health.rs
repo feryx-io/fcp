@@ -256,17 +256,14 @@ async fn registrations_handler(
 
     // If AOR is provided, filter by that AOR; otherwise return all registrations
     let registrations_result = match query.aor {
-        Some(ref aor) => state.storage.get_registrations(aor).await,
+        Some(ref aor) => state
+            .storage
+            .get_registrations_in_tenant(&state.default_tenant_id, aor)
+            .await,
         None => state
             .storage
-            .get_all_registrations()
-            .await
-            .map(|registrations| {
-                registrations
-                    .into_iter()
-                    .filter(|registration| visible_aors.contains(&normalize_aor(&registration.aor)))
-                    .collect()
-            }),
+            .get_all_registrations_in_tenant(&state.default_tenant_id)
+            .await,
     };
 
     match registrations_result {
@@ -1468,7 +1465,10 @@ async fn list_presence_handler(State(state): State<Arc<AppState>>) -> Json<serde
     let scoped_presences = pm.get_presences_by_tenant(&state.default_tenant_id);
     let total_watchers: usize = scoped_presences
         .iter()
-        .map(|presence| pm.get_watchers(&presence.aor).len())
+        .map(|presence| {
+            pm.get_watchers_for_tenant(&presence.aor, &state.default_tenant_id)
+                .len()
+        })
         .sum();
     let presentities: Vec<serde_json::Value> = scoped_presences
         .into_iter()
@@ -1507,12 +1507,12 @@ async fn get_presence_handler(
     match pm.get_presence_for_tenant(&aor, &state.default_tenant_id) {
         Some(info) => {
             let watchers: Vec<serde_json::Value> = pm
-                .get_watchers(&aor)
+                .get_watchers_for_tenant(&aor, &state.default_tenant_id)
                 .into_iter()
                 .map(|w| serde_json::json!({"watcher_aor": w.watcher_aor, "subscription_id": w.subscription_id}))
                 .collect();
 
-            let pidf = pm.generate_pidf(&aor);
+            let pidf = pm.generate_pidf_for_tenant(&aor, &state.default_tenant_id);
 
             Json(serde_json::json!({
                 "aor": info.aor,

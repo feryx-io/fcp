@@ -2526,6 +2526,7 @@ async fn run_presence_listener(
                         for aor in &affected_aors {
                             presence.update_call_state(
                                 aor,
+                                &tenant_id,
                                 &call_id_str,
                                 fcp_presence::DialogState::Confirmed,
                             );
@@ -2538,7 +2539,7 @@ async fn run_presence_listener(
                             )
                             .await;
                             // Transition Ringing → OnThePhone for the callee
-                            if let Some(info) = presence.get_presence(aor) {
+                            if let Some(info) = presence.get_presence_for_tenant(aor, &tenant_id) {
                                 if info.state == fcp_presence::PresenceState::Ringing {
                                     let update = fcp_presence::PresenceUpdate {
                                         aor: aor.clone(),
@@ -2575,6 +2576,7 @@ async fn run_presence_listener(
                             let caller_uri = from.clone();
                             presence.add_active_call(
                                 &callee_aor,
+                                &tenant_id,
                                 fcp_presence::ActiveCallInfo {
                                     call_id: call_id_str.clone(),
                                     remote_uri: caller_uri.clone(),
@@ -2605,6 +2607,7 @@ async fn run_presence_listener(
                                 let _ = presence.update_presence(update, &tenant_id).await;
                                 presence.add_active_call(
                                     dev_aor,
+                                    &tenant_id,
                                     fcp_presence::ActiveCallInfo {
                                         call_id: call_id_str.clone(),
                                         remote_uri: caller_uri.clone(),
@@ -2641,6 +2644,7 @@ async fn run_presence_listener(
                                 let _ = presence.update_presence(update, &tenant_id).await;
                                 presence.add_active_call(
                                     ext_aor,
+                                    &tenant_id,
                                     fcp_presence::ActiveCallInfo {
                                         call_id: call_id_str.clone(),
                                         remote_uri: caller_uri.clone(),
@@ -2672,6 +2676,7 @@ async fn run_presence_listener(
                                     let _ = presence.update_presence(update, &tenant_id).await;
                                     presence.add_active_call(
                                         ext_dev_aor,
+                                        &tenant_id,
                                         fcp_presence::ActiveCallInfo {
                                             call_id: call_id_str.clone(),
                                             remote_uri: caller_uri.clone(),
@@ -2709,6 +2714,7 @@ async fn run_presence_listener(
                                 let _ = presence.update_presence(update, &tenant_id).await;
                                 presence.add_active_call(
                                     ext_aor,
+                                    &tenant_id,
                                     fcp_presence::ActiveCallInfo {
                                         call_id: call_id_str.clone(),
                                         remote_uri: caller_uri.clone(),
@@ -2735,6 +2741,7 @@ async fn run_presence_listener(
                             let callee_uri = to.clone();
                             presence.add_active_call(
                                 &caller_aor,
+                                &tenant_id,
                                 fcp_presence::ActiveCallInfo {
                                     call_id: call_id_str.clone(),
                                     remote_uri: callee_uri,
@@ -2775,14 +2782,14 @@ async fn run_presence_listener(
                             .await;
                             // If this AOR has no remaining active calls, revert
                             // presence to Open (only if in a call-related state).
-                            if presence.get_active_calls(aor).is_empty() {
+                            if presence.get_active_calls_for_tenant(aor, &tenant_id).is_empty() {
                                 // Bypass auto_phone_state — the system set the
                                 // state on Initiated, so the system must clear it.
                                 // Also revert if no presentity exists yet (conference
                                 // calls may set OnThePhone without creating a record
                                 // in every path).
                                 let is_call_state = presence
-                                    .get_presence(aor)
+                                    .get_presence_for_tenant(aor, &tenant_id)
                                     .map(|p| {
                                         matches!(
                                             p.state,
@@ -2887,7 +2894,10 @@ async fn run_presence_listener(
                     }) => {
                         let aor = resolve_conference_participant_aor(participant_id, &presence);
                         if let Some(aor) = aor {
-                            if presence.get_active_calls(&aor).is_empty() {
+                            if presence
+                                .get_active_calls_for_tenant(&aor, event_tenant_id)
+                                .is_empty()
+                            {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor,
                                     state: fcp_presence::PresenceState::Open,

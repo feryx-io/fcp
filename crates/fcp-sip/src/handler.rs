@@ -1947,32 +1947,11 @@ impl SipMessageHandler {
 
         // Look up user media preferences
         let user_prefs = if let Some(ref registrar) = self.registrar {
-            // Extract username from From header (simple parsing)
-            // From: "Alice" <sip:alice@example.com> or sip:alice@example.com
-            let username = sip_parse::header(request.headers(), "From").and_then(|from| {
-                // Extract URI between < > if present, otherwise use whole string
-                let uri_part = if let Some(start) = from.as_str().find('<') {
-                    if let Some(end) = from.as_str().find('>') {
-                        &from.as_str()[start + 1..end]
-                    } else {
-                        from.as_str()
-                    }
-                } else {
-                    from.as_str()
-                };
+            let from_aor = sip_parse::header(request.headers(), "From")
+                .and_then(|from| crate::presence::extract_aor(from.as_str()));
 
-                // Extract username from sip:username@domain
-                if let Some(user_start) = uri_part.find("sip:") {
-                    let after_sip = &uri_part[user_start + 4..];
-                    if let Some(at_pos) = after_sip.find('@') {
-                        return Some(after_sip[..at_pos].to_string());
-                    }
-                }
-                None
-            });
-
-            if let Some(user) = username {
-                registrar.get_user_media_preferences(&user).await
+            if let Some(aor) = from_aor {
+                registrar.get_user_media_preferences(&aor).await
             } else {
                 fcp_core::MediaPreferences::default()
             }
@@ -8750,11 +8729,11 @@ impl SipMessageHandler {
                 );
                 // TODO: Phase 2 — CANCEL the ringing B-leg and bridge the picker to the A-leg
                 let response =
-                    self.create_simple_response(request, 501, "Pickup Not Yet Implemented");
+                    self.create_simple_response(request, 503, "Pickup Unavailable");
                 handle.send_final(response).await;
                 let _ = self.call_manager.terminate_call(
                     call_id,
-                    Some("Group pickup not yet fully implemented".to_string()),
+                    Some("Group pickup is not available in this deployment".to_string()),
                 );
             }
             None => {
@@ -8796,11 +8775,11 @@ impl SipMessageHandler {
                 );
                 // TODO: Phase 2 — CANCEL the ringing B-leg and bridge the picker to the A-leg
                 let response =
-                    self.create_simple_response(request, 501, "Pickup Not Yet Implemented");
+                    self.create_simple_response(request, 503, "Pickup Unavailable");
                 handle.send_final(response).await;
                 let _ = self.call_manager.terminate_call(
                     call_id,
-                    Some("Directed pickup not yet fully implemented".to_string()),
+                    Some("Directed pickup is not available in this deployment".to_string()),
                 );
             }
             None => {
@@ -9464,11 +9443,11 @@ impl SipMessageHandler {
 
         // TODO: Phase 2 — resolve extension to contact, send INVITE with extra_headers,
         // and for one-way mode, modify SDP direction to sendonly on the intercom leg.
-        let response = self.create_simple_response(request, 501, "Intercom Not Yet Implemented");
+        let response = self.create_simple_response(request, 503, "Intercom Unavailable");
         handle.send_final(response).await;
         let _ = self.call_manager.terminate_call(
             call_id,
-            Some("Intercom not yet fully implemented".to_string()),
+            Some("Intercom is not available in this deployment".to_string()),
         );
         Ok(())
     }

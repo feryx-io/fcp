@@ -244,7 +244,9 @@ async fn get_watchers(
     State(state): State<Arc<AppState>>,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
-    let watchers = state.manager.get_watchers(&aor);
+    let watchers = state
+        .manager
+        .get_watchers_for_tenant(&aor, &state.default_tenant_id);
     let watcher_list: Vec<serde_json::Value> = watchers
         .iter()
         .map(|w| {

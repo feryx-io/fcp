@@ -25,29 +25,29 @@ use crate::types::{
 /// Thread-safe via `DashMap` — can be shared across tokio tasks.
 #[derive(Clone)]
 pub struct PresenceManager {
-    /// AOR → PresenceInfo
+    /// (tenant_id, AOR) → PresenceInfo
     presentities: Arc<DashMap<String, PresenceInfo>>,
-    /// Presentity AOR → Vec<Watcher>
+    /// (tenant_id, presentity AOR) → Vec<Watcher>
     watchers: Arc<DashMap<String, Vec<Watcher>>>,
     /// Configuration
     config: Arc<parking_lot::RwLock<PresenceConfig>>,
     /// Optional event publisher
     events: Option<Arc<dyn EventPublisher>>,
-    /// Per-presentity authorization policies (AOR → policy)
+    /// Per-presentity authorization policies ((tenant_id, AOR) → policy)
     auth_policies: Arc<DashMap<String, PresenceAuthPolicy>>,
-    /// Tenant ownership for each authorization policy (AOR → tenant)
+    /// Tenant ownership for each authorization policy ((tenant_id, AOR) → tenant)
     auth_policy_tenants: Arc<DashMap<String, TenantId>>,
     /// RFC 3903 PUBLISH ETag → Event State Composition tracking
     publish_etags: Arc<DashMap<String, EventStateComposition>>,
-    /// RFC 4235 dialog-info version counter per presentity AOR
+    /// RFC 4235 dialog-info version counter per (tenant_id, presentity AOR)
     dialog_versions: Arc<DashMap<String, u64>>,
     /// Metrics handle for observability
     metrics: MetricsHandle,
-    /// Active calls per AOR for real dialog-info generation
+    /// Active calls per (tenant_id, AOR) for real dialog-info generation
     active_calls: Arc<DashMap<String, Vec<crate::types::ActiveCallInfo>>>,
-    /// Watcher-info subscribers (AOR → Vec<Watcher> watching the watcher list)
+    /// Watcher-info subscribers ((tenant_id, AOR) → Vec<Watcher> watching the watcher list)
     winfo_watchers: Arc<DashMap<String, Vec<Watcher>>>,
-    /// Watcher-info version counter per AOR
+    /// Watcher-info version counter per (tenant_id, AOR)
     winfo_versions: Arc<DashMap<String, u32>>,
     /// NOTIFY delivery retry queue (keyed by "subscription_id:aor")
     notify_retry_queue: Arc<DashMap<String, NotifyRetryEntry>>,
@@ -122,6 +122,89 @@ impl PresenceManager {
         self.config.read().clone()
     }
 
+    fn normalized_aor_key(aor: &str) -> String {
+        aor.trim().to_ascii_lowercase()
+    }
+
+    fn scoped_aor_key(tenant_id: &TenantId, aor: &str) -> String {
+        format!("{}|{}", tenant_id, Self::normalized_aor_key(aor))
+    }
+
+    fn key_matches_aor(key: &str, aor: &str) -> bool {
+        key.ends_with(&format!("|{}", Self::normalized_aor_key(aor)))
+    }
+
+    fn tenant_id_from_scoped_key(key: &str) -> Option<TenantId> {
+        let (tenant_str, _) = key.split_once('|')?;
+        tenant_str.parse::<TenantId>().ok()
+    }
+
+    fn aor_from_scoped_key(key: &str) -> String {
+        key.split_once('|')
+            .map(|(_, aor)| aor.to_string())
+            .unwrap_or_else(|| key.to_string())
+    }
+
+    fn unique_key_for_aor<T>(map: &DashMap<String, T>, aor: &str) -> Option<String> {
+        let mut matches = map
+            .iter()
+            .filter(|entry| Self::key_matches_aor(entry.key(), aor))
+            .map(|entry| entry.key().clone());
+
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
+    }
+
+    fn keys_for_aor<T>(map: &DashMap<String, T>, aor: &str) -> Vec<String> {
+        map.iter()
+            .filter(|entry| Self::key_matches_aor(entry.key(), aor))
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
+    fn tenants_for_aor<T>(map: &DashMap<String, T>, aor: &str) -> Vec<TenantId> {
+        let mut tenants = Vec::new();
+        for key in Self::keys_for_aor(map, aor) {
+            if let Some(tenant_id) = Self::tenant_id_from_scoped_key(&key) {
+                if !tenants.contains(&tenant_id) {
+                    tenants.push(tenant_id);
+                }
+            }
+        }
+        tenants
+    }
+
+    fn candidate_tenants_for_aor(&self, aor: &str) -> Vec<TenantId> {
+        let mut tenants = Vec::new();
+        for candidate in [
+            Self::tenants_for_aor(&self.presentities, aor),
+            Self::tenants_for_aor(&self.watchers, aor),
+            Self::tenants_for_aor(&self.winfo_watchers, aor),
+            Self::tenants_for_aor(&self.auth_policies, aor),
+            Self::tenants_for_aor(&self.active_calls, aor),
+        ] {
+            for tenant_id in candidate {
+                if !tenants.contains(&tenant_id) {
+                    tenants.push(tenant_id);
+                }
+            }
+        }
+        tenants
+    }
+
+    fn resolve_unique_tenant_for_aor(&self, aor: &str) -> Option<TenantId> {
+        let tenants = self.candidate_tenants_for_aor(aor);
+        if tenants.len() == 1 {
+            tenants.into_iter().next()
+        } else {
+            None
+        }
+    }
+
     /// Get a reference to the event publisher for external event emission.
     pub fn event_publisher(&self) -> &Option<Arc<dyn EventPublisher>> {
         &self.events
@@ -181,24 +264,18 @@ impl PresenceManager {
         update: PresenceUpdate,
         tenant_id: &TenantId,
     ) -> Result<PresenceInfo> {
+        let key = Self::scoped_aor_key(tenant_id, &update.aor);
         // Extract config values before any await point (parking_lot guards are !Send)
         let max_presentities = self.config.read().max_presentities;
 
         // Check max presentities limit
-        if !self.presentities.contains_key(&update.aor)
+        if !self.presentities.contains_key(&key)
             && self.presentities.len() >= max_presentities
         {
             bail!("Max presentities limit reached ({max_presentities})");
         }
 
-        let old_state = match self.presentities.get(&update.aor) {
-            Some(existing) if existing.tenant_id != *tenant_id => {
-                bail!(
-                    "Presentity '{}' belongs to tenant {}",
-                    update.aor,
-                    existing.tenant_id
-                );
-            }
+        let old_state = match self.presentities.get(&key) {
             Some(existing) => Some(existing.state),
             None => None,
         };
@@ -215,7 +292,7 @@ impl PresenceManager {
             updated_at: Instant::now(),
         };
 
-        self.presentities.insert(update_aor.clone(), info.clone());
+        self.presentities.insert(key, info.clone());
 
         // Emit metrics
         self.metrics.set_gauge(
@@ -255,21 +332,9 @@ impl PresenceManager {
 
     /// Get current presence info for an AOR.
     pub fn get_presence(&self, aor: &str) -> Option<PresenceInfo> {
-        // Check local presentities first
-        if let Some(p) = self.presentities.get(aor) {
-            return Some(p.clone());
-        }
-
-        // Fall back to federation cache
-        if let Some(ref fm) = self.federation {
-            if let Some(state) = fm.get_federated_presence(aor) {
-                return Some(PresenceInfo {
-                    aor: aor.to_string(),
-                    state,
-                    note: None,
-                    tenant_id: TenantId::default(),
-                    updated_at: Instant::now(),
-                });
+        if let Some(key) = Self::unique_key_for_aor(&self.presentities, aor) {
+            if let Some(p) = self.presentities.get(&key) {
+                return Some(p.clone());
             }
         }
 
@@ -278,12 +343,9 @@ impl PresenceManager {
 
     /// Get current presence info for an AOR scoped to a tenant.
     pub fn get_presence_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> Option<PresenceInfo> {
-        if let Some(presence) = self.presentities.get(aor) {
-            let presence = presence.clone();
-            if presence.tenant_id == *tenant_id {
-                return Some(presence);
-            }
-            return None;
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        if let Some(presence) = self.presentities.get(&key) {
+            return Some(presence.clone());
         }
 
         self.federation.as_ref().and_then(|fm| {
@@ -324,13 +386,13 @@ impl PresenceManager {
     /// Publishes a StatusChanged event (→ Closed) so watchers are notified,
     /// and removes from persistent storage.
     pub async fn remove_presence(&self, aor: &str, tenant_id: &TenantId) {
-        let old_state = match self.presentities.get(aor) {
-            Some(existing) if existing.tenant_id != *tenant_id => return,
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        let old_state = match self.presentities.get(&key) {
             Some(existing) => Some(existing.state),
             None => None,
         };
 
-        self.presentities.remove(aor);
+        self.presentities.remove(&key);
 
         // Publish StatusChanged event so the NOTIFY dispatcher can inform watchers
         if let Some(old) = old_state {
@@ -348,15 +410,21 @@ impl PresenceManager {
         let presentity_aor = watcher.presentity_aor.clone();
         let watcher_aor = watcher.watcher_aor.clone();
         let tenant_id = watcher.tenant_id.clone();
+        let key = Self::scoped_aor_key(&tenant_id, &presentity_aor);
 
         // Verify cross-tenant isolation: watcher must belong to the same tenant as the presentity
-        if let Some(info) = self.presentities.get(&presentity_aor) {
+        if let Some(info) = self.presentities.get(&key) {
             if info.tenant_id != watcher.tenant_id {
                 bail!("Cross-tenant subscription not allowed");
             }
+        } else if Self::keys_for_aor(&self.presentities, &presentity_aor)
+            .into_iter()
+            .any(|presentity_key| presentity_key != key)
+        {
+            bail!("Cross-tenant subscription not allowed");
         }
 
-        let mut entry = self.watchers.entry(presentity_aor.clone()).or_default();
+        let mut entry = self.watchers.entry(key).or_default();
 
         if max > 0 && entry.len() >= max {
             bail!("Max watchers per presentity reached ({max}) for {presentity_aor}");
@@ -392,14 +460,21 @@ impl PresenceManager {
         let mut removed_aor = None;
         let mut tenant_id = None;
 
-        if let Some(mut entry) = self.watchers.get_mut(presentity_aor) {
-            if let Some(pos) = entry
-                .iter()
-                .position(|w| w.subscription_id == subscription_id)
-            {
-                let removed = entry.remove(pos);
-                removed_aor = Some(removed.watcher_aor);
-                tenant_id = Some(removed.tenant_id);
+        for key in Self::keys_for_aor(&self.watchers, presentity_aor) {
+            if let Some(mut entry) = self.watchers.get_mut(&key) {
+                if let Some(pos) = entry
+                    .iter()
+                    .position(|w| w.subscription_id == subscription_id)
+                {
+                    let removed = entry.remove(pos);
+                    removed_aor = Some(removed.watcher_aor);
+                    tenant_id = Some(removed.tenant_id);
+                    if entry.is_empty() {
+                        drop(entry);
+                        self.watchers.remove(&key);
+                    }
+                    break;
+                }
             }
         }
 
@@ -423,9 +498,23 @@ impl PresenceManager {
 
     /// Get all non-expired watchers for a presentity.
     pub fn get_watchers(&self, presentity_aor: &str) -> Vec<Watcher> {
+        let key = match Self::unique_key_for_aor(&self.watchers, presentity_aor) {
+            Some(key) => key,
+            None => return Vec::new(),
+        };
+        self.get_watchers_for_key(&key)
+    }
+
+    /// Get all non-expired watchers for a presentity within a tenant.
+    pub fn get_watchers_for_tenant(&self, presentity_aor: &str, tenant_id: &TenantId) -> Vec<Watcher> {
+        let key = Self::scoped_aor_key(tenant_id, presentity_aor);
+        self.get_watchers_for_key(&key)
+    }
+
+    fn get_watchers_for_key(&self, key: &str) -> Vec<Watcher> {
         let now = Instant::now();
         self.watchers
-            .get(presentity_aor)
+            .get(key)
             .map(|entry| {
                 entry
                     .iter()
@@ -454,9 +543,28 @@ impl PresenceManager {
 
     /// Get watchers for a presentity filtered by event package (excludes expired).
     pub fn get_watchers_by_event(&self, presentity_aor: &str, event_package: &str) -> Vec<Watcher> {
+        let key = match Self::unique_key_for_aor(&self.watchers, presentity_aor) {
+            Some(key) => key,
+            None => return Vec::new(),
+        };
+        self.get_watchers_by_event_for_key(&key, event_package)
+    }
+
+    /// Get watchers for a presentity filtered by event package within a tenant.
+    pub fn get_watchers_by_event_for_tenant(
+        &self,
+        presentity_aor: &str,
+        tenant_id: &TenantId,
+        event_package: &str,
+    ) -> Vec<Watcher> {
+        let key = Self::scoped_aor_key(tenant_id, presentity_aor);
+        self.get_watchers_by_event_for_key(&key, event_package)
+    }
+
+    fn get_watchers_by_event_for_key(&self, key: &str, event_package: &str) -> Vec<Watcher> {
         let now = Instant::now();
         self.watchers
-            .get(presentity_aor)
+            .get(key)
             .map(|entry| {
                 entry
                     .iter()
@@ -497,8 +605,29 @@ impl PresenceManager {
         presentity_aor: &str,
         event_package: &str,
     ) -> Option<String> {
+        let key = Self::unique_key_for_aor(&self.watchers, presentity_aor)?;
+        self.find_existing_watcher_for_key(watcher_aor, &key, event_package)
+    }
+
+    pub fn find_existing_watcher_for_tenant(
+        &self,
+        watcher_aor: &str,
+        presentity_aor: &str,
+        tenant_id: &TenantId,
+        event_package: &str,
+    ) -> Option<String> {
+        let key = Self::scoped_aor_key(tenant_id, presentity_aor);
+        self.find_existing_watcher_for_key(watcher_aor, &key, event_package)
+    }
+
+    fn find_existing_watcher_for_key(
+        &self,
+        watcher_aor: &str,
+        key: &str,
+        event_package: &str,
+    ) -> Option<String> {
         let now = Instant::now();
-        self.watchers.get(presentity_aor).and_then(|entry| {
+        self.watchers.get(key).and_then(|entry| {
             entry
                 .iter()
                 .find(|w| {
@@ -517,24 +646,53 @@ impl PresenceManager {
         subscription_id: &str,
         new_expires: Instant,
     ) -> Result<()> {
-        if let Some(mut entry) = self.watchers.get_mut(presentity_aor) {
-            if let Some(watcher) = entry
-                .iter_mut()
-                .find(|w| w.subscription_id == subscription_id)
-            {
-                watcher.expires_at = new_expires;
+        let key = Self::unique_key_for_aor(&self.watchers, presentity_aor)
+            .ok_or_else(|| anyhow::anyhow!("Watcher not found: {subscription_id} for {presentity_aor}"))?;
+        self.refresh_watcher_for_key(&key, subscription_id, new_expires)
+    }
 
+    pub fn refresh_watcher_for_tenant(
+        &self,
+        presentity_aor: &str,
+        tenant_id: &TenantId,
+        subscription_id: &str,
+        new_expires: Instant,
+    ) -> Result<()> {
+        let key = Self::scoped_aor_key(tenant_id, presentity_aor);
+        self.refresh_watcher_for_key(&key, subscription_id, new_expires)
+    }
+
+    fn refresh_watcher_for_key(
+        &self,
+        key: &str,
+        subscription_id: &str,
+        new_expires: Instant,
+    ) -> Result<()> {
+        if let Some(mut entry) = self.watchers.get_mut(key) {
+            if let Some(watcher) = entry.iter_mut().find(|w| w.subscription_id == subscription_id) {
+                watcher.expires_at = new_expires;
                 return Ok(());
             }
         }
-        bail!("Watcher not found: {subscription_id} for {presentity_aor}");
+        bail!("Watcher not found: {subscription_id}");
     }
 
     /// Generate PIDF XML for a presentity's current state (for NOTIFY body).
     ///
     /// Includes RFC 4480 RPID activity extensions when applicable.
     pub fn generate_pidf(&self, aor: &str) -> Option<String> {
-        self.presentities.get(aor).map(|info| {
+        self.get_presence(aor).map(|info| {
+            pidf::generate_pidf(
+                aor,
+                &info.state,
+                info.note.as_deref(),
+                info.state.to_rpid_activity(),
+            )
+        })
+    }
+
+    pub fn generate_pidf_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> Option<String> {
+        self.get_presence_for_tenant(aor, tenant_id).map(|info| {
             pidf::generate_pidf(
                 aor,
                 &info.state,
@@ -558,11 +716,7 @@ impl PresenceManager {
     /// Each call increments the version counter for this AOR, ensuring
     /// BLF phones see monotonically increasing version numbers.
     pub fn generate_dialog_info(&self, aor: &str) -> String {
-        let state = self
-            .presentities
-            .get(aor)
-            .map(|p| p.state)
-            .unwrap_or(PresenceState::Closed);
+        let state = self.get_presence(aor).map(|p| p.state).unwrap_or(PresenceState::Closed);
         let version = self.next_dialog_version(aor);
         let active_calls = self.get_active_calls(aor);
         if active_calls.is_empty() {
@@ -572,9 +726,35 @@ impl PresenceManager {
         }
     }
 
+    pub fn generate_dialog_info_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> String {
+        let state = self
+            .get_presence_for_tenant(aor, tenant_id)
+            .map(|p| p.state)
+            .unwrap_or(PresenceState::Closed);
+        let version = self.next_dialog_version_for_tenant(aor, tenant_id);
+        let active_calls = self.get_active_calls_for_tenant(aor, tenant_id);
+        if active_calls.is_empty() {
+            dialog_info::generate_dialog_info(aor, &state, None, version)
+        } else {
+            dialog_info::generate_dialog_info_with_calls(aor, &active_calls, version)
+        }
+    }
+
     /// Atomically increment and return the next dialog-info version for an AOR.
     fn next_dialog_version(&self, aor: &str) -> u64 {
-        let mut entry = self.dialog_versions.entry(aor.to_string()).or_insert(0);
+        let key = match Self::unique_key_for_aor(&self.dialog_versions, aor) {
+            Some(key) => key,
+            None => Self::normalized_aor_key(aor),
+        };
+        let mut entry = self.dialog_versions.entry(key).or_insert(0);
+        let v = *entry;
+        *entry = v + 1;
+        v
+    }
+
+    fn next_dialog_version_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> u64 {
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        let mut entry = self.dialog_versions.entry(key).or_insert(0);
         let v = *entry;
         *entry = v + 1;
         v
@@ -607,8 +787,7 @@ impl PresenceManager {
 
         // Only revert if currently in a call-related state
         let is_in_call = self
-            .presentities
-            .get(aor)
+            .get_presence_for_tenant(aor, tenant_id)
             .map(|p| matches!(p.state, PresenceState::OnThePhone | PresenceState::Ringing))
             .unwrap_or(false);
 
@@ -751,11 +930,24 @@ impl PresenceManager {
     ///
     /// Returns `None` if there are no active PUBLISHes for the given AOR.
     pub fn compose_state(&self, aor: &str) -> Option<(PresenceState, Option<String>)> {
+        let tenant_id = self.resolve_unique_tenant_for_aor(aor)?;
+        self.compose_state_for_tenant(aor, &tenant_id)
+    }
+
+    /// Compose the highest-priority presence state from all active PUBLISHes for an AOR
+    /// within a specific tenant.
+    ///
+    /// Returns `None` if there are no active PUBLISHes for the given AOR.
+    pub fn compose_state_for_tenant(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> Option<(PresenceState, Option<String>)> {
         let mut best: Option<(PresenceState, Option<String>)> = None;
 
         for entry in self.publish_etags.iter() {
             let esc = entry.value();
-            if esc.aor == aor {
+            if esc.aor == aor && esc.tenant_id == *tenant_id {
                 match &best {
                     Some((current_state, _))
                         if esc.state.composition_priority()
@@ -781,7 +973,7 @@ impl PresenceManager {
             return;
         }
 
-        if let Some((state, note)) = self.compose_state(aor) {
+        if let Some((state, note)) = self.compose_state_for_tenant(aor, tenant_id) {
             let update = PresenceUpdate {
                 aor: aor.to_string(),
                 state,
@@ -876,7 +1068,7 @@ impl PresenceManager {
                 // Recompose from remaining PUBLISHes
                 self.recompose_and_update(&aor, &tenant_id).await;
                 // If no remaining PUBLISHes, compose_state returns None — revert to Closed
-                if self.compose_state(&aor).is_none() {
+                if self.compose_state_for_tenant(&aor, &tenant_id).is_none() {
                     debug!(aor = %aor, "Last PUBLISH expired, reverting to Closed");
                     let update = PresenceUpdate {
                         aor: aor.clone(),
@@ -892,7 +1084,7 @@ impl PresenceManager {
                 let has_remaining = self
                     .publish_etags
                     .iter()
-                    .any(|entry| entry.value().aor == aor);
+                    .any(|entry| entry.value().aor == aor && entry.value().tenant_id == tenant_id);
                 if !has_remaining {
                     debug!(aor = %aor, "Last PUBLISH expired, reverting to Closed");
                     let update = PresenceUpdate {
@@ -911,20 +1103,21 @@ impl PresenceManager {
     // ---- Active call tracking for real dialog-info (RFC 4235) ----
 
     /// Track a new active call for dialog-info generation.
-    pub fn add_active_call(&self, aor: &str, call: crate::types::ActiveCallInfo) {
+    pub fn add_active_call(&self, aor: &str, tenant_id: &TenantId, call: crate::types::ActiveCallInfo) {
         self.active_calls
-            .entry(aor.to_string())
+            .entry(Self::scoped_aor_key(tenant_id, aor))
             .or_default()
             .push(call);
     }
 
     /// Remove an active call by call_id for a specific AOR.
-    pub fn remove_active_call(&self, aor: &str, call_id: &str) {
-        if let Some(mut entry) = self.active_calls.get_mut(aor) {
+    pub fn remove_active_call(&self, aor: &str, tenant_id: &TenantId, call_id: &str) {
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        if let Some(mut entry) = self.active_calls.get_mut(&key) {
             entry.retain(|c| c.call_id != call_id);
             if entry.is_empty() {
                 drop(entry);
-                self.active_calls.remove(aor);
+                self.active_calls.remove(&key);
             }
         }
     }
@@ -937,7 +1130,7 @@ impl PresenceManager {
         self.active_calls
             .iter()
             .filter(|entry| entry.value().iter().any(|c| c.call_id == call_id))
-            .map(|entry| entry.key().clone())
+            .map(|entry| Self::aor_from_scoped_key(entry.key()))
             .collect()
     }
 
@@ -959,10 +1152,12 @@ impl PresenceManager {
     pub fn update_call_state(
         &self,
         aor: &str,
+        tenant_id: &TenantId,
         call_id: &str,
         new_state: crate::types::DialogState,
     ) {
-        if let Some(mut entry) = self.active_calls.get_mut(aor) {
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        if let Some(mut entry) = self.active_calls.get_mut(&key) {
             if let Some(call) = entry.iter_mut().find(|c| c.call_id == call_id) {
                 call.dialog_state = new_state;
             }
@@ -971,8 +1166,25 @@ impl PresenceManager {
 
     /// Get active calls for an AOR.
     pub fn get_active_calls(&self, aor: &str) -> Vec<crate::types::ActiveCallInfo> {
+        let key = match Self::unique_key_for_aor(&self.active_calls, aor) {
+            Some(key) => key,
+            None => return Vec::new(),
+        };
         self.active_calls
-            .get(aor)
+            .get(&key)
+            .map(|entry| entry.clone())
+            .unwrap_or_default()
+    }
+
+    /// Get active calls for an AOR within a tenant.
+    pub fn get_active_calls_for_tenant(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> Vec<crate::types::ActiveCallInfo> {
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        self.active_calls
+            .get(&key)
             .map(|entry| entry.clone())
             .unwrap_or_default()
     }
@@ -984,13 +1196,19 @@ impl PresenceManager {
         presentity_aor: &str,
         subscription_id: &str,
     ) -> Option<Watcher> {
-        if let Some(mut entry) = self.watchers.get_mut(presentity_aor) {
-            if let Some(pos) = entry
-                .iter()
-                .position(|w| w.subscription_id == subscription_id)
-            {
-                let removed = entry.remove(pos);
-                return Some(removed);
+        for key in Self::keys_for_aor(&self.watchers, presentity_aor) {
+            if let Some(mut entry) = self.watchers.get_mut(&key) {
+                if let Some(pos) = entry
+                    .iter()
+                    .position(|w| w.subscription_id == subscription_id)
+                {
+                    let removed = entry.remove(pos);
+                    if entry.is_empty() {
+                        drop(entry);
+                        self.watchers.remove(&key);
+                    }
+                    return Some(removed);
+                }
             }
         }
         None
@@ -1003,10 +1221,10 @@ impl PresenceManager {
         aor: &str,
         tenant_id: &TenantId,
     ) -> Vec<Watcher> {
-        let watchers = self.get_watchers(aor);
+        let watchers = self.get_watchers_for_tenant(aor, tenant_id);
 
         // Remove all watchers for this AOR
-        self.watchers.remove(aor);
+        self.watchers.remove(&Self::scoped_aor_key(tenant_id, aor));
 
         // Remove the presentity itself
         self.remove_presence(aor, tenant_id).await;
@@ -1019,27 +1237,60 @@ impl PresenceManager {
     /// Add a watcher-info subscriber (someone watching the watcher list for an AOR).
     pub fn add_winfo_watcher(&self, watcher: Watcher) {
         self.winfo_watchers
-            .entry(watcher.presentity_aor.clone())
+            .entry(Self::scoped_aor_key(&watcher.tenant_id, &watcher.presentity_aor))
             .or_default()
             .push(watcher);
     }
 
     /// Remove a watcher-info subscriber.
     pub fn remove_winfo_watcher(&self, aor: &str, subscription_id: &str) {
-        if let Some(mut entry) = self.winfo_watchers.get_mut(aor) {
+        for key in Self::keys_for_aor(&self.winfo_watchers, aor) {
+            if let Some(mut entry) = self.winfo_watchers.get_mut(&key) {
+                entry.retain(|w| w.subscription_id != subscription_id);
+                if entry.is_empty() {
+                    drop(entry);
+                    self.winfo_watchers.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Remove a watcher-info subscriber within a tenant.
+    pub fn remove_winfo_watcher_for_tenant(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+        subscription_id: &str,
+    ) {
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        if let Some(mut entry) = self.winfo_watchers.get_mut(&key) {
             entry.retain(|w| w.subscription_id != subscription_id);
             if entry.is_empty() {
                 drop(entry);
-                self.winfo_watchers.remove(aor);
+                self.winfo_watchers.remove(&key);
             }
         }
     }
 
     /// Get all non-expired watcher-info subscribers for an AOR.
     pub fn get_winfo_watchers(&self, aor: &str) -> Vec<Watcher> {
+        let key = match Self::unique_key_for_aor(&self.winfo_watchers, aor) {
+            Some(key) => key,
+            None => return Vec::new(),
+        };
+        self.get_winfo_watchers_for_key(&key)
+    }
+
+    /// Get all non-expired watcher-info subscribers for an AOR within a tenant.
+    pub fn get_winfo_watchers_for_tenant(&self, aor: &str, tenant_id: &TenantId) -> Vec<Watcher> {
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        self.get_winfo_watchers_for_key(&key)
+    }
+
+    fn get_winfo_watchers_for_key(&self, key: &str) -> Vec<Watcher> {
         let now = Instant::now();
         self.winfo_watchers
-            .get(aor)
+            .get(key)
             .map(|entry| {
                 entry
                     .iter()
@@ -1052,12 +1303,28 @@ impl PresenceManager {
 
     /// Generate watcherinfo XML (RFC 3858) for the given AOR's watcher list.
     pub fn generate_watcherinfo(&self, aor: &str) -> anyhow::Result<String> {
+        let tenants = self.candidate_tenants_for_aor(aor);
+        let tenant_id = match tenants.len() {
+            0 => TenantId::nil(),
+            1 => tenants[0],
+            _ => return Err(anyhow::anyhow!("ambiguous tenant for {}", aor)),
+        };
+        self.generate_watcherinfo_for_tenant(aor, &tenant_id)
+    }
+
+    /// Generate watcherinfo XML (RFC 3858) for the given AOR's watcher list within a tenant.
+    pub fn generate_watcherinfo_for_tenant(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<String> {
         use sip_core::watcher_info::{
             Watcher as WinfoWatcher, WatcherEvent, WatcherList, WatcherStatus, WatcherinfoDocument,
         };
 
+        let key = Self::scoped_aor_key(tenant_id, aor);
         let version = {
-            let mut entry = self.winfo_versions.entry(aor.to_string()).or_insert(0);
+            let mut entry = self.winfo_versions.entry(key).or_insert(0);
             let v = *entry;
             *entry = v + 1;
             v
@@ -1069,7 +1336,7 @@ impl PresenceManager {
         let mut list = WatcherList::new(format!("sip:{aor}"), "presence")
             .map_err(|e| anyhow::anyhow!("watcherinfo error: {e}"))?;
 
-        let watchers = self.get_watchers(aor);
+        let watchers = self.get_watchers_for_tenant(aor, tenant_id);
         let now = Instant::now();
 
         for w in &watchers {
@@ -1109,14 +1376,16 @@ impl PresenceManager {
 
     /// Set authorization policy for a presentity.
     pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, tenant_id: &TenantId) {
-        self.auth_policies.insert(aor.to_string(), policy);
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        self.auth_policies.insert(key.clone(), policy);
         self.auth_policy_tenants
-            .insert(aor.to_string(), tenant_id.clone());
+            .insert(key, tenant_id.clone());
     }
 
     /// Get authorization policy for a presentity.
     pub fn get_auth_policy(&self, aor: &str) -> Option<PresenceAuthPolicy> {
-        self.auth_policies.get(aor).map(|p| p.clone())
+        let key = Self::unique_key_for_aor(&self.auth_policies, aor)?;
+        self.auth_policies.get(&key).map(|p| p.clone())
     }
 
     /// Get authorization policy for a presentity scoped to a tenant.
@@ -1125,28 +1394,33 @@ impl PresenceManager {
         aor: &str,
         tenant_id: &TenantId,
     ) -> Option<PresenceAuthPolicy> {
-        let owner = self.auth_policy_tenants.get(aor)?;
+        let key = Self::scoped_aor_key(tenant_id, aor);
+        let owner = self.auth_policy_tenants.get(&key)?;
         if *owner != *tenant_id {
             return None;
         }
-        self.auth_policies.get(aor).map(|p| p.clone())
+        self.auth_policies.get(&key).map(|p| p.clone())
     }
 
     /// Remove authorization policy for a presentity (reverts to self-only access).
     pub fn remove_auth_policy(&self, aor: &str) {
-        self.auth_policies.remove(aor);
-        self.auth_policy_tenants.remove(aor);
+        for key in Self::keys_for_aor(&self.auth_policies, aor) {
+            self.auth_policies.remove(&key);
+            self.auth_policy_tenants.remove(&key);
+        }
     }
 
     /// Remove authorization policy for a presentity only if it belongs to the tenant.
     pub fn remove_auth_policy_for_tenant(&self, aor: &str, tenant_id: &TenantId) {
+        let key = Self::scoped_aor_key(tenant_id, aor);
         if self
             .auth_policy_tenants
-            .get(aor)
+            .get(&key)
             .map(|owner| *owner == *tenant_id)
             .unwrap_or(false)
         {
-            self.remove_auth_policy(aor);
+            self.auth_policies.remove(&key);
+            self.auth_policy_tenants.remove(&key);
         }
     }
 
@@ -1159,7 +1433,29 @@ impl PresenceManager {
         presentity_aor: &str,
         event_package: &str,
     ) -> bool {
-        match self.auth_policies.get(presentity_aor) {
+        let policy = self.get_auth_policy(presentity_aor);
+        match policy {
+            Some(policy) => {
+                let allowed = policy.is_allowed_for_event(watcher_aor, event_package);
+                if !allowed {
+                    self.metrics
+                        .inc_counter("fcp_presence_auth_denied_total", &[]);
+                }
+                allowed
+            }
+            None => watcher_aor.eq_ignore_ascii_case(presentity_aor),
+        }
+    }
+
+    /// Check if a watcher is authorized within a specific tenant context.
+    pub fn is_watcher_authorized_for_tenant(
+        &self,
+        watcher_aor: &str,
+        presentity_aor: &str,
+        tenant_id: &TenantId,
+        event_package: &str,
+    ) -> bool {
+        match self.get_auth_policy_for_tenant(presentity_aor, tenant_id) {
             Some(policy) => {
                 let allowed = policy.is_allowed_for_event(watcher_aor, event_package);
                 if !allowed {
@@ -1322,10 +1618,10 @@ impl PresenceManager {
                                         // Update local state directly (without re-publishing
                                         // to Redis, which would cause a loop). We insert
                                         // into presentities directly and fire local events.
-                                        let old_state = manager
-                                            .presentities
-                                            .get(&change.aor)
-                                            .map(|p| p.state);
+                                        let key =
+                                            Self::scoped_aor_key(&change.tenant_id, &change.aor);
+                                        let old_state =
+                                            manager.presentities.get(&key).map(|p| p.state);
                                         let info = PresenceInfo {
                                             aor: change.aor.clone(),
                                             state,
@@ -1333,7 +1629,7 @@ impl PresenceManager {
                                             tenant_id: change.tenant_id.clone(),
                                             updated_at: std::time::Instant::now(),
                                         };
-                                        manager.presentities.insert(change.aor.clone(), info);
+                                        manager.presentities.insert(key, info);
 
                                         let old = old_state.unwrap_or(PresenceState::Closed);
                                         if old != state {
@@ -1356,7 +1652,8 @@ impl PresenceManager {
                                 }
 
                                 // Notify local watchers
-                                let watchers = manager.get_watchers(&change.aor);
+                                let watchers =
+                                    manager.get_watchers_for_tenant(&change.aor, &change.tenant_id);
                                 if !watchers.is_empty() {
                                     debug!(
                                         aor = %change.aor,
@@ -1435,7 +1732,9 @@ impl PresenceManager {
             .iter()
             .map(|entry| VirtualSubscription {
                 presentity_aor: entry.uri.clone(),
-                last_state: self.get_presence(&entry.uri).map(|p| p.state),
+                last_state: self
+                    .get_presence_for_tenant(&entry.uri, tenant_id)
+                    .map(|p| p.state),
                 last_notify_cseq: 0,
             })
             .collect();
@@ -1484,7 +1783,10 @@ impl PresenceManager {
         for vsub in &rls_sub.virtual_subs {
             let state = vsub
                 .last_state
-                .or_else(|| self.get_presence(&vsub.presentity_aor).map(|p| p.state))
+                .or_else(|| {
+                    self.get_presence_for_tenant(&vsub.presentity_aor, &rls_sub.tenant_id)
+                        .map(|p| p.state)
+                })
                 .unwrap_or(PresenceState::Closed);
 
             let instance_id = uuid::Uuid::new_v4().simple().to_string();
@@ -1521,7 +1823,10 @@ impl PresenceManager {
         for vsub in &rls_sub.virtual_subs {
             let state = vsub
                 .last_state
-                .or_else(|| self.get_presence(&vsub.presentity_aor).map(|p| p.state))
+                .or_else(|| {
+                    self.get_presence_for_tenant(&vsub.presentity_aor, &rls_sub.tenant_id)
+                        .map(|p| p.state)
+                })
                 .unwrap_or(PresenceState::Closed);
 
             let pidf_xml = pidf::generate_pidf(
@@ -1547,6 +1852,20 @@ impl PresenceManager {
     /// Returns a list of `(subscription_id, contact_uri, content_type, body)` tuples
     /// for the caller to send as SIP NOTIFYs.
     pub fn notify_rls_watchers(&self, aor: &str) -> Vec<(String, String, String, String)> {
+        let Some(key) = Self::unique_key_for_aor(&self.presentities, aor) else {
+            return Vec::new();
+        };
+        let Some(tenant_id) = Self::tenant_id_from_scoped_key(&key) else {
+            return Vec::new();
+        };
+        self.notify_rls_watchers_for_tenant(aor, &tenant_id)
+    }
+
+    pub fn notify_rls_watchers_for_tenant(
+        &self,
+        aor: &str,
+        tenant_id: &TenantId,
+    ) -> Vec<(String, String, String, String)> {
         let mut notifications = Vec::new();
 
         for mut entry in self.rls_subscriptions.iter_mut() {
@@ -1554,6 +1873,9 @@ impl PresenceManager {
             let subs = entry.value_mut();
 
             for sub in subs.iter_mut() {
+                if sub.tenant_id != *tenant_id {
+                    continue;
+                }
                 // Check if this list contains the changed presentity
                 let contains = sub.virtual_subs.iter().any(|vs| vs.presentity_aor == aor);
                 if !contains {
@@ -1561,7 +1883,9 @@ impl PresenceManager {
                 }
 
                 // Update virtual sub state
-                let new_state = self.get_presence(aor).map(|p| p.state);
+                let new_state = self
+                    .get_presence_for_tenant(aor, tenant_id)
+                    .map(|p| p.state);
                 for vs in &mut sub.virtual_subs {
                     if vs.presentity_aor == aor {
                         vs.last_state = new_state;

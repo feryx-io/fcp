@@ -15,13 +15,13 @@ use fcp_core::TenantId;
 ///
 /// Key patterns:
 /// - `presence:sub:{subscription_id}` — Hash with subscription fields
-/// - `presence:subs_by_aor:{aor}` — Set of subscription IDs for a presentity
+/// - `presence:subs_by_aor:{tenant_id}:{aor}` — Set of subscription IDs for a presentity
 /// - `presence:subs_by_watcher:{aor}` — Set of subscription IDs for a watcher
 /// - `presence:subs_by_tenant:{tenant_id}` — Set of subscription IDs for a tenant
 /// - `presence:sub_expiry` — Sorted set (score=epoch) for expiry index
-/// - `presence:presentity:{aor}` — Hash with presentity fields
+/// - `presence:presentity:{tenant_id}:{aor}` — Hash with presentity fields
 /// - `presence:presentities_by_tenant:{tenant_id}` — Set of presentity AORs
-/// - `presence:auth:{aor}` — Hash with auth policy fields
+/// - `presence:auth:{tenant_id}:{aor}` — Hash with auth policy fields
 /// - `presence:auth_by_tenant:{tenant_id}` — Set of AORs with auth policies
 pub struct RedisPresenceStore {
     conn: redis::aio::ConnectionManager,
@@ -47,8 +47,8 @@ impl RedisPresenceStore {
         format!("presence:sub:{id}")
     }
 
-    fn subs_by_aor_key(aor: &str) -> String {
-        format!("presence:subs_by_aor:{aor}")
+    fn subs_by_aor_key(tenant_id: &TenantId, aor: &str) -> String {
+        format!("presence:subs_by_aor:{tenant_id}:{aor}")
     }
 
     fn subs_by_watcher_key(aor: &str) -> String {
@@ -59,16 +59,16 @@ impl RedisPresenceStore {
         format!("presence:subs_by_tenant:{tenant_id}")
     }
 
-    fn presentity_key(aor: &str) -> String {
-        format!("presence:presentity:{aor}")
+    fn presentity_key(tenant_id: &TenantId, aor: &str) -> String {
+        format!("presence:presentity:{tenant_id}:{aor}")
     }
 
     fn presentities_by_tenant_key(tenant_id: &TenantId) -> String {
         format!("presence:presentities_by_tenant:{tenant_id}")
     }
 
-    fn auth_key(aor: &str) -> String {
-        format!("presence:auth:{aor}")
+    fn auth_key(tenant_id: &TenantId, aor: &str) -> String {
+        format!("presence:auth:{tenant_id}:{aor}")
     }
 
     fn auth_by_tenant_key(tenant_id: &TenantId) -> String {
@@ -114,7 +114,7 @@ impl PresenceStore for RedisPresenceStore {
             .arg(fields)
             .ignore()
             .cmd("SADD")
-            .arg(Self::subs_by_aor_key(&sub.presentity_aor))
+            .arg(Self::subs_by_aor_key(&sub.tenant_id, &sub.presentity_aor))
             .arg(&sub.subscription_id)
             .ignore()
             .cmd("SADD")
@@ -198,7 +198,7 @@ impl PresenceStore for RedisPresenceStore {
             .arg(&key)
             .ignore()
             .cmd("SREM")
-            .arg(Self::subs_by_aor_key(&presentity_aor))
+            .arg(Self::subs_by_aor_key(&tenant_id, &presentity_aor))
             .arg(subscription_id)
             .ignore()
             .cmd("SREM")
@@ -221,11 +221,15 @@ impl PresenceStore for RedisPresenceStore {
         Ok(())
     }
 
-    async fn remove_subscriptions_for_presentity(&self, presentity_aor: &str) -> Result<()> {
+    async fn remove_subscriptions_for_presentity(
+        &self,
+        tenant_id: &TenantId,
+        presentity_aor: &str,
+    ) -> Result<()> {
         let mut conn = self.conn.clone();
 
         let sub_ids: Vec<String> = conn
-            .smembers(Self::subs_by_aor_key(presentity_aor))
+            .smembers(Self::subs_by_aor_key(tenant_id, presentity_aor))
             .await
             .unwrap_or_default();
 
@@ -268,7 +272,7 @@ impl PresenceStore for RedisPresenceStore {
 
     async fn save_presentity(&self, presentity: StoredPresentity) -> Result<()> {
         let mut conn = self.conn.clone();
-        let key = Self::presentity_key(&presentity.aor);
+        let key = Self::presentity_key(&presentity.tenant_id, &presentity.aor);
 
         let fields: Vec<(String, String)> = vec![
             ("aor".into(), presentity.aor.clone()),
@@ -309,7 +313,7 @@ impl PresenceStore for RedisPresenceStore {
         let mut presentities = Vec::with_capacity(aors.len());
         for aor in &aors {
             let fields: std::collections::HashMap<String, String> = conn
-                .hgetall(Self::presentity_key(aor))
+                .hgetall(Self::presentity_key(tenant_id, aor))
                 .await
                 .unwrap_or_default();
 
@@ -323,24 +327,19 @@ impl PresenceStore for RedisPresenceStore {
         Ok(presentities)
     }
 
-    async fn remove_presentity(&self, aor: &str) -> Result<()> {
+    async fn remove_presentity(&self, tenant_id: &TenantId, aor: &str) -> Result<()> {
         let mut conn = self.conn.clone();
-        let key = Self::presentity_key(aor);
-
-        // Get tenant ID for index cleanup
-        let tenant_str: Option<String> = conn.hget(&key, "tenant_id").await.ok();
+        let key = Self::presentity_key(tenant_id, aor);
 
         let mut pipe = redis::pipe();
-        pipe.atomic().cmd("DEL").arg(&key).ignore();
-
-        if let Some(tid_str) = tenant_str {
-            if let Ok(tid) = tid_str.parse::<TenantId>() {
-                pipe.cmd("SREM")
-                    .arg(Self::presentities_by_tenant_key(&tid))
-                    .arg(aor)
-                    .ignore();
-            }
-        }
+        pipe.atomic()
+            .cmd("DEL")
+            .arg(&key)
+            .ignore()
+            .cmd("SREM")
+            .arg(Self::presentities_by_tenant_key(tenant_id))
+            .arg(aor)
+            .ignore();
 
         pipe.query_async::<()>(&mut conn)
             .await
@@ -351,7 +350,7 @@ impl PresenceStore for RedisPresenceStore {
 
     async fn save_auth_policy(&self, policy: StoredAuthPolicy) -> Result<()> {
         let mut conn = self.conn.clone();
-        let key = Self::auth_key(&policy.aor);
+        let key = Self::auth_key(&policy.tenant_id, &policy.aor);
 
         let fields: Vec<(String, String)> = vec![
             ("aor".into(), policy.aor.clone()),
@@ -400,7 +399,9 @@ impl PresenceStore for RedisPresenceStore {
         let mut policies = Vec::with_capacity(aors.len());
         for aor in &aors {
             let fields: std::collections::HashMap<String, String> =
-                conn.hgetall(Self::auth_key(aor)).await.unwrap_or_default();
+                conn.hgetall(Self::auth_key(tenant_id, aor))
+                    .await
+                    .unwrap_or_default();
 
             if fields.is_empty() {
                 continue;
@@ -412,24 +413,19 @@ impl PresenceStore for RedisPresenceStore {
         Ok(policies)
     }
 
-    async fn remove_auth_policy(&self, aor: &str) -> Result<()> {
+    async fn remove_auth_policy(&self, tenant_id: &TenantId, aor: &str) -> Result<()> {
         let mut conn = self.conn.clone();
-        let key = Self::auth_key(aor);
-
-        // Get tenant ID for index cleanup
-        let tenant_str: Option<String> = conn.hget(&key, "tenant_id").await.ok();
+        let key = Self::auth_key(tenant_id, aor);
 
         let mut pipe = redis::pipe();
-        pipe.atomic().cmd("DEL").arg(&key).ignore();
-
-        if let Some(tid_str) = tenant_str {
-            if let Ok(tid) = tid_str.parse::<TenantId>() {
-                pipe.cmd("SREM")
-                    .arg(Self::auth_by_tenant_key(&tid))
-                    .arg(aor)
-                    .ignore();
-            }
-        }
+        pipe.atomic()
+            .cmd("DEL")
+            .arg(&key)
+            .ignore()
+            .cmd("SREM")
+            .arg(Self::auth_by_tenant_key(tenant_id))
+            .arg(aor)
+            .ignore();
 
         pipe.query_async::<()>(&mut conn)
             .await

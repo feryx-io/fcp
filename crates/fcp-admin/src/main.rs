@@ -699,6 +699,7 @@ async fn run_presence_listener(
                         // Track active call for callee
                         presence.add_active_call(
                             &callee_aor,
+                            &tenant_id,
                             fcp_presence::ActiveCallInfo {
                                 call_id: call_id_str.clone(),
                                 remote_uri: from.clone(),
@@ -713,6 +714,7 @@ async fn run_presence_listener(
                         // Track active call for caller
                         presence.add_active_call(
                             &caller_aor,
+                            &tenant_id,
                             fcp_presence::ActiveCallInfo {
                                 call_id: call_id_str.clone(),
                                 remote_uri: to.clone(),
@@ -730,10 +732,11 @@ async fn run_presence_listener(
                     for aor in &affected_aors {
                         presence.update_call_state(
                             aor,
+                            &tenant_id,
                             &call_id_str,
                             fcp_presence::DialogState::Confirmed,
                         );
-                        if let Some(info) = presence.get_presence(aor) {
+                        if let Some(info) = presence.get_presence_for_tenant(aor, &tenant_id) {
                             if info.state == fcp_presence::PresenceState::Ringing {
                                 let update = fcp_presence::PresenceUpdate {
                                     aor: aor.clone(),
@@ -752,9 +755,9 @@ async fn run_presence_listener(
                     let affected_aors = presence.get_aors_with_active_call(&call_id_str);
                     presence.remove_active_call_by_id(&call_id_str);
                     for aor in &affected_aors {
-                        if presence.get_active_calls(aor).is_empty() {
+                        if presence.get_active_calls_for_tenant(aor, &tenant_id).is_empty() {
                             let is_call_state = presence
-                                .get_presence(aor)
+                                .get_presence_for_tenant(aor, &tenant_id)
                                 .map(|p| {
                                     matches!(
                                         p.state,
