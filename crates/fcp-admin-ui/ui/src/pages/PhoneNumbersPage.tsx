@@ -17,9 +17,9 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { phoneNumbers, locations } from '@/api/endpoints'
+import { phoneNumbers, locations, tenants } from '@/api/endpoints'
 import type { PhoneNumber, CreatePhoneNumberRequest } from '@/types'
-import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   e164: z.string().min(1, 'E.164 number is required').regex(/^\+?[0-9]+$/, 'Invalid phone number format'),
@@ -57,10 +57,11 @@ export function PhoneNumbersPage() {
   const [editItem, setEditItem] = useState<PhoneNumber | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: rawItems = [], isLoading } = useQuery({
     queryKey: ['phone-numbers'],
     queryFn: phoneNumbers.list,
   })
+  const items = useTenantListFilter(rawItems)
 
   const { data: locationList = [] } = useQuery({
     queryKey: ['locations'],
@@ -71,6 +72,17 @@ export function PhoneNumbersPage() {
     if (!id) return '-'
     const loc = locationList.find((l) => l.id === id)
     return loc ? loc.name : id
+  }
+
+  const showTenantColumn = useShowTenantColumn()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: showTenantColumn,
+  })
+  const tenantName = (id: string | null | undefined) => {
+    if (!id) return '-'
+    return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
   }
 
   const createMutation = useMutation({
@@ -145,6 +157,17 @@ export function PhoneNumbersPage() {
         ? row.original.tags.map((t) => <Badge key={t} variant="outline" className="mr-1">{t}</Badge>)
         : '-',
     },
+    ...(showTenantColumn
+      ? ([
+          {
+            id: 'tenant',
+            header: 'Tenant',
+            cell: ({ row }) => (
+              <Badge variant="outline">{tenantName(row.original.tenant_id)}</Badge>
+            ),
+          },
+        ] as ColumnDef<PhoneNumber>[])
+      : []),
     {
       id: 'actions',
       cell: ({ row }) => (
@@ -307,7 +330,7 @@ export function PhoneNumbersPage() {
               <Label htmlFor="e-cnam">CNAM</Label>
               <Input id="e-cnam" placeholder="Caller ID name" {...editForm.register('cnam')} />
             </div>
-            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} mode="edit" />
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" {...editForm.register('recording_enabled')} className="rounded" />

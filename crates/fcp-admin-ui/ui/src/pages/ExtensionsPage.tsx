@@ -17,9 +17,9 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { extensions, users, locations, devices, phoneNumbers } from '@/api/endpoints'
+import { extensions, users, locations, devices, phoneNumbers, tenants } from '@/api/endpoints'
 import type { Extension, CreateExtensionRequest, UpdateExtensionRequest, User, Location } from '@/types'
-import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const TARGET_TYPES = [
   { value: 'user', label: 'User' },
@@ -59,10 +59,11 @@ export function ExtensionsPage() {
   const [editItem, setEditItem] = useState<Extension | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: rawItems = [], isLoading } = useQuery({
     queryKey: ['extensions'],
     queryFn: extensions.list,
   })
+  const items = useTenantListFilter(rawItems)
 
   const { data: userList = [] } = useQuery({
     queryKey: ['users'],
@@ -83,6 +84,17 @@ export function ExtensionsPage() {
     queryKey: ['phone-numbers'],
     queryFn: phoneNumbers.list,
   })
+
+  const showTenantColumn = useShowTenantColumn()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: showTenantColumn,
+  })
+  const tenantName = (id: string | null | undefined) => {
+    if (!id) return '-'
+    return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
+  }
 
   const userMap = useMemo(() => new Map(userList.map(u => [u.id, u])), [userList])
   const deviceMap = useMemo(() => new Map(deviceList.map(d => [d.id, d])), [deviceList])
@@ -167,6 +179,17 @@ export function ExtensionsPage() {
       header: 'Location',
       cell: ({ row }) => locationName(row.original.location_id),
     },
+    ...(showTenantColumn
+      ? ([
+          {
+            id: 'tenant',
+            header: 'Tenant',
+            cell: ({ row }) => (
+              <Badge variant="outline">{tenantName(row.original.tenant_id)}</Badge>
+            ),
+          },
+        ] as ColumnDef<Extension>[])
+      : []),
     {
       id: 'actions',
       cell: ({ row }) => (
@@ -358,7 +381,7 @@ export function ExtensionsPage() {
               <Label htmlFor="e-description">Description</Label>
               <Input id="e-description" {...editForm.register('description')} />
             </div>
-            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} mode="edit" />
             <div className="space-y-2">
               <Label>Target Type</Label>
               <Select

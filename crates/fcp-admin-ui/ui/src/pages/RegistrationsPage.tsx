@@ -6,6 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { registrations } from '@/api/endpoints'
 import type { Registration } from '@/types'
+// NOTE: Registration responses currently do not carry tenant_id, so the
+// client-side tenant filter is applied at the list endpoint level by the
+// backend for tenant-scoped identities. Super-admins will see all tenants'
+// registrations until the backend response is extended with tenant_id.
 
 function formatExpiry(seconds: number): string {
   if (seconds <= 0) return 'Expired'

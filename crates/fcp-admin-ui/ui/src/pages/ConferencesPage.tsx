@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select'
 import { conferences, conferenceLive, prompts, users, type PromptResponse } from '@/api/endpoints'
 import type { MeetingResponse, CreateMeetingRequest, UpdateMeetingRequest, User } from '@/types'
+import { useTenantListFilter } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   room_number: z.string().min(1, 'Room number is required').regex(/^\d+$/, 'Must be numeric'),
@@ -111,10 +112,11 @@ export function ConferencesPage() {
   const [dialOutResult, setDialOutResult] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: rawItems = [], isLoading } = useQuery({
     queryKey: ['meetings'],
     queryFn: conferences.listMeetings,
   })
+  const items = useTenantListFilter(rawItems)
 
   const { data: promptList = [] } = useQuery({
     queryKey: ['prompts'],

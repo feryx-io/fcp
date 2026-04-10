@@ -17,9 +17,9 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { devices, locations } from '@/api/endpoints'
+import { devices, locations, tenants } from '@/api/endpoints'
 import type { Device, CreateDeviceRequest } from '@/types'
-import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -62,10 +62,11 @@ export function DevicesPage() {
   const [editItem, setEditItem] = useState<Device | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading, refetch, isFetching } = useQuery({
+  const { data: rawItems = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ['devices'],
     queryFn: devices.list,
   })
+  const items = useTenantListFilter(rawItems)
 
   const { data: locationList = [] } = useQuery({
     queryKey: ['locations'],
@@ -76,6 +77,17 @@ export function DevicesPage() {
     if (!id) return '-'
     const loc = locationList.find((l) => l.id === id)
     return loc ? loc.name : id
+  }
+
+  const showTenantColumn = useShowTenantColumn()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: showTenantColumn,
+  })
+  const tenantName = (id: string | null | undefined) => {
+    if (!id) return '-'
+    return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
   }
 
   const createMutation = useMutation({
@@ -165,6 +177,17 @@ export function DevicesPage() {
         </Badge>
       ),
     },
+    ...(showTenantColumn
+      ? ([
+          {
+            id: 'tenant',
+            header: 'Tenant',
+            cell: ({ row }) => (
+              <Badge variant="outline">{tenantName(row.original.tenant_id)}</Badge>
+            ),
+          },
+        ] as ColumnDef<Device>[])
+      : []),
     {
       id: 'actions',
       cell: ({ row }) => (
@@ -369,7 +392,7 @@ export function DevicesPage() {
               <Input id="e-name" {...editForm.register('name')} />
               {editForm.formState.errors.name && <p className="text-sm text-destructive">{editForm.formState.errors.name.message}</p>}
             </div>
-            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} mode="edit" />
             <div className="space-y-2">
               <Label htmlFor="e-sip_uri">SIP URI</Label>
               <Input id="e-sip_uri" placeholder="sip:username@domain" {...editForm.register('sip_uri')} />

@@ -21,9 +21,9 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { users, locations } from '@/api/endpoints'
+import { users, locations, tenants } from '@/api/endpoints'
 import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
-import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -100,15 +100,27 @@ export function UsersPage() {
   const [digestUser, setDigestUser] = useState<User | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: userList = [], isLoading } = useQuery({
+  const { data: rawUserList = [], isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: users.list,
   })
+  const userList = useTenantListFilter(rawUserList)
 
   const { data: locationList = [] } = useQuery({
     queryKey: ['locations'],
     queryFn: locations.list,
   })
+
+  const showTenantColumn = useShowTenantColumn()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: showTenantColumn,
+  })
+  const tenantName = (id: string | null | undefined) => {
+    if (!id) return '-'
+    return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
+  }
 
   const locationName = (id: string | null) => {
     if (!id) return '-'
@@ -216,6 +228,17 @@ export function UsersPage() {
       header: 'Location',
       cell: ({ row }) => locationName(row.original.location_id),
     },
+    ...(showTenantColumn
+      ? ([
+          {
+            id: 'tenant',
+            header: 'Tenant',
+            cell: ({ row }) => (
+              <Badge variant="outline">{tenantName(row.original.tenant_id)}</Badge>
+            ),
+          },
+        ] as ColumnDef<User>[])
+      : []),
     {
       id: 'actions',
       cell: ({ row }) => (
@@ -547,7 +570,7 @@ function EditUserDialog({
               </Select>
             </div>
           </div>
-          <TenantField value={watch('tenant_id') ?? ''} onChange={(v) => setValue('tenant_id', v)} />
+          <TenantField value={watch('tenant_id') ?? ''} onChange={(v) => setValue('tenant_id', v)} mode="edit" />
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="edit-extension">Extension</Label>

@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/select'
 import { prompts, type PromptResponse, type CreatePromptRequest, type UpdatePromptRequest } from '@/api/endpoints'
 import { apiClient } from '@/api/client'
+import { useTenantListFilter } from '@/components/TenantSelector'
 
 const CATEGORIES = ['system', 'ivr', 'voicemail', 'queue', 'greeting', 'moh', 'custom'] as const
 
@@ -144,10 +145,11 @@ export function PromptsPage() {
   const [editTtsVoice, setEditTtsVoice] = useState('')
   const [editLanguage, setEditLanguage] = useState('en-US')
 
-  const { data: items = [] } = useQuery({
+  const { data: rawItems = [] } = useQuery({
     queryKey: ['prompts', categoryFilter],
     queryFn: () => prompts.list(categoryFilter !== 'all' ? { category: categoryFilter } : undefined),
   })
+  const items = useTenantListFilter(rawItems)
 
   const [createError, setCreateError] = useState<string | null>(null)
   const [editError, setEditError] = useState<string | null>(null)

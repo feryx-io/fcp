@@ -15,10 +15,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { lineBindings, users, devices, phoneNumbers, flows } from '@/api/endpoints'
+import { lineBindings, users, devices, phoneNumbers, flows, tenants } from '@/api/endpoints'
 import type { LineBinding, DeviceBinding, UpdateLineBindingRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
-import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const BINDING_TYPES = [
   { value: 'user', label: 'User' },
@@ -85,10 +85,11 @@ export function LineBindingsPage() {
   const [createBindingType, setCreateBindingType] = useState<string>('user')
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: rawItems = [], isLoading } = useQuery({
     queryKey: ['line-bindings'],
     queryFn: lineBindings.list,
   })
+  const items = useTenantListFilter(rawItems)
 
   const { data: userList = [] } = useQuery({
     queryKey: ['users'],
@@ -107,6 +108,17 @@ export function LineBindingsPage() {
     queryFn: () => flows.list(),
   })
   const flowList = flowsData?.flows ?? []
+
+  const showTenantColumn = useShowTenantColumn()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: showTenantColumn,
+  })
+  const tenantName = (id: string | null | undefined) => {
+    if (!id) return '-'
+    return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
+  }
 
   const userMap = useMemo(() => new Map(userList.map(u => [u.id, u])), [userList])
   const deviceMap = useMemo(() => new Map(deviceList.map(d => [d.id, d])), [deviceList])
@@ -201,6 +213,17 @@ export function LineBindingsPage() {
       header: 'Created',
       cell: ({ row }) => formatDateTime(row.original.created_at),
     },
+    ...(showTenantColumn
+      ? ([
+          {
+            id: 'tenant',
+            header: 'Tenant',
+            cell: ({ row }) => (
+              <Badge variant="outline">{tenantName(row.original.tenant_id)}</Badge>
+            ),
+          },
+        ] as ColumnDef<LineBinding>[])
+      : []),
     {
       id: 'actions',
       cell: ({ row }) => (
@@ -504,7 +527,7 @@ export function LineBindingsPage() {
           )}
 
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
-            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} mode="edit" />
             {editItem?.binding_type === 'ivr' && (
               <div className="space-y-2">
                 <Label>IVR Flow</Label>

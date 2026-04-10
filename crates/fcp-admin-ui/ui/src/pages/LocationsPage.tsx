@@ -19,9 +19,9 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { locations } from '@/api/endpoints'
+import { locations, tenants } from '@/api/endpoints'
 import type { Location, CreateLocationRequest } from '@/types'
-import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId, useTenantListFilter, useShowTenantColumn } from '@/components/TenantSelector'
 
 const TIMEZONES: Record<string, string[]> = (() => {
   const grouped: Record<string, string[]> = {}
@@ -63,10 +63,22 @@ export function LocationsPage() {
   const [editItem, setEditItem] = useState<Location | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: rawItems = [], isLoading } = useQuery({
     queryKey: ['locations'],
     queryFn: locations.list,
   })
+  const items = useTenantListFilter(rawItems)
+
+  const showTenantColumn = useShowTenantColumn()
+  const { data: tenantList = [] } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: tenants.list,
+    enabled: showTenantColumn,
+  })
+  const tenantName = (id: string | null | undefined) => {
+    if (!id) return '-'
+    return tenantList.find((t) => t.id === id)?.name ?? id.slice(0, 8)
+  }
 
   const createMutation = useMutation({
     mutationFn: locations.create,
@@ -131,6 +143,17 @@ export function LocationsPage() {
         <Badge variant="secondary">{row.original.timezone}</Badge>
       ) : '-',
     },
+    ...(showTenantColumn
+      ? ([
+          {
+            id: 'tenant',
+            header: 'Tenant',
+            cell: ({ row }) => (
+              <Badge variant="outline">{tenantName(row.original.tenant_id)}</Badge>
+            ),
+          },
+        ] as ColumnDef<Location>[])
+      : []),
     {
       id: 'actions',
       cell: ({ row }) => (
@@ -387,7 +410,7 @@ export function LocationsPage() {
             <DialogDescription>Update location details.</DialogDescription>
           </DialogHeader>
           <form onSubmit={editForm.handleSubmit(onEditSubmit)} className="space-y-4">
-            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} />
+            <TenantField value={editForm.watch('tenant_id') ?? ''} onChange={(v) => editForm.setValue('tenant_id', v)} mode="edit" />
             {locationFormFields(editForm)}
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

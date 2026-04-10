@@ -17,6 +17,7 @@ import {
 import { tenants } from '@/api/endpoints'
 import type { Tenant } from '@/types'
 import { formatDateTime } from '@/lib/utils'
+import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required').max(255),
@@ -54,6 +55,7 @@ export function TenantsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editItem, setEditItem] = useState<Tenant | null>(null)
   const queryClient = useQueryClient()
+  const isPlatformAdmin = useIsPlatformAdmin()
 
   const { data: items = [], isLoading } = useQuery({
     queryKey: ['tenants'],
@@ -128,18 +130,22 @@ export function TenantsPage() {
               <Pencil className="mr-2 h-4 w-4" />
               Edit
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-destructive"
-              onClick={() => {
-                if (confirm(`Delete tenant "${row.original.name}"? This action cannot be undone.`)) {
-                  deleteMutation.mutate(row.original.id)
-                }
-              }}
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </DropdownMenuItem>
+            {isPlatformAdmin && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onClick={() => {
+                    if (confirm(`Delete tenant "${row.original.name}"? This action cannot be undone.`)) {
+                      deleteMutation.mutate(row.original.id)
+                    }
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       ),
@@ -190,11 +196,17 @@ export function TenantsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Tenants</h1>
-          <p className="text-muted-foreground">Manage tenant organizations</p>
+          <p className="text-muted-foreground">
+            {isPlatformAdmin
+              ? 'Manage tenant organizations'
+              : 'View and update your tenant settings'}
+          </p>
         </div>
-        <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
-          <Plus className="mr-2 h-4 w-4" /> Add Tenant
-        </Button>
+        {isPlatformAdmin && (
+          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+            <Plus className="mr-2 h-4 w-4" /> Add Tenant
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -203,7 +215,8 @@ export function TenantsPage() {
         <DataTable columns={columns} data={items} searchKey="name" searchPlaceholder="Search tenants..." />
       )}
 
-      {/* Create Dialog */}
+      {/* Create Dialog — platform admins only */}
+      {isPlatformAdmin && (
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -256,6 +269,7 @@ export function TenantsPage() {
           </form>
         </DialogContent>
       </Dialog>
+      )}
 
       {/* Edit Dialog */}
       <Dialog open={!!editItem} onOpenChange={(v) => { if (!v) { setEditItem(null); setLastEditId(null); editForm.reset() } }}>
