@@ -1713,7 +1713,7 @@ impl PresenceManager {
             .ok_or_else(|| anyhow::anyhow!("Resource list store not configured"))?;
 
         let stored = store
-            .get_resource_list(list_uri)
+            .get_resource_list(tenant_id, list_uri)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Resource list not found: {list_uri}"))?;
 

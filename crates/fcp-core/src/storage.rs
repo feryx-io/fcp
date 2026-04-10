@@ -1528,8 +1528,12 @@ pub trait ResourceListStore: Send + Sync {
     /// Save or update a resource list.
     async fn save_resource_list(&self, list: &StoredResourceList) -> Result<()>;
 
-    /// Get a resource list by URI.
-    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>>;
+    /// Get a resource list by tenant and URI.
+    async fn get_resource_list(
+        &self,
+        tenant_id: &crate::TenantId,
+        uri: &str,
+    ) -> Result<Option<StoredResourceList>>;
 
     /// Get all resource lists for a tenant.
     async fn get_resource_lists_by_tenant(
@@ -1537,8 +1541,8 @@ pub trait ResourceListStore: Send + Sync {
         tenant_id: &crate::TenantId,
     ) -> Result<Vec<StoredResourceList>>;
 
-    /// Delete a resource list by URI.
-    async fn delete_resource_list(&self, uri: &str) -> Result<()>;
+    /// Delete a resource list by tenant and URI.
+    async fn delete_resource_list(&self, tenant_id: &crate::TenantId, uri: &str) -> Result<()>;
 }
 
 /// A stored presence state change for analytics/history.
@@ -3177,8 +3181,14 @@ impl ResourceListStore for DynStorage {
         self.resource_list_store.save_resource_list(list).await
     }
 
-    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
-        self.resource_list_store.get_resource_list(uri).await
+    async fn get_resource_list(
+        &self,
+        tenant_id: &crate::TenantId,
+        uri: &str,
+    ) -> Result<Option<StoredResourceList>> {
+        self.resource_list_store
+            .get_resource_list(tenant_id, uri)
+            .await
     }
 
     async fn get_resource_lists_by_tenant(
@@ -3190,8 +3200,10 @@ impl ResourceListStore for DynStorage {
             .await
     }
 
-    async fn delete_resource_list(&self, uri: &str) -> Result<()> {
-        self.resource_list_store.delete_resource_list(uri).await
+    async fn delete_resource_list(&self, tenant_id: &crate::TenantId, uri: &str) -> Result<()> {
+        self.resource_list_store
+            .delete_resource_list(tenant_id, uri)
+            .await
     }
 }
 

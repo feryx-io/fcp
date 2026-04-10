@@ -145,7 +145,7 @@ async fn get_resource_lists(
     let uri = resource_lists_uri(&xui);
     let store = &state.resource_list_store;
 
-    match store.get_resource_list(&uri).await {
+    match store.get_resource_list(&state.default_tenant_id, &uri).await {
         Ok(Some(stored)) => {
             // Decode entries_json → Vec<ResourceListXml>
             let lists: Vec<ResourceListXml> = match decode_resource_lists(&stored) {
@@ -217,7 +217,11 @@ async fn put_resource_lists(
     let store = &state.resource_list_store;
 
     // Check If-Match against existing document
-    let existing = store.get_resource_list(&uri).await.ok().flatten();
+    let existing = store
+        .get_resource_list(&state.default_tenant_id, &uri)
+        .await
+        .ok()
+        .flatten();
     let is_create = existing.is_none();
 
     if let Some(ref existing) = existing {
@@ -272,7 +276,7 @@ async fn delete_resource_lists(
     let store = &state.resource_list_store;
 
     // Check document exists
-    let existing = match store.get_resource_list(&uri).await {
+    let existing = match store.get_resource_list(&state.default_tenant_id, &uri).await {
         Ok(Some(stored)) => stored,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -289,7 +293,7 @@ async fn delete_resource_lists(
         return *resp;
     }
 
-    if let Err(e) = store.delete_resource_list(&uri).await {
+    if let Err(e) = store.delete_resource_list(&state.default_tenant_id, &uri).await {
         warn!(error = %e, "Failed to delete resource list");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }

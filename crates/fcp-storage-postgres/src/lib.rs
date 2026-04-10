@@ -3537,10 +3537,9 @@ impl ResourceListStore for PostgresStorage {
         sqlx::query(
             "INSERT INTO resource_lists (uri, name, entries_json, tenant_id)
              VALUES ($1, $2, $3, $4)
-             ON CONFLICT(uri) DO UPDATE SET
+             ON CONFLICT(tenant_id, uri) DO UPDATE SET
                 name = EXCLUDED.name,
-                entries_json = EXCLUDED.entries_json,
-                tenant_id = EXCLUDED.tenant_id",
+                entries_json = EXCLUDED.entries_json",
         )
         .bind(&list.uri)
         .bind(&list.name)
@@ -3551,10 +3550,17 @@ impl ResourceListStore for PostgresStorage {
         Ok(())
     }
 
-    async fn get_resource_list(&self, uri: &str) -> Result<Option<StoredResourceList>> {
+    async fn get_resource_list(
+        &self,
+        tenant_id: &TenantId,
+        uri: &str,
+    ) -> Result<Option<StoredResourceList>> {
         let row = sqlx::query(
-            "SELECT uri, name, entries_json, tenant_id FROM resource_lists WHERE uri = $1",
+            "SELECT uri, name, entries_json, tenant_id
+             FROM resource_lists
+             WHERE tenant_id = $1 AND uri = $2",
         )
+        .bind(tenant_id.to_string())
         .bind(uri)
         .fetch_optional(&self.pool)
         .await?;
@@ -3589,8 +3595,9 @@ impl ResourceListStore for PostgresStorage {
             .collect())
     }
 
-    async fn delete_resource_list(&self, uri: &str) -> Result<()> {
-        sqlx::query("DELETE FROM resource_lists WHERE uri = $1")
+    async fn delete_resource_list(&self, tenant_id: &TenantId, uri: &str) -> Result<()> {
+        sqlx::query("DELETE FROM resource_lists WHERE tenant_id = $1 AND uri = $2")
+            .bind(tenant_id.to_string())
             .bind(uri)
             .execute(&self.pool)
             .await?;

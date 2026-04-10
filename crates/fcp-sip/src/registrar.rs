@@ -59,8 +59,8 @@ async fn resolve_tenant_for_inputs(
             if let Some(tenant) = store.get_tenant_by_name(&domain).await? {
                 return Ok(tenant.id);
             }
-            // Domain not found in tenant store — fall through to default
-            // (single-tenant deployments use server IP as domain)
+
+            return Err(anyhow!("unknown tenant domain '{}'", domain));
         }
 
         if let Some(default_tenant_id) = default_tenant_id {

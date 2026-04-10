@@ -421,8 +421,10 @@ fn parse_binding_type(s: &str) -> Result<BindingType, ApiError> {
     match s.to_lowercase().as_str() {
         "user" => Ok(BindingType::User),
         "ivr" => Ok(BindingType::Ivr),
-        "queue" | "hunt_group" | "conference_bridge" | "voicemail" | "parking" | "paging"
-        | "fax" | "emergency" => Err(ApiError::BadRequest(format!(
+        "conference_bridge" => Ok(BindingType::ConferenceBridge),
+        "voicemail" => Ok(BindingType::Voicemail),
+        "queue" | "hunt_group" | "parking" | "paging" | "fax" | "emergency" => Err(
+            ApiError::BadRequest(format!(
             "Binding type '{}' is not supported by the SIP runtime yet",
             s
         ))),

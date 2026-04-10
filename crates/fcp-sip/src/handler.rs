@@ -1211,23 +1211,11 @@ impl SipMessageHandler {
                         tenant.id
                     }
                     Ok(None) => {
-                        if let Some(default_tenant_id) = self.default_tenant_id {
-                            debug!(
-                                domain = %domain,
-                                tenant_id = %default_tenant_id,
-                                "Domain not found in tenant store, using configured default tenant"
-                            );
-                            default_tenant_id
-                        } else {
-                            warn!(
-                                domain = %domain,
-                                "Rejecting INVITE: domain not found and no default tenant is configured"
-                            );
-                            let response =
-                                self.create_simple_response(request, 403, "Unknown tenant domain");
-                            handle.send_final(response).await;
-                            return Ok(());
-                        }
+                        warn!(domain = %domain, "Rejecting INVITE: unknown tenant domain");
+                        let response =
+                            self.create_simple_response(request, 403, "Unknown tenant domain");
+                        handle.send_final(response).await;
+                        return Ok(());
                     }
                     Err(e) => {
                         warn!(
