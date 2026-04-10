@@ -1199,7 +1199,56 @@ impl SipMessageHandler {
         // Extract tenant for multi-tenant isolation
         // Try to extract domain from INVITE and look up tenant in storage
         let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
-            let Some(storage) = &self.storage else {
+            if let Some(storage) = &self.storage {
+                match storage.get_tenant_by_name(&domain).await {
+                    Ok(Some(tenant)) => {
+                        debug!(
+                            domain = %domain,
+                            tenant_id = %tenant.id,
+                            tenant_name = %tenant.name,
+                            "Resolved tenant from INVITE domain"
+                        );
+                        tenant.id
+                    }
+                    Ok(None) => {
+                        if let Some(default_tenant_id) = self.default_tenant_id {
+                            debug!(
+                                domain = %domain,
+                                tenant_id = %default_tenant_id,
+                                "Domain not found in tenant store, using configured default tenant"
+                            );
+                            default_tenant_id
+                        } else {
+                            warn!(
+                                domain = %domain,
+                                "Rejecting INVITE: domain not found and no default tenant is configured"
+                            );
+                            let response =
+                                self.create_simple_response(request, 403, "Unknown tenant domain");
+                            handle.send_final(response).await;
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            domain = %domain,
+                            error = %e,
+                            "Rejecting INVITE: tenant lookup failed"
+                        );
+                        let response =
+                            self.create_simple_response(request, 503, "Tenant lookup unavailable");
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                }
+            } else if let Some(default_tenant_id) = self.default_tenant_id {
+                debug!(
+                    domain = %domain,
+                    tenant_id = %default_tenant_id,
+                    "No tenant store configured; using default tenant for INVITE domain"
+                );
+                default_tenant_id
+            } else {
                 warn!(
                     domain = %domain,
                     "Rejecting INVITE: tenant domain present but no tenant store configured"
@@ -1208,48 +1257,6 @@ impl SipMessageHandler {
                     self.create_simple_response(request, 503, "Tenant resolution unavailable");
                 handle.send_final(response).await;
                 return Ok(());
-            };
-
-            match storage.get_tenant_by_name(&domain).await {
-                Ok(Some(tenant)) => {
-                    debug!(
-                        domain = %domain,
-                        tenant_id = %tenant.id,
-                        tenant_name = %tenant.name,
-                        "Resolved tenant from INVITE domain"
-                    );
-                    tenant.id
-                }
-                Ok(None) => {
-                    if let Some(default_tenant_id) = self.default_tenant_id {
-                        debug!(
-                            domain = %domain,
-                            tenant_id = %default_tenant_id,
-                            "Domain not found in tenant store, using configured default tenant"
-                        );
-                        default_tenant_id
-                    } else {
-                        warn!(
-                            domain = %domain,
-                            "Rejecting INVITE: domain not found and no default tenant is configured"
-                        );
-                        let response =
-                            self.create_simple_response(request, 403, "Unknown tenant domain");
-                        handle.send_final(response).await;
-                        return Ok(());
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        domain = %domain,
-                        error = %e,
-                        "Rejecting INVITE: tenant lookup failed"
-                    );
-                    let response =
-                        self.create_simple_response(request, 503, "Tenant lookup unavailable");
-                    handle.send_final(response).await;
-                    return Ok(());
-                }
             }
         } else if let Some(default_tenant_id) = self.default_tenant_id {
             default_tenant_id
@@ -2103,6 +2110,358 @@ impl SipMessageHandler {
             SmolStr::new("Content-Length"),
             SmolStr::new(body_len.to_string()),
         );
+    }
+
+    fn build_local_extension_uri(&self, extension: &str) -> String {
+        format!("sip:{}@{}", extension, self.uas.local_uri.host())
+    }
+
+    fn collect_outbound_intercom_headers(&self, request: &sip_core::Request) -> sip_core::Headers {
+        let mut headers = sip_core::Headers::new();
+        for name in ["Alert-Info", "Call-Info", "X-FCP-Intercom-Mode"] {
+            for value in request.headers().get_all(name) {
+                let _ = headers.push(SmolStr::new(name), value.to_string());
+            }
+        }
+        headers
+    }
+
+    fn is_oneway_intercom_request(request: &sip_core::Request) -> bool {
+        request
+            .headers()
+            .get("X-FCP-Intercom-Mode")
+            .map(|value| value.eq_ignore_ascii_case("oneway"))
+            .unwrap_or(false)
+    }
+
+    /// Rewrite the direction attribute (`a=sendrecv` / `a=sendonly` / `a=recvonly`
+    /// / `a=inactive`) on the first `m=audio` section of an SDP.
+    ///
+    /// - Only the first audio media section is touched; other media (e.g.
+    ///   `m=video`) keep their original direction.
+    /// - If the audio section has no explicit direction attribute, one is
+    ///   inserted immediately after the `m=audio` line.
+    /// - Line endings are preserved: if the input uses CRLF we emit CRLF,
+    ///   otherwise we emit LF.
+    /// - If no `m=audio` section exists the SDP is returned unchanged.
+    fn rewrite_sdp_direction(sdp: &str, direction: &str) -> String {
+        // Detect the line ending used by the input. SIP mandates CRLF but we
+        // tolerate LF-only bodies that some stacks produce.
+        let eol: &str = if sdp.contains("\r\n") { "\r\n" } else { "\n" };
+        let target = format!("a={}", direction);
+
+        // Split preserving empty trailing element so we can rejoin faithfully.
+        let lines: Vec<&str> = sdp.split(eol).collect();
+        let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
+
+        // State machine walking the SDP line by line.
+        // `section`: None = session-level, Some("audio") = inside audio media,
+        //            Some(other) = inside a non-audio media section we leave alone.
+        let mut section: Option<String> = None;
+        let mut audio_seen = false;
+        let mut audio_direction_set = false;
+        let mut audio_m_line_index: Option<usize> = None;
+
+        for line in lines.iter() {
+            if let Some(rest) = line.strip_prefix("m=") {
+                // Entering a new media section. Flush the previous audio
+                // section by inserting a direction line if we never saw one.
+                if section.as_deref() == Some("audio") && !audio_direction_set {
+                    if let Some(idx) = audio_m_line_index {
+                        out.insert(idx + 1, target.clone());
+                        audio_direction_set = true;
+                    }
+                }
+                let media_type = rest.split_whitespace().next().unwrap_or("").to_string();
+                if media_type == "audio" && !audio_seen {
+                    // Only the first audio section is eligible for rewrite.
+                    section = Some("audio".to_string());
+                    audio_seen = true;
+                    audio_m_line_index = Some(out.len());
+                } else {
+                    // Any other media (including subsequent audio sections)
+                    // must be left untouched. Use a marker that will never
+                    // match the "audio" comparison below.
+                    section = Some(format!("_other:{}", media_type));
+                }
+                out.push((*line).to_string());
+                continue;
+            }
+
+            // Only rewrite direction lines inside the first audio section.
+            if section.as_deref() == Some("audio") {
+                let trimmed = line.trim();
+                if trimmed == "a=sendrecv"
+                    || trimmed == "a=sendonly"
+                    || trimmed == "a=recvonly"
+                    || trimmed == "a=inactive"
+                {
+                    out.push(target.clone());
+                    audio_direction_set = true;
+                    continue;
+                }
+            }
+
+            out.push((*line).to_string());
+        }
+
+        // If the SDP ended while still inside the audio section with no
+        // direction attribute, insert one right after the m=audio line.
+        if section.as_deref() == Some("audio") && !audio_direction_set {
+            if let Some(idx) = audio_m_line_index {
+                out.insert(idx + 1, target.clone());
+            }
+        }
+
+        out.join(eol)
+    }
+
+    fn build_feature_route_request(
+        &self,
+        request: &sip_core::Request,
+        target_extension: &str,
+        extra_headers: &[(String, String)],
+    ) -> Result<sip_core::Request> {
+        let mut routed = request.clone();
+        let target_uri = sip_core::SipUri::parse(&self.build_local_extension_uri(target_extension))
+            .map_err(|e| anyhow::anyhow!("invalid intercom target URI: {}", e))?;
+        let to_header = format!("<{}>", target_uri.as_str());
+
+        routed.set_uri(target_uri.clone());
+        routed.headers_mut().remove("To");
+        routed
+            .headers_mut()
+            .push(SmolStr::new("To"), SmolStr::new(to_header))
+            .map_err(|e| anyhow::anyhow!("failed to rewrite To header: {}", e))?;
+
+        for (name, value) in extra_headers {
+            routed.headers_mut().remove(name.as_str());
+            routed
+                .headers_mut()
+                .push(SmolStr::new(name.as_str()), SmolStr::new(value.as_str()))
+                .map_err(|e| anyhow::anyhow!("failed to append intercom header {}: {}", name, e))?;
+        }
+
+        Ok(routed)
+    }
+
+    fn build_final_ok_response(
+        &self,
+        request: &sip_core::Request,
+        to_tag: Option<&str>,
+        sdp_body: Option<&str>,
+    ) -> Result<sip_core::Response> {
+        let mut response = self.uas.create_ok(request, sdp_body)?;
+
+        if let Some(tag) = to_tag {
+            if let Some(to) = request.headers().get("To") {
+                let to_with_tag = format!("{};tag={}", to, tag);
+                response.headers_mut().retain(|h| h.name() != "To");
+                let _ = response
+                    .headers_mut()
+                    .push(SmolStr::new("To"), SmolStr::new(to_with_tag));
+            }
+        }
+
+        self.ensure_response_hygiene(request, &mut response);
+        inject_session_timer_headers(&self.b2bua_config, &mut response);
+        Ok(response)
+    }
+
+    fn build_inbound_dialog(
+        &self,
+        request: &sip_core::Request,
+        response: &sip_core::Response,
+    ) -> Result<sip_dialog::Dialog> {
+        sip_dialog::Dialog::new_uas(
+            request,
+            response,
+            self.uas.local_uri.clone(),
+            extract_from_uri(request)
+                .unwrap_or_else(|_| sip_core::SipUri::parse("sip:unknown@unknown").unwrap()),
+        )
+        .ok_or_else(|| anyhow::anyhow!("failed to create UAS dialog"))
+    }
+
+    fn build_pickup_leg(
+        &self,
+        request: &sip_core::Request,
+        dialog: sip_dialog::Dialog,
+    ) -> fcp_b2bua_core::CallLeg {
+        let remote_uri = extract_from_uri(request)
+            .map(|uri| uri.as_str().to_string())
+            .unwrap_or_else(|_| "sip:unknown@unknown".to_string());
+        let remote_display_name = sip_parse::header(request.headers(), "From")
+            .and_then(|from| Self::extract_display_name(from.as_str()));
+
+        let mut leg = fcp_b2bua_core::CallLeg::new_outbound(remote_uri, remote_display_name);
+        leg.dialog = Some(dialog);
+        leg.sdp = if !request.body().is_empty() {
+            Some(String::from_utf8_lossy(request.body()).to_string())
+        } else {
+            None
+        };
+        leg
+    }
+
+    async fn anchor_pickup_media(
+        &self,
+        ringing_call_id: &fcp_b2bua_core::CallId,
+        original_offer: Option<&str>,
+        picker_offer: Option<&str>,
+        label: &str,
+    ) -> Result<(fcp_core::CallId, Option<String>, Option<String>)> {
+        let media_manager = self
+            .media_manager
+            .as_ref()
+            .context("media manager unavailable")?;
+        let media_session_id = fcp_core::CallId::new();
+        let dialog_id = fcp_core::DialogId::new();
+
+        media_manager
+            .create_session_default(media_session_id.clone(), dialog_id)
+            .await
+            .with_context(|| format!("{} failed: could not create media session", label))?;
+
+        let original_answer = match original_offer {
+            Some(offer) => Some(
+                media_manager
+                    .update_session(&media_session_id, offer.to_string())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "{} failed: could not set original caller media endpoint",
+                            label
+                        )
+                    })?,
+            ),
+            None => None,
+        };
+
+        if let Some(offer) = picker_offer {
+            media_manager
+                .update_session_b_leg(&media_session_id, offer.to_string())
+                .await
+                .with_context(|| {
+                    format!("{} failed: could not set picker media endpoint", label)
+                })?;
+        }
+
+        let session = media_manager
+            .get_session(&media_session_id)
+            .await
+            .with_context(|| format!("{} failed: could not load media session", label))?;
+        let (rtp_port, _rtcp_port) = session.ports();
+        let local_offer = generate_basic_sdp(&self.local_addr, rtp_port);
+        let picker_answer = picker_offer
+            .map(|offer| {
+                fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+            })
+            .or_else(|| Some(local_offer.clone()));
+        let original_answer = original_answer.or_else(|| Some(local_offer));
+
+        info!(
+            call_id = %ringing_call_id,
+            media_session_id = %media_session_id,
+            "Pickup dynamically anchored media to generate valid SDP for both legs"
+        );
+
+        Ok((media_session_id, original_answer, picker_answer))
+    }
+
+    /// Cancel a forked B-leg, falling back to BYE when the leg has already
+    /// crossed into a confirmed dialog.
+    ///
+    /// Per RFC 3261 §9.1, a CANCEL that arrives after the UAS has sent a
+    /// final 2xx response to the INVITE is simply ineffective — the CANCEL
+    /// transaction itself completes normally (so `cancel()` returns `Ok`)
+    /// but the INVITE remains answered and the callee still believes it is
+    /// on a live call. To guarantee cleanup we therefore:
+    ///
+    /// 1. Send the CANCEL (best effort; may or may not reach in time).
+    /// 2. Unconditionally re-read the dialog state afterwards.
+    /// 3. If the dialog is `Confirmed`, send BYE to tear it down — whether
+    ///    the CANCEL returned `Ok` or `Err`.
+    ///
+    /// This fixes a race window where pickup rebinds the call the instant a
+    /// fork target answers: the arbiter's `cancel()` returns `Ok`, but the
+    /// target phone would otherwise remain "in a call" until the user hangs
+    /// up manually.
+    async fn cancel_or_bye_fork_leg(
+        &self,
+        call_id: &fcp_b2bua_core::CallId,
+        target: &str,
+        leg_index: usize,
+        b_leg_handle: &Arc<crate::uac::OutboundCall>,
+        context: &str,
+    ) {
+        let cancel_result = b_leg_handle.cancel().await;
+        if let Err(ref e) = cancel_result {
+            warn!(
+                call_id = %call_id,
+                target = %target,
+                error = %e,
+                "{}: CANCEL failed for fork {}",
+                context,
+                leg_index
+            );
+        }
+
+        // Always check dialog state, not just in the error path. A "successful"
+        // CANCEL transaction does not mean the INVITE was actually cancelled if
+        // the UAS had already answered 200 OK before the CANCEL arrived.
+        let dialog = b_leg_handle.dialog.read().await.clone();
+        if dialog.state() != sip_dialog::DialogStateType::Confirmed {
+            if cancel_result.is_err() {
+                debug!(
+                    call_id = %call_id,
+                    target = %target,
+                    dialog_state = ?dialog.state(),
+                    "{}: fork {} is not confirmed, skipping BYE cleanup",
+                    context,
+                    leg_index
+                );
+            }
+            return;
+        }
+
+        // Dialog is confirmed — the callee already answered 200 OK. CANCEL is
+        // ineffective (or was already ineffective when we sent it); send BYE.
+        let Some(uac) = &self.uac else {
+            warn!(
+                call_id = %call_id,
+                target = %target,
+                "{}: confirmed fork {} needs BYE cleanup but UAC is unavailable",
+                context,
+                leg_index
+            );
+            return;
+        };
+
+        match uac.bye(&dialog).await {
+            Ok(response) => {
+                self.dialog_manager.remove(dialog.id());
+                info!(
+                    call_id = %call_id,
+                    target = %target,
+                    code = response.start_line().code(),
+                    cancel_ok = cancel_result.is_ok(),
+                    "{}: sent BYE to confirmed fork {} (CANCEL raced too late)",
+                    context,
+                    leg_index
+                );
+            }
+            Err(bye_error) => {
+                warn!(
+                    call_id = %call_id,
+                    target = %target,
+                    error = %bye_error,
+                    "{}: failed to send BYE to confirmed fork {}",
+                    context,
+                    leg_index
+                );
+            }
+        }
     }
 
     /// Apply topology hiding transformations to a response.
@@ -3170,10 +3529,9 @@ impl SipMessageHandler {
                         let response =
                             self.create_simple_response(request, 403, "Tenant context required");
                         a_leg_handle.send_final(response).await;
-                        let _ = self.call_manager.terminate_call(
-                            &call_id,
-                            Some("Tenant context required".to_string()),
-                        );
+                        let _ = self
+                            .call_manager
+                            .terminate_call(&call_id, Some("Tenant context required".to_string()));
                         return Ok(());
                     }
                 };
@@ -3866,8 +4224,9 @@ impl SipMessageHandler {
                                     .map(|call| call.tenant_id)
                                     .or(self.default_tenant_id)
                                 {
-                                    if let Ok(Some(user)) =
-                                        storage.get_user_in_tenant(callee_username, &tenant_id).await
+                                    if let Ok(Some(user)) = storage
+                                        .get_user_in_tenant(callee_username, &tenant_id)
+                                        .await
                                     {
                                         if let Ok(lbs) =
                                             storage.list_line_bindings_by_user(&user.id).await
@@ -3882,12 +4241,14 @@ impl SipMessageHandler {
                                                     tenant_id = %tenant_id,
                                                     "Stored line binding for direct-registration callee"
                                                 );
-                                                let _ =
-                                                    self.call_manager.update_call(&call_id, |call| {
+                                                let _ = self.call_manager.update_call(
+                                                    &call_id,
+                                                    |call| {
                                                         call.line_binding_id = Some(lb_id);
                                                         call.original_callee = Some(callee);
                                                         call.no_answer_timeout = Some(rna_timeout);
-                                                    });
+                                                    },
+                                                );
                                             }
                                         }
                                     }
@@ -5030,6 +5391,18 @@ impl SipMessageHandler {
         let handler_clone = self.clone();
         tokio::spawn(async move {
             if let Some(b_leg_provisional) = provisional_rx.recv().await {
+                let already_rebound = call_manager_clone
+                    .get_call(&call_id_clone)
+                    .map(|call| call.state == fcp_b2bua_core::CallState::Established)
+                    .unwrap_or(false);
+                if already_rebound {
+                    debug!(
+                        call_id = %call_id_clone,
+                        "Skipping provisional relay because call was already rebound"
+                    );
+                    return;
+                }
+
                 let code = b_leg_provisional.start_line().code();
                 let has_body = !b_leg_provisional.body().is_empty();
 
@@ -5252,6 +5625,46 @@ impl SipMessageHandler {
             "Race complete"
         );
 
+        let already_rebound = self
+            .call_manager
+            .get_call(&call_id)
+            .map(|call| {
+                call.state == fcp_b2bua_core::CallState::Established
+                    && call.a_leg.dialog.is_some()
+                    && call
+                        .b_leg
+                        .as_ref()
+                        .and_then(|leg| leg.dialog.as_ref())
+                        .is_some()
+            })
+            .unwrap_or(false);
+        if already_rebound {
+            info!(
+                call_id = %call_id,
+                fork_count = b_leg_calls.len(),
+                "Call was rebound while fork race was in flight; cancelling all forks"
+            );
+            // Cancel every outstanding fork leg so target phones stop ringing.
+            // If a leg already raced pickup to 200 OK, the helper falls back to
+            // sending BYE on the confirmed dialog to tear it down cleanly.
+            for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
+                info!(
+                    call_id = %call_id,
+                    target = %target,
+                    "CANCELing fork {} after pickup rebind", i
+                );
+                self.cancel_or_bye_fork_leg(
+                    &call_id,
+                    target,
+                    i,
+                    b_leg_handle,
+                    "Pickup rebind cleanup",
+                )
+                .await;
+            }
+            return Ok(());
+        }
+
         // CANCEL all non-winning B-legs
         for (i, (target, b_leg_handle, _flow_token)) in b_leg_calls.iter().enumerate() {
             if Some(i) != winning_index {
@@ -5260,14 +5673,8 @@ impl SipMessageHandler {
                     target = %target,
                     "CANCELing non-winning B-leg {}", i
                 );
-                if let Err(e) = b_leg_handle.cancel().await {
-                    warn!(
-                        call_id = %call_id,
-                        target = %target,
-                        error = %e,
-                        "Failed to CANCEL B-leg {}", i
-                    );
-                }
+                self.cancel_or_bye_fork_leg(&call_id, target, i, b_leg_handle, "Fork race cleanup")
+                    .await;
             }
         }
 
@@ -5421,6 +5828,12 @@ impl SipMessageHandler {
                         }
                     }
                 }
+            }
+
+            if Self::is_oneway_intercom_request(&request) {
+                b_leg_sdp = b_leg_sdp
+                    .as_deref()
+                    .map(|sdp| Self::rewrite_sdp_direction(sdp, "recvonly"));
             }
 
             // Retrieve saved A-leg To-tag from provisional response
@@ -8668,14 +9081,8 @@ impl SipMessageHandler {
                     caller_ext = %caller_ext,
                     "Group pickup: found ringing call"
                 );
-                // TODO: Phase 2 — CANCEL the ringing B-leg and bridge the picker to the A-leg
-                let response =
-                    self.create_simple_response(request, 503, "Pickup Unavailable");
-                handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(
-                    call_id,
-                    Some("Group pickup is not available in this deployment".to_string()),
-                );
+                self.complete_pickup(request, handle, call_id, ringing_call_id, "group pickup")
+                    .await?;
             }
             None => {
                 info!(call_id = %call_id, caller_ext = %caller_ext, "Group pickup: no ringing call found");
@@ -8714,14 +9121,8 @@ impl SipMessageHandler {
                     target = %target_extension,
                     "Directed pickup: found ringing call"
                 );
-                // TODO: Phase 2 — CANCEL the ringing B-leg and bridge the picker to the A-leg
-                let response =
-                    self.create_simple_response(request, 503, "Pickup Unavailable");
-                handle.send_final(response).await;
-                let _ = self.call_manager.terminate_call(
-                    call_id,
-                    Some("Directed pickup is not available in this deployment".to_string()),
-                );
+                self.complete_pickup(request, handle, call_id, ringing_call_id, "directed pickup")
+                    .await?;
             }
             None => {
                 info!(call_id = %call_id, target = %target_extension, "Directed pickup: no ringing call found");
@@ -8736,6 +9137,233 @@ impl SipMessageHandler {
                 );
             }
         }
+        Ok(())
+    }
+
+    async fn complete_pickup(
+        &self,
+        request: &sip_core::Request,
+        handle: &ServerTransactionHandle,
+        feature_call_id: &fcp_b2bua_core::CallId,
+        ringing_call_id: fcp_b2bua_core::CallId,
+        label: &str,
+    ) -> Result<()> {
+        let Some(ringing_call) = self.call_manager.get_call(&ringing_call_id) else {
+            let response = self.create_simple_response(request, 404, "Ringing Call Not Found");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(
+                feature_call_id,
+                Some(format!("{} failed: ringing call disappeared", label)),
+            );
+            return Ok(());
+        };
+
+        if ringing_call.state != fcp_b2bua_core::CallState::Proceeding {
+            let response = self.create_simple_response(request, 409, "Call No Longer Ringing");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(
+                feature_call_id,
+                Some(format!("{} failed: call is no longer ringing", label)),
+            );
+            return Ok(());
+        }
+
+        let Some(original_request) = ringing_call.original_invite.clone() else {
+            let response = self.create_simple_response(request, 500, "Pickup Failed");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(
+                feature_call_id,
+                Some(format!("{} failed: missing original INVITE", label)),
+            );
+            return Ok(());
+        };
+
+        let Some(original_tx_key) = ringing_call.a_leg_invite_tx.clone() else {
+            let response = self.create_simple_response(request, 500, "Pickup Failed");
+            handle.send_final(response).await;
+            let _ = self.call_manager.terminate_call(
+                feature_call_id,
+                Some(format!("{} failed: missing A-leg transaction", label)),
+            );
+            return Ok(());
+        };
+
+        // We defer signaling the fork arbiter until *after* the call has been
+        // atomically transitioned to Established below. Waking the arbiter with
+        // state still in Proceeding would race the `already_rebound` check and
+        // could cause the arbiter to send 487 Request Terminated to the caller
+        // while we concurrently send 200 OK from this function.
+        let cancel_notify = ringing_call.cancel_notify.clone();
+
+        let picker_offer = if !request.body().is_empty() {
+            Some(String::from_utf8_lossy(request.body()).to_string())
+        } else {
+            None
+        };
+        let original_offer = ringing_call.a_leg.sdp.clone();
+
+        let mut pickup_media_session_id = ringing_call.media_session_id.clone();
+        let mut pickup_media_anchored = ringing_call.media_anchored;
+
+        let (original_answer, picker_answer) = if ringing_call.media_anchored {
+            let Some(media_manager) = &self.media_manager else {
+                let response = self.create_simple_response(request, 503, "Media Unavailable");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    feature_call_id,
+                    Some(format!("{} failed: media manager unavailable", label)),
+                );
+                return Ok(());
+            };
+            let Some(media_session_id) = ringing_call.media_session_id.clone() else {
+                let response = self.create_simple_response(request, 503, "Media Unavailable");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    feature_call_id,
+                    Some(format!("{} failed: media session unavailable", label)),
+                );
+                return Ok(());
+            };
+
+            if let Some(ref picker_offer) = picker_offer {
+                if let Err(e) = media_manager
+                    .update_session_b_leg(&media_session_id, picker_offer.clone())
+                    .await
+                {
+                    warn!(
+                        call_id = %ringing_call_id,
+                        error = %e,
+                        "{} failed while updating media session for picker",
+                        label
+                    );
+                    let response = self.create_simple_response(request, 503, "Pickup Failed");
+                    handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(feature_call_id, Some(format!("{} failed: {}", label, e)));
+                    return Ok(());
+                }
+            }
+
+            let session = match media_manager.get_session(&media_session_id).await {
+                Ok(session) => session,
+                Err(e) => {
+                    warn!(
+                        call_id = %ringing_call_id,
+                        error = %e,
+                        "{} failed while loading media session",
+                        label
+                    );
+                    let response = self.create_simple_response(request, 503, "Pickup Failed");
+                    handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(feature_call_id, Some(format!("{} failed: {}", label, e)));
+                    return Ok(());
+                }
+            };
+            let (rtp_port, _rtcp_port) = session.ports();
+
+            let original_answer = original_offer
+                .as_deref()
+                .map(|offer| {
+                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                })
+                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, rtp_port));
+            let picker_answer = picker_offer
+                .as_deref()
+                .map(|offer| {
+                    fcp_media::construct_answer_for_a_leg(offer, &self.local_addr, rtp_port, None)
+                })
+                .unwrap_or_else(|| generate_basic_sdp(&self.local_addr, rtp_port));
+
+            (Some(original_answer), Some(picker_answer))
+        } else {
+            match self
+                .anchor_pickup_media(
+                    &ringing_call_id,
+                    original_offer.as_deref(),
+                    picker_offer.as_deref(),
+                    label,
+                )
+                .await
+            {
+                Ok((media_session_id, original_answer, picker_answer)) => {
+                    pickup_media_session_id = Some(media_session_id);
+                    pickup_media_anchored = true;
+                    (original_answer, picker_answer)
+                }
+                Err(e) => {
+                    warn!(
+                        call_id = %ringing_call_id,
+                        error = %e,
+                        "{} failed while dynamically anchoring pickup media",
+                        label
+                    );
+                    let response = self.create_simple_response(request, 503, "Media Unavailable");
+                    handle.send_final(response).await;
+                    let _ = self
+                        .call_manager
+                        .terminate_call(feature_call_id, Some(format!("{} failed: {}", label, e)));
+                    return Ok(());
+                }
+            }
+        };
+
+        let original_response = self.build_final_ok_response(
+            &original_request,
+            ringing_call.a_leg_to_tag.as_deref(),
+            original_answer.as_deref(),
+        )?;
+        let picker_response =
+            self.build_final_ok_response(request, None, picker_answer.as_deref())?;
+
+        let original_dialog = self.build_inbound_dialog(&original_request, &original_response)?;
+        let picker_dialog = self.build_inbound_dialog(request, &picker_response)?;
+        let picker_leg = self.build_pickup_leg(request, picker_dialog.clone());
+
+        // Transition state to Established BEFORE signaling the arbiter so
+        // that when it wakes and re-reads the call, `already_rebound` is true
+        // and it takes the cancel-all-forks branch instead of the normal
+        // no-winner path that would respond with 487 to the original caller.
+        let _ = self.call_manager.update_call(&ringing_call_id, |call| {
+            call.a_leg.dialog = Some(original_dialog.clone());
+            call.b_leg = Some(picker_leg.clone());
+            call.cancel_notify = None;
+            call.media_session_id = pickup_media_session_id.clone();
+            call.media_anchored = pickup_media_anchored;
+            call.establish();
+        });
+
+        // Now it is safe to signal the fork arbiter. Use `notify_one` so that
+        // if for any reason the arbiter has not yet registered a waiter on
+        // `cancel_notify.notified()`, a permit is stored and picked up on its
+        // next poll.
+        if let Some(cancel_notify) = cancel_notify {
+            cancel_notify.notify_one();
+        }
+
+        let _ = self.dialog_manager.insert(original_dialog.clone());
+        self.start_session_timer(&original_dialog);
+        let _ = self.dialog_manager.insert(picker_dialog.clone());
+        self.start_session_timer(&picker_dialog);
+
+        self.transaction_manager
+            .send_final(&original_tx_key, original_response)
+            .await;
+        handle.send_final(picker_response).await;
+
+        let _ = self
+            .call_manager
+            .terminate_call(feature_call_id, Some(format!("{} completed", label)));
+
+        info!(
+            pickup_call_id = %feature_call_id,
+            ringing_call_id = %ringing_call_id,
+            mode = %label,
+            "Bridged ringing call to picker"
+        );
+
         Ok(())
     }
 
@@ -9382,15 +10010,30 @@ impl SipMessageHandler {
             "Intercom: routing to extension with auto-answer headers"
         );
 
-        // TODO: Phase 2 — resolve extension to contact, send INVITE with extra_headers,
-        // and for one-way mode, modify SDP direction to sendonly on the intercom leg.
-        let response = self.create_simple_response(request, 503, "Intercom Unavailable");
-        handle.send_final(response).await;
-        let _ = self.call_manager.terminate_call(
-            call_id,
-            Some("Intercom is not available in this deployment".to_string()),
-        );
-        Ok(())
+        let uac = match &self.uac {
+            Some(uac) => Arc::clone(uac),
+            None => {
+                let response = self.create_simple_response(request, 500, "UAC Not Configured");
+                handle.send_final(response).await;
+                let _ = self.call_manager.terminate_call(
+                    call_id,
+                    Some("Intercom failed: UAC not configured".to_string()),
+                );
+                return Ok(());
+            }
+        };
+
+        let routed_request = self.build_feature_route_request(
+            request,
+            &params.target_extension,
+            &params.extra_headers,
+        )?;
+        let _ = self.call_manager.update_call(call_id, |call| {
+            call.original_callee = Some(params.target_extension.clone());
+        });
+
+        self.forward_invite_to_b_leg(&routed_request, handle, *call_id, uac)
+            .await
     }
 
     /// Handle agent login feature code (*50).
@@ -9533,10 +10176,12 @@ impl SipMessageHandler {
         // may differ from the extension, e.g. "polycom" vs "1556").
         let caller_ext = if let Some(storage) = &self.storage {
             match self.resolve_runtime_tenant(request, call_id).await {
-                Ok(tenant_id) => match storage.get_user_in_tenant(&sip_username, &tenant_id).await {
-                    Ok(Some(user)) => user.extension.unwrap_or_else(|| sip_username.clone()),
-                    _ => sip_username.clone(),
-                },
+                Ok(tenant_id) => {
+                    match storage.get_user_in_tenant(&sip_username, &tenant_id).await {
+                        Ok(Some(user)) => user.extension.unwrap_or_else(|| sip_username.clone()),
+                        _ => sip_username.clone(),
+                    }
+                }
                 Err(_) => sip_username.clone(),
             }
         } else {
@@ -10194,7 +10839,7 @@ impl SipMessageHandler {
         sdp_override: Option<String>,
     ) -> Result<Arc<crate::uac::OutboundCall>> {
         // Use SDP override if provided, otherwise extract from A-leg request
-        let a_leg_sdp = sdp_override.or_else(|| {
+        let mut a_leg_sdp = sdp_override.or_else(|| {
             if !request.body().is_empty() {
                 Some(String::from_utf8_lossy(request.body()).to_string())
             } else {
@@ -10202,7 +10847,21 @@ impl SipMessageHandler {
             }
         });
 
-        let call = uac.invite(target_uri, a_leg_sdp.as_deref()).await?;
+        if Self::is_oneway_intercom_request(request) {
+            a_leg_sdp = Some(generate_hold_sdp(
+                a_leg_sdp.as_deref(),
+                &self.local_addr,
+                self.rtp_port,
+            ));
+        }
+
+        let extra_headers = self.collect_outbound_intercom_headers(request);
+        let call = if extra_headers.iter().next().is_some() {
+            uac.invite_with_headers(target_uri, a_leg_sdp.as_deref(), extra_headers)
+                .await?
+        } else {
+            uac.invite(target_uri, a_leg_sdp.as_deref()).await?
+        };
         Ok(Arc::new(call))
     }
 
@@ -11571,6 +12230,90 @@ fn generate_unhold_sdp(sdp: Option<&str>, local_addr: &str, rtp_port: u16) -> St
 mod tests {
     use super::*;
     use crate::registrar::FcpRegistrar;
+
+    #[test]
+    fn rewrite_sdp_direction_replaces_sendrecv_in_audio_only() {
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 127.0.0.1\r\n\
+                   s=-\r\n\
+                   c=IN IP4 127.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=sendrecv\r\n\
+                   m=video 10002 RTP/AVP 96\r\n\
+                   a=rtpmap:96 VP8/90000\r\n\
+                   a=sendrecv\r\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
+        assert!(rewritten.contains("m=audio 10000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=recvonly"));
+        // Video section is untouched.
+        assert!(
+            rewritten.contains("m=video 10002 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\na=sendrecv")
+        );
+        // Exactly one rewritten direction token on the audio side.
+        assert_eq!(rewritten.matches("a=recvonly").count(), 1);
+    }
+
+    #[test]
+    fn rewrite_sdp_direction_inserts_when_absent() {
+        // RFC 3264 default is sendrecv; phones commonly omit the attribute.
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 127.0.0.1\r\n\
+                   s=-\r\n\
+                   c=IN IP4 127.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "sendonly");
+        // The direction line should appear right after m=audio.
+        let audio_idx = rewritten.find("m=audio").unwrap();
+        let sendonly_idx = rewritten.find("a=sendonly").unwrap();
+        assert!(sendonly_idx > audio_idx);
+        // And must not appear before m=audio (no session-level leak).
+        assert!(rewritten[..audio_idx].find("a=sendonly").is_none());
+    }
+
+    #[test]
+    fn rewrite_sdp_direction_only_touches_first_audio_section() {
+        // Two audio sections (rare but legal) — only the first should change.
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 127.0.0.1\r\n\
+                   s=-\r\n\
+                   t=0 0\r\n\
+                   m=audio 10000 RTP/AVP 0\r\n\
+                   a=sendrecv\r\n\
+                   m=audio 10002 RTP/AVP 0\r\n\
+                   a=sendrecv\r\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
+        assert_eq!(rewritten.matches("a=recvonly").count(), 1);
+        assert_eq!(rewritten.matches("a=sendrecv").count(), 1);
+    }
+
+    #[test]
+    fn rewrite_sdp_direction_no_audio_section_is_noop() {
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 127.0.0.1\r\n\
+                   s=-\r\n\
+                   t=0 0\r\n\
+                   m=video 10002 RTP/AVP 96\r\n\
+                   a=sendrecv\r\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
+        assert_eq!(rewritten, sdp);
+    }
+
+    #[test]
+    fn rewrite_sdp_direction_preserves_lf_only_endings() {
+        let sdp = "v=0\n\
+                   o=- 1 1 IN IP4 127.0.0.1\n\
+                   s=-\n\
+                   t=0 0\n\
+                   m=audio 10000 RTP/AVP 0\n\
+                   a=sendrecv\n";
+        let rewritten = SipMessageHandler::rewrite_sdp_direction(sdp, "recvonly");
+        assert!(rewritten.contains("\na=recvonly\n"));
+        assert!(!rewritten.contains("\r\n"));
+    }
+
     use bytes::Bytes as StdBytes;
     use fcp_core::{FileBackedStorage, RegistrationStore};
     use sip_core::{Headers, Method, RequestLine, SipUri};

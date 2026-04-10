@@ -54,44 +54,18 @@ impl Default for PbxConfig {
 }
 
 /// Validate PBX configuration for unsupported or inconsistent options.
-pub fn validate_config(config: &PbxConfig) -> Result<(), String> {
-    let feature_codes = &config.feature_codes;
-
-    reject_unsupported_feature_code("pbx.feature_codes.group_pickup", &feature_codes.group_pickup)?;
-    reject_unsupported_feature_code(
-        "pbx.feature_codes.directed_pickup",
-        &feature_codes.directed_pickup,
-    )?;
-    reject_unsupported_feature_code(
-        "pbx.feature_codes.intercom_oneway",
-        &feature_codes.intercom_oneway,
-    )?;
-    reject_unsupported_feature_code(
-        "pbx.feature_codes.intercom_twoway",
-        &feature_codes.intercom_twoway,
-    )?;
-
+pub fn validate_config(_config: &PbxConfig) -> Result<(), String> {
     Ok(())
-}
-
-fn reject_unsupported_feature_code(field: &str, value: &str) -> Result<(), String> {
-    if value.trim().is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{field} is configured but that feature code path is not implemented yet"
-        ))
-    }
 }
 
 /// Feature code (star code) prefix mappings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeatureCodeConfig {
-    /// Group pickup prefix (e.g., "*8"). Disabled by default until runtime support is complete.
+    /// Group pickup prefix (e.g., "*8").
     #[serde(default = "default_group_pickup")]
     pub group_pickup: String,
 
-    /// Directed pickup prefix (e.g., "*9" followed by extension). Disabled by default until runtime support is complete.
+    /// Directed pickup prefix (e.g., "*9" followed by extension).
     #[serde(default = "default_directed_pickup")]
     pub directed_pickup: String,
 
@@ -103,11 +77,11 @@ pub struct FeatureCodeConfig {
     #[serde(default = "default_retrieve")]
     pub retrieve: String,
 
-    /// One-way intercom prefix (e.g., "*80" followed by extension). Disabled by default until runtime support is complete.
+    /// One-way intercom prefix (e.g., "*80" followed by extension).
     #[serde(default = "default_intercom_oneway")]
     pub intercom_oneway: String,
 
-    /// Two-way intercom prefix (e.g., "*81" followed by extension). Disabled by default until runtime support is complete.
+    /// Two-way intercom prefix (e.g., "*81" followed by extension).
     #[serde(default = "default_intercom_twoway")]
     pub intercom_twoway: String,
 
@@ -407,14 +381,14 @@ digits = 4
     }
 
     #[test]
-    fn test_rejects_unsupported_feature_codes() {
+    fn test_accepts_pickup_and_intercom_feature_codes() {
         let mut cfg = PbxConfig::default();
         cfg.feature_codes.group_pickup = "*8".to_string();
-        assert!(validate_config(&cfg).is_err());
+        assert!(validate_config(&cfg).is_ok());
 
         let mut cfg = PbxConfig::default();
         cfg.feature_codes.intercom_twoway = "*81".to_string();
-        assert!(validate_config(&cfg).is_err());
+        assert!(validate_config(&cfg).is_ok());
 
         let cfg = PbxConfig::default();
         assert!(validate_config(&cfg).is_ok());

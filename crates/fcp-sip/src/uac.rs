@@ -5,6 +5,7 @@
 use crate::settings::ServerSettings;
 use anyhow::Result;
 use sip_dialog::{Dialog, Subscription};
+use sip_core::Headers;
 use sip_uac::integrated::{CallHandle, IntegratedUAC};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -99,6 +100,18 @@ impl SipUserAgentClient {
     /// ```
     pub async fn invite(&self, target: &str, sdp_body: Option<&str>) -> Result<CallHandle> {
         self.inner.invite(target, sdp_body).await
+    }
+
+    /// Initiate an outbound INVITE with additional SIP headers.
+    pub async fn invite_with_headers(
+        &self,
+        target: &str,
+        sdp_body: Option<&str>,
+        extra_headers: Headers,
+    ) -> Result<CallHandle> {
+        self.inner
+            .invite_with_headers(target, sdp_body, extra_headers)
+            .await
     }
 
     /// Send an INVITE using an existing connection (RFC 5626 flow support).
