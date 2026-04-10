@@ -1034,7 +1034,10 @@ impl FlowCallHandler {
             final_tx: Mutex::new(Some(final_tx)),
             term_tx: Mutex::new(Some(term_tx)),
             uac: tu_uac,
+            transaction_manager: Arc::clone(transaction_manager),
             request: invite.clone(),
+            local_uri: local_uri.clone(),
+            remote_uri: dest_uri.clone(),
             ctx: ctx.clone(),
             dispatcher: self.dispatcher.clone(),
         });
@@ -3372,8 +3375,14 @@ struct DialTransactionUser {
     term_tx: Mutex<Option<oneshot::Sender<String>>>,
     /// UserAgentClient helper for creating ACK
     uac: UserAgentClient,
+    /// Transaction manager for sending PRACK transactions.
+    transaction_manager: Arc<TransactionManager>,
     /// Original INVITE request (for creating ACK)
     request: Request,
+    /// Local URI used to construct the early dialog for PRACK.
+    local_uri: sip_core::SipUri,
+    /// Remote URI used to construct the early dialog for PRACK.
+    remote_uri: sip_core::SipUri,
     /// Transport context for sending ACK/CANCEL
     ctx: TransportContext,
     /// Transport dispatcher for sending ACK outside the transaction layer
@@ -3452,12 +3461,53 @@ impl ClientTransactionUser for DialTransactionUser {
         }
     }
 
-    async fn send_prack(&self, _key: &TransactionKey, response: Response, _ctx: &TransportContext) {
-        debug!(
-            "PRACK for reliable provisional {} (not implemented for Dial node MVP)",
-            response.code()
+    async fn send_prack(&self, _key: &TransactionKey, response: Response, ctx: &TransportContext) {
+        info!(
+            code = response.code(),
+            "Sending PRACK for reliable provisional on B-leg"
         );
-        // Phase 5: Send PRACK for reliable provisionals via sip-uac
+
+        let dialog = match Dialog::new_uac(
+            &self.request,
+            &response,
+            self.local_uri.clone(),
+            self.remote_uri.clone(),
+        ) {
+            Some(dialog) => dialog,
+            None => {
+                warn!(
+                    code = response.code(),
+                    "Failed to construct early dialog for PRACK"
+                );
+                return;
+            }
+        };
+
+        let prack = match self.uac.create_prack(&self.request, &response, &dialog) {
+            Ok(prack) => prack,
+            Err(e) => {
+                warn!(
+                    code = response.code(),
+                    error = %e,
+                    "Failed to create PRACK request"
+                );
+                return;
+            }
+        };
+
+        let tu = Arc::new(PrackTransactionUser);
+        match self
+            .transaction_manager
+            .start_client_transaction(prack, ctx.clone(), tu)
+            .await
+        {
+            Ok(key) => {
+                debug!(branch = %key.branch(), "Started PRACK transaction");
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to start PRACK transaction");
+            }
+        }
     }
 
     async fn on_transport_error(&self, _key: &TransactionKey) {
@@ -3477,6 +3527,47 @@ impl ClientTransactionUser for DialTransactionUser {
 struct CancelTransactionUser {
     final_tx: Mutex<Option<oneshot::Sender<Response>>>,
     term_tx: Mutex<Option<oneshot::Sender<String>>>,
+}
+
+/// Lightweight transaction user for PRACK transactions.
+struct PrackTransactionUser;
+
+#[async_trait]
+impl ClientTransactionUser for PrackTransactionUser {
+    async fn on_provisional(&self, _key: &TransactionKey, response: &Response) {
+        debug!(code = response.code(), "PRACK provisional response");
+    }
+
+    async fn on_final(&self, _key: &TransactionKey, response: &Response) {
+        info!(code = response.code(), "PRACK final response");
+    }
+
+    async fn on_terminated(&self, _key: &TransactionKey, reason: &str) {
+        warn!(reason = %reason, "PRACK transaction terminated");
+    }
+
+    async fn send_ack(
+        &self,
+        _key: &TransactionKey,
+        _response: Response,
+        _ctx: &TransportContext,
+        _is_2xx: bool,
+    ) {
+        // PRACK is a non-INVITE transaction.
+    }
+
+    async fn send_prack(
+        &self,
+        _key: &TransactionKey,
+        _response: Response,
+        _ctx: &TransportContext,
+    ) {
+        // Nested PRACK is not applicable.
+    }
+
+    async fn on_transport_error(&self, _key: &TransactionKey) {
+        warn!("PRACK transport error");
+    }
 }
 
 #[async_trait]

@@ -2739,30 +2739,12 @@ impl SipMessageHandler {
                                             .split('@')
                                             .next()
                                             .unwrap_or(destination_aor);
-                                        let meeting_result = match storage
+                                        let meeting_result = storage
                                             .get_meeting_by_room_number(
                                                 &line_binding.tenant_id,
                                                 room_number,
                                             )
-                                            .await
-                                        {
-                                            Ok(Some(m)) => Ok(Some(m)),
-                                            Ok(None) => match self.default_tenant_id {
-                                                Some(default_tenant_id)
-                                                    if default_tenant_id
-                                                        != line_binding.tenant_id =>
-                                                {
-                                                    storage
-                                                        .get_meeting_by_room_number(
-                                                            &default_tenant_id,
-                                                            room_number,
-                                                        )
-                                                        .await
-                                                }
-                                                _ => Ok(None),
-                                            },
-                                            other => other,
-                                        };
+                                            .await;
 
                                         match meeting_result {
                                             Ok(Some(meeting)) if meeting.enabled => {
@@ -3627,26 +3609,9 @@ impl SipMessageHandler {
                                     }
                                 }
 
-                                let meeting_result = match storage
+                                let meeting_result = storage
                                     .get_meeting_by_room_number(&tenant_id, extension_number)
-                                    .await
-                                {
-                                    Ok(Some(m)) => Ok(Some(m)),
-                                    Ok(None) => match self.default_tenant_id {
-                                        Some(default_tenant_id)
-                                            if default_tenant_id != tenant_id =>
-                                        {
-                                            storage
-                                                .get_meeting_by_room_number(
-                                                    &default_tenant_id,
-                                                    extension_number,
-                                                )
-                                                .await
-                                        }
-                                        _ => Ok(None),
-                                    },
-                                    other => other,
-                                };
+                                    .await;
 
                                 match meeting_result {
                                     Ok(Some(meeting)) if meeting.enabled => {
@@ -3760,34 +3725,10 @@ impl SipMessageHandler {
                         if let Some(ref storage) = self.storage {
                             use fcp_core::storage::ConferenceStore;
 
-                            // Look up meeting by room number. Try the call's tenant first,
-                            // then fall back to the default (nil) tenant so rooms created
-                            // via the admin API (which uses nil tenant) are always reachable.
-                            let meeting_result = match storage
+                            // Look up meeting by room number only within the call's tenant.
+                            let meeting_result = storage
                                 .get_meeting_by_room_number(&tenant_id, extension_number)
-                                .await
-                            {
-                                Ok(Some(m)) => Ok(Some(m)),
-                                Ok(None) => match self.default_tenant_id {
-                                    Some(default_tenant_id) if default_tenant_id != tenant_id => {
-                                        debug!(
-                                            call_id = %call_id,
-                                            tenant_id = %tenant_id,
-                                            default_tenant_id = %default_tenant_id,
-                                            room = %extension_number,
-                                            "Conference room not found for tenant, trying configured default tenant"
-                                        );
-                                        storage
-                                            .get_meeting_by_room_number(
-                                                &default_tenant_id,
-                                                extension_number,
-                                            )
-                                            .await
-                                    }
-                                    _ => Ok(None),
-                                },
-                                other => other,
-                            };
+                                .await;
 
                             match meeting_result {
                                 Ok(Some(meeting)) if meeting.enabled => {
