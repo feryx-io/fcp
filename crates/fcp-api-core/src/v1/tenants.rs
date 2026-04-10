@@ -1,16 +1,55 @@
 //! API endpoints for tenant management
 
+use crate::auth::AuthIdentity;
 use crate::{error::ApiError, state::ApiState};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use fcp_core::{Tenant, TenantId, TenantStatus, TenantStore};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::time::SystemTime;
+
+/// Require a platform-level admin identity for tenant lifecycle operations.
+///
+/// Tenant CRUD (create/delete) is strictly a super_admin / static-token
+/// operation. Tenant admins may view and update their own tenant, but must
+/// never be able to create sibling tenants or delete a tenant — that would
+/// let a tenant-scoped admin operate outside their scope.
+fn require_platform(identity: Option<&AuthIdentity>) -> Result<(), ApiError> {
+    if let Some(id) = identity {
+        if !id.is_platform_admin() {
+            return Err(ApiError::Forbidden(
+                "Platform admin access required".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Require that the caller can see the given tenant.
+///
+/// Platform admins see every tenant. Any other identity (tenant_admin,
+/// telecom_admin, ...) may only act on their own tenant. Callers without
+/// an identity at all (auth disabled in dev) are allowed through.
+fn require_tenant_access(
+    identity: Option<&AuthIdentity>,
+    target: &TenantId,
+) -> Result<(), ApiError> {
+    let Some(id) = identity else { return Ok(()) };
+    if id.is_platform_admin() {
+        return Ok(());
+    }
+    match id.tenant_id() {
+        Some(own) if own == target => Ok(()),
+        _ => Err(ApiError::Forbidden(
+            "Cannot access resources in another tenant".to_string(),
+        )),
+    }
+}
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -106,23 +145,46 @@ pub struct UpdateTenantRequest {
 }
 
 /// List all tenants
+///
+/// Platform admins see every tenant. Tenant-scoped identities (including
+/// the new tenant_admin role) only see their own tenant so they can render
+/// their own tenant card in the admin UI without learning about siblings.
 pub async fn list_tenants(
     State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
 ) -> Result<Json<Vec<TenantResponse>>, ApiError> {
     let storage = require_storage!(state);
-    let tenants = storage.list_tenants().await?;
+    let identity_ref = identity.as_ref().map(|ext| &ext.0);
+
+    let tenants = if identity_ref.map_or(true, |id| id.is_platform_admin()) {
+        storage.list_tenants().await?
+    } else {
+        // Tenant-scoped identities can only see themselves.
+        match identity_ref.and_then(|id| id.tenant_id()) {
+            Some(own) => match storage.get_tenant(own).await? {
+                Some(t) => vec![t],
+                None => vec![],
+            },
+            None => vec![],
+        }
+    };
+
     let response: Vec<TenantResponse> = tenants.into_iter().map(|t| t.into()).collect();
     Ok(Json(response))
 }
 
 /// Get a specific tenant by ID
+///
+/// Tenant-scoped identities may only load their own tenant.
 pub async fn get_tenant(
     State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
 ) -> Result<Json<TenantResponse>, ApiError> {
     let storage = require_storage!(state);
     let tenant_id = TenantId::from_str(&id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
+    require_tenant_access(identity.as_ref().map(|ext| &ext.0), &tenant_id)?;
     let tenant = storage
         .get_tenant(&tenant_id)
         .await?
@@ -130,11 +192,13 @@ pub async fn get_tenant(
     Ok(Json(tenant.into()))
 }
 
-/// Create a new tenant
+/// Create a new tenant (platform admin only)
 pub async fn create_tenant(
     State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
     Json(req): Json<CreateTenantRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_platform(identity.as_ref().map(|ext| &ext.0))?;
     let storage = require_storage!(state);
 
     // Check if tenant name already exists
@@ -191,14 +255,19 @@ pub async fn create_tenant(
 }
 
 /// Update an existing tenant
+///
+/// Tenant admins may update their own tenant (name, contact info, etc.)
+/// but not cross-tenant. Platform admins may update any tenant.
 pub async fn update_tenant(
     State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateTenantRequest>,
 ) -> Result<Json<TenantResponse>, ApiError> {
     let storage = require_storage!(state);
     let tenant_id = TenantId::from_str(&id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;
+    require_tenant_access(identity.as_ref().map(|ext| &ext.0), &tenant_id)?;
 
     // Get existing tenant
     let mut tenant = storage
@@ -279,11 +348,14 @@ pub async fn update_tenant(
     Ok(Json(tenant.into()))
 }
 
-/// Delete a tenant
+/// Delete a tenant (platform admin only)
 pub async fn delete_tenant(
     State(state): State<ApiState>,
+    identity: Option<Extension<AuthIdentity>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    require_platform(identity.as_ref().map(|ext| &ext.0))?;
+
     let storage = require_storage!(state);
     let tenant_id = TenantId::from_str(&id)
         .map_err(|_| ApiError::BadRequest("Invalid tenant ID format".to_string()))?;

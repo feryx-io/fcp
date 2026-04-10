@@ -19,7 +19,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { extensions, users, locations, devices, phoneNumbers } from '@/api/endpoints'
 import type { Extension, CreateExtensionRequest, UpdateExtensionRequest, User, Location } from '@/types'
-import { TenantField } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
 
 const TARGET_TYPES = [
   { value: 'user', label: 'User' },
@@ -197,7 +197,11 @@ export function ExtensionsPage() {
     },
   ]
 
-  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const effectiveTenantId = useEffectiveTenantId()
+  const createForm = useForm<CreateForm>({
+    resolver: zodResolver(createSchema),
+    defaultValues: { tenant_id: effectiveTenantId },
+  })
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
@@ -260,7 +264,7 @@ export function ExtensionsPage() {
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
           </Button>
-          <Button onClick={() => { createForm.reset({ number: '', target_type: '', target_id: '', description: '', location_id: '' }); setCreateOpen(true) }}>
+          <Button onClick={() => { createForm.reset({ number: '', target_type: '', target_id: '', description: '', location_id: '', tenant_id: effectiveTenantId }); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Extension
           </Button>
         </div>

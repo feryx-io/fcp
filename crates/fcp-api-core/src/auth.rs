@@ -46,6 +46,26 @@ impl AuthIdentity {
         }
     }
 
+    /// Returns true when the caller is a platform-level administrator with
+    /// cross-tenant visibility and the right to edit system-wide settings.
+    ///
+    /// This is strictly narrower than [`is_admin`]: a tenant admin is an
+    /// "admin" inside a single tenant but must not be treated as a platform
+    /// admin. Only [`StaticToken`] and [`Session`] carrying the `super_admin`
+    /// role qualify. API tokens are scoped by construction and therefore
+    /// never qualify.
+    ///
+    /// Endpoints that must stay off-limits to tenant admins (tenant CRUD,
+    /// system-scoped config, cluster topology, etc.) should check this
+    /// instead of [`is_admin`].
+    pub fn is_platform_admin(&self) -> bool {
+        match self {
+            Self::StaticToken => true,
+            Self::ApiToken { .. } => false,
+            Self::Session { role, .. } => role == "super_admin",
+        }
+    }
+
     /// Check whether this identity holds a specific permission.
     ///
     /// Returns `true` for static tokens (unrestricted) and for API tokens
@@ -72,9 +92,16 @@ impl AuthIdentity {
 
 /// Returns true when the caller is allowed to operate outside tenant scope.
 ///
-/// Static config tokens are treated as global platform-admin credentials.
+/// Both static config tokens and JWT sessions carrying the `super_admin`
+/// role are treated as platform-admin credentials and can see/modify
+/// resources in every tenant. Tenant-scoped roles (`tenant_admin`,
+/// `telecom_admin`, ...) are rejected so that list/read endpoints clamp
+/// to their own tenant_id.
 pub fn can_access_all_tenants(identity: Option<&AuthIdentity>) -> bool {
-    matches!(identity, Some(AuthIdentity::StaticToken))
+    match identity {
+        Some(id) => id.is_platform_admin(),
+        None => false,
+    }
 }
 
 /// Authentication middleware state.
@@ -251,6 +278,35 @@ pub async fn require_admin(req: Request, next: Next) -> Result<Response, (Status
     if let Some(identity) = req.extensions().get::<AuthIdentity>() {
         if !identity.is_admin() {
             return Err((StatusCode::FORBIDDEN, "Admin access required".to_string()));
+        }
+    }
+    Ok(next.run(req).await)
+}
+
+/// Middleware that requires platform-level (cross-tenant) admin access.
+///
+/// Strictly narrower than [`require_admin`]: a tenant admin is rejected.
+/// Use this to gate endpoints that operate on platform-wide resources
+/// such as tenant CRUD, system-scope configuration, cluster membership,
+/// and any operation that a tenant-scoped administrator should not be
+/// able to perform on behalf of the whole platform.
+///
+/// Callers:
+/// - `StaticToken`  — allowed (master config token)
+/// - `Session { role: "super_admin", .. }` — allowed
+/// - `Session` with any other role, including `tenant_admin` — rejected
+/// - `ApiToken` — rejected (API tokens are tenant-scoped by construction)
+/// - no identity — allowed (auth disabled)
+pub async fn require_platform_admin(
+    req: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    if let Some(identity) = req.extensions().get::<AuthIdentity>() {
+        if !identity.is_platform_admin() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Platform admin access required".to_string(),
+            ));
         }
     }
     Ok(next.run(req).await)

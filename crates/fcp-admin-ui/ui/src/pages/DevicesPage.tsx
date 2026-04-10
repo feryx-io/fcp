@@ -19,7 +19,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { devices, locations } from '@/api/endpoints'
 import type { Device, CreateDeviceRequest } from '@/types'
-import { TenantField } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -195,7 +195,11 @@ export function DevicesPage() {
     },
   ]
 
-  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const effectiveTenantId = useEffectiveTenantId()
+  const createForm = useForm<CreateForm>({
+    resolver: zodResolver(createSchema),
+    defaultValues: { tenant_id: effectiveTenantId },
+  })
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
@@ -265,7 +269,7 @@ export function DevicesPage() {
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
           </Button>
-          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+          <Button onClick={() => { createForm.reset({ tenant_id: effectiveTenantId }); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Device
           </Button>
         </div>

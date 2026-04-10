@@ -18,7 +18,7 @@ import {
 import { lineBindings, users, devices, phoneNumbers, flows } from '@/api/endpoints'
 import type { LineBinding, DeviceBinding, UpdateLineBindingRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
-import { TenantField } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
 
 const BINDING_TYPES = [
   { value: 'user', label: 'User' },
@@ -235,9 +235,10 @@ export function LineBindingsPage() {
     },
   ]
 
+  const effectiveTenantId = useEffectiveTenantId()
   const createForm = useForm<CreateForm>({
     resolver: zodResolver(createSchema),
-    defaultValues: { binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30 },
+    defaultValues: { binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30, tenant_id: effectiveTenantId },
   })
 
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
@@ -361,7 +362,7 @@ export function LineBindingsPage() {
           <h1 className="text-3xl font-bold tracking-tight">Line Bindings</h1>
           <p className="text-muted-foreground">Bind phone numbers to users, devices, and call handling</p>
         </div>
-        <Button onClick={() => { createForm.reset({ binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30 }); setCreateDevices([]); setCreateFlowId(''); setCreateBindingType('user'); setCreateOpen(true) }}>
+        <Button onClick={() => { createForm.reset({ binding_type: 'user', ring_strategy: 'simultaneous', no_answer_timeout_secs: 30, tenant_id: effectiveTenantId }); setCreateDevices([]); setCreateFlowId(''); setCreateBindingType('user'); setCreateOpen(true) }}>
           <Plus className="mr-2 h-4 w-4" /> Add Binding
         </Button>
       </div>

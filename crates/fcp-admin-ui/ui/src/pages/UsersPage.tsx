@@ -23,7 +23,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { users, locations } from '@/api/endpoints'
 import type { User, CreateUserRequest, UpdateUserRequest, Location } from '@/types'
-import { TenantField } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
 
 const createUserSchema = z.object({
   username: z.string().min(1, 'Username is required').max(64),
@@ -72,6 +72,7 @@ type DigestCredentialsForm = z.infer<typeof digestCredentialsSchema>
 const roleBadgeVariant = (role: string) => {
   switch (role) {
     case 'super_admin': case 'superadmin': return 'destructive' as const
+    case 'tenant_admin': case 'tenantadmin': return 'destructive' as const
     case 'telecom_admin': case 'telecomadmin': return 'default' as const
     case 'user_admin': case 'useradmin': return 'default' as const
     case 'department_admin': case 'departmentadmin': return 'secondary' as const
@@ -342,6 +343,7 @@ function CreateUserDialog({
   mutation: ReturnType<typeof useMutation<User, Error, Parameters<typeof users.create>[0]>>
   locationList: Location[]
 }) {
+  const effectiveTenantId = useEffectiveTenantId()
   const {
     register,
     handleSubmit,
@@ -351,7 +353,7 @@ function CreateUserDialog({
     formState: { errors },
   } = useForm<CreateUserForm>({
     resolver: zodResolver(createUserSchema),
-    defaultValues: { role: 'end_user' },
+    defaultValues: { role: 'end_user', tenant_id: effectiveTenantId },
   })
 
   const onSubmit = (data: CreateUserForm) => {
@@ -403,6 +405,7 @@ function CreateUserDialog({
                 <SelectItem value="department_admin">Department Admin</SelectItem>
                 <SelectItem value="user_admin">User Admin</SelectItem>
                 <SelectItem value="telecom_admin">Telecom Admin</SelectItem>
+                <SelectItem value="tenant_admin">Tenant Admin</SelectItem>
                 <SelectItem value="super_admin">Super Admin</SelectItem>
               </SelectContent>
             </Select>
@@ -527,6 +530,7 @@ function EditUserDialog({
                   <SelectItem value="department_admin">Department Admin</SelectItem>
                   <SelectItem value="user_admin">User Admin</SelectItem>
                   <SelectItem value="telecom_admin">Telecom Admin</SelectItem>
+                  <SelectItem value="tenant_admin">Tenant Admin</SelectItem>
                   <SelectItem value="super_admin">Super Admin</SelectItem>
                 </SelectContent>
               </Select>
@@ -673,7 +677,7 @@ function exportUsers(userList: User[]) {
 }
 
 const IMPORT_COLUMNS = ['username', 'password', 'display_name', 'email', 'role', 'extension', 'department', 'location_id'] as const
-const KNOWN_ROLES = ['end_user', 'read_only', 'department_admin', 'user_admin', 'telecom_admin', 'super_admin']
+const KNOWN_ROLES = ['end_user', 'read_only', 'department_admin', 'user_admin', 'telecom_admin', 'tenant_admin', 'super_admin']
 
 interface ParsedRow {
   [key: string]: string

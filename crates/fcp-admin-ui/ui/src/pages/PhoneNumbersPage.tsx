@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { phoneNumbers, locations } from '@/api/endpoints'
 import type { PhoneNumber, CreatePhoneNumberRequest } from '@/types'
-import { TenantField } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
 
 const createSchema = z.object({
   e164: z.string().min(1, 'E.164 number is required').regex(/^\+?[0-9]+$/, 'Invalid phone number format'),
@@ -175,7 +175,11 @@ export function PhoneNumbersPage() {
     },
   ]
 
-  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const effectiveTenantId = useEffectiveTenantId()
+  const createForm = useForm<CreateForm>({
+    resolver: zodResolver(createSchema),
+    defaultValues: { tenant_id: effectiveTenantId },
+  })
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
@@ -230,7 +234,7 @@ export function PhoneNumbersPage() {
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
           </Button>
-          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+          <Button onClick={() => { createForm.reset({ tenant_id: effectiveTenantId }); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Number
           </Button>
         </div>

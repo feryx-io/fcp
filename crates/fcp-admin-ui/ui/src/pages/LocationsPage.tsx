@@ -21,7 +21,7 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { locations } from '@/api/endpoints'
 import type { Location, CreateLocationRequest } from '@/types'
-import { TenantField } from '@/components/TenantSelector'
+import { TenantField, useEffectiveTenantId } from '@/components/TenantSelector'
 
 const TIMEZONES: Record<string, string[]> = (() => {
   const grouped: Record<string, string[]> = {}
@@ -161,7 +161,11 @@ export function LocationsPage() {
     },
   ]
 
-  const createForm = useForm<CreateForm>({ resolver: zodResolver(createSchema) })
+  const effectiveTenantId = useEffectiveTenantId()
+  const createForm = useForm<CreateForm>({
+    resolver: zodResolver(createSchema),
+    defaultValues: { tenant_id: effectiveTenantId },
+  })
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) })
 
   const [lastEditId, setLastEditId] = useState<string | null>(null)
@@ -340,7 +344,7 @@ export function LocationsPage() {
             <Upload className="mr-2 h-4 w-4" />
             Bulk Import
           </Button>
-          <Button onClick={() => { createForm.reset(); setCreateOpen(true) }}>
+          <Button onClick={() => { createForm.reset({ tenant_id: effectiveTenantId }); setCreateOpen(true) }}>
             <Plus className="mr-2 h-4 w-4" /> Add Location
           </Button>
         </div>

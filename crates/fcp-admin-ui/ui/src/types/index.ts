@@ -22,7 +22,14 @@ export interface User {
   account_locked_until: string | null
 }
 
-export type UserRole = 'super_admin' | 'telecom_admin' | 'user_admin' | 'department_admin' | 'read_only' | 'end_user'
+export type UserRole =
+  | 'super_admin'
+  | 'tenant_admin'
+  | 'telecom_admin'
+  | 'user_admin'
+  | 'department_admin'
+  | 'read_only'
+  | 'end_user'
 
 export type AccountStatus = 'active' | 'suspended' | 'locked' | 'pending' | 'disabled'
 

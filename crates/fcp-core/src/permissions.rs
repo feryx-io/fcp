@@ -55,8 +55,12 @@ impl DeploymentMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum UserRole {
-    /// Platform super admin - full system access
+    /// Platform super admin - full system access across every tenant.
     SuperAdmin,
+    /// Tenant system admin - full administrative access within a single
+    /// tenant. Cannot edit platform/system configuration, cannot create or
+    /// delete tenants, and cannot see resources belonging to other tenants.
+    TenantAdmin,
     /// Telecom/voice infrastructure admin
     TelecomAdmin,
     /// User and extension management
@@ -80,6 +84,7 @@ impl UserRole {
     pub fn name(&self) -> &'static str {
         match self {
             Self::SuperAdmin => "Super Administrator",
+            Self::TenantAdmin => "Tenant Administrator",
             Self::TelecomAdmin => "Telecom Administrator",
             Self::UserAdmin => "User Administrator",
             Self::DepartmentAdmin => "Department Administrator",
@@ -92,6 +97,9 @@ impl UserRole {
     pub fn description(&self) -> &'static str {
         match self {
             Self::SuperAdmin => "Full system access including configuration and all resources",
+            Self::TenantAdmin => {
+                "Full administrative access within a single tenant; cannot edit system settings or manage other tenants"
+            }
             Self::TelecomAdmin => {
                 "Manage voice infrastructure: phone numbers, devices, trunks, routing"
             }
@@ -100,6 +108,16 @@ impl UserRole {
             Self::ReadOnly => "View-only access for monitoring and reporting",
             Self::EndUser => "Personal settings and assigned resources only",
         }
+    }
+
+    /// True when this role has cross-tenant visibility on the platform.
+    ///
+    /// Only [`UserRole::SuperAdmin`] is a platform-level role. TenantAdmin and
+    /// all other roles are scoped to a single tenant and the API layer must
+    /// enforce that scope when serving requests from a session with one of
+    /// those roles.
+    pub fn is_platform_admin(&self) -> bool {
+        matches!(self, Self::SuperAdmin)
     }
 }
 
@@ -203,6 +221,47 @@ impl UserRole {
         match (self, permission, mode) {
             // SuperAdmin has all permissions in all modes
             (SuperAdmin, _, _) => true,
+
+            // TenantAdmin - full admin within a single tenant.
+            //
+            // Can manage every resource that lives inside a tenant (users,
+            // numbers, devices, calls, trunks when enabled, recordings,
+            // registrations) but CANNOT touch platform-wide configuration,
+            // cannot create or delete tenants, and cannot see logs from
+            // other tenants. The API layer is responsible for scoping
+            // list/read operations to the session's own tenant_id.
+            (TenantAdmin, SystemConfig, _) => false,
+            (TenantAdmin, SystemViewLogs, _) => true,
+            (TenantAdmin, UserCreate | UserRead | UserUpdate | UserDelete, _) => true,
+            (TenantAdmin, UserSetPassword, _) => true,
+            (
+                TenantAdmin,
+                PhoneNumberCreate | PhoneNumberRead | PhoneNumberUpdate | PhoneNumberDelete,
+                _,
+            ) => true,
+            (
+                TenantAdmin,
+                PhoneNumberViewCarrierData,
+                DeploymentMode::Carrier | DeploymentMode::ServiceProvider,
+            ) => true,
+            (TenantAdmin, PhoneNumberViewCarrierData, DeploymentMode::Enterprise) => false,
+            (TenantAdmin, DeviceCreate | DeviceRead | DeviceUpdate | DeviceDelete, _) => true,
+            (TenantAdmin, CallView | CallControl | CallRecordingAccess, _) => true,
+            (TenantAdmin, RegistrationView | RegistrationManage, _) => true,
+            (
+                TenantAdmin,
+                TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete,
+                DeploymentMode::Carrier | DeploymentMode::ServiceProvider,
+            ) => true,
+            (
+                TenantAdmin,
+                TrunkCreate | TrunkRead | TrunkUpdate | TrunkDelete,
+                DeploymentMode::Enterprise,
+            ) => false,
+            // Tenant CRUD: read and update own tenant, never create/delete.
+            (TenantAdmin, TenantRead | TenantUpdate, _) => true,
+            (TenantAdmin, TenantCreate | TenantDelete, _) => false,
+            (TenantAdmin, DebugView, _) => true,
 
             // TelecomAdmin - voice infrastructure management
             (TelecomAdmin, SystemConfig, _) => false, // Can't change system config
@@ -454,5 +513,55 @@ mod tests {
         // Not in other modes
         assert!(!role.has_permission(Permission::TenantCreate, DeploymentMode::Carrier));
         assert!(!role.has_permission(Permission::TenantCreate, DeploymentMode::Enterprise));
+    }
+
+    #[test]
+    fn test_tenant_admin_has_full_tenant_scope_but_no_platform_rights() {
+        let role = UserRole::TenantAdmin;
+        let mode = DeploymentMode::ServiceProvider;
+
+        // Full user + resource management inside the tenant.
+        assert!(role.has_permission(Permission::UserCreate, mode));
+        assert!(role.has_permission(Permission::UserUpdate, mode));
+        assert!(role.has_permission(Permission::UserDelete, mode));
+        assert!(role.has_permission(Permission::UserSetPassword, mode));
+        assert!(role.has_permission(Permission::PhoneNumberCreate, mode));
+        assert!(role.has_permission(Permission::DeviceCreate, mode));
+        assert!(role.has_permission(Permission::CallView, mode));
+        assert!(role.has_permission(Permission::CallControl, mode));
+        assert!(role.has_permission(Permission::CallRecordingAccess, mode));
+        assert!(role.has_permission(Permission::RegistrationManage, mode));
+        assert!(role.has_permission(Permission::TrunkCreate, mode));
+        assert!(role.has_permission(Permission::TenantRead, mode));
+        assert!(role.has_permission(Permission::TenantUpdate, mode));
+
+        // Platform-level rights are denied.
+        assert!(!role.has_permission(Permission::SystemConfig, mode));
+        assert!(!role.has_permission(Permission::TenantCreate, mode));
+        assert!(!role.has_permission(Permission::TenantDelete, mode));
+    }
+
+    #[test]
+    fn test_tenant_admin_is_not_platform_admin() {
+        // This is the key check the API layer relies on to gate
+        // cross-tenant and system-wide endpoints.
+        assert!(!UserRole::TenantAdmin.is_platform_admin());
+        assert!(!UserRole::TelecomAdmin.is_platform_admin());
+        assert!(!UserRole::UserAdmin.is_platform_admin());
+        assert!(!UserRole::ReadOnly.is_platform_admin());
+        assert!(!UserRole::EndUser.is_platform_admin());
+        assert!(UserRole::SuperAdmin.is_platform_admin());
+    }
+
+    #[test]
+    fn test_tenant_admin_enterprise_mode_has_no_trunks_or_tenant_rights() {
+        // Trunks aren't a feature in Enterprise mode and tenants don't exist
+        // there either, so a tenant admin should not have those permissions
+        // even though they would in a multi-tenant deployment.
+        let role = UserRole::TenantAdmin;
+        let mode = DeploymentMode::Enterprise;
+
+        assert!(!role.has_permission(Permission::TrunkCreate, mode));
+        assert!(!role.has_permission(Permission::TrunkRead, mode));
     }
 }
