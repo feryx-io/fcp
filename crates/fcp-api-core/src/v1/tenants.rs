@@ -77,6 +77,8 @@ pub struct TenantResponse {
     pub updated_at: u64,
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
+    /// SIP domains claimed by this tenant. See `Tenant::sip_domains`.
+    pub sip_domains: Vec<String>,
 }
 
 impl From<Tenant> for TenantResponse {
@@ -108,6 +110,7 @@ impl From<Tenant> for TenantResponse {
                     .map(|d| d.as_secs())
             }),
             metadata: tenant.metadata,
+            sip_domains: tenant.sip_domains,
         }
     }
 }
@@ -126,6 +129,9 @@ pub struct CreateTenantRequest {
     pub billing_id: Option<String>,
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
+    /// SIP domains to claim on behalf of the new tenant.
+    #[serde(default)]
+    pub sip_domains: Vec<String>,
 }
 
 /// Request to update a tenant
@@ -142,6 +148,70 @@ pub struct UpdateTenantRequest {
     pub billing_id: Option<String>,
     pub trial_expires_at: Option<u64>,
     pub metadata: Option<String>,
+    /// Full replacement for the tenant's SIP domain list. Use `None` to
+    /// leave the list alone; use `Some(vec![])` to clear it.
+    pub sip_domains: Option<Vec<String>>,
+}
+
+/// Normalize and validate a list of user-supplied SIP domains.
+///
+/// Returns a deduplicated, lowercased, trimmed list. Rejects entries that
+/// are numeric IP literals, `localhost`, or contain characters that clearly
+/// can't appear in a hostname — these belong on the compatibility fallback
+/// path, not in the allowlist.
+fn normalize_sip_domains(input: &[String]) -> Result<Vec<String>, ApiError> {
+    let mut out: Vec<String> = Vec::with_capacity(input.len());
+    for raw in input {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+
+        // Reject host literals — the resolver handles IP/localhost via
+        // the compatibility fallback and listing them here would shadow
+        // the real allowlist semantics.
+        if lower == "localhost" || lower.parse::<std::net::IpAddr>().is_ok() {
+            return Err(ApiError::BadRequest(format!(
+                "'{}' is a host literal and cannot be added to sip_domains. \
+                 IP-addressed devices are handled by the server's default tenant fallback.",
+                raw
+            )));
+        }
+
+        // Very light syntactic check: no whitespace, no SIP separators.
+        if lower.chars().any(|c| c.is_whitespace() || matches!(c, '@' | ':' | '/' | '<' | '>' | ',' | ';')) {
+            return Err(ApiError::BadRequest(format!(
+                "'{}' is not a valid SIP domain (whitespace or SIP separator characters are not allowed)",
+                raw
+            )));
+        }
+
+        if !out.contains(&lower) {
+            out.push(lower);
+        }
+    }
+    Ok(out)
+}
+
+/// Ensure no other tenant already claims any of `domains`. Pass the
+/// tenant id being updated (or `None` for creates) to exclude self-matches.
+async fn ensure_sip_domains_unique<S: fcp_core::TenantStore + ?Sized>(
+    storage: &S,
+    domains: &[String],
+    exclude: Option<&TenantId>,
+) -> Result<(), ApiError> {
+    for d in domains {
+        if let Some(existing) = storage.get_tenant_by_sip_domain(d).await? {
+            if exclude.map_or(true, |id| &existing.id != id) {
+                return Err(ApiError::Conflict(format!(
+                    "SIP domain '{}' is already claimed by tenant '{}'",
+                    d, existing.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// List all tenants
@@ -209,6 +279,10 @@ pub async fn create_tenant(
         )));
     }
 
+    // Normalize and uniqueness-check any SIP domains the create provided.
+    let sip_domains = normalize_sip_domains(&req.sip_domains)?;
+    ensure_sip_domains_unique(storage.as_ref(), &sip_domains, None).await?;
+
     let now = SystemTime::now();
     let status = if let Some(status_str) = &req.status {
         match status_str.to_lowercase().as_str() {
@@ -246,6 +320,7 @@ pub async fn create_tenant(
         updated_at: now,
         trial_expires_at,
         metadata: req.metadata,
+        sip_domains,
     };
 
     storage.put_tenant(tenant.clone()).await?;
@@ -339,6 +414,12 @@ pub async fn update_tenant(
 
     if let Some(metadata) = req.metadata {
         tenant.metadata = Some(metadata);
+    }
+
+    if let Some(raw_domains) = req.sip_domains {
+        let normalized = normalize_sip_domains(&raw_domains)?;
+        ensure_sip_domains_unique(storage.as_ref(), &normalized, Some(&tenant.id)).await?;
+        tenant.sip_domains = normalized;
     }
 
     tenant.updated_at = SystemTime::now();

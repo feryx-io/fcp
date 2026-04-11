@@ -1196,26 +1196,87 @@ impl SipMessageHandler {
             }
         }
 
-        // Extract tenant for multi-tenant isolation
-        // Try to extract domain from INVITE and look up tenant in storage
+        // Resolve the tenant for this INVITE using the tiered strategy:
+        //   1. Hostname domain → tenants.sip_domains allowlist
+        //   2. Hostname domain → legacy tenant-name fallback (with warning)
+        //   3. IP / localhost → skip domain lookup, fall through to default
+        //   4. No domain → default tenant
+        // A real hostname that matches nothing still fails closed with 403.
         let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
-            if let Some(storage) = &self.storage {
-                match storage.get_tenant_by_name(&domain).await {
+            if crate::registrar::is_host_literal(&domain) {
+                // IP literal or localhost — phones that haven't been
+                // provisioned with their tenant's SIP domain. Fall through
+                // to the default tenant; trunk admission control below
+                // still enforces per-IP allowlisting for external sources.
+                if let Some(default_tenant_id) = self.default_tenant_id {
+                    debug!(
+                        domain = %domain,
+                        tenant_id = %default_tenant_id,
+                        "Host literal in INVITE; falling back to default tenant"
+                    );
+                    default_tenant_id
+                } else {
+                    warn!(
+                        domain = %domain,
+                        "Rejecting INVITE: host literal domain and no default tenant configured"
+                    );
+                    let response =
+                        self.create_simple_response(request, 403, "Tenant context required");
+                    handle.send_final(response).await;
+                    return Ok(());
+                }
+            } else if let Some(storage) = &self.storage {
+                // Tier 1: sip_domains allowlist.
+                match storage.get_tenant_by_sip_domain(&domain).await {
                     Ok(Some(tenant)) => {
                         debug!(
                             domain = %domain,
                             tenant_id = %tenant.id,
                             tenant_name = %tenant.name,
-                            "Resolved tenant from INVITE domain"
+                            "Resolved tenant from INVITE sip_domain"
                         );
                         tenant.id
                     }
                     Ok(None) => {
-                        warn!(domain = %domain, "Rejecting INVITE: unknown tenant domain");
-                        let response =
-                            self.create_simple_response(request, 403, "Unknown tenant domain");
-                        handle.send_final(response).await;
-                        return Ok(());
+                        // Tier 2: legacy tenant-name fallback.
+                        match storage.get_tenant_by_name(&domain).await {
+                            Ok(Some(tenant)) => {
+                                warn!(
+                                    domain = %domain,
+                                    tenant_id = %tenant.id,
+                                    "INVITE tenant resolved via legacy name match; add '{}' to the tenant's sip_domains",
+                                    domain
+                                );
+                                tenant.id
+                            }
+                            Ok(None) => {
+                                warn!(
+                                    domain = %domain,
+                                    "Rejecting INVITE: unknown tenant domain"
+                                );
+                                let response = self.create_simple_response(
+                                    request,
+                                    403,
+                                    "Unknown tenant domain",
+                                );
+                                handle.send_final(response).await;
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                warn!(
+                                    domain = %domain,
+                                    error = %e,
+                                    "Rejecting INVITE: tenant lookup failed"
+                                );
+                                let response = self.create_simple_response(
+                                    request,
+                                    503,
+                                    "Tenant lookup unavailable",
+                                );
+                                handle.send_final(response).await;
+                                return Ok(());
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(

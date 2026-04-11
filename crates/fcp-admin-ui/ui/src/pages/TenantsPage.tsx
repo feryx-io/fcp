@@ -15,7 +15,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { tenants } from '@/api/endpoints'
-import type { Tenant } from '@/types'
+import type { Tenant, CreateTenantRequest } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
@@ -27,6 +27,7 @@ const createSchema = z.object({
   max_users: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_phone_numbers: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
+  sip_domains: z.string().optional(),
 })
 
 const editSchema = z.object({
@@ -37,10 +38,20 @@ const editSchema = z.object({
   max_users: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_phone_numbers: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
   max_concurrent_calls: z.coerce.number().positive().optional().or(z.literal(0).transform(() => undefined)),
+  sip_domains: z.string().optional(),
 })
 
 type CreateForm = z.infer<typeof createSchema>
 type EditForm = z.infer<typeof editSchema>
+
+/** Split a free-form sip_domains textarea into a clean array. */
+function parseSipDomains(input: string | undefined): string[] {
+  if (!input) return []
+  return input
+    .split(/[\s,]+/)
+    .map((d) => d.trim().toLowerCase())
+    .filter((d) => d.length > 0)
+}
 
 const statusBadge = (status: string) => {
   switch (status) {
@@ -71,7 +82,7 @@ export function TenantsPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<EditForm> }) =>
+    mutationFn: ({ id, data }: { id: string; data: Partial<CreateTenantRequest> }) =>
       tenants.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenants'] })
@@ -112,6 +123,21 @@ export function TenantsPage() {
       accessorKey: 'max_users',
       header: 'Max Users',
       cell: ({ row }) => row.original.max_users ?? 'Unlimited',
+    },
+    {
+      id: 'sip_domains',
+      header: 'SIP Domains',
+      cell: ({ row }) => {
+        const domains = row.original.sip_domains ?? []
+        if (domains.length === 0) return <span className="text-muted-foreground">—</span>
+        return (
+          <div className="flex flex-wrap gap-1">
+            {domains.map((d) => (
+              <Badge key={d} variant="outline" className="font-mono text-xs">{d}</Badge>
+            ))}
+          </div>
+        )
+      },
     },
     {
       accessorKey: 'created_at',
@@ -166,27 +192,32 @@ export function TenantsPage() {
       max_users: editItem.max_users ?? undefined,
       max_phone_numbers: editItem.max_phone_numbers ?? undefined,
       max_concurrent_calls: editItem.max_concurrent_calls ?? undefined,
+      sip_domains: (editItem.sip_domains ?? []).join('\n'),
     })
   }
 
   const onCreateSubmit = (data: CreateForm) => {
+    const { sip_domains: rawDomains, ...rest } = data
     createMutation.mutate({
-      ...data,
+      ...rest,
       description: data.description || undefined,
       contact_email: data.contact_email || undefined,
       contact_phone: data.contact_phone || undefined,
+      sip_domains: parseSipDomains(rawDomains),
     })
   }
 
   const onEditSubmit = (data: EditForm) => {
     if (!editItem) return
+    const { sip_domains: rawDomains, ...rest } = data
     updateMutation.mutate({
       id: editItem.id,
       data: {
-        ...data,
+        ...rest,
         description: data.description || undefined,
         contact_email: data.contact_email || undefined,
         contact_phone: data.contact_phone || undefined,
+        sip_domains: parseSipDomains(rawDomains),
       },
     })
   }
@@ -257,6 +288,22 @@ export function TenantsPage() {
                 <Input id="c-max_concurrent_calls" type="number" min="0" {...createForm.register('max_concurrent_calls')} />
               </div>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="c-sip_domains">SIP Domains</Label>
+              <textarea
+                id="c-sip_domains"
+                rows={3}
+                placeholder="acme.fcp.net&#10;sip.acme.com"
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring font-mono"
+                {...createForm.register('sip_domains')}
+              />
+              <p className="text-xs text-muted-foreground">
+                One per line. SIP REGISTER / INVITE requests whose From or
+                Request-URI host matches one of these will be routed to this
+                tenant. IP addresses and <code>localhost</code> are not
+                allowed here &mdash; they fall back to the default tenant.
+              </p>
+            </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={createMutation.isPending}>
@@ -311,6 +358,21 @@ export function TenantsPage() {
                 <Label htmlFor="e-max_concurrent_calls">Max Calls</Label>
                 <Input id="e-max_concurrent_calls" type="number" min="0" {...editForm.register('max_concurrent_calls')} />
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="e-sip_domains">SIP Domains</Label>
+              <textarea
+                id="e-sip_domains"
+                rows={3}
+                placeholder="acme.fcp.net&#10;sip.acme.com"
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring font-mono"
+                {...editForm.register('sip_domains')}
+              />
+              <p className="text-xs text-muted-foreground">
+                One per line. SIP REGISTER / INVITE requests whose From or
+                Request-URI host matches one of these will be routed to this
+                tenant. Leave blank to use only the default-tenant fallback.
+              </p>
             </div>
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" onClick={() => setEditItem(null)}>Cancel</Button>

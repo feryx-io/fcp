@@ -726,16 +726,19 @@ impl RegistrationStore for PostgresStorage {
 // TenantStore Implementation
 // ============================================================================
 
+/// Columns returned by every tenant SELECT. Keep this list in sync with
+/// `row_to_tenant` below.
+const TENANT_SELECT_COLS: &str = "id, name, description, status, contact_email, contact_phone,
+    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
+    created_at, updated_at, trial_expires_at, metadata, sip_domains";
+
 #[async_trait]
 impl TenantStore for PostgresStorage {
     async fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>> {
-        let row = sqlx::query(
-            "SELECT id, name, description, status, contact_email, contact_phone,
-                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-                    created_at, updated_at, trial_expires_at, metadata
-             FROM tenants
-             WHERE id = $1",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {} FROM tenants WHERE id = $1",
+            TENANT_SELECT_COLS
+        ))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?;
@@ -747,13 +750,10 @@ impl TenantStore for PostgresStorage {
     }
 
     async fn get_tenant_by_name(&self, name: &str) -> Result<Option<Tenant>> {
-        let row = sqlx::query(
-            "SELECT id, name, description, status, contact_email, contact_phone,
-                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-                    created_at, updated_at, trial_expires_at, metadata
-             FROM tenants
-             WHERE name = $1",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {} FROM tenants WHERE name = $1",
+            TENANT_SELECT_COLS
+        ))
         .bind(name)
         .fetch_optional(&self.pool)
         .await?;
@@ -764,14 +764,37 @@ impl TenantStore for PostgresStorage {
         }
     }
 
+    async fn get_tenant_by_sip_domain(&self, domain: &str) -> Result<Option<Tenant>> {
+        // Normalize the input the same way we normalize on write: trim and
+        // lowercase. Reject empty after normalization so we never match a
+        // tenant that accidentally has an empty entry in its sip_domains.
+        let needle = domain.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Ok(None);
+        }
+
+        // `$1 = ANY(sip_domains)` leverages the GIN index created by
+        // migration 042. Limit 1 is a defensive guard — the application
+        // layer enforces uniqueness so there should be at most one match.
+        let row = sqlx::query(&format!(
+            "SELECT {} FROM tenants WHERE $1 = ANY(sip_domains) LIMIT 1",
+            TENANT_SELECT_COLS
+        ))
+        .bind(&needle)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_tenant(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn list_tenants(&self) -> Result<Vec<Tenant>> {
-        let rows = sqlx::query(
-            "SELECT id, name, description, status, contact_email, contact_phone,
-                    max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-                    created_at, updated_at, trial_expires_at, metadata
-             FROM tenants
-             ORDER BY name",
-        )
+        let rows = sqlx::query(&format!(
+            "SELECT {} FROM tenants ORDER BY name",
+            TENANT_SELECT_COLS
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -792,13 +815,23 @@ impl TenantStore for PostgresStorage {
         let updated_at = system_time_to_datetime(tenant.updated_at);
         let trial_expires_at = tenant.trial_expires_at.map(system_time_to_datetime);
 
+        // Normalize sip_domains on the write path so that reads never need
+        // to worry about case or whitespace, and so that the GIN index
+        // lookups match what the application layer queries for.
+        let sip_domains: Vec<String> = tenant
+            .sip_domains
+            .iter()
+            .map(|d| d.trim().to_ascii_lowercase())
+            .filter(|d| !d.is_empty())
+            .collect();
+
         sqlx::query(
             "INSERT INTO tenants (
                 id, name, description, status, contact_email, contact_phone,
                 max_users, max_phone_numbers, max_concurrent_calls, billing_id,
-                created_at, updated_at, trial_expires_at, metadata, data
+                created_at, updated_at, trial_expires_at, metadata, sip_domains, data
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, '{}'::jsonb)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, '{}'::jsonb)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  description = EXCLUDED.description,
@@ -811,7 +844,8 @@ impl TenantStore for PostgresStorage {
                  billing_id = EXCLUDED.billing_id,
                  updated_at = EXCLUDED.updated_at,
                  trial_expires_at = EXCLUDED.trial_expires_at,
-                 metadata = EXCLUDED.metadata",
+                 metadata = EXCLUDED.metadata,
+                 sip_domains = EXCLUDED.sip_domains",
         )
         .bind(&id)
         .bind(&tenant.name)
@@ -827,6 +861,7 @@ impl TenantStore for PostgresStorage {
         .bind(updated_at)
         .bind(trial_expires_at)
         .bind(&tenant.metadata)
+        .bind(&sip_domains)
         .execute(&self.pool)
         .await?;
 
@@ -856,6 +891,9 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
     let trial_expires_at = row
         .get::<Option<DateTime<Utc>>, _>("trial_expires_at")
         .map(datetime_to_system_time);
+    let sip_domains: Vec<String> = row
+        .try_get::<Vec<String>, _>("sip_domains")
+        .unwrap_or_default();
 
     Ok(Tenant {
         id,
@@ -876,6 +914,7 @@ fn row_to_tenant(row: sqlx::postgres::PgRow) -> Result<Tenant> {
         updated_at,
         trial_expires_at,
         metadata: row.get("metadata"),
+        sip_domains,
     })
 }
 

@@ -85,6 +85,23 @@ pub struct Tenant {
 
     /// Additional metadata (JSON)
     pub metadata: Option<String>,
+
+    /// SIP domains claimed by this tenant.
+    ///
+    /// Each entry is a hostname (e.g. `acme.fcp.net`, `sip.acme.com`) that
+    /// SIP requests may use in their From/Request-URI domain. The tenant
+    /// resolver looks up incoming requests against this list to determine
+    /// which tenant they belong to. A single tenant can own multiple
+    /// domains — for example one for user phones and one for carrier
+    /// trunks.
+    ///
+    /// Entries are stored as lowercase, trimmed hostnames. Empty or
+    /// whitespace-only strings are not allowed at the API boundary.
+    /// Numeric IP addresses and `localhost` should NOT be used here —
+    /// they are handled as a compatibility fallback at the resolver
+    /// level.
+    #[serde(default)]
+    pub sip_domains: Vec<String>,
 }
 
 impl Tenant {
@@ -106,7 +123,22 @@ impl Tenant {
             updated_at: now,
             trial_expires_at: None,
             metadata: None,
+            sip_domains: Vec::new(),
         }
+    }
+
+    /// Returns true if this tenant claims the given SIP domain.
+    ///
+    /// The comparison is case-insensitive and ignores surrounding
+    /// whitespace, matching the normalization performed at write time.
+    pub fn claims_sip_domain(&self, domain: &str) -> bool {
+        let needle = domain.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return false;
+        }
+        self.sip_domains
+            .iter()
+            .any(|d| d.trim().eq_ignore_ascii_case(&needle))
     }
 
     /// Check if tenant is active
@@ -152,6 +184,24 @@ mod tests {
         tenant.status = TenantStatus::Trial;
         assert!(tenant.is_active());
         assert!(tenant.is_trial());
+    }
+
+    #[test]
+    fn test_claims_sip_domain() {
+        let mut t = Tenant::new("Acme".to_string());
+        t.sip_domains = vec!["acme.fcp.net".to_string(), "sip.acme.com".to_string()];
+
+        assert!(t.claims_sip_domain("acme.fcp.net"));
+        assert!(t.claims_sip_domain("sip.acme.com"));
+        // Case-insensitive.
+        assert!(t.claims_sip_domain("ACME.FCP.NET"));
+        // Trims whitespace on the input.
+        assert!(t.claims_sip_domain("  acme.fcp.net  "));
+        // Not a claimed domain.
+        assert!(!t.claims_sip_domain("coke.fcp.net"));
+        // Empty input never matches.
+        assert!(!t.claims_sip_domain(""));
+        assert!(!t.claims_sip_domain("   "));
     }
 
     #[test]

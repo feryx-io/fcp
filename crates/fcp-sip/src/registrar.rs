@@ -47,6 +47,59 @@ fn extract_domain_from_aor(aor: &str) -> Option<String> {
     }
 }
 
+/// Returns true when `domain` is a numeric IP literal, `localhost`, or any
+/// other host form that should not be treated as a tenant SIP domain.
+///
+/// IP literals and `localhost` are typically emitted by devices that have
+/// not been provisioned with their tenant's SIP domain (legacy phones,
+/// softphones pointed at the server IP, test rigs). Matching these against
+/// `tenants.sip_domains` will always fail, so the resolver should skip that
+/// lookup entirely and fall through to username- and default-based
+/// resolution. Real hostnames stay on the strict "must match a tenant"
+/// path so typos and lookup misses still fail closed.
+pub(crate) fn is_host_literal(domain: &str) -> bool {
+    let trimmed = domain.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // A bracketed form like `[::1]` is an IPv6 literal in SIP URIs; strip
+    // the brackets before calling IpAddr::parse.
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    inner.parse::<std::net::IpAddr>().is_ok()
+}
+
+/// Resolve an inbound SIP request to a tenant using a tiered strategy.
+///
+/// The resolver walks through progressively weaker signals and uses the
+/// first one that confidently identifies a tenant:
+///
+/// 1. **Hostname domain → `sip_domains` lookup.** If the AOR host is a
+///    real hostname, look it up against the tenant allowlist. A match
+///    returns immediately; a miss fails closed so typos / spoofed
+///    hostnames can't silently route to the default tenant.
+///
+/// 2. **Legacy name-based fallback.** Older deployments used the tenant
+///    display name as the SIP domain. To avoid breaking those while they
+///    migrate to `sip_domains`, we still try `get_tenant_by_name` on a
+///    miss. (This fallback can be removed once all live tenants have
+///    at least one entry in `sip_domains`.)
+///
+/// 3. **IP / localhost → skip domain lookup.** Numeric IP literals are
+///    never tenant names; fall through to the next tier.
+///
+/// 4. **Username-based lookup.** If the credential store sees exactly one
+///    user with this username across every tenant, route the request to
+///    that user's tenant. Ambiguous usernames (two tenants with the same
+///    name) fail loudly so the operator must disambiguate.
+///
+/// 5. **Default tenant.** Last-resort compatibility for single-tenant
+///    deployments. Only used when nothing above provided a match.
 async fn resolve_tenant_for_inputs(
     tenant_store: Option<&Arc<dyn TenantStore>>,
     credential_store: Option<&Arc<dyn CredentialStore>>,
@@ -55,24 +108,46 @@ async fn resolve_tenant_for_inputs(
     username_hint: Option<&str>,
 ) -> Result<TenantId> {
     if let Some(domain) = aor.and_then(extract_domain_from_aor) {
-        if let Some(store) = tenant_store {
-            if let Some(tenant) = store.get_tenant_by_name(&domain).await? {
+        if is_host_literal(&domain) {
+            // IP literal or localhost — skip the tenant-store lookup and
+            // let the username / default fallbacks handle it.
+            debug!(
+                domain = %domain,
+                "Host literal in AOR; skipping tenant domain lookup"
+            );
+        } else if let Some(store) = tenant_store {
+            // Tier 1: sip_domains allowlist.
+            if let Some(tenant) = store.get_tenant_by_sip_domain(&domain).await? {
                 return Ok(tenant.id);
             }
 
+            // Tier 2: legacy fallback — tenant display name used as SIP
+            // domain. Deployments should migrate off this by populating
+            // sip_domains on every tenant.
+            if let Some(tenant) = store.get_tenant_by_name(&domain).await? {
+                warn!(
+                    domain = %domain,
+                    tenant_id = %tenant.id,
+                    "Tenant resolved via legacy name match; add '{}' to the tenant's sip_domains to silence this warning",
+                    domain
+                );
+                return Ok(tenant.id);
+            }
+
+            // Hostname present but nothing claims it — fail closed.
             return Err(anyhow!("unknown tenant domain '{}'", domain));
-        }
-
-        if let Some(default_tenant_id) = default_tenant_id {
+        } else if let Some(default_tenant_id) = default_tenant_id {
+            // No tenant store configured at all — single-tenant deployment.
             return Ok(default_tenant_id);
+        } else {
+            return Err(anyhow!(
+                "unknown tenant domain '{}' and no default tenant configured",
+                domain
+            ));
         }
-
-        return Err(anyhow!(
-            "unknown tenant domain '{}' and no default tenant configured",
-            domain
-        ));
     }
 
+    // Tier 3 (or follow-through from an IP literal): username lookup.
     let username = username_hint
         .map(str::to_string)
         .or_else(|| aor.and_then(extract_username_from_aor));
@@ -91,6 +166,7 @@ async fn resolve_tenant_for_inputs(
         }
     }
 
+    // Tier 4: default tenant.
     if let Some(default_tenant_id) = default_tenant_id {
         Ok(default_tenant_id)
     } else {
@@ -1229,16 +1305,38 @@ impl FcpRegistrar {
     /// Split an AOR into user and domain parts.
     /// Returns None if the AOR doesn't have the expected format.
     fn split_aor(aor: &str) -> Option<(&str, &str)> {
-        // Handle "sip:user@domain" format
+        // Parse `sip:` or `sips:` prefix.
         let without_scheme = aor
             .strip_prefix("sip:")
             .or_else(|| aor.strip_prefix("sips:"))?;
         let at_pos = without_scheme.find('@')?;
         let user = &without_scheme[..at_pos];
-        let domain = &without_scheme[at_pos + 1..];
-        // Strip any port from domain
-        let domain = domain.split(':').next().unwrap_or(domain);
-        Some((user, domain))
+        let hostport_and_params = &without_scheme[at_pos + 1..];
+
+        // RFC 3261 URI layout: scheme:user@hostport;uri-params?headers
+        // Strip anything after the host/port — URI parameters (`;...`) and
+        // any trailing headers (`?...`) are NOT part of the host and must
+        // not be included when matching against the tenant `sip_domains`
+        // allowlist or when detecting IP literals.
+        let hostport = hostport_and_params
+            .split(|c: char| c == ';' || c == '?')
+            .next()
+            .unwrap_or(hostport_and_params);
+
+        // Strip the port from the host. IPv6 literals are wrapped in
+        // square brackets, so keep the brackets and only strip the port
+        // that follows the closing bracket. For IPv4 / hostname forms,
+        // the port is after the single `:`.
+        let host = if hostport.starts_with('[') {
+            hostport
+                .find(']')
+                .map(|end| &hostport[..=end])
+                .unwrap_or(hostport)
+        } else {
+            hostport.split(':').next().unwrap_or(hostport)
+        };
+
+        Some((user, host))
     }
 
     /// Get media preferences for a user identified by AOR.
@@ -1312,6 +1410,72 @@ mod tests {
     use super::*;
     use fcp_core::FileBackedStorage;
     use smol_str::SmolStr;
+
+    #[test]
+    fn split_aor_strips_uri_parameters_from_host() {
+        // URI parameters after the host must not leak into the host slice
+        // — otherwise IP literal detection and tenant allowlist lookups
+        // both break.
+        let (user, host) = FcpRegistrar::split_aor("sip:jerry@192.168.1.225;transport=tcp").unwrap();
+        assert_eq!(user, "jerry");
+        assert_eq!(host, "192.168.1.225");
+    }
+
+    #[test]
+    fn split_aor_strips_port_and_parameters() {
+        let (user, host) = FcpRegistrar::split_aor(
+            "sip:alice@192.168.1.80:56720;transport=tcp;lr",
+        )
+        .unwrap();
+        assert_eq!(user, "alice");
+        assert_eq!(host, "192.168.1.80");
+    }
+
+    #[test]
+    fn split_aor_strips_headers_after_host() {
+        let (user, host) = FcpRegistrar::split_aor("sip:bob@acme.fcp.net?Subject=Hi").unwrap();
+        assert_eq!(user, "bob");
+        assert_eq!(host, "acme.fcp.net");
+    }
+
+    #[test]
+    fn split_aor_keeps_ipv6_brackets_and_strips_port() {
+        let (user, host) = FcpRegistrar::split_aor("sip:carol@[2001:db8::1]:5060").unwrap();
+        assert_eq!(user, "carol");
+        assert_eq!(host, "[2001:db8::1]");
+    }
+
+    #[test]
+    fn split_aor_plain_hostname_is_unchanged() {
+        let (user, host) = FcpRegistrar::split_aor("sip:dave@acme.fcp.net").unwrap();
+        assert_eq!(user, "dave");
+        assert_eq!(host, "acme.fcp.net");
+    }
+
+    #[test]
+    fn is_host_literal_detects_ipv4() {
+        assert!(is_host_literal("192.168.1.225"));
+        assert!(is_host_literal("10.0.0.1"));
+        assert!(is_host_literal("127.0.0.1"));
+    }
+
+    #[test]
+    fn is_host_literal_detects_localhost() {
+        assert!(is_host_literal("localhost"));
+        assert!(is_host_literal("LOCALHOST"));
+    }
+
+    #[test]
+    fn is_host_literal_detects_bracketed_ipv6() {
+        assert!(is_host_literal("[::1]"));
+        assert!(is_host_literal("[2001:db8::1]"));
+    }
+
+    #[test]
+    fn is_host_literal_rejects_real_hostnames() {
+        assert!(!is_host_literal("acme.fcp.net"));
+        assert!(!is_host_literal("sip.example.com"));
+    }
 
     #[tokio::test]
     async fn test_registrar_without_auth() {

@@ -77,6 +77,8 @@ export interface Tenant {
   billing_id: string | null
   created_at: string
   updated_at: string
+  /** SIP domains the tenant claims (e.g. ["acme.fcp.net", "sip.acme.com"]). */
+  sip_domains: string[]
 }
 
 export type TenantStatus = 'active' | 'suspended' | 'trial' | 'disabled'
@@ -90,6 +92,8 @@ export interface CreateTenantRequest {
   max_phone_numbers?: number
   max_concurrent_calls?: number
   billing_id?: string
+  /** SIP domains to claim for this tenant. Empty array = none claimed. */
+  sip_domains?: string[]
 }
 
 export interface ExtensionTarget {

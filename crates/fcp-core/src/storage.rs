@@ -738,8 +738,24 @@ pub trait TenantStore: Send + Sync {
     /// Get a tenant by ID.
     async fn get_tenant(&self, id: &crate::TenantId) -> Result<Option<crate::Tenant>>;
 
-    /// Get a tenant by name (for uniqueness checks).
+    /// Get a tenant by display name (for uniqueness checks on the admin UI).
+    ///
+    /// NOTE: Tenant names are human-readable and SHOULD NOT be used as SIP
+    /// routing identifiers. Use [`get_tenant_by_sip_domain`] for SIP lookup.
     async fn get_tenant_by_name(&self, name: &str) -> Result<Option<crate::Tenant>>;
+
+    /// Get a tenant that claims the given SIP domain.
+    ///
+    /// Matches `domain` (case-insensitive, whitespace-trimmed) against every
+    /// tenant's `sip_domains` array. The application layer enforces that no
+    /// two tenants claim the same domain, so this returns at most one tenant.
+    /// Returns `Ok(None)` when no tenant owns the domain.
+    ///
+    /// Implementations should use an index (e.g. Postgres GIN on the
+    /// `sip_domains` column) so that the lookup is O(log n) in the number
+    /// of tenants.
+    async fn get_tenant_by_sip_domain(&self, domain: &str)
+        -> Result<Option<crate::Tenant>>;
 
     /// List all tenants.
     async fn list_tenants(&self) -> Result<Vec<crate::Tenant>>;
@@ -3011,6 +3027,13 @@ impl TenantStore for DynStorage {
 
     async fn get_tenant_by_name(&self, name: &str) -> Result<Option<crate::Tenant>> {
         self.tenant_store.get_tenant_by_name(name).await
+    }
+
+    async fn get_tenant_by_sip_domain(
+        &self,
+        domain: &str,
+    ) -> Result<Option<crate::Tenant>> {
+        self.tenant_store.get_tenant_by_sip_domain(domain).await
     }
 
     async fn list_tenants(&self) -> Result<Vec<crate::Tenant>> {
