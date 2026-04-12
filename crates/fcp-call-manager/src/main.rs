@@ -37,6 +37,7 @@ mod config;
 mod health;
 mod queue_audio;
 mod queue_handler;
+mod queue_runtime_config;
 mod storage;
 
 use cli::Cli;
@@ -624,14 +625,35 @@ async fn main() -> Result<()> {
         .or_else(|| config.media.public_ip.clone())
         .unwrap_or_else(|| derive_local_ip(&config.sip.udp_bind));
     let default_tenant_id = config.service.default_tenant_id;
+    let effective_queue_runtime = if config.queue.enabled {
+        Some(
+            queue_runtime_config::build_effective_queue_runtime(
+                &config.queue,
+                &dyn_storage,
+                default_tenant_id,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let effective_queue_config = effective_queue_runtime
+        .as_ref()
+        .map(|(queue_config, _)| queue_config.clone())
+        .unwrap_or_else(|| config.queue.clone());
 
     // 17a. Create QueueManager and QueueCallHandler (if queue system is enabled)
     let queue_manager: Option<Arc<fcp_queue::QueueManager>> = if config.queue.enabled {
+        let (queue_config, queue_definitions) = effective_queue_runtime
+            .clone()
+            .unwrap_or_else(|| (config.queue.clone(), Vec::new()));
         let mut qm = fcp_queue::QueueManager::new(
-            config.queue.clone(),
+            queue_config.clone(),
             Some(Arc::clone(&event_publisher)),
             default_tenant_id,
         );
+
+        qm.sync_queue_definitions(queue_definitions, queue_config.clone())?;
 
         // Set up queue persistence and restore agents
         let queue_store: Arc<dyn fcp_core::storage::QueueStore> = Arc::clone(&dyn_storage) as _;
@@ -678,7 +700,7 @@ async fn main() -> Result<()> {
         let queue_port_pool = Arc::new(forge_rtp::PortPool::new(port_pool_config));
         let handler = queue_handler::QueueCallHandler::new(
             Arc::clone(qm),
-            config.queue.clone(),
+            effective_queue_config.clone(),
             default_tenant_id,
             local_uri.as_str().to_string(),
             local_addr.clone(),
@@ -1479,15 +1501,31 @@ async fn main() -> Result<()> {
                 match config::load_config(cli.config.as_deref()) {
                     Ok(new_config) => {
                         if let Some(ref qm) = queue_manager {
-                            let new_queues =
-                                qm.reload_config(new_config.queue.clone(), default_tenant_id);
-                            if let Some(ref qh) = queue_call_handler {
-                                for name in new_queues {
-                                    info!(queue = %name, "Spawning distribution loop for new queue");
-                                    qh.spawn_distribution_loop_for(name);
+                            match queue_runtime_config::build_effective_queue_runtime(
+                                &new_config.queue,
+                                &dyn_storage,
+                                default_tenant_id,
+                            ).await {
+                                Ok((effective_queue_config, queue_definitions)) => {
+                                    match qm.sync_queue_definitions(queue_definitions, effective_queue_config) {
+                                        Ok(new_queues) => {
+                                            if let Some(ref qh) = queue_call_handler {
+                                                for name in new_queues {
+                                                    info!(queue = %name, "Spawning distribution loop for new queue");
+                                                    qh.spawn_distribution_loop_for(name);
+                                                }
+                                            }
+                                            info!("Queue configuration reloaded successfully");
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "Failed to synchronize queue configuration");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to build effective queue runtime config");
                                 }
                             }
-                            info!("Queue configuration reloaded successfully");
                         }
                     }
                     Err(e) => {

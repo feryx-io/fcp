@@ -10,9 +10,9 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use fcp_api_core::auth::{validate_bearer_token, AuthConfig};
+use fcp_api_core::auth::{validate_bearer_token, AuthConfig, PLATFORM_TENANT_HEADER};
 use fcp_b2bua_core::CallManager;
-use fcp_core::storage::ConferenceStore;
+use fcp_core::storage::{ConferenceStore, TenantStore};
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{
     ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
@@ -455,12 +455,15 @@ fn default_page_limit() -> usize {
 
 async fn list_meetings_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Query(pagination): Query<PaginationParams>,
 ) -> Json<serde_json::Value> {
     use fcp_core::storage::ConferenceStore;
 
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err((_, body)) => return body,
+    };
     match state.storage.list_meetings(&tenant_id).await {
         Ok(meetings) => {
             let total = meetings.len();
@@ -485,12 +488,15 @@ async fn list_meetings_handler(
 
 async fn create_meeting_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(payload): Json<CreateMeetingRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     use fcp_core::storage::ConferenceStore;
 
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
 
     // Validate room number
     if !crate::conference_handler::validate_room_number(&payload.room_number) {
@@ -515,13 +521,10 @@ async fn create_meeting_handler(
         }
     }
 
-    // Check for duplicate room number
-    match state
-        .storage
-        .get_meeting_by_room_number(&tenant_id, &payload.room_number)
-        .await
-    {
-        Ok(Some(_)) => {
+    // Rooms are keyed globally inside the shared conference runtime, so room
+    // numbers must stay globally unique across tenants.
+    match room_number_exists_globally(&state, &payload.room_number, None).await {
+        Ok(true) => {
             return (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -537,7 +540,7 @@ async fn create_meeting_handler(
                 })),
             );
         }
-        Ok(None) => {}
+        Ok(false) => {}
     }
 
     let now = SystemTime::now();
@@ -596,6 +599,7 @@ async fn create_meeting_handler(
 
 async fn get_meeting_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     use fcp_core::storage::ConferenceStore;
@@ -610,7 +614,10 @@ async fn get_meeting_handler(
         }
     };
 
-    let expected_tenant = extract_tenant_id(&state);
+    let expected_tenant = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     match state.storage.get_meeting(&meeting_id).await {
         Ok(Some(meeting)) if meeting.tenant_id == expected_tenant => {
             (StatusCode::OK, Json(meeting_to_json(&meeting)))
@@ -655,6 +662,7 @@ struct UpdateMeetingRequest {
 
 async fn update_meeting_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(payload): Json<UpdateMeetingRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -670,7 +678,10 @@ async fn update_meeting_handler(
         }
     };
 
-    let expected_tenant = extract_tenant_id(&state);
+    let expected_tenant = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     let mut meeting = match state.storage.get_meeting(&meeting_id).await {
         Ok(Some(m)) if m.tenant_id == expected_tenant => m,
         Ok(Some(_)) | Ok(None) => {
@@ -808,6 +819,7 @@ async fn update_meeting_handler(
 
 async fn delete_meeting_handler(
     State(state): State<Arc<ConferenceState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
     use fcp_core::storage::ConferenceStore;
@@ -822,7 +834,10 @@ async fn delete_meeting_handler(
         }
     };
 
-    let expected_tenant = extract_tenant_id(&state);
+    let expected_tenant = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     let meeting_info = match state.storage.get_meeting(&meeting_id).await {
         Ok(Some(meeting)) if meeting.tenant_id == expected_tenant => Some(meeting),
         Ok(Some(_)) | Ok(None) => {
@@ -995,7 +1010,7 @@ struct DialOutRequest {
 
 async fn dial_out_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
     Json(payload): Json<DialOutRequest>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -1023,7 +1038,10 @@ async fn dial_out_handler(
         format!("sip:{}@{}", raw, domain)
     };
 
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
 
     match state
         .conference_handler
@@ -1135,10 +1153,13 @@ async fn unmute_participant_handler(
 
 async fn lock_room_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.lock();
@@ -1165,10 +1186,13 @@ async fn lock_room_handler(
 
 async fn unlock_room_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             room.unlock();
@@ -1195,10 +1219,13 @@ async fn unlock_room_handler(
 
 async fn start_recording_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     match state.bridge.get_room(&room_number) {
         Ok(room) => {
             let recording_path = format!(
@@ -1242,10 +1269,13 @@ async fn start_recording_handler(
 
 async fn stop_recording_handler(
     State(state): State<Arc<ConferenceState>>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Path(room_number): Path<String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let tenant_id = extract_tenant_id(&state);
+    let tenant_id = match extract_tenant_id(&headers, &state).await {
+        Ok(tenant_id) => tenant_id,
+        Err(err) => return err,
+    };
     match state.bridge.get_room(&room_number) {
         Ok(room) => match room.stop_recording() {
             Ok(()) => {
@@ -1911,10 +1941,65 @@ fn is_valid_identifier(id: &str) -> bool {
         && !id.contains('\\')
 }
 
-/// Extract tenant ID.
-/// SECURITY: Does NOT trust X-Tenant-ID header. Uses the server-configured tenant.
-fn extract_tenant_id(state: &ConferenceState) -> TenantId {
-    state.default_tenant_id
+/// Extract tenant ID from the authenticated control plane.
+///
+/// Conference HTTP APIs use a static/platform-admin bearer token, so an
+/// explicit tenant header is required to manage non-default tenants. Tenant-
+/// scoped SIP traffic derives tenant from SIP domains separately.
+async fn extract_tenant_id(
+    headers: &HeaderMap,
+    state: &ConferenceState,
+) -> Result<TenantId, (StatusCode, Json<serde_json::Value>)> {
+    let Some(raw_tenant_id) = headers
+        .get(PLATFORM_TENANT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(state.default_tenant_id);
+    };
+
+    let tenant_id = match raw_tenant_id.parse::<TenantId>() {
+        Ok(tenant_id) => tenant_id,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid {} header: {}", PLATFORM_TENANT_HEADER, e)
+                })),
+            ));
+        }
+    };
+
+    match state.storage.get_tenant(&tenant_id).await {
+        Ok(Some(_)) => Ok(tenant_id),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Tenant '{}' not found", tenant_id)
+            })),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to resolve tenant override: {}", e)
+            })),
+        )),
+    }
+}
+
+async fn room_number_exists_globally(
+    state: &ConferenceState,
+    room_number: &str,
+    exclude_tenant: Option<TenantId>,
+) -> anyhow::Result<bool> {
+    fcp_core::room_number_exists_globally(
+        state.storage.as_ref(),
+        &state.default_tenant_id,
+        room_number,
+        exclude_tenant,
+    )
+    .await
 }
 
 fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {

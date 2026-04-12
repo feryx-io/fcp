@@ -1386,6 +1386,53 @@ pub trait ConferenceStore: Send + Sync {
     async fn delete_meeting(&self, id: &crate::MeetingId) -> Result<()>;
 }
 
+/// Check whether a meeting room number already exists across **all** tenants.
+///
+/// The conference bridge keys rooms globally by room number, so each room
+/// number must be unique across tenants. This helper centralises the
+/// cross-tenant uniqueness check used by both the conference-server HTTP API
+/// and the admin API.
+///
+/// * `storage` — any storage that implements both [`ConferenceStore`] and
+///   [`TenantStore`].
+/// * `default_tenant_id` — always included in the tenant sweep so that the
+///   default tenant is checked even when it has no row in `list_tenants`.
+/// * `room_number` — the candidate room number to search for.
+/// * `exclude_tenant` — when updating an existing meeting, pass
+///   `Some(meeting.tenant_id)` to avoid a false positive against the meeting
+///   being updated.
+///
+/// Returns `Ok(true)` as soon as a matching room is found.
+pub async fn room_number_exists_globally<S>(
+    storage: &S,
+    default_tenant_id: &crate::TenantId,
+    room_number: &str,
+    exclude_tenant: Option<crate::TenantId>,
+) -> Result<bool>
+where
+    S: ConferenceStore + TenantStore,
+{
+    use std::collections::HashSet;
+    let mut tenant_ids: HashSet<crate::TenantId> =
+        HashSet::from([default_tenant_id.clone()]);
+    for tenant in storage.list_tenants().await? {
+        tenant_ids.insert(tenant.id);
+    }
+    for tenant_id in tenant_ids {
+        if exclude_tenant == Some(tenant_id.clone()) {
+            continue;
+        }
+        if storage
+            .get_meeting_by_room_number(&tenant_id, room_number)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Persisted presentity state for restart recovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredPresentity {

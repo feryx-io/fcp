@@ -93,15 +93,15 @@ pub use crate::sip_handler::{
 pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
 pub use crate::site_location::SiteLocation;
 pub use crate::storage::{
-    AccountStatus, ApiToken, ApiTokenStore, CallDetailRecord, CallDisposition, CdrQuery, CdrStore,
-    ClusterParkedCall, ClusterParkingStore, ConferenceStore, CredentialStore, DynStorage,
-    EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences, PresenceStore,
-    QueueConfigStore, QueueStore, Registration, RegistrationStore, RoutingRuleStore,
-    SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredSubscription,
-    TenantStore, TrunkStore, User, UserFileEntry, WebhookDeliveryLog, WebhookEndpoint,
-    WebhookStore,
+    room_number_exists_globally, AccountStatus, ApiToken, ApiTokenStore, CallDetailRecord,
+    CallDisposition, CdrQuery, CdrStore, ClusterParkedCall, ClusterParkingStore, ConferenceStore,
+    CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
+    MediaPreferences, PresenceStore, QueueConfigStore, QueueStore, Registration, RegistrationStore,
+    RoutingRuleStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
+    StoredSubscription, TenantStore, TrunkStore, User, UserFileEntry, WebhookDeliveryLog,
+    WebhookEndpoint, WebhookStore,
 };
-pub use crate::tenant::{Tenant, TenantStatus};
+pub use crate::tenant::{is_host_literal, Tenant, TenantStatus};
 pub use crate::transport::{
     ConnectionId, ConnectionMetadata, ConnectionState, Transport, TransportMessage,
     TransportReceiver, TransportType,

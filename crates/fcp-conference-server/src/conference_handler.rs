@@ -1,5 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use dashmap::DashMap;
+use fcp_core::storage::TenantStore;
 use fcp_core::{DynStorage, Meeting, TenantId};
 use fcp_events::{ConferenceEvent, EventPublisher, PlatformEvent};
 use fcp_media::{
@@ -672,6 +673,66 @@ impl ConferenceCallHandler {
     pub fn invalidate_meeting_cache(&self, tenant_id: &TenantId, room_number: &str) {
         self.meeting_cache
             .remove(&(tenant_id.clone(), room_number.to_string()));
+    }
+
+    fn extract_tenant_domain(request: &sip_core::Request) -> Option<String> {
+        let request_uri = request.uri().to_string();
+        let uri_str = request_uri
+            .strip_prefix("sip:")
+            .or_else(|| request_uri.strip_prefix("sips:"))
+            .unwrap_or(&request_uri);
+
+        if let Some(domain) = uri_str.split('@').nth(1) {
+            let domain = domain.split(';').next().unwrap_or(domain).trim();
+            if !domain.is_empty() && domain != "localhost" && domain != "127.0.0.1" {
+                return Some(domain.to_string());
+            }
+        }
+
+        let to_header = request.headers().get("To")?;
+        let to_str = to_header.to_string();
+        let uri_str = if let Some(start) = to_str.find('<') {
+            if let Some(end) = to_str.find('>') {
+                &to_str[start + 1..end]
+            } else {
+                &to_str
+            }
+        } else {
+            &to_str
+        };
+
+        let parsed = sip_core::SipUri::parse(uri_str.trim()).ok()?;
+        let domain = parsed.host().to_string();
+        if domain.is_empty() || domain == "localhost" || domain == "127.0.0.1" {
+            None
+        } else {
+            Some(domain)
+        }
+    }
+
+    async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
+        if let Some(domain) = Self::extract_tenant_domain(request) {
+            if fcp_core::is_host_literal(&domain) {
+                return Ok(self.default_tenant_id);
+            }
+
+            if let Some(tenant) = self.storage.get_tenant_by_sip_domain(&domain).await? {
+                return Ok(tenant.id);
+            }
+
+            if let Some(tenant) = self.storage.get_tenant_by_name(&domain).await? {
+                warn!(
+                    domain = %domain,
+                    tenant_id = %tenant.id,
+                    "Conference tenant resolved via legacy name match; add the domain to sip_domains"
+                );
+                return Ok(tenant.id);
+            }
+
+            bail!("unknown tenant domain '{}'", domain);
+        }
+
+        Ok(self.default_tenant_id)
     }
 
     /// Check if a call ID belongs to an active conference session.
@@ -2267,7 +2328,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             None => return false,
         };
 
-        let tenant_id = self.default_tenant_id;
+        let tenant_id = match self.resolve_tenant(request).await {
+            Ok(tenant_id) => tenant_id,
+            Err(_) => return false,
+        };
         match self.lookup_meeting(&tenant_id, &room_number).await {
             Ok(Some(meeting)) => meeting.enabled,
             _ => false,
@@ -2317,7 +2381,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             .context("Failed to extract room number from Request-URI")?;
 
         // 2. Extract tenant and look up meeting
-        let tenant_id = self.default_tenant_id;
+        let tenant_id = self.resolve_tenant(request).await?;
         let meeting = self
             .lookup_meeting(&tenant_id, &room_number)
             .await?
@@ -3933,7 +3997,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
 
         // Verify room exists (either active or configured)
         let room_active = self.bridge.get_room(&room_number).is_ok();
-        let tenant_id = self.default_tenant_id;
+        let tenant_id = self.resolve_tenant(request).await?;
         let meeting_exists = self
             .lookup_meeting(&tenant_id, &room_number)
             .await?

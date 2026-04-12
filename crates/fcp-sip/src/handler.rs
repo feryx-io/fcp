@@ -1203,7 +1203,7 @@ impl SipMessageHandler {
         //   4. No domain → default tenant
         // A real hostname that matches nothing still fails closed with 403.
         let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
-            if crate::registrar::is_host_literal(&domain) {
+            if fcp_core::is_host_literal(&domain) {
                 // IP literal or localhost — phones that haven't been
                 // provisioned with their tenant's SIP domain. Fall through
                 // to the default tenant; trunk admission control below

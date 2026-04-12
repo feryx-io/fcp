@@ -6,9 +6,16 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use fcp_core::storage::ApiTokenStore;
+use fcp_core::storage::{ApiTokenStore, TenantStore};
 use fcp_core::{AccountStatus, CredentialStore, TenantId};
 use std::sync::Arc;
+
+/// Header that platform-admin credentials can use to target a specific tenant.
+///
+/// SECURITY: This override is ignored for tenant-scoped identities. Only
+/// platform-admin credentials (static token / super_admin session) may select
+/// a tenant this way.
+pub const PLATFORM_TENANT_HEADER: &str = "x-fcp-tenant-id";
 
 /// Identity of the authenticated caller, inserted into request extensions
 /// after successful authentication by the bearer middleware.
@@ -385,7 +392,7 @@ pub struct TenantContext(pub fcp_core::TenantId);
 
 #[axum::async_trait]
 impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
-    type Rejection = std::convert::Infallible;
+    type Rejection = (StatusCode, String);
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
@@ -394,6 +401,43 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
         if let Some(identity) = parts.extensions.get::<AuthIdentity>() {
             if let Some(tenant_id) = identity.tenant_id() {
                 return Ok(TenantContext(*tenant_id));
+            }
+
+            if identity.is_platform_admin() {
+                if let Some(raw_tenant_id) = parts
+                    .headers
+                    .get(PLATFORM_TENANT_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    let tenant_id = raw_tenant_id.parse::<TenantId>().map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Invalid {} header: {}", PLATFORM_TENANT_HEADER, e),
+                        )
+                    })?;
+
+                    if let Some(storage) = state.storage.as_ref() {
+                        match storage.get_tenant(&tenant_id).await {
+                            Ok(Some(_)) => {}
+                            Ok(None) => {
+                                return Err((
+                                    StatusCode::NOT_FOUND,
+                                    format!("Tenant '{}' not found", tenant_id),
+                                ));
+                            }
+                            Err(e) => {
+                                return Err((
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Failed to resolve tenant override: {}", e),
+                                ));
+                            }
+                        }
+                    }
+
+                    return Ok(TenantContext(tenant_id));
+                }
             }
         }
 

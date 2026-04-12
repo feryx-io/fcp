@@ -780,7 +780,30 @@ async fn reload_queues_handler(State(state): State<Arc<AppState>>) -> Json<serde
         }
     };
 
-    let new_queues = qm.reload_config(new_config.queue.clone(), state.default_tenant_id.clone());
+    let (effective_queue_config, queue_definitions) =
+        match crate::queue_runtime_config::build_effective_queue_runtime(
+            &new_config.queue,
+            &state.storage,
+            state.default_tenant_id,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                return Json(serde_json::json!({
+                    "error": format!("Failed to build queue runtime config: {}", e),
+                }));
+            }
+        };
+
+    let new_queues = match qm.sync_queue_definitions(queue_definitions, effective_queue_config) {
+        Ok(new_queues) => new_queues,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("Failed to synchronize queue configuration: {}", e),
+            }));
+        }
+    };
 
     // Spawn distribution loops for any newly added queues
     if let Some(ref qh) = state.queue_handler {

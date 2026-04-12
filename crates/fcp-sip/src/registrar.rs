@@ -4,7 +4,9 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use fcp_core::{CredentialStore, Registration, RegistrationStore, TenantId, TenantStore};
+use fcp_core::{
+    is_host_literal, CredentialStore, Registration, RegistrationStore, TenantId, TenantStore,
+};
 use fcp_events::{EventPublisher, PlatformEvent, RegistrationEvent};
 use sip_core::{Request, Response};
 use sip_registrar::{AsyncLocationStore, Binding};
@@ -45,33 +47,6 @@ fn extract_domain_from_aor(aor: &str) -> Option<String> {
     } else {
         Some(domain.to_string())
     }
-}
-
-/// Returns true when `domain` is a numeric IP literal, `localhost`, or any
-/// other host form that should not be treated as a tenant SIP domain.
-///
-/// IP literals and `localhost` are typically emitted by devices that have
-/// not been provisioned with their tenant's SIP domain (legacy phones,
-/// softphones pointed at the server IP, test rigs). Matching these against
-/// `tenants.sip_domains` will always fail, so the resolver should skip that
-/// lookup entirely and fall through to username- and default-based
-/// resolution. Real hostnames stay on the strict "must match a tenant"
-/// path so typos and lookup misses still fail closed.
-pub(crate) fn is_host_literal(domain: &str) -> bool {
-    let trimmed = domain.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
-        return true;
-    }
-    if trimmed.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    // A bracketed form like `[::1]` is an IPv6 literal in SIP URIs; strip
-    // the brackets before calling IpAddr::parse.
-    let inner = trimmed
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(trimmed);
-    inner.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// Resolve an inbound SIP request to a tenant using a tiered strategy.

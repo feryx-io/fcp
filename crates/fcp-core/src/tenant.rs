@@ -7,6 +7,34 @@ use crate::identifiers::TenantId;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
+/// Returns `true` when `domain` is a numeric IP literal, `localhost`, or any
+/// other host form that should not be treated as a tenant SIP domain.
+///
+/// IP literals and `localhost` are typically emitted by devices that have not
+/// been provisioned with their tenant's SIP domain (legacy phones, softphones
+/// pointed at the server IP, test rigs). Matching these against
+/// `tenants.sip_domains` will always fail, so the resolver should skip that
+/// lookup entirely and fall through to username- and default-based resolution.
+/// Real hostnames stay on the strict "must match a tenant" path so typos and
+/// lookup misses still fail closed.
+///
+/// A bracketed IPv6 form such as `[::1]` (used in SIP URIs) is also
+/// recognised — the brackets are stripped before parsing.
+pub fn is_host_literal(domain: &str) -> bool {
+    let trimmed = domain.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let inner = trimmed
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    inner.parse::<std::net::IpAddr>().is_ok()
+}
+
 /// Account status for a tenant
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

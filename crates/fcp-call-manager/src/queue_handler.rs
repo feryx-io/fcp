@@ -433,9 +433,24 @@ impl QueueCallHandler {
 
     async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
         if let Some(domain) = Self::extract_tenant_domain(request) {
-            return match self.storage.get_tenant_by_name(&domain).await {
+            if fcp_core::is_host_literal(&domain) {
+                return Ok(self.default_tenant_id);
+            }
+
+            return match self.storage.get_tenant_by_sip_domain(&domain).await {
                 Ok(Some(tenant)) => Ok(tenant.id),
-                Ok(None) => bail!("Unknown tenant domain '{}'", domain),
+                Ok(None) => match self.storage.get_tenant_by_name(&domain).await {
+                    Ok(Some(tenant)) => {
+                        warn!(
+                            domain = %domain,
+                            tenant_id = %tenant.id,
+                            "Queue tenant resolved via legacy name match; add the domain to sip_domains"
+                        );
+                        Ok(tenant.id)
+                    }
+                    Ok(None) => bail!("Unknown tenant domain '{}'", domain),
+                    Err(e) => Err(e).context("failed to resolve tenant from SIP domain"),
+                },
                 Err(e) => Err(e).context("failed to resolve tenant from SIP domain"),
             };
         }
@@ -1891,12 +1906,16 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         if !self.queue_manager.is_enabled() {
             return false;
         }
+        let tenant_id = match self.resolve_tenant(request).await {
+            Ok(tenant_id) => tenant_id,
+            Err(_) => return false,
+        };
         let extension = match Self::extract_extension(request) {
             Some(ext) => ext,
             None => return false,
         };
         self.queue_manager
-            .get_queue_for_extension(&extension)
+            .get_queue_for_extension_in_tenant(&tenant_id, &extension)
             .is_some()
     }
 
@@ -1909,11 +1928,6 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         // 1. Extract extension and look up queue
         let extension = Self::extract_extension(request)
             .context("Failed to extract extension from Request-URI")?;
-        let queue_name = self
-            .queue_manager
-            .get_queue_for_extension(&extension)
-            .context("No queue found for extension")?;
-
         let call_id = Self::extract_call_id(request);
         let tenant_id = match self.resolve_tenant(request).await {
             Ok(tenant_id) => tenant_id,
@@ -1934,6 +1948,10 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
                 return Ok(());
             }
         };
+        let queue_name = self
+            .queue_manager
+            .get_queue_for_extension_in_tenant(&tenant_id, &extension)
+            .context("No queue found for extension")?;
         let (caller_display, caller_uri) = Self::extract_caller_info(request);
 
         info!(

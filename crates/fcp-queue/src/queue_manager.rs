@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use chrono::Datelike;
 use dashmap::DashMap;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use tokio_util::sync::CancellationToken;
 
 use fcp_core::storage::{QueueStore, StoredAgent, StoredQueueSnapshot};
@@ -19,12 +19,19 @@ use tracing::{debug, info, warn};
 use crate::config::{QueueConfig, QueueSystemConfig};
 use crate::distribution::{self, DistributionPlan};
 use crate::events;
-use std::collections::HashSet;
 
 use crate::types::{
     Agent, AgentState, AgentStats, CampaignCallOutcome, CampaignNumber, CampaignStats, Queue,
     QueueStats, QueuedCall,
 };
+
+/// Runtime queue definition with explicit tenant ownership.
+#[derive(Debug, Clone)]
+pub struct TenantQueueDefinition {
+    pub name: String,
+    pub tenant_id: TenantId,
+    pub config: QueueConfig,
+}
 
 /// Central manager for all queues, agents, and call distribution.
 ///
@@ -42,7 +49,7 @@ pub struct QueueManager {
     /// System configuration.
     config: Arc<parking_lot::RwLock<QueueSystemConfig>>,
     /// Extension → queue name mapping for fast INVITE dispatch.
-    extension_map: Arc<DashMap<String, String>>,
+    extension_map: Arc<DashMap<(TenantId, String), String>>,
     /// Per-queue counters for daily stats.
     calls_handled_today: Arc<DashMap<String, u64>>,
     calls_abandoned_today: Arc<DashMap<String, u64>>,
@@ -84,7 +91,7 @@ impl QueueManager {
         // Initialize queues from config
         for (key, queue_config) in &config.queues {
             let queue = Queue::new(key.clone(), tenant_id.clone(), queue_config.clone());
-            extension_map.insert(queue_config.extension.clone(), key.clone());
+            extension_map.insert((tenant_id, queue_config.extension.clone()), key.clone());
             round_robin_counters.insert(key.clone(), AtomicUsize::new(0));
             calls_handled_today.insert(key.clone(), 0);
             calls_abandoned_today.insert(key.clone(), 0);
@@ -128,9 +135,33 @@ impl QueueManager {
     }
 
     /// Check if a dialed extension maps to a configured queue.
-    /// Returns the queue name if found.
+    /// Returns the queue name if the extension is globally unambiguous.
+    ///
+    /// When multiple tenants use the same extension, callers must use
+    /// [`get_queue_for_extension_in_tenant`] to disambiguate.
     pub fn get_queue_for_extension(&self, extension: &str) -> Option<String> {
-        self.extension_map.get(extension).map(|v| v.clone())
+        let matches = self
+            .extension_map
+            .iter()
+            .filter(|entry| entry.key().1 == extension)
+            .map(|entry| entry.value().clone())
+            .collect::<HashSet<_>>();
+        if matches.len() == 1 {
+            matches.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    /// Check if a dialed extension maps to a queue inside the given tenant.
+    pub fn get_queue_for_extension_in_tenant(
+        &self,
+        tenant_id: &TenantId,
+        extension: &str,
+    ) -> Option<String> {
+        self.extension_map
+            .get(&(tenant_id.clone(), extension.to_string()))
+            .map(|queue_name| queue_name.clone())
     }
 
     /// Check if the queue system is enabled.
@@ -302,48 +333,140 @@ impl QueueManager {
         new_config: QueueSystemConfig,
         default_tenant_id: TenantId,
     ) -> Vec<String> {
-        let mut new_queues = Vec::new();
+        let definitions = new_config
+            .queues
+            .iter()
+            .map(|(name, config)| TenantQueueDefinition {
+                name: name.clone(),
+                tenant_id: default_tenant_id,
+                config: config.clone(),
+            })
+            .collect::<Vec<_>>();
 
-        for (name, qc) in &new_config.queues {
-            if self.queues.contains_key(name) {
-                // Update existing queue config (preserves waiting_calls, draining state)
-                if let Some(mut queue) = self.queues.get_mut(name) {
-                    // Update extension mapping if it changed
-                    let old_extension = queue.config.extension.clone();
-                    if old_extension != qc.extension {
-                        self.extension_map.remove(&old_extension);
-                        self.extension_map
-                            .insert(qc.extension.clone(), name.clone());
-                    }
-                    queue.config = qc.clone();
-                }
-            } else {
-                // New queue — insert it
-                self.queues.insert(
-                    name.clone(),
-                    Queue::new(name.clone(), default_tenant_id, qc.clone()),
+        self.sync_queue_definitions(definitions, new_config)
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to reload queue configuration");
+                Vec::new()
+            })
+    }
+
+    /// Synchronize the runtime queue set to the desired definitions.
+    ///
+    /// - Existing queues are updated in-place to preserve waiting callers.
+    /// - New queues are inserted and returned so callers can spawn loops.
+    /// - Removed queues stop accepting new calls immediately by dropping their
+    ///   extension mapping. They are deleted only when no callers remain.
+    pub fn sync_queue_definitions(
+        &self,
+        definitions: Vec<TenantQueueDefinition>,
+        mut system_config: QueueSystemConfig,
+    ) -> Result<Vec<String>> {
+        let mut new_queues = Vec::new();
+        let mut desired_names = HashSet::new();
+        let mut seen_extensions = HashSet::new();
+
+        for definition in &definitions {
+            if !desired_names.insert(definition.name.clone()) {
+                bail!("Duplicate queue name '{}' in runtime configuration", definition.name);
+            }
+
+            let extension_key = (definition.tenant_id, definition.config.extension.clone());
+            if !seen_extensions.insert(extension_key) {
+                bail!(
+                    "Duplicate queue extension '{}' for tenant '{}'",
+                    definition.config.extension,
+                    definition.tenant_id
                 );
-                self.extension_map
-                    .insert(qc.extension.clone(), name.clone());
-                self.calls_handled_today.insert(name.clone(), 0);
-                self.calls_abandoned_today.insert(name.clone(), 0);
-                self.calls_within_sl.insert(name.clone(), 0);
-                self.calls_offered_today.insert(name.clone(), 0);
-                self.round_robin_counters
-                    .insert(name.clone(), AtomicUsize::new(0));
-                new_queues.push(name.clone());
             }
         }
 
-        // Update system-level config
-        *self.config.write() = new_config;
+        for definition in &definitions {
+            if self.queues.contains_key(&definition.name) {
+                if let Some(mut queue) = self.queues.get_mut(&definition.name) {
+                    let old_extension = queue.config.extension.clone();
+                    let old_tenant_id = queue.tenant_id;
+                    if old_extension != definition.config.extension
+                        || old_tenant_id != definition.tenant_id
+                    {
+                        self.extension_map
+                            .remove(&(old_tenant_id, old_extension.clone()));
+                        self.extension_map.insert(
+                            (definition.tenant_id, definition.config.extension.clone()),
+                            definition.name.clone(),
+                        );
+                    }
+                    queue.tenant_id = definition.tenant_id;
+                    queue.config = definition.config.clone();
+                    queue.draining = false;
+                }
+            } else {
+                self.queues.insert(
+                    definition.name.clone(),
+                    Queue::new(
+                        definition.name.clone(),
+                        definition.tenant_id,
+                        definition.config.clone(),
+                    ),
+                );
+                self.extension_map.insert(
+                    (definition.tenant_id, definition.config.extension.clone()),
+                    definition.name.clone(),
+                );
+                self.calls_handled_today.insert(definition.name.clone(), 0);
+                self.calls_abandoned_today.insert(definition.name.clone(), 0);
+                self.calls_within_sl.insert(definition.name.clone(), 0);
+                self.calls_offered_today.insert(definition.name.clone(), 0);
+                self.round_robin_counters
+                    .insert(definition.name.clone(), AtomicUsize::new(0));
+                new_queues.push(definition.name.clone());
+            }
+
+            system_config
+                .queues
+                .insert(definition.name.clone(), definition.config.clone());
+        }
+
+        let existing_names = self
+            .queues
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for queue_name in existing_names {
+            if desired_names.contains(&queue_name) {
+                continue;
+            }
+
+            if let Some(queue) = self.queues.get(&queue_name) {
+                self.extension_map
+                    .remove(&(queue.tenant_id, queue.config.extension.clone()));
+
+                if queue.waiting_calls.is_empty() {
+                    drop(queue);
+                    self.queues.remove(&queue_name);
+                    self.round_robin_counters.remove(&queue_name);
+                    self.calls_handled_today.remove(&queue_name);
+                    self.calls_abandoned_today.remove(&queue_name);
+                    self.calls_within_sl.remove(&queue_name);
+                    self.calls_offered_today.remove(&queue_name);
+                    self.stats_history.remove(&queue_name);
+                    self.campaign_numbers.remove(&queue_name);
+                    self.campaign_active_dials.remove(&queue_name);
+                    self.campaign_stats.remove(&queue_name);
+                    self.campaign_running.remove(&queue_name);
+                } else if let Some(mut queue) = self.queues.get_mut(&queue_name) {
+                    queue.draining = true;
+                }
+            }
+        }
+
+        *self.config.write() = system_config;
 
         info!(
             updated = self.queues.len(),
             new = new_queues.len(),
-            "Queue configuration reloaded"
+            "Queue configuration synchronized"
         );
-        new_queues
+        Ok(new_queues)
     }
 
     // ---- Agent Operations ----
@@ -1370,9 +1493,19 @@ impl QueueManager {
         if self.queues.contains_key(&key) {
             bail!("Queue '{}' already exists", key);
         }
+        if self
+            .extension_map
+            .contains_key(&(tenant_id, queue_config.extension.clone()))
+        {
+            bail!(
+                "Queue extension '{}' already exists in tenant '{}'",
+                queue_config.extension,
+                tenant_id
+            );
+        }
         let queue = Queue::new(key.clone(), tenant_id, queue_config.clone());
         self.extension_map
-            .insert(queue_config.extension.clone(), key.clone());
+            .insert((queue.tenant_id, queue_config.extension.clone()), key.clone());
         self.round_robin_counters
             .insert(key.clone(), AtomicUsize::new(0));
         self.calls_handled_today.insert(key.clone(), 0);
@@ -1398,10 +1531,24 @@ impl QueueManager {
 
         // Update extension mapping if it changed
         let old_extension = queue.config.extension.clone();
+        let tenant_id = queue.tenant_id;
         if old_extension != queue_config.extension {
-            self.extension_map.remove(&old_extension);
+            if let Some(existing_queue) = self
+                .extension_map
+                .get(&(tenant_id, queue_config.extension.clone()))
+                .map(|entry| entry.clone())
+            {
+                if existing_queue != key {
+                    bail!(
+                        "Queue extension '{}' already exists in tenant '{}'",
+                        queue_config.extension,
+                        tenant_id
+                    );
+                }
+            }
+            self.extension_map.remove(&(tenant_id, old_extension));
             self.extension_map
-                .insert(queue_config.extension.clone(), key.to_string());
+                .insert((tenant_id, queue_config.extension.clone()), key.to_string());
         }
 
         queue.config = queue_config.clone();
@@ -1433,10 +1580,11 @@ impl QueueManager {
         }
 
         let extension = queue.config.extension.clone();
+        let tenant_id = queue.tenant_id;
         drop(queue);
 
         self.queues.remove(key);
-        self.extension_map.remove(&extension);
+        self.extension_map.remove(&(tenant_id, extension));
         self.round_robin_counters.remove(key);
         self.calls_handled_today.remove(key);
         self.calls_abandoned_today.remove(key);
