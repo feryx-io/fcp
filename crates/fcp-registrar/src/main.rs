@@ -52,6 +52,21 @@ async fn main() -> Result<()> {
         config.sip.udp_bind = bind.clone();
         config.sip.tcp_bind = bind.clone();
     }
+    if let Some(ref bind) = cli.sips_bind {
+        config.sip.sips_bind = bind.clone();
+    }
+    if let Some(ref bind) = cli.ws_bind {
+        config.sip.ws_bind = Some(bind.clone());
+    }
+    if let Some(ref bind) = cli.wss_bind {
+        config.sip.wss_bind = Some(bind.clone());
+    }
+    if let Some(ref cert) = cli.tls_cert {
+        config.sip.tls_cert_path = Some(cert.display().to_string());
+    }
+    if let Some(ref key) = cli.tls_key {
+        config.sip.tls_key_path = Some(key.display().to_string());
+    }
     if let Some(ref bind) = cli.http_bind {
         config.http.bind_address = bind
             .parse()
@@ -83,9 +98,28 @@ async fn main() -> Result<()> {
     // 6. Create message channel
     let (tx, mut rx) = mpsc::channel::<InboundPacket>(1024);
 
-    // 7. Start SIP transports (UDP + TCP)
+    // 7. Start SIP transports
+    let transport_config = transport::RegistrarTransportConfig {
+        udp_bind: config.sip.udp_bind.clone(),
+        tcp_bind: config.sip.tcp_bind.clone(),
+        tls_bind: config
+            .sip
+            .tls_cert_path
+            .as_ref()
+            .zip(config.sip.tls_key_path.as_ref())
+            .map(|_| config.sip.sips_bind.clone()),
+        ws_bind: config.sip.ws_bind.clone(),
+        wss_bind: config
+            .sip
+            .tls_cert_path
+            .as_ref()
+            .zip(config.sip.tls_key_path.as_ref())
+            .and(config.sip.wss_bind.clone()),
+        tls_cert_path: config.sip.tls_cert_path.clone(),
+        tls_key_path: config.sip.tls_key_path.clone(),
+    };
     let (transport_dispatcher, _udp_socket) =
-        transport::start_transports(&config.sip.udp_bind, &config.sip.tcp_bind, tx).await?;
+        transport::start_transports(&transport_config, tx).await?;
 
     // 8. Create transaction manager
     let transaction_mgr = Arc::new(TransactionManager::new(transport_dispatcher));
@@ -124,6 +158,9 @@ async fn main() -> Result<()> {
     info!(
         udp = %config.sip.udp_bind,
         tcp = %config.sip.tcp_bind,
+        tls = %config.sip.sips_bind,
+        ws = ?config.sip.ws_bind,
+        wss = ?config.sip.wss_bind,
         http = %config.http.bind_address,
         auth = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
@@ -169,11 +206,11 @@ fn create_registrar(
 
     Arc::new(
         FcpRegistrar::new(
-        registration_store,
-        credential_store,
-        realm,
-        config.registrar.auth_enabled,
-    )
+            registration_store,
+            credential_store,
+            realm,
+            config.registrar.auth_enabled,
+        )
         .with_tenant_store(Arc::clone(storage) as _)
         .with_default_tenant_id(config.service.default_tenant_id),
     )

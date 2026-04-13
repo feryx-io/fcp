@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use fcp_core::storage::{QueueConfigStore, TenantStore};
+use fcp_core::storage::QueueConfigStore;
 use fcp_core::{DynStorage, QueueConfigRecord, TenantId};
 use fcp_queue::queue_manager::TenantQueueDefinition;
 use fcp_queue::{DistributionStrategy, QueueConfig, QueueSystemConfig};
@@ -86,9 +86,8 @@ fn validate_extension_uniqueness(
 /// Build the effective queue runtime configuration by merging file-backed queue
 /// config with database-backed queue-config records.
 ///
-/// Queue names remain global runtime identifiers. A duplicate queue name across
-/// different tenants is therefore rejected at build time rather than silently
-/// collapsing one tenant's queue into another.
+/// The call-manager runtime only materializes queues for its configured
+/// service tenant, so queue names only need to be unique within that tenant.
 pub async fn build_effective_queue_runtime(
     base_config: &QueueSystemConfig,
     storage: &Arc<DynStorage>,
@@ -107,35 +106,23 @@ pub async fn build_effective_queue_runtime(
         );
     }
 
-    let tenants = storage
-        .list_tenants()
+    let records = storage
+        .list_queue_configs(&default_tenant_id)
         .await
-        .context("failed to list tenants for queue runtime configuration")?;
+        .with_context(|| {
+            format!(
+                "failed to list queue configs for service tenant '{}'",
+                default_tenant_id
+            )
+        })?;
 
-    for tenant in tenants {
-        let records = storage
-            .list_queue_configs(&tenant.id)
-            .await
-            .with_context(|| format!("failed to list queue configs for tenant '{}'", tenant.id))?;
-
-        for record in records {
-            let definition = TenantQueueDefinition {
-                name: record.name.clone(),
-                tenant_id: record.tenant_id,
-                config: queue_config_from_record(&record),
-            };
-
-            if let Some(existing) = definitions_by_name.get(&definition.name) {
-                if existing.tenant_id != definition.tenant_id {
-                    bail!(
-                        "queue name '{}' is configured in multiple tenants; runtime queue names must stay globally unique",
-                        definition.name
-                    );
-                }
-            }
-
-            definitions_by_name.insert(definition.name.clone(), definition);
-        }
+    for record in records {
+        let definition = TenantQueueDefinition {
+            name: record.name.clone(),
+            tenant_id: record.tenant_id,
+            config: queue_config_from_record(&record),
+        };
+        definitions_by_name.insert(definition.name.clone(), definition);
     }
 
     let definitions = validate_extension_uniqueness(definitions_by_name.into_values())?;

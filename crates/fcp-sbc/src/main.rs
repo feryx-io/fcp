@@ -664,6 +664,12 @@ async fn main() -> Result<()> {
         .health_bind
         .parse()
         .context("Invalid health bind address")?;
+    if !health_bind.ip().is_loopback() && cli.health_api_token.is_none() {
+        anyhow::bail!(
+            "FCP_SBC_HEALTH_API_TOKEN or --health-api-token is required when --health-bind is non-loopback ({})",
+            health_bind
+        );
+    }
     let health_state = Arc::new(HealthState {
         admission: Arc::clone(&admission),
         health_monitor: Arc::clone(&trunk_health),
@@ -678,6 +684,7 @@ async fn main() -> Result<()> {
         lcr_routes: sbc_config.lcr.routes.clone(),
         stir_metrics: stir_metrics.clone(),
         stir_verifier: stir_verifier.clone(),
+        api_token: cli.health_api_token.clone(),
     });
     tokio::spawn(async move {
         if let Err(e) = health::run_health_server(health_bind, health_state).await {

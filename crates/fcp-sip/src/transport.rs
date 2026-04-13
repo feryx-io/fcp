@@ -284,7 +284,7 @@ impl TransportDispatcher for RealTransportDispatcher {
 }
 
 #[cfg(feature = "ws")]
-fn websocket_url(ctx: &TransportContext, secure: bool) -> String {
+pub fn websocket_url(ctx: &TransportContext, secure: bool) -> String {
     let host = ctx.server_name().map(str::to_owned).unwrap_or_else(|| {
         let ip = ctx.peer().ip();
         if ip.is_ipv6() {

@@ -12,7 +12,7 @@ use axum::{
 };
 use fcp_api_core::auth::{validate_bearer_token, AuthConfig, PLATFORM_TENANT_HEADER};
 use fcp_b2bua_core::CallManager;
-use fcp_core::storage::{ConferenceStore, TenantStore};
+use fcp_core::storage::ConferenceStore;
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{
     ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
@@ -520,9 +520,7 @@ async fn create_meeting_handler(
         }
     }
 
-    // Rooms are keyed globally inside the shared conference runtime, so room
-    // numbers must stay globally unique across tenants.
-    match room_number_exists_globally(&state, &payload.room_number, None).await {
+    match room_number_exists_in_tenant(&state, &tenant_id, &payload.room_number).await {
         Ok(true) => {
             return (
                 StatusCode::CONFLICT,
@@ -1942,9 +1940,8 @@ fn is_valid_identifier(id: &str) -> bool {
 
 /// Extract tenant ID from the authenticated control plane.
 ///
-/// Conference HTTP APIs use a static/platform-admin bearer token, so an
-/// explicit tenant header is required to manage non-default tenants. Tenant-
-/// scoped SIP traffic derives tenant from SIP domains separately.
+/// Conference HTTP APIs are scoped to the configured service tenant. The
+/// control plane accepts the tenant header only when it matches that tenant.
 async fn extract_tenant_id(
     headers: &HeaderMap,
     state: &ConferenceState,
@@ -1970,35 +1967,32 @@ async fn extract_tenant_id(
         }
     };
 
-    match state.storage.get_tenant(&tenant_id).await {
-        Ok(Some(_)) => Ok(tenant_id),
-        Ok(None) => Err((
-            StatusCode::NOT_FOUND,
+    if tenant_id != state.default_tenant_id {
+        return Err((
+            StatusCode::FORBIDDEN,
             Json(serde_json::json!({
-                "error": format!("Tenant '{}' not found", tenant_id)
+                "error": format!(
+                    "Conference server is scoped to tenant '{}'; tenant '{}' is not served by this instance",
+                    state.default_tenant_id,
+                    tenant_id
+                )
             })),
-        )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to resolve tenant override: {}", e)
-            })),
-        )),
+        ));
     }
+
+    Ok(tenant_id)
 }
 
-async fn room_number_exists_globally(
+async fn room_number_exists_in_tenant(
     state: &ConferenceState,
+    tenant_id: &TenantId,
     room_number: &str,
-    exclude_tenant: Option<TenantId>,
 ) -> anyhow::Result<bool> {
-    fcp_core::room_number_exists_globally(
-        state.storage.as_ref(),
-        &state.default_tenant_id,
-        room_number,
-        exclude_tenant,
-    )
-    .await
+    state
+        .storage
+        .get_meeting_by_room_number(tenant_id, room_number)
+        .await
+        .map(|meeting| meeting.is_some())
 }
 
 fn meeting_to_json(meeting: &Meeting) -> serde_json::Value {

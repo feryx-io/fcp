@@ -80,10 +80,32 @@ pub struct SipSection {
     /// TCP bind address
     #[serde(default = "default_sip_bind")]
     pub tcp_bind: String,
+
+    /// TLS/SIPS bind address.
+    #[serde(default = "default_sips_bind")]
+    pub sips_bind: String,
+
+    /// Path to TLS certificate file (PEM format)
+    pub tls_cert_path: Option<String>,
+
+    /// Path to TLS private key file (PEM format)
+    pub tls_key_path: Option<String>,
+
+    /// Optional SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub ws_bind: Option<String>,
+
+    /// Optional secure SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub wss_bind: Option<String>,
 }
 
 fn default_sip_bind() -> String {
     "0.0.0.0:5060".to_string()
+}
+
+fn default_sips_bind() -> String {
+    "0.0.0.0:5061".to_string()
 }
 
 impl Default for SipSection {
@@ -91,6 +113,11 @@ impl Default for SipSection {
         Self {
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
+            sips_bind: default_sips_bind(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            ws_bind: None,
+            wss_bind: None,
         }
     }
 }
@@ -255,6 +282,9 @@ pub fn load_config(config_path: Option<&Path>) -> Result<RegistrarConfig> {
         node_id = %config.service.node_id,
         udp_bind = %config.sip.udp_bind,
         tcp_bind = %config.sip.tcp_bind,
+        sips_bind = %config.sip.sips_bind,
+        ws_bind = ?config.sip.ws_bind,
+        wss_bind = ?config.sip.wss_bind,
         auth_enabled = config.registrar.auth_enabled,
         realm = %config.registrar.realm,
         http_bind = %config.http.bind_address,
@@ -265,16 +295,48 @@ pub fn load_config(config_path: Option<&Path>) -> Result<RegistrarConfig> {
 }
 
 pub fn validate_config(config: &RegistrarConfig) -> Result<()> {
+    fcp_sip::validate_sip_binds(
+        &config.sip.udp_bind,
+        &config.sip.tcp_bind,
+        config.sip.ws_bind.as_deref(),
+        config.sip.wss_bind.as_deref(),
+        config.sip.tls_cert_path.as_deref(),
+        config.sip.tls_key_path.as_deref(),
+    )?;
+
     let public_udp = bind_is_public(&config.sip.udp_bind)
         .with_context(|| format!("Invalid SIP UDP bind address '{}'", config.sip.udp_bind))?;
     let public_tcp = bind_is_public(&config.sip.tcp_bind)
         .with_context(|| format!("Invalid SIP TCP bind address '{}'", config.sip.tcp_bind))?;
+    let public_tls = bind_is_public(&config.sip.sips_bind)
+        .with_context(|| format!("Invalid SIP TLS bind address '{}'", config.sip.sips_bind))?;
+    let public_ws = config
+        .sip
+        .ws_bind
+        .as_deref()
+        .map(bind_is_public)
+        .transpose()
+        .with_context(|| format!("Invalid SIP WS bind address '{:?}'", config.sip.ws_bind))?
+        .unwrap_or(false);
+    let public_wss = config
+        .sip
+        .wss_bind
+        .as_deref()
+        .map(bind_is_public)
+        .transpose()
+        .with_context(|| format!("Invalid SIP WSS bind address '{:?}'", config.sip.wss_bind))?
+        .unwrap_or(false);
 
-    if (public_udp || public_tcp) && !config.registrar.auth_enabled {
+    if (public_udp || public_tcp || public_tls || public_ws || public_wss)
+        && !config.registrar.auth_enabled
+    {
         anyhow::bail!(
-            "registrar.auth_enabled must be true when binding the standalone registrar to a non-loopback SIP address (udp={}, tcp={})",
+            "registrar.auth_enabled must be true when binding the standalone registrar to a non-loopback SIP address (udp={}, tcp={}, tls={}, ws={:?}, wss={:?})",
             config.sip.udp_bind,
-            config.sip.tcp_bind
+            config.sip.tcp_bind,
+            config.sip.sips_bind,
+            config.sip.ws_bind,
+            config.sip.wss_bind
         );
     }
 
@@ -308,6 +370,7 @@ mod tests {
         assert_eq!(config.service.default_tenant_id, fcp_core::TenantId::nil());
         assert_eq!(config.sip.udp_bind, "0.0.0.0:5060");
         assert_eq!(config.sip.tcp_bind, "0.0.0.0:5060");
+        assert_eq!(config.sip.sips_bind, "0.0.0.0:5061");
         assert!(config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "fcp.local");
         assert_eq!(config.registrar.default_expires, 3600);
@@ -326,6 +389,7 @@ default_tenant_id = "00000000-0000-0000-0000-000000000123"
 [sip]
 udp_bind = "0.0.0.0:5060"
 tcp_bind = "0.0.0.0:5060"
+sips_bind = "0.0.0.0:5061"
 
 [registrar]
 auth_enabled = true
@@ -346,9 +410,7 @@ format = "pretty"
         assert_eq!(config.service.node_id, "reg-test-01");
         assert_eq!(
             config.service.default_tenant_id,
-            "00000000-0000-0000-0000-000000000123"
-                .parse()
-                .unwrap()
+            "00000000-0000-0000-0000-000000000123".parse().unwrap()
         );
         assert!(config.registrar.auth_enabled);
         assert_eq!(config.registrar.realm, "test.local");
@@ -364,6 +426,7 @@ format = "pretty"
 
         config.sip.udp_bind = "127.0.0.1:5060".to_string();
         config.sip.tcp_bind = "127.0.0.1:5060".to_string();
+        config.sip.sips_bind = "127.0.0.1:5061".to_string();
         assert!(validate_config(&config).is_ok());
     }
 }

@@ -4,8 +4,11 @@ use crate::admission::AdmissionController;
 use crate::metrics::SbcRuntimeMetrics;
 use crate::recording_store::RecordingStore;
 use crate::stir_shaken::{StirMetrics, StirVerifier};
+use axum::body::Body;
+use axum::extract::Request;
 use axum::http::header;
-use axum::response::IntoResponse;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::{extract::State, routing::get, Json, Router};
 use fcp_sbc_core::trunk_health::TrunkHealthMonitor;
 use fcp_sbc_core::trunk_registration::TrunkRegistrar;
@@ -28,15 +31,74 @@ pub struct HealthState {
     pub lcr_routes: Vec<fcp_sbc_core::LcrRouteEntry>,
     pub stir_metrics: Option<Arc<StirMetrics>>,
     pub stir_verifier: Option<Arc<StirVerifier>>,
+    pub api_token: Option<String>,
+}
+
+fn extract_bearer_token(value: &str) -> Option<&str> {
+    let (scheme, token) = value.split_once(' ')?;
+    if scheme.eq_ignore_ascii_case("bearer") {
+        Some(token.trim())
+    } else {
+        None
+    }
+}
+
+fn constant_time_compare(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut diff = 0u8;
+    for (a, b) in left.as_bytes().iter().zip(right.as_bytes()) {
+        diff |= a ^ b;
+    }
+    diff == 0
+}
+
+async fn require_api_token(
+    State(state): State<Arc<HealthState>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(expected_token) = state.api_token.as_deref() else {
+        return next.run(request).await;
+    };
+
+    let provided_token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(extract_bearer_token);
+
+    match provided_token {
+        Some(token) if constant_time_compare(token, expected_token) => next.run(request).await,
+        _ => (
+            axum::http::StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or missing authentication token"})),
+        )
+            .into_response(),
+    }
+}
+
+fn public_router() -> Router<Arc<HealthState>> {
+    Router::new()
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
+}
+
+fn protected_router() -> Router<Arc<HealthState>> {
+    Router::new()
+        .route("/metrics", get(metrics_snapshot))
+        .nest("/admin", crate::admin::admin_router())
 }
 
 /// Build the health/readiness/metrics router with admin API.
 pub fn health_router(state: Arc<HealthState>) -> Router {
-    Router::new()
-        .route("/health", get(health_check))
-        .route("/ready", get(readiness_check))
-        .route("/metrics", get(metrics_snapshot))
-        .nest("/admin", crate::admin::admin_router())
+    public_router()
+        .merge(protected_router().layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            require_api_token,
+        )))
         .with_state(state)
 }
 

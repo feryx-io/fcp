@@ -734,33 +734,38 @@ impl ConferenceCallHandler {
     }
 
     async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
-        if let Some(domain) = Self::extract_tenant_domain(request) {
+        let resolved = if let Some(domain) = Self::extract_tenant_domain(request) {
             if fcp_core::is_host_literal(&domain) {
-                return self
-                    .default_tenant_fallback()
+                self.default_tenant_fallback()
                     .await?
-                    .ok_or_else(|| anyhow::anyhow!("tenant context required"));
-            }
-
-            if let Some(tenant) = self.storage.get_tenant_by_sip_domain(&domain).await? {
-                return Ok(tenant.id);
-            }
-
-            if let Some(tenant) = self.storage.get_tenant_by_name(&domain).await? {
+                    .ok_or_else(|| anyhow::anyhow!("tenant context required"))?
+            } else if let Some(tenant) = self.storage.get_tenant_by_sip_domain(&domain).await? {
+                tenant.id
+            } else if let Some(tenant) = self.storage.get_tenant_by_name(&domain).await? {
                 warn!(
                     domain = %domain,
                     tenant_id = %tenant.id,
                     "Conference tenant resolved via legacy name match; add the domain to sip_domains"
                 );
-                return Ok(tenant.id);
+                tenant.id
+            } else {
+                bail!("unknown tenant domain '{}'", domain);
             }
+        } else {
+            self.default_tenant_fallback()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("tenant context required"))?
+        };
 
-            bail!("unknown tenant domain '{}'", domain);
+        if resolved != self.default_tenant_id {
+            bail!(
+                "conference server is scoped to tenant '{}' and cannot serve tenant '{}'",
+                self.default_tenant_id,
+                resolved
+            );
         }
 
-        self.default_tenant_fallback()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("tenant context required"))
+        Ok(resolved)
     }
 
     async fn default_tenant_fallback(&self) -> Result<Option<TenantId>> {

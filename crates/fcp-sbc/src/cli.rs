@@ -66,6 +66,15 @@ pub struct Cli {
     )]
     pub health_bind: String,
 
+    /// Optional bearer token protecting /metrics and /admin on the health server.
+    #[arg(
+        long = "health-api-token",
+        value_name = "TOKEN",
+        help = "Bearer token for protected SBC health/admin endpoints",
+        env = "FCP_SBC_HEALTH_API_TOKEN"
+    )]
+    pub health_api_token: Option<String>,
+
     /// TLS SIP bind address (e.g. 0.0.0.0:5061)
     #[arg(
         long = "tls-bind",

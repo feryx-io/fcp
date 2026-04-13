@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
-fcp-sip = { path = "../fcp-sip" }
+fcp-sip = { path = "../fcp-sip", features = ["tls", "ws"] }
 
 # Storage backend
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
@@ -22,7 +22,7 @@ fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 # SIP stack from siphon-rs
 sip-core = { path = "../../external/siphon-rs/crates/sip-core" }
 sip-parse = { path = "../../external/siphon-rs/crates/sip-parse" }
-sip-transport = { path = "../../external/siphon-rs/crates/sip-transport" }
+sip-transport = { path = "../../external/siphon-rs/crates/sip-transport", features = ["tls", "ws"] }
 sip-transaction = { path = "../../external/siphon-rs/crates/sip-transaction" }
 sip-auth = { path = "../../external/siphon-rs/crates/sip-auth" }
 sip-observe = { path = "../../external/siphon-rs/crates/sip-observe" }
@@ -51,3 +51,4 @@ async-trait = "0.1"
 bytes = { workspace = true }
 smol_str = "0.3"
 uuid = { workspace = true }
+tokio-rustls = "0.26"

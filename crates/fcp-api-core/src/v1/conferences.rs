@@ -158,20 +158,17 @@ fn ensure_meeting_tenant(
     Ok(meeting)
 }
 
-async fn room_number_exists_globally(
+async fn room_number_exists_in_tenant(
     state: &ApiState,
+    tenant_id: &fcp_core::TenantId,
     room_number: &str,
-    exclude_tenant: Option<fcp_core::TenantId>,
 ) -> Result<bool, ApiError> {
     let storage = require_storage!(state);
-    fcp_core::room_number_exists_globally(
-        storage.as_ref(),
-        &state.default_tenant_id,
-        room_number,
-        exclude_tenant,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))
+    storage
+        .get_meeting_by_room_number(tenant_id, room_number)
+        .await
+        .map(|meeting| meeting.is_some())
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 /// Update meeting request body (all fields optional).
@@ -233,9 +230,7 @@ pub async fn create_meeting(
         return Err(ApiError::BadRequest("name is required".to_string()));
     }
 
-    // The shared conference runtime keys rooms globally by room number, so
-    // one room number must not exist in multiple tenants.
-    if room_number_exists_globally(&state, &req.room_number, None).await? {
+    if room_number_exists_in_tenant(&state, &tenant_id, &req.room_number).await? {
         return Err(ApiError::Conflict(format!(
             "A meeting with room number '{}' already exists",
             req.room_number
