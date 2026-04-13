@@ -1016,8 +1016,16 @@ async fn main() -> Result<()> {
                             let dest = destination.clone();
                             tokio::spawn(async move {
                                 info!(room = %rn, destination = %dest, "Processing DTMF dial-out request");
+                                let Some(tenant_id) = handler.tenant_for_room(&rn) else {
+                                    warn!(
+                                        room = %rn,
+                                        destination = %dest,
+                                        "Skipping DTMF dial-out because tenant context could not be resolved"
+                                    );
+                                    return;
+                                };
                                 match handler
-                                    .dial_out(&rn, &dest, handler.default_tenant_id, None, None)
+                                    .dial_out(&rn, &dest, tenant_id, None, None)
                                     .await
                                 {
                                     Ok(pid) => {
@@ -1038,11 +1046,11 @@ async fn main() -> Result<()> {
 
     // 24b. Spawn recording size monitor
     if config.conference.max_recording_size_mb > 0 {
+        let monitor_handler = Arc::clone(&conference_handler);
         let monitor_bridge = Arc::clone(&bridge);
         let max_bytes = config.conference.max_recording_size_mb * 1024 * 1024;
         let recordings_dir = config.conference.recordings_dir.clone();
         let monitor_event_bus = Arc::clone(&event_bus) as Arc<dyn fcp_events::EventPublisher>;
-        let monitor_default_tenant_id = config.service.default_tenant_id;
         let size_check_interval =
             Duration::from_secs(config.conference.recording_size_check_interval_secs);
         tokio::spawn(supervise_task("recording-size-monitor", async move {
@@ -1090,14 +1098,21 @@ async fn main() -> Result<()> {
                                 if let Err(e) = room.stop_recording() {
                                     warn!(room = %room_id, error = %e, "Failed to stop recording on size limit");
                                 }
-                                let event = fcp_events::PlatformEvent::Conference(
-                                    fcp_events::ConferenceEvent::RecordingStopped {
-                                        room_number: room_id.to_string(),
-                                        tenant_id: monitor_default_tenant_id,
-                                        timestamp: std::time::SystemTime::now(),
-                                    },
-                                );
-                                let _ = monitor_event_bus.publish(event).await;
+                                if let Some(tenant_id) = monitor_handler.tenant_for_room(room_id) {
+                                    let event = fcp_events::PlatformEvent::Conference(
+                                        fcp_events::ConferenceEvent::RecordingStopped {
+                                            room_number: room_id.to_string(),
+                                            tenant_id,
+                                            timestamp: std::time::SystemTime::now(),
+                                        },
+                                    );
+                                    let _ = monitor_event_bus.publish(event).await;
+                                } else {
+                                    warn!(
+                                        room = %room_id,
+                                        "Skipped RecordingStopped event because tenant context could not be resolved"
+                                    );
+                                }
                             }
                         }
                     }

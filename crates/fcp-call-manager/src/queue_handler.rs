@@ -675,7 +675,6 @@ impl QueueCallHandler {
         let prompt_cache = self.prompt_cache.clone();
         let recording_dir = self.config.recording_dir.clone();
         let campaign_call_id_map = Arc::clone(&self.campaign_call_id_map);
-        let campaign_tenant_id = self.default_tenant_id;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -685,6 +684,11 @@ impl QueueCallHandler {
                 if !queue_manager.is_enabled() {
                     continue;
                 }
+
+                let Some(queue_tenant_id) = queue_manager.get_queue_tenant(&queue_name) else {
+                    debug!(queue = %queue_name, "Skipping distribution tick for missing queue");
+                    continue;
+                };
 
                 // Check for callers who have exceeded max wait time
                 if let Some(config) = queue_manager.get_queue_config(&queue_name) {
@@ -868,7 +872,7 @@ impl QueueCallHandler {
                         Arc::clone(&uac),
                         Arc::clone(&event_bus),
                         queue_name.clone(),
-                        campaign_tenant_id,
+                        queue_tenant_id,
                     );
                 }
 
@@ -900,7 +904,7 @@ impl QueueCallHandler {
                                 &Some(Arc::clone(&event_bus)),
                                 &queue_name,
                                 &dest,
-                                &campaign_tenant_id,
+                                &queue_tenant_id,
                             )
                             .await;
 
@@ -918,7 +922,7 @@ impl QueueCallHandler {
                             let ac2 = announce_config.clone();
                             let pc2 = prompt_cache.clone();
                             let rd2 = recording_dir.clone();
-                            let tid = campaign_tenant_id.clone();
+                            let tid = queue_tenant_id;
                             let ccm = Arc::clone(&campaign_call_id_map);
 
                             tokio::spawn(async move {
@@ -952,7 +956,7 @@ impl QueueCallHandler {
                     let active = sessions.iter().any(|e| e.value().queue_name == queue_name);
                     if !active {
                         let events = queue_manager.events_ref();
-                        fcp_queue::events::queue_drained(&events, &queue_name, &campaign_tenant_id)
+                        fcp_queue::events::queue_drained(&events, &queue_name, &queue_tenant_id)
                             .await;
                     }
                 }
@@ -3084,7 +3088,7 @@ fn spawn_callback_ring(
     uac: Arc<SipUserAgentClient>,
     event_bus: Arc<dyn EventPublisher>,
     queue_name: String,
-    default_tenant_id: TenantId,
+    queue_tenant_id: TenantId,
 ) {
     tokio::spawn(async move {
         let agent_id = plan.agent_id.clone();
@@ -3097,7 +3101,7 @@ fn spawn_callback_ring(
         let tenant_id = queue_manager
             .get_queued_call(&call_id)
             .map(|c| c.tenant_id)
-            .unwrap_or(default_tenant_id);
+            .unwrap_or(queue_tenant_id);
 
         // 1. Allocate agent B-leg RTP ports
         let agent_port_pair = match port_pool.allocate().await {

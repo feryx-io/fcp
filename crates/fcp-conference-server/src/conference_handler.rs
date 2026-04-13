@@ -675,6 +675,29 @@ impl ConferenceCallHandler {
             .remove(&(tenant_id.clone(), room_number.to_string()));
     }
 
+    fn session_tenant_for_room(&self, room_number: &str) -> Option<TenantId> {
+        let call_ids = self.room_sessions.get(room_number)?.clone();
+        for call_id in call_ids {
+            if let Some(session) = self.sessions.get(&call_id) {
+                return Some(session.tenant_id);
+            }
+        }
+        None
+    }
+
+    pub fn tenant_for_room(&self, room_number: &str) -> Option<TenantId> {
+        self.session_tenant_for_room(room_number).or_else(|| {
+            self.meeting_cache.iter().find_map(|entry| {
+                let key = entry.key();
+                if key.1 == room_number {
+                    Some(key.0)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     fn extract_tenant_domain(request: &sip_core::Request) -> Option<String> {
         let request_uri = request.uri().to_string();
         let uri_str = request_uri
@@ -1396,7 +1419,7 @@ impl ConferenceCallHandler {
             // Priority: greeting_prompt (WAV from prompt store) > greeting_tts > meeting default > none
             if let Some(prompt_name) = greeting_prompt {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = self.default_tenant_id;
+                    let tid = tenant_id;
                     if let Ok(Some(prompt)) =
                         prompt_store.get_prompt_by_name(&tid, prompt_name).await
                     {
@@ -1432,7 +1455,7 @@ impl ConferenceCallHandler {
             // Fall back to a default dial-out greeting from the prompt store
             if greeting_samples.is_none() && greeting_tts.is_none() && greeting_prompt.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = self.default_tenant_id;
+                    let tid = tenant_id;
                     if let Ok(Some(prompt)) = prompt_store
                         .get_prompt_by_name(&tid, "conf_dialout_greeting")
                         .await
@@ -1627,6 +1650,8 @@ impl ConferenceCallHandler {
             .get_room(room_number)
             .map_err(|_| anyhow::anyhow!("Conference room not active: {}", room_number))?;
 
+        let room_tenant_id = self.tenant_for_room(room_number);
+
         // Collect call IDs using room index for O(1) lookup
         let call_ids: Vec<String> = self
             .room_sessions
@@ -1660,12 +1685,18 @@ impl ConferenceCallHandler {
         // Clean up associated state
         self.dtmf_handlers.remove(room_number);
 
-        // Publish RoomDestroyed event (use nil tenant since we don't know which tenant)
-        self.publish_event(ConferenceEvent::RoomDestroyed {
-            room_number: room_number.to_string(),
-            tenant_id: self.default_tenant_id,
-            timestamp: SystemTime::now(),
-        });
+        if let Some(tenant_id) = room_tenant_id {
+            self.publish_event(ConferenceEvent::RoomDestroyed {
+                room_number: room_number.to_string(),
+                tenant_id,
+                timestamp: SystemTime::now(),
+            });
+        } else {
+            warn!(
+                room = %room_number,
+                "Skipped RoomDestroyed event because tenant context could not be resolved"
+            );
+        }
 
         info!(room = %room_number, participants = kicked, "Conference room force-destroyed");
         Ok(kicked)
@@ -2636,7 +2667,6 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Audio Prompts page using Kokoro TTS.
             if pin_prompt_samples.is_none() || invalid_pin_samples.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tenant_id = self.default_tenant_id;
                     let player = forge_conference::AudioFeedbackPlayer::new(mixer_sample_rate);
                     if pin_prompt_samples.is_none() {
                         if let Ok(Some(prompt)) = prompt_store
@@ -2965,7 +2995,6 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Load announcement sound (short TTS message like "Please wait...")
             let mut announcement_samples: Option<Arc<Vec<i16>>> = None;
             if let Some(prompt_store) = self.storage.prompt_store() {
-                let tenant_id = self.default_tenant_id;
                 if let Ok(Some(prompt)) = prompt_store
                     .get_prompt_by_name(&tenant_id, "conf_wait_announcement")
                     .await
@@ -2986,7 +3015,6 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 room.get_sounds().and_then(|s| s.moh_sound.clone());
             if music_samples.is_none() {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tenant_id = self.default_tenant_id;
                     if let Ok(Some(prompt)) = prompt_store
                         .get_prompt_by_name(&tenant_id, "conf_moh_music")
                         .await
@@ -3431,7 +3459,7 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
             // Fallback: static prompt from the Prompt store
             if !welcome_played {
                 if let Some(prompt_store) = self.storage.prompt_store() {
-                    let tid = self.default_tenant_id;
+                    let tid = tenant_id;
                     if let Ok(Some(prompt)) =
                         prompt_store.get_prompt_by_name(&tid, "conf_welcome").await
                     {

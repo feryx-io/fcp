@@ -50,15 +50,14 @@ pub struct ConferenceState {
 
 /// Public routes (no auth required).
 fn public_router() -> Router<Arc<ConferenceState>> {
-    Router::new()
-        .route("/health", get(health_handler))
-        .route("/metrics", get(metrics_handler))
+    Router::new().route("/health", get(health_handler))
 }
 
 /// Protected routes (auth required when enabled).
 fn protected_router() -> Router<Arc<ConferenceState>> {
     Router::new()
         .route("/status", get(status_handler))
+        .route("/metrics", get(metrics_handler))
         // Meeting CRUD (persistent config in DB)
         .route("/meetings", get(list_meetings_handler))
         .route("/meetings", post(create_meeting_handler))

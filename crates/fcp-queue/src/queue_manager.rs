@@ -1637,6 +1637,10 @@ impl QueueManager {
             .map(|queue| queue.config.clone())
     }
 
+    pub fn get_queue_tenant(&self, name: &str) -> Option<TenantId> {
+        self.queues.get(name).map(|queue| queue.tenant_id)
+    }
+
     /// Get the merged overflow destinations for a queue (legacy single + list).
     pub fn get_overflow_destinations(&self, queue_name: &str) -> Vec<String> {
         self.queues
