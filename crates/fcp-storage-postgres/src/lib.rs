@@ -40,10 +40,11 @@ use fcp_core::porting::PortingStore;
 use fcp_core::{
     storage::{
         CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
-        LineBindingStore, PhoneNumberStore, PresenceStore, QueueConfigStore, QueueStore,
-        RegistrationStore, ResourceListStore, RoutingRuleStore, SiteLocationStore, StoredAgent,
-        StoredAuthPolicy, StoredPresentity, StoredResourceList, StoredSubscription, TenantStore,
-        TrunkStore, VoicemailStore, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
+        LineBindingStore, PhoneNumberStore, PresenceHistoryStore, PresenceStore, PresenceSummary,
+        QueueConfigStore, QueueStore, RegistrationStore, ResourceListStore, RoutingRuleStore,
+        SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresenceChange, StoredPresentity,
+        StoredResourceList, StoredSubscription, TenantStore, TrunkStore, VoicemailStore,
+        WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
@@ -298,7 +299,11 @@ impl CredentialStore for PostgresStorage {
         }
     }
 
-    async fn get_user_in_tenant(&self, username: &str, tenant_id: &TenantId) -> Result<Option<User>> {
+    async fn get_user_in_tenant(
+        &self,
+        username: &str,
+        tenant_id: &TenantId,
+    ) -> Result<Option<User>> {
         let row = sqlx::query(
             "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
@@ -3419,10 +3424,10 @@ impl PresenceStore for PostgresStorage {
         sqlx::query(
             "DELETE FROM presence_subscriptions WHERE tenant_id = $1 AND presentity_aor = $2",
         )
-            .bind(tenant_id.to_string())
-            .bind(presentity_aor)
-            .execute(&self.pool)
-            .await?;
+        .bind(tenant_id.to_string())
+        .bind(presentity_aor)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -3567,6 +3572,141 @@ impl PresenceStore for PostgresStorage {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl PresenceHistoryStore for PostgresStorage {
+    async fn record_change(&self, change: StoredPresenceChange) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO presence_history \
+             (id, tenant_id, aor, old_state, new_state, timestamp_epoch) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&change.id)
+        .bind(change.tenant_id.to_string())
+        .bind(&change.aor)
+        .bind(&change.old_state)
+        .bind(&change.new_state)
+        .bind(change.timestamp_epoch as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn query_history(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<StoredPresenceChange>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, aor, old_state, new_state, timestamp_epoch
+             FROM presence_history
+             WHERE tenant_id = $1
+               AND aor = $2
+               AND ($3::BIGINT IS NULL OR timestamp_epoch >= $3)
+               AND ($4::BIGINT IS NULL OR timestamp_epoch <= $4)
+             ORDER BY timestamp_epoch DESC
+             LIMIT $5",
+        )
+        .bind(tenant_id.to_string())
+        .bind(aor)
+        .bind(from_epoch.map(|value| value as i64))
+        .bind(to_epoch.map(|value| value as i64))
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut history = Vec::with_capacity(rows.len());
+        for row in rows {
+            let tenant_id_str: String = row.try_get("tenant_id")?;
+            history.push(StoredPresenceChange {
+                id: row.try_get("id")?,
+                aor: row.try_get("aor")?,
+                old_state: row.try_get("old_state")?,
+                new_state: row.try_get("new_state")?,
+                tenant_id: tenant_id_str.parse().unwrap_or_default(),
+                timestamp_epoch: row.try_get::<i64, _>("timestamp_epoch")? as u64,
+            });
+        }
+
+        Ok(history)
+    }
+
+    async fn query_summary(
+        &self,
+        tenant_id: &TenantId,
+        from_epoch: Option<u64>,
+        to_epoch: Option<u64>,
+    ) -> Result<Vec<PresenceSummary>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, aor, old_state, new_state, timestamp_epoch
+             FROM presence_history
+             WHERE tenant_id = $1
+               AND ($2::BIGINT IS NULL OR timestamp_epoch >= $2)
+               AND ($3::BIGINT IS NULL OR timestamp_epoch <= $3)
+             ORDER BY aor ASC, timestamp_epoch ASC",
+        )
+        .bind(tenant_id.to_string())
+        .bind(from_epoch.map(|value| value as i64))
+        .bind(to_epoch.map(|value| value as i64))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut changes_by_aor: HashMap<String, Vec<StoredPresenceChange>> = HashMap::new();
+        for row in rows {
+            let tenant_id_str: String = row.try_get("tenant_id")?;
+            let change = StoredPresenceChange {
+                id: row.try_get("id")?,
+                aor: row.try_get("aor")?,
+                old_state: row.try_get("old_state")?,
+                new_state: row.try_get("new_state")?,
+                tenant_id: tenant_id_str.parse().unwrap_or_default(),
+                timestamp_epoch: row.try_get::<i64, _>("timestamp_epoch")? as u64,
+            };
+            changes_by_aor
+                .entry(change.aor.clone())
+                .or_default()
+                .push(change);
+        }
+
+        let mut summaries = Vec::with_capacity(changes_by_aor.len());
+        for (aor, changes) in changes_by_aor {
+            let total_changes = changes.len() as u64;
+            let mut time_in_open_secs = 0u64;
+            let mut time_in_busy_secs = 0u64;
+            let mut time_in_away_secs = 0u64;
+            let mut time_in_closed_secs = 0u64;
+
+            for window in changes.windows(2) {
+                let current = &window[0];
+                let next = &window[1];
+                let duration = next.timestamp_epoch.saturating_sub(current.timestamp_epoch);
+
+                match current.new_state.as_str() {
+                    "open" => time_in_open_secs += duration,
+                    "busy" => time_in_busy_secs += duration,
+                    "away" => time_in_away_secs += duration,
+                    "closed" => time_in_closed_secs += duration,
+                    _ => {}
+                }
+            }
+
+            summaries.push(PresenceSummary {
+                aor,
+                total_changes,
+                time_in_open_secs,
+                time_in_busy_secs,
+                time_in_away_secs,
+                time_in_closed_secs,
+            });
+        }
+
+        summaries.sort_by(|left, right| left.aor.cmp(&right.aor));
+        Ok(summaries)
     }
 }
 

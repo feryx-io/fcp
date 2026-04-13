@@ -2007,6 +2007,19 @@ impl PresenceManager {
         self.rls_subscriptions.iter().map(|e| e.value().len()).sum()
     }
 
+    pub fn rls_subscription_count_for_tenant(&self, tenant_id: &TenantId) -> usize {
+        self.rls_subscriptions
+            .iter()
+            .map(|entry| {
+                entry
+                    .value()
+                    .iter()
+                    .filter(|subscription| subscription.tenant_id == *tenant_id)
+                    .count()
+            })
+            .sum()
+    }
+
     /// Get all watchers including winfo watchers (for shutdown NOTIFY).
     pub fn get_all_watchers_including_winfo(&self) -> Vec<Watcher> {
         let now = Instant::now();

@@ -39,6 +39,7 @@ impl PresenceHistoryStore for InMemoryPresenceHistory {
 
     async fn query_history(
         &self,
+        tenant_id: &fcp_core::TenantId,
         aor: &str,
         from_epoch: Option<u64>,
         to_epoch: Option<u64>,
@@ -47,6 +48,7 @@ impl PresenceHistoryStore for InMemoryPresenceHistory {
         let entries = self.entries.read().await;
         let results: Vec<StoredPresenceChange> = entries
             .iter()
+            .filter(|e| &e.tenant_id == tenant_id)
             .filter(|e| e.aor == aor)
             .filter(|e| from_epoch.map_or(true, |f| e.timestamp_epoch >= f))
             .filter(|e| to_epoch.map_or(true, |t| e.timestamp_epoch <= t))
@@ -59,6 +61,7 @@ impl PresenceHistoryStore for InMemoryPresenceHistory {
 
     async fn query_summary(
         &self,
+        tenant_id: &fcp_core::TenantId,
         from_epoch: Option<u64>,
         to_epoch: Option<u64>,
     ) -> Result<Vec<PresenceSummary>> {
@@ -67,7 +70,8 @@ impl PresenceHistoryStore for InMemoryPresenceHistory {
         // Group changes by AOR
         let mut by_aor: HashMap<String, Vec<&StoredPresenceChange>> = HashMap::new();
         for entry in entries.iter() {
-            if from_epoch.map_or(true, |f| entry.timestamp_epoch >= f)
+            if &entry.tenant_id == tenant_id
+                && from_epoch.map_or(true, |f| entry.timestamp_epoch >= f)
                 && to_epoch.map_or(true, |t| entry.timestamp_epoch <= t)
             {
                 by_aor.entry(entry.aor.clone()).or_default().push(entry);
@@ -167,19 +171,20 @@ mod tests {
     #[tokio::test]
     async fn test_record_and_query() {
         let store = InMemoryPresenceHistory::new(100);
+        let tenant_id = fcp_core::TenantId::new();
         let change = StoredPresenceChange {
             id: "1".to_string(),
             aor: "alice@example.com".to_string(),
             old_state: "closed".to_string(),
             new_state: "open".to_string(),
-            tenant_id: fcp_core::TenantId::default(),
+            tenant_id,
             timestamp_epoch: 1000,
         };
 
         store.record_change(change).await.unwrap();
 
         let results = store
-            .query_history("alice@example.com", None, None, 10)
+            .query_history(&tenant_id, "alice@example.com", None, None, 10)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -189,6 +194,7 @@ mod tests {
     #[tokio::test]
     async fn test_ring_buffer_eviction() {
         let store = InMemoryPresenceHistory::new(3);
+        let tenant_id = fcp_core::TenantId::new();
 
         for i in 0..5 {
             store
@@ -197,7 +203,7 @@ mod tests {
                     aor: "bob@example.com".to_string(),
                     old_state: "closed".to_string(),
                     new_state: "open".to_string(),
-                    tenant_id: fcp_core::TenantId::default(),
+                    tenant_id,
                     timestamp_epoch: i as u64,
                 })
                 .await
@@ -205,7 +211,7 @@ mod tests {
         }
 
         let results = store
-            .query_history("bob@example.com", None, None, 100)
+            .query_history(&tenant_id, "bob@example.com", None, None, 100)
             .await
             .unwrap();
         assert_eq!(results.len(), 3);
@@ -216,6 +222,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_with_time_range() {
         let store = InMemoryPresenceHistory::new(100);
+        let tenant_id = fcp_core::TenantId::new();
 
         for i in 0..10 {
             store
@@ -224,7 +231,7 @@ mod tests {
                     aor: "alice@example.com".to_string(),
                     old_state: "closed".to_string(),
                     new_state: "open".to_string(),
-                    tenant_id: fcp_core::TenantId::default(),
+                    tenant_id,
                     timestamp_epoch: i * 100,
                 })
                 .await
@@ -232,7 +239,7 @@ mod tests {
         }
 
         let results = store
-            .query_history("alice@example.com", Some(300), Some(700), 100)
+            .query_history(&tenant_id, "alice@example.com", Some(300), Some(700), 100)
             .await
             .unwrap();
         assert_eq!(results.len(), 5); // epochs 300, 400, 500, 600, 700
@@ -241,6 +248,7 @@ mod tests {
     #[tokio::test]
     async fn test_summary() {
         let store = InMemoryPresenceHistory::new(100);
+        let tenant_id = fcp_core::TenantId::new();
 
         let changes = vec![
             ("closed", "open", 1000),
@@ -256,18 +264,47 @@ mod tests {
                     aor: "alice@example.com".to_string(),
                     old_state: old.to_string(),
                     new_state: new.to_string(),
-                    tenant_id: fcp_core::TenantId::default(),
+                    tenant_id,
                     timestamp_epoch: *ts,
                 })
                 .await
                 .unwrap();
         }
 
-        let summaries = store.query_summary(None, None).await.unwrap();
+        let summaries = store.query_summary(&tenant_id, None, None).await.unwrap();
         assert_eq!(summaries.len(), 1);
         let s = &summaries[0];
         assert_eq!(s.total_changes, 4);
         assert_eq!(s.time_in_open_secs, 60 + 110); // open→busy(60s) + open→closed(110s)
         assert_eq!(s.time_in_busy_secs, 30); // busy→open(30s)
+    }
+
+    #[tokio::test]
+    async fn test_history_is_tenant_scoped() {
+        let store = InMemoryPresenceHistory::new(100);
+        let tenant_a = fcp_core::TenantId::new();
+        let tenant_b = fcp_core::TenantId::new();
+
+        for tenant_id in [tenant_a, tenant_b] {
+            store
+                .record_change(StoredPresenceChange {
+                    id: tenant_id.to_string(),
+                    aor: "alice@example.com".to_string(),
+                    old_state: "closed".to_string(),
+                    new_state: "open".to_string(),
+                    tenant_id,
+                    timestamp_epoch: 1000,
+                })
+                .await
+                .unwrap();
+        }
+
+        let results = store
+            .query_history(&tenant_a, "alice@example.com", None, None, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tenant_id, tenant_a);
     }
 }

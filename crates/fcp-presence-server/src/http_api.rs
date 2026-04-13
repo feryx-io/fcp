@@ -8,7 +8,6 @@ use axum::{
     routing::{delete, get, put},
     Json, Router,
 };
-use fcp_core::storage::TenantStore;
 use fcp_core::TenantId;
 use fcp_presence::PresenceManager;
 use fcp_sip::presence::SipPresenceHandler;
@@ -25,7 +24,6 @@ pub struct AppState {
     pub start_time: Instant,
     pub api_token: Option<String>,
     pub resource_list_store: Arc<dyn fcp_core::storage::ResourceListStore>,
-    pub tenant_store: Arc<dyn TenantStore>,
     pub default_tenant_id: fcp_core::TenantId,
     pub history_store: Option<Arc<dyn fcp_core::storage::PresenceHistoryStore>>,
     #[cfg(feature = "webhook")]
@@ -136,23 +134,17 @@ pub(crate) async fn resolve_request_tenant_id(
         return Ok(tenant_id);
     }
 
-    match state.tenant_store.get_tenant(&tenant_id).await {
-        Ok(Some(_)) => Ok(tenant_id),
-        Ok(None) => Err((
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("Tenant '{}' not found", tenant_id)
-            })),
-        )
-            .into_response()),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to resolve tenant override: {}", e)
-            })),
-        )
-            .into_response()),
-    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({
+            "error": format!(
+                "Presence server is scoped to tenant '{}'; tenant '{}' is not served by this instance",
+                state.default_tenant_id,
+                tenant_id
+            )
+        })),
+    )
+        .into_response())
 }
 
 // ============================================================================
@@ -167,17 +159,28 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     }))
 }
 
-async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let presences = state.manager.get_all_presences();
-    let watchers = state.manager.get_all_watchers();
-    let rls_subs = state.manager.rls_subscription_count();
+async fn metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
+    let presences = state.manager.get_presences_by_tenant(&tenant_id);
+    let watchers = state
+        .manager
+        .get_all_watchers()
+        .into_iter()
+        .filter(|watcher| watcher.tenant_id == tenant_id)
+        .count();
+    let rls_subs = state.manager.rls_subscription_count_for_tenant(&tenant_id);
 
     Json(serde_json::json!({
+        "tenant_id": tenant_id,
         "presentities": presences.len(),
-        "watchers": watchers.len(),
+        "watchers": watchers,
         "rls_subscriptions": rls_subs,
         "uptime_secs": state.start_time.elapsed().as_secs(),
     }))
+    .into_response()
 }
 
 // ============================================================================
@@ -389,6 +392,7 @@ struct SummaryQuery {
 
 async fn get_presence_history(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
     axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> impl IntoResponse {
@@ -400,8 +404,13 @@ async fn get_presence_history(
             .into_response();
     };
 
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
+
     match store
-        .query_history(&aor, query.from, query.to, query.limit)
+        .query_history(&tenant_id, &aor, query.from, query.to, query.limit)
         .await
     {
         Ok(history) => {
@@ -419,6 +428,7 @@ async fn get_presence_history(
                 .collect();
 
             Json(serde_json::json!({
+                "tenant_id": tenant_id,
                 "aor": aor,
                 "count": items.len(),
                 "history": items,
@@ -435,6 +445,7 @@ async fn get_presence_history(
 
 async fn get_presence_summary(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<SummaryQuery>,
 ) -> impl IntoResponse {
     let Some(ref store) = state.history_store else {
@@ -445,7 +456,12 @@ async fn get_presence_summary(
             .into_response();
     };
 
-    match store.query_summary(query.from, query.to).await {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
+
+    match store.query_summary(&tenant_id, query.from, query.to).await {
         Ok(summaries) => {
             let items: Vec<serde_json::Value> = summaries
                 .iter()
@@ -462,6 +478,7 @@ async fn get_presence_summary(
                 .collect();
 
             Json(serde_json::json!({
+                "tenant_id": tenant_id,
                 "count": items.len(),
                 "summaries": items,
             }))

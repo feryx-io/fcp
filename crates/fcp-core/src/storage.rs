@@ -754,8 +754,7 @@ pub trait TenantStore: Send + Sync {
     /// Implementations should use an index (e.g. Postgres GIN on the
     /// `sip_domains` column) so that the lookup is O(log n) in the number
     /// of tenants.
-    async fn get_tenant_by_sip_domain(&self, domain: &str)
-        -> Result<Option<crate::Tenant>>;
+    async fn get_tenant_by_sip_domain(&self, domain: &str) -> Result<Option<crate::Tenant>>;
 
     /// List all tenants.
     async fn list_tenants(&self) -> Result<Vec<crate::Tenant>>;
@@ -1413,8 +1412,7 @@ where
     S: ConferenceStore + TenantStore,
 {
     use std::collections::HashSet;
-    let mut tenant_ids: HashSet<crate::TenantId> =
-        HashSet::from([default_tenant_id.clone()]);
+    let mut tenant_ids: HashSet<crate::TenantId> = HashSet::from([default_tenant_id.clone()]);
     for tenant in storage.list_tenants().await? {
         tenant_ids.insert(tenant.id);
     }
@@ -1535,11 +1533,7 @@ pub trait PresenceStore: Send + Sync {
     }
 
     /// Remove a presentity by AOR within a tenant.
-    async fn remove_presentity(
-        &self,
-        tenant_id: &crate::TenantId,
-        aor: &str,
-    ) -> Result<()> {
+    async fn remove_presentity(&self, tenant_id: &crate::TenantId, aor: &str) -> Result<()> {
         let _ = tenant_id;
         let _ = aor;
         Ok(())
@@ -1561,11 +1555,7 @@ pub trait PresenceStore: Send + Sync {
     }
 
     /// Remove an auth policy by AOR within a tenant.
-    async fn remove_auth_policy(
-        &self,
-        tenant_id: &crate::TenantId,
-        aor: &str,
-    ) -> Result<()> {
+    async fn remove_auth_policy(&self, tenant_id: &crate::TenantId, aor: &str) -> Result<()> {
         let _ = tenant_id;
         let _ = aor;
         Ok(())
@@ -1648,18 +1638,20 @@ pub trait PresenceHistoryStore: Send + Sync {
     /// Record a presence state change.
     async fn record_change(&self, change: StoredPresenceChange) -> Result<()>;
 
-    /// Query history for a specific AOR within a time range.
+    /// Query history for a specific AOR within a tenant and time range.
     async fn query_history(
         &self,
+        tenant_id: &crate::TenantId,
         aor: &str,
         from_epoch: Option<u64>,
         to_epoch: Option<u64>,
         limit: usize,
     ) -> Result<Vec<StoredPresenceChange>>;
 
-    /// Get a summary of presence activity across all AORs.
+    /// Get a summary of presence activity across all AORs for a tenant.
     async fn query_summary(
         &self,
+        tenant_id: &crate::TenantId,
         from_epoch: Option<u64>,
         to_epoch: Option<u64>,
     ) -> Result<Vec<PresenceSummary>>;
@@ -3076,10 +3068,7 @@ impl TenantStore for DynStorage {
         self.tenant_store.get_tenant_by_name(name).await
     }
 
-    async fn get_tenant_by_sip_domain(
-        &self,
-        domain: &str,
-    ) -> Result<Option<crate::Tenant>> {
+    async fn get_tenant_by_sip_domain(&self, domain: &str) -> Result<Option<crate::Tenant>> {
         self.tenant_store.get_tenant_by_sip_domain(domain).await
     }
 

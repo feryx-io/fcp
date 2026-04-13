@@ -82,9 +82,11 @@ async fn main() -> Result<()> {
     );
 
     // Initialize storage
-    let storage_result = initialize_storage(&config).await?;
-    let config_store = storage_result.config_store;
-    let dyn_storage = storage_result.dyn_storage;
+    let StorageResult {
+        dyn_storage,
+        config_store,
+        history_store,
+    } = initialize_storage(&config).await?;
 
     // Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, storage, http, logging) stay TOML-only.
@@ -387,10 +389,7 @@ async fn main() -> Result<()> {
         setup_redis(&mut manager, redis_config, &config.service.node_id).await?;
     }
 
-    // Start presence analytics consumer
-    let history_store: Arc<dyn fcp_core::storage::PresenceHistoryStore> = Arc::new(
-        fcp_presence::analytics::InMemoryPresenceHistory::new(100_000),
-    );
+    // Start presence analytics consumer using durable shared storage.
     let _analytics_handle = fcp_presence::analytics::spawn_analytics_consumer(
         event_bus.clone() as Arc<dyn fcp_events::EventSubscriber>,
         Arc::clone(&history_store),
@@ -471,7 +470,6 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
         resource_list_store: Arc::clone(dyn_storage.resource_list_store()),
-        tenant_store: Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>,
         default_tenant_id: config.service.default_tenant_id,
         history_store: Some(Arc::clone(&history_store)),
         #[cfg(feature = "webhook")]
@@ -575,6 +573,7 @@ async fn main() -> Result<()> {
 struct StorageResult {
     dyn_storage: Arc<fcp_core::storage::DynStorage>,
     config_store: Arc<dyn fcp_core::config_store::ConfigStore>,
+    history_store: Arc<dyn fcp_core::storage::PresenceHistoryStore>,
 }
 
 /// Initialize PostgreSQL storage backend based on configuration.
@@ -598,7 +597,8 @@ async fn initialize_storage(config: &PresenceServerConfig) -> Result<StorageResu
         dyn_storage: Arc::new(fcp_core::storage::DynStorage::from_all_in_one(
             storage.clone(),
         )),
-        config_store: storage,
+        config_store: storage.clone(),
+        history_store: storage,
     })
 }
 
