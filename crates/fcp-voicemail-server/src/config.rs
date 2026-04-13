@@ -472,24 +472,14 @@ fn validate_http_config(http: &HttpSection) -> Result<()> {
 }
 
 fn validate_sip_config(sip: &SipSection) -> Result<()> {
-    sip.udp_bind
-        .parse::<std::net::SocketAddr>()
-        .context("Invalid SIP UDP bind address")?;
-    sip.tcp_bind
-        .parse::<std::net::SocketAddr>()
-        .context("Invalid SIP TCP bind address")?;
-    if let Some(ref bind) = sip.ws_bind {
-        bind.parse::<std::net::SocketAddr>()
-            .context("Invalid SIP WS bind address")?;
-    }
-    if let Some(ref bind) = sip.wss_bind {
-        bind.parse::<std::net::SocketAddr>()
-            .context("Invalid SIP WSS bind address")?;
-        if sip.tls_cert_path.is_none() || sip.tls_key_path.is_none() {
-            anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
-        }
-    }
-    Ok(())
+    fcp_sip::validate_sip_binds(
+        &sip.udp_bind,
+        &sip.tcp_bind,
+        sip.ws_bind.as_deref(),
+        sip.wss_bind.as_deref(),
+        sip.tls_cert_path.as_deref(),
+        sip.tls_key_path.as_deref(),
+    )
 }
 
 fn load_config_from_file(path: &Path) -> Result<VoicemailServerConfig> {

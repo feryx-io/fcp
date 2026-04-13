@@ -259,14 +259,13 @@ impl TransportDispatcher for RealTransportDispatcher {
                         peer = %peer,
                         url = %url,
                         secure,
-                        "sending via websocket transport"
+                        "sending via pooled websocket transport"
                     );
 
-                    if secure {
-                        sip_transport::send_wss(&url, payload).await?;
-                    } else {
-                        sip_transport::send_ws(&url, payload).await?;
-                    }
+                    // Use the connection pool so repeated sends to the same
+                    // peer reuse the existing WS connection instead of opening
+                    // a new handshake per message.
+                    self.tcp_pool.send_ws(&url, payload).await?;
                 }
                 #[cfg(not(feature = "ws"))]
                 {

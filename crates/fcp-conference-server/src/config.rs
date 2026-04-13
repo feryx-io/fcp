@@ -778,28 +778,15 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
         );
     }
 
-    // SIP bind addresses must be parseable as SocketAddr
-    config
-        .sip
-        .udp_bind
-        .parse::<std::net::SocketAddr>()
-        .with_context(|| format!("Invalid sip.udp_bind: '{}'", config.sip.udp_bind))?;
-    config
-        .sip
-        .tcp_bind
-        .parse::<std::net::SocketAddr>()
-        .with_context(|| format!("Invalid sip.tcp_bind: '{}'", config.sip.tcp_bind))?;
-    if let Some(ref bind) = config.sip.ws_bind {
-        bind.parse::<std::net::SocketAddr>()
-            .with_context(|| format!("Invalid sip.ws_bind: '{}'", bind))?;
-    }
-    if let Some(ref bind) = config.sip.wss_bind {
-        bind.parse::<std::net::SocketAddr>()
-            .with_context(|| format!("Invalid sip.wss_bind: '{}'", bind))?;
-        if config.sip.tls_cert_path.is_none() || config.sip.tls_key_path.is_none() {
-            anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
-        }
-    }
+    // SIP bind addresses must be parseable as SocketAddr and WSS requires TLS paths.
+    fcp_sip::validate_sip_binds(
+        &config.sip.udp_bind,
+        &config.sip.tcp_bind,
+        config.sip.ws_bind.as_deref(),
+        config.sip.wss_bind.as_deref(),
+        config.sip.tls_cert_path.as_deref(),
+        config.sip.tls_key_path.as_deref(),
+    )?;
 
     // Sample rate must be a standard telephony rate
     match config.conference.sample_rate {

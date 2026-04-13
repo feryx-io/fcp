@@ -11,6 +11,7 @@
 pub mod adapters;
 pub mod auth;
 pub mod conference;
+pub mod config;
 pub mod exports;
 pub mod flow;
 pub mod flow_handler;
@@ -26,6 +27,9 @@ pub mod service;
 pub mod settings;
 pub mod transport;
 pub mod uac;
+
+// Re-export shared config validation helper
+pub use config::validate_sip_binds;
 
 // Re-export B2BUA types from fcp-b2bua-core
 pub use fcp_b2bua_core::{

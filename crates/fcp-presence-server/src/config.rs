@@ -427,38 +427,32 @@ fn validate_http_config(http: &HttpSection) -> Result<()> {
 }
 
 fn validate_sip_config(sip: &SipSection) -> Result<()> {
-    let udp_bind: SocketAddr = sip
-        .udp_bind
-        .parse()
-        .context("Invalid SIP UDP bind address")?;
-    let tcp_bind: SocketAddr = sip
-        .tcp_bind
-        .parse()
-        .context("Invalid SIP TCP bind address")?;
+    // Shared bind address parsing and WSS TLS prerequisite check.
+    fcp_sip::validate_sip_binds(
+        &sip.udp_bind,
+        &sip.tcp_bind,
+        sip.ws_bind.as_deref(),
+        sip.wss_bind.as_deref(),
+        sip.tls_cert_path.as_deref(),
+        sip.tls_key_path.as_deref(),
+    )?;
+
+    // Presence-specific: public binds require SIP digest auth.
+    let udp_bind: SocketAddr = sip.udp_bind.parse().expect("already validated above");
+    let tcp_bind: SocketAddr = sip.tcp_bind.parse().expect("already validated above");
     let ws_bind = sip
         .ws_bind
         .as_deref()
-        .map(|bind| {
-            bind.parse::<SocketAddr>()
-                .context("Invalid SIP WS bind address")
-        })
-        .transpose()?;
+        .map(|b| b.parse::<SocketAddr>().expect("already validated above"));
     let wss_bind = sip
         .wss_bind
         .as_deref()
-        .map(|bind| {
-            bind.parse::<SocketAddr>()
-                .context("Invalid SIP WSS bind address")
-        })
-        .transpose()?;
+        .map(|b| b.parse::<SocketAddr>().expect("already validated above"));
+
     let public_bind = !udp_bind.ip().is_loopback()
         || !tcp_bind.ip().is_loopback()
-        || ws_bind
-            .as_ref()
-            .is_some_and(|addr| !addr.ip().is_loopback())
-        || wss_bind
-            .as_ref()
-            .is_some_and(|addr| !addr.ip().is_loopback());
+        || ws_bind.as_ref().is_some_and(|a| !a.ip().is_loopback())
+        || wss_bind.as_ref().is_some_and(|a| !a.ip().is_loopback());
 
     if public_bind && !sip.auth_enabled {
         anyhow::bail!(
@@ -468,10 +462,6 @@ fn validate_sip_config(sip: &SipSection) -> Result<()> {
             sip.ws_bind,
             sip.wss_bind
         );
-    }
-
-    if sip.wss_bind.is_some() && (sip.tls_cert_path.is_none() || sip.tls_key_path.is_none()) {
-        anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
     }
 
     Ok(())
