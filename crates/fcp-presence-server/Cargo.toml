@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 # FCP crates
 fcp-core = { path = "../fcp-core" }
-fcp-sip = { path = "../fcp-sip", features = ["tls"] }
+fcp-sip = { path = "../fcp-sip", features = ["tls", "ws"] }
 fcp-presence = { path = "../fcp-presence" }
 fcp-events = { path = "../fcp-events" }
 

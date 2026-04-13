@@ -92,6 +92,22 @@ pub struct SipSection {
     #[serde(default = "default_sip_bind")]
     pub tcp_bind: String,
 
+    /// Optional SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub ws_bind: Option<String>,
+
+    /// Optional secure SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub wss_bind: Option<String>,
+
+    /// TLS certificate path for secure SIP listeners (WSS).
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    /// TLS private key path for secure SIP listeners (WSS).
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
+
     /// Advertised local IP for Contact/Via when the bind address is unspecified.
     pub local_ip: Option<String>,
 
@@ -124,6 +140,10 @@ impl Default for SipSection {
         Self {
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
+            ws_bind: None,
+            wss_bind: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             local_ip: None,
             local_uri: None,
             auth_enabled: default_true(),
@@ -415,14 +435,43 @@ fn validate_sip_config(sip: &SipSection) -> Result<()> {
         .tcp_bind
         .parse()
         .context("Invalid SIP TCP bind address")?;
-    let public_bind = !udp_bind.ip().is_loopback() || !tcp_bind.ip().is_loopback();
+    let ws_bind = sip
+        .ws_bind
+        .as_deref()
+        .map(|bind| {
+            bind.parse::<SocketAddr>()
+                .context("Invalid SIP WS bind address")
+        })
+        .transpose()?;
+    let wss_bind = sip
+        .wss_bind
+        .as_deref()
+        .map(|bind| {
+            bind.parse::<SocketAddr>()
+                .context("Invalid SIP WSS bind address")
+        })
+        .transpose()?;
+    let public_bind = !udp_bind.ip().is_loopback()
+        || !tcp_bind.ip().is_loopback()
+        || ws_bind
+            .as_ref()
+            .is_some_and(|addr| !addr.ip().is_loopback())
+        || wss_bind
+            .as_ref()
+            .is_some_and(|addr| !addr.ip().is_loopback());
 
     if public_bind && !sip.auth_enabled {
         anyhow::bail!(
-            "sip.auth_enabled must be true when binding the presence SIP server to a non-loopback address (udp={}, tcp={})",
+            "sip.auth_enabled must be true when binding the presence SIP server to a non-loopback address (udp={}, tcp={}, ws={:?}, wss={:?})",
             udp_bind,
-            tcp_bind
+            tcp_bind,
+            sip.ws_bind,
+            sip.wss_bind
         );
+    }
+
+    if sip.wss_bind.is_some() && (sip.tls_cert_path.is_none() || sip.tls_key_path.is_none()) {
+        anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
     }
 
     Ok(())

@@ -814,33 +814,35 @@ async fn main() -> Result<()> {
     // 18. Create SipMessageHandler
     //     flow_handler = None (conference doesn't use flows)
     //     The conference handler is wired via the conference_handler field
-    let handler = Arc::new(
-        SipMessageHandler::new(
-            Arc::clone(&transaction_manager_ref),
-            Arc::clone(&dialog_manager_ref),
-            local_uri,
-            None, // No media profile — conference server handles RTP directly, no B2BUA anchoring
-            local_addr,
-            config.media.rtp_port_start,
-            None, // registrar = None
-            None, // routing_service = None
-            Arc::clone(&call_manager),
-            Some(Arc::clone(&uac)),
-            Some(Arc::clone(&dyn_storage)),
-            None, // No media manager — prevents evaluate_media_anchoring from anchoring
-            None, // No media config — conference handles its own RTP
-            None, // flow_handler = None
-            config.b2bua.clone(),
-            outbound_route_provider,
-            None, // No PBX handler
-            Some(Arc::clone(&conference_handler) as Arc<dyn fcp_sip::conference::ConferenceHandler>),
-            None,          // No queue handler
-            None,          // presence_handler
-            None,          // cluster_parking
-            String::new(), // node_id
-        )?
-        .with_default_tenant_id(config.service.default_tenant_id),
-    );
+    let handler =
+        Arc::new(
+            SipMessageHandler::new(
+                Arc::clone(&transaction_manager_ref),
+                Arc::clone(&dialog_manager_ref),
+                local_uri,
+                None, // No media profile — conference server handles RTP directly, no B2BUA anchoring
+                local_addr,
+                config.media.rtp_port_start,
+                None, // registrar = None
+                None, // routing_service = None
+                Arc::clone(&call_manager),
+                Some(Arc::clone(&uac)),
+                Some(Arc::clone(&dyn_storage)),
+                None, // No media manager — prevents evaluate_media_anchoring from anchoring
+                None, // No media config — conference handles its own RTP
+                None, // flow_handler = None
+                config.b2bua.clone(),
+                outbound_route_provider,
+                None, // No PBX handler
+                Some(Arc::clone(&conference_handler)
+                    as Arc<dyn fcp_sip::conference::ConferenceHandler>),
+                None,          // No queue handler
+                None,          // presence_handler
+                None,          // cluster_parking
+                String::new(), // node_id
+            )?
+            .with_default_tenant_id(config.service.default_tenant_id),
+        );
 
     // 19. Create and start TransportListener
     let udp_bind: std::net::SocketAddr = config
@@ -853,6 +855,18 @@ async fn main() -> Result<()> {
         .tcp_bind
         .parse()
         .context("Invalid TCP bind address")?;
+    let ws_bind = config
+        .sip
+        .ws_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid WS bind address"))
+        .transpose()?;
+    let wss_bind = config
+        .sip
+        .wss_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid WSS bind address"))
+        .transpose()?;
 
     let listener_config = ListenerConfig {
         udp_bind: Some(udp_bind),
@@ -860,9 +874,11 @@ async fn main() -> Result<()> {
         #[cfg(feature = "tls")]
         tls_bind: None,
         #[cfg(feature = "tls")]
-        tls_cert: None,
+        tls_cert: config.sip.tls_cert_path.clone(),
         #[cfg(feature = "tls")]
-        tls_key: None,
+        tls_key: config.sip.tls_key_path.clone(),
+        ws_bind,
+        wss_bind,
     };
 
     let handler_dyn: Arc<dyn InboundMessageHandler> =
@@ -1024,10 +1040,7 @@ async fn main() -> Result<()> {
                                     );
                                     return;
                                 };
-                                match handler
-                                    .dial_out(&rn, &dest, tenant_id, None, None)
-                                    .await
-                                {
+                                match handler.dial_out(&rn, &dest, tenant_id, None, None).await {
                                     Ok(pid) => {
                                         info!(room = %rn, destination = %dest, participant = %pid, "DTMF dial-out connected")
                                     }

@@ -80,6 +80,24 @@ pub struct Cli {
     )]
     pub sips_bind: Option<String>,
 
+    /// SIP-over-WebSocket bind address (e.g. 0.0.0.0:5080)
+    #[arg(
+        long = "ws-bind",
+        value_name = "ADDR",
+        help = "SIP-over-WebSocket bind address (e.g., 0.0.0.0:5080)",
+        env = "FCP_CALL_MANAGER_WS_BIND"
+    )]
+    pub ws_bind: Option<String>,
+
+    /// Secure SIP-over-WebSocket bind address (e.g. 0.0.0.0:5081)
+    #[arg(
+        long = "wss-bind",
+        value_name = "ADDR",
+        help = "Secure SIP-over-WebSocket bind address (e.g., 0.0.0.0:5081)",
+        env = "FCP_CALL_MANAGER_WSS_BIND"
+    )]
+    pub wss_bind: Option<String>,
+
     /// Path to TLS certificate file (PEM format)
     #[arg(
         long = "tls-cert",

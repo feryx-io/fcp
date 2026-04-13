@@ -64,7 +64,9 @@ fn queue_config_from_record(record: &QueueConfigRecord) -> QueueConfig {
     }
 }
 
-fn validate_extension_uniqueness(definitions: impl Iterator<Item = TenantQueueDefinition>) -> Result<Vec<TenantQueueDefinition>> {
+fn validate_extension_uniqueness(
+    definitions: impl Iterator<Item = TenantQueueDefinition>,
+) -> Result<Vec<TenantQueueDefinition>> {
     let mut seen = HashSet::new();
     let mut collected = Vec::new();
     for definition in definitions {

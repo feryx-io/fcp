@@ -10,6 +10,7 @@ description = "Integration layer between fcp-core and siphon-rs SIP stack"
 [features]
 default = []
 tls = ["sip-transport/tls", "tokio-rustls", "rustls-native-certs"]
+ws = ["sip-transport/ws"]
 
 [dependencies]
 # FCP core types

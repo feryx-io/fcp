@@ -324,12 +324,26 @@ async fn main() -> Result<()> {
         .tcp_bind
         .parse()
         .context("Invalid TCP bind address")?;
+    let ws_bind = config
+        .sip
+        .ws_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid WS bind address"))
+        .transpose()?;
+    let wss_bind = config
+        .sip
+        .wss_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid WSS bind address"))
+        .transpose()?;
     let listener_config = ListenerConfig {
         udp_bind: Some(udp_bind),
         tcp_bind: Some(tcp_bind),
         tls_bind: None,
-        tls_cert: None,
-        tls_key: None,
+        tls_cert: config.sip.tls_cert_path.clone(),
+        tls_key: config.sip.tls_key_path.clone(),
+        ws_bind,
+        wss_bind,
     };
     let handler_dyn: Arc<dyn InboundMessageHandler> =
         Arc::clone(&handler) as Arc<dyn InboundMessageHandler>;

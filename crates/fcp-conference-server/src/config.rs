@@ -189,6 +189,18 @@ pub struct SipSection {
     #[serde(default = "default_sip_bind")]
     pub tcp_bind: String,
 
+    #[serde(default)]
+    pub ws_bind: Option<String>,
+
+    #[serde(default)]
+    pub wss_bind: Option<String>,
+
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
+
     pub local_ip: Option<String>,
 
     pub local_uri: Option<String>,
@@ -203,6 +215,10 @@ impl Default for SipSection {
         Self {
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
+            ws_bind: None,
+            wss_bind: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             local_ip: None,
             local_uri: None,
         }
@@ -773,6 +789,17 @@ pub fn validate_config(config: &ConferenceServerConfig) -> Result<()> {
         .tcp_bind
         .parse::<std::net::SocketAddr>()
         .with_context(|| format!("Invalid sip.tcp_bind: '{}'", config.sip.tcp_bind))?;
+    if let Some(ref bind) = config.sip.ws_bind {
+        bind.parse::<std::net::SocketAddr>()
+            .with_context(|| format!("Invalid sip.ws_bind: '{}'", bind))?;
+    }
+    if let Some(ref bind) = config.sip.wss_bind {
+        bind.parse::<std::net::SocketAddr>()
+            .with_context(|| format!("Invalid sip.wss_bind: '{}'", bind))?;
+        if config.sip.tls_cert_path.is_none() || config.sip.tls_key_path.is_none() {
+            anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
+        }
+    }
 
     // Sample rate must be a standard telephony rate
     match config.conference.sample_rate {

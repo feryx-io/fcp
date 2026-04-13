@@ -256,14 +256,18 @@ async fn registrations_handler(
 
     // If AOR is provided, filter by that AOR; otherwise return all registrations
     let registrations_result = match query.aor {
-        Some(ref aor) => state
-            .storage
-            .get_registrations_in_tenant(&state.default_tenant_id, aor)
-            .await,
-        None => state
-            .storage
-            .get_all_registrations_in_tenant(&state.default_tenant_id)
-            .await,
+        Some(ref aor) => {
+            state
+                .storage
+                .get_registrations_in_tenant(&state.default_tenant_id, aor)
+                .await
+        }
+        None => {
+            state
+                .storage
+                .get_all_registrations_in_tenant(&state.default_tenant_id)
+                .await
+        }
     };
 
     match registrations_result {

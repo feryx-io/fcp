@@ -133,6 +133,14 @@ pub struct SipSection {
     /// Path to TLS private key file (PEM format)
     pub tls_key_path: Option<String>,
 
+    /// Optional SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub ws_bind: Option<String>,
+
+    /// Optional secure SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub wss_bind: Option<String>,
+
     /// Local IP for SDP/Contact (auto-detect if not set)
     pub local_ip: Option<String>,
 
@@ -156,6 +164,8 @@ impl Default for SipSection {
             sips_bind: default_sips_bind(),
             tls_cert_path: None,
             tls_key_path: None,
+            ws_bind: None,
+            wss_bind: None,
             local_ip: None,
             local_uri: None,
         }
@@ -668,13 +678,33 @@ fn validate_registrar_config(sip: &SipSection, registrar: &RegistrarSection) -> 
         .with_context(|| format!("Invalid SIP UDP bind address '{}'", sip.udp_bind))?;
     let public_tcp = bind_is_public(&sip.tcp_bind)
         .with_context(|| format!("Invalid SIP TCP bind address '{}'", sip.tcp_bind))?;
+    let public_ws = sip
+        .ws_bind
+        .as_deref()
+        .map(bind_is_public)
+        .transpose()
+        .with_context(|| format!("Invalid SIP WS bind address '{:?}'", sip.ws_bind))?
+        .unwrap_or(false);
+    let public_wss = sip
+        .wss_bind
+        .as_deref()
+        .map(bind_is_public)
+        .transpose()
+        .with_context(|| format!("Invalid SIP WSS bind address '{:?}'", sip.wss_bind))?
+        .unwrap_or(false);
 
-    if (public_udp || public_tcp) && !registrar.auth_enabled {
+    if (public_udp || public_tcp || public_ws || public_wss) && !registrar.auth_enabled {
         anyhow::bail!(
-            "registrar.auth_enabled must be true when the call-manager registrar binds to a non-loopback SIP address (udp={}, tcp={})",
+            "registrar.auth_enabled must be true when the call-manager registrar binds to a non-loopback SIP address (udp={}, tcp={}, ws={:?}, wss={:?})",
             sip.udp_bind,
-            sip.tcp_bind
+            sip.tcp_bind,
+            sip.ws_bind,
+            sip.wss_bind
         );
+    }
+
+    if sip.wss_bind.is_some() && (sip.tls_cert_path.is_none() || sip.tls_key_path.is_none()) {
+        anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
     }
 
     Ok(())
@@ -758,6 +788,8 @@ mod tests {
             sips_bind: default_sips_bind(),
             tls_cert_path: None,
             tls_key_path: None,
+            ws_bind: None,
+            wss_bind: None,
             local_uri: None,
         };
         let registrar = RegistrarSection {

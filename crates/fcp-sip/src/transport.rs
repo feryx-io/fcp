@@ -25,8 +25,8 @@ use crate::prelude::*;
 
 /// Real transport dispatcher that uses siphon-rs transport layer.
 ///
-/// This dispatcher handles UDP, TCP, and TLS transports with connection pooling
-/// for stream-based transports.
+/// This dispatcher handles UDP, TCP, TLS, WS, and WSS transports with
+/// connection pooling for stream-based transports where available.
 pub struct RealTransportDispatcher {
     /// UDP socket for sending datagrams
     udp_socket: Option<Arc<UdpSocket>>,
@@ -246,8 +246,33 @@ impl TransportDispatcher for RealTransportDispatcher {
                 }
             }
             TxnTransportKind::Ws | TxnTransportKind::Wss => {
-                error!("WebSocket transports not yet implemented");
-                anyhow::bail!("WebSocket transports not yet implemented");
+                #[cfg(feature = "ws")]
+                {
+                    let secure = matches!(transport, TxnTransportKind::Wss);
+                    let url = ctx
+                        .ws_uri()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| websocket_url(ctx, secure));
+
+                    debug!(
+                        first_line = %first_line,
+                        peer = %peer,
+                        url = %url,
+                        secure,
+                        "sending via websocket transport"
+                    );
+
+                    if secure {
+                        sip_transport::send_wss(&url, payload).await?;
+                    } else {
+                        sip_transport::send_ws(&url, payload).await?;
+                    }
+                }
+                #[cfg(not(feature = "ws"))]
+                {
+                    error!("WebSocket feature not enabled");
+                    anyhow::bail!("WebSocket feature not enabled at compile time");
+                }
             }
             TxnTransportKind::Sctp | TxnTransportKind::TlsSctp => {
                 error!("SCTP transports not yet implemented");
@@ -257,6 +282,20 @@ impl TransportDispatcher for RealTransportDispatcher {
 
         Ok(())
     }
+}
+
+#[cfg(feature = "ws")]
+fn websocket_url(ctx: &TransportContext, secure: bool) -> String {
+    let host = ctx.server_name().map(str::to_owned).unwrap_or_else(|| {
+        let ip = ctx.peer().ip();
+        if ip.is_ipv6() {
+            format!("[{}]", ip)
+        } else {
+            ip.to_string()
+        }
+    });
+    let scheme = if secure { "wss" } else { "ws" };
+    format!("{}://{}:{}/", scheme, host, ctx.peer().port())
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Transport listeners for receiving inbound SIP messages.
 //!
-//! This module provides a `TransportListener` that manages UDP, TCP, and TLS
-//! receive loops and routes incoming packets to a message handler.
+//! This module provides a `TransportListener` that manages UDP, TCP, TLS, WS,
+//! and WSS receive loops and routes incoming packets to a message handler.
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -32,6 +32,12 @@ pub struct ListenerConfig {
     /// TLS private key path (for TLS server)
     #[cfg(feature = "tls")]
     pub tls_key: Option<String>,
+
+    /// WebSocket bind address
+    pub ws_bind: Option<SocketAddr>,
+
+    /// Secure WebSocket bind address
+    pub wss_bind: Option<SocketAddr>,
 }
 
 /// Handler trait for processing incoming SIP messages.
@@ -69,6 +75,14 @@ pub struct TransportListener {
     #[cfg(feature = "tls")]
     tls_task: Option<JoinHandle<()>>,
 
+    /// WS listener task
+    #[cfg(feature = "ws")]
+    ws_task: Option<JoinHandle<()>>,
+
+    /// WSS listener task
+    #[cfg(all(feature = "ws", feature = "tls"))]
+    wss_task: Option<JoinHandle<()>>,
+
     /// Shutdown signal sender (broadcast to all listeners)
     shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
@@ -83,6 +97,10 @@ impl TransportListener {
             tcp_task: None,
             #[cfg(feature = "tls")]
             tls_task: None,
+            #[cfg(feature = "ws")]
+            ws_task: None,
+            #[cfg(all(feature = "ws", feature = "tls"))]
+            wss_task: None,
             shutdown_tx: None,
         }
     }
@@ -173,6 +191,50 @@ impl TransportListener {
                 self.tls_task = Some(task);
             } else {
                 error!("TLS bind address configured but missing cert/key paths");
+            }
+        }
+
+        // Start WS listener
+        #[cfg(feature = "ws")]
+        if let Some(ws_bind) = self.config.ws_bind {
+            info!(%ws_bind, "Starting WS listener");
+
+            let handler = Arc::clone(&self.handler);
+            let mut shutdown = shutdown_rx.resubscribe();
+
+            let task = tokio::spawn(async move {
+                if let Err(e) = Self::run_ws_listener(ws_bind, handler, &mut shutdown).await {
+                    error!("WS listener error: {}", e);
+                }
+            });
+
+            self.ws_task = Some(task);
+        }
+
+        // Start WSS listener
+        #[cfg(all(feature = "ws", feature = "tls"))]
+        if let Some(wss_bind) = self.config.wss_bind {
+            if let (Some(cert_path), Some(key_path)) = (&self.config.tls_cert, &self.config.tls_key)
+            {
+                info!(%wss_bind, "Starting WSS listener");
+
+                let tls_config = sip_transport::load_rustls_server_config(cert_path, key_path)
+                    .context("Failed to load WSS TLS server config")?;
+
+                let handler = Arc::clone(&self.handler);
+                let mut shutdown = shutdown_rx.resubscribe();
+
+                let task = tokio::spawn(async move {
+                    if let Err(e) =
+                        Self::run_wss_listener(wss_bind, tls_config, handler, &mut shutdown).await
+                    {
+                        error!("WSS listener error: {}", e);
+                    }
+                });
+
+                self.wss_task = Some(task);
+            } else {
+                error!("WSS bind address configured but missing cert/key paths");
             }
         }
 
@@ -337,6 +399,105 @@ impl TransportListener {
         Ok(())
     }
 
+    /// Run WS listener loop.
+    #[cfg(feature = "ws")]
+    async fn run_ws_listener(
+        bind_addr: SocketAddr,
+        handler: Arc<dyn InboundMessageHandler>,
+        shutdown: &mut tokio::sync::broadcast::Receiver<()>,
+    ) -> Result<()> {
+        let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
+
+        let bind_str = bind_addr.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = sip_transport::run_ws(&bind_str, tx).await {
+                error!("WS accept loop error: {}", e);
+            }
+        });
+
+        loop {
+            tokio::select! {
+                Some(packet) = rx.recv() => {
+                    debug!(
+                        transport = ?packet.transport(),
+                        peer = %packet.peer(),
+                        size = packet.payload().len(),
+                        "Received WS packet"
+                    );
+
+                    let txn_transport = convert_transport_kind(packet.transport());
+                    let handler = Arc::clone(&handler);
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_inbound(
+                            txn_transport,
+                            packet.peer(),
+                            packet.payload().clone(),
+                            packet.stream().cloned(),
+                        ).await {
+                            error!("Failed to handle WS message: {}", e);
+                        }
+                    });
+                }
+                _ = shutdown.recv() => {
+                    info!("WS listener shutting down");
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run WSS listener loop.
+    #[cfg(all(feature = "ws", feature = "tls"))]
+    async fn run_wss_listener(
+        bind_addr: SocketAddr,
+        tls_config: Arc<tokio_rustls::rustls::ServerConfig>,
+        handler: Arc<dyn InboundMessageHandler>,
+        shutdown: &mut tokio::sync::broadcast::Receiver<()>,
+    ) -> Result<()> {
+        let (tx, mut rx) = mpsc::channel::<sip_transport::InboundPacket>(1000);
+
+        let bind_str = bind_addr.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = sip_transport::run_wss(&bind_str, tls_config, tx).await {
+                error!("WSS accept loop error: {}", e);
+            }
+        });
+
+        loop {
+            tokio::select! {
+                Some(packet) = rx.recv() => {
+                    debug!(
+                        transport = ?packet.transport(),
+                        peer = %packet.peer(),
+                        size = packet.payload().len(),
+                        "Received WSS packet"
+                    );
+
+                    let txn_transport = convert_transport_kind(packet.transport());
+                    let handler = Arc::clone(&handler);
+                    tokio::spawn(async move {
+                        if let Err(e) = handler.handle_inbound(
+                            txn_transport,
+                            packet.peer(),
+                            packet.payload().clone(),
+                            packet.stream().cloned(),
+                        ).await {
+                            error!("Failed to handle WSS message: {}", e);
+                        }
+                    });
+                }
+                _ = shutdown.recv() => {
+                    info!("WSS listener shutting down");
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Stop all listeners.
     pub async fn stop(&mut self) -> Result<()> {
         // Send shutdown signal
@@ -355,6 +516,16 @@ impl TransportListener {
 
         #[cfg(feature = "tls")]
         if let Some(task) = self.tls_task.take() {
+            let _ = task.await;
+        }
+
+        #[cfg(feature = "ws")]
+        if let Some(task) = self.ws_task.take() {
+            let _ = task.await;
+        }
+
+        #[cfg(all(feature = "ws", feature = "tls"))]
+        if let Some(task) = self.wss_task.take() {
             let _ = task.await;
         }
 

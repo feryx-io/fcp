@@ -101,6 +101,22 @@ pub struct SipSection {
     #[serde(default = "default_sip_bind")]
     pub tcp_bind: String,
 
+    /// Optional SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub ws_bind: Option<String>,
+
+    /// Optional secure SIP-over-WebSocket bind address.
+    #[serde(default)]
+    pub wss_bind: Option<String>,
+
+    /// TLS certificate path for secure SIP listeners (WSS).
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    /// TLS private key path for secure SIP listeners (WSS).
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
+
     /// Local IP for SDP/Contact (auto-detect if not set)
     pub local_ip: Option<String>,
 
@@ -117,6 +133,10 @@ impl Default for SipSection {
         Self {
             udp_bind: default_sip_bind(),
             tcp_bind: default_sip_bind(),
+            ws_bind: None,
+            wss_bind: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             local_ip: None,
             local_uri: None,
         }
@@ -415,6 +435,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<VoicemailServerConfig> 
     };
 
     validate_http_config(&config.http)?;
+    validate_sip_config(&config.sip)?;
 
     info!(
         node_id = %config.service.node_id,
@@ -447,6 +468,27 @@ fn validate_http_config(http: &HttpSection) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+fn validate_sip_config(sip: &SipSection) -> Result<()> {
+    sip.udp_bind
+        .parse::<std::net::SocketAddr>()
+        .context("Invalid SIP UDP bind address")?;
+    sip.tcp_bind
+        .parse::<std::net::SocketAddr>()
+        .context("Invalid SIP TCP bind address")?;
+    if let Some(ref bind) = sip.ws_bind {
+        bind.parse::<std::net::SocketAddr>()
+            .context("Invalid SIP WS bind address")?;
+    }
+    if let Some(ref bind) = sip.wss_bind {
+        bind.parse::<std::net::SocketAddr>()
+            .context("Invalid SIP WSS bind address")?;
+        if sip.tls_cert_path.is_none() || sip.tls_key_path.is_none() {
+            anyhow::bail!("sip.wss_bind requires sip.tls_cert_path and sip.tls_key_path");
+        }
+    }
     Ok(())
 }
 

@@ -80,6 +80,12 @@ async fn main() -> Result<()> {
     if let Some(ref sips_bind) = cli.sips_bind {
         config.sip.sips_bind = sips_bind.clone();
     }
+    if let Some(ref ws_bind) = cli.ws_bind {
+        config.sip.ws_bind = Some(ws_bind.clone());
+    }
+    if let Some(ref wss_bind) = cli.wss_bind {
+        config.sip.wss_bind = Some(wss_bind.clone());
+    }
     if let Some(ref tls_cert) = cli.tls_cert {
         config.sip.tls_cert_path = Some(tls_cert.display().to_string());
     }
@@ -1037,6 +1043,18 @@ async fn main() -> Result<()> {
         .tcp_bind
         .parse()
         .context("Invalid TCP bind address")?;
+    let ws_bind = config
+        .sip
+        .ws_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid WS bind address"))
+        .transpose()?;
+    let wss_bind = config
+        .sip
+        .wss_bind
+        .as_deref()
+        .map(|bind| bind.parse().context("Invalid WSS bind address"))
+        .transpose()?;
 
     // Parse TLS bind address and configure TLS if cert and key are provided
     #[cfg(feature = "tls")]
@@ -1074,6 +1092,8 @@ async fn main() -> Result<()> {
         tls_cert,
         #[cfg(feature = "tls")]
         tls_key,
+        ws_bind,
+        wss_bind,
     };
 
     let handler_dyn: Arc<dyn InboundMessageHandler> =
@@ -2820,7 +2840,10 @@ async fn run_presence_listener(
                             .await;
                             // If this AOR has no remaining active calls, revert
                             // presence to Open (only if in a call-related state).
-                            if presence.get_active_calls_for_tenant(aor, &tenant_id).is_empty() {
+                            if presence
+                                .get_active_calls_for_tenant(aor, &tenant_id)
+                                .is_empty()
+                            {
                                 // Bypass auto_phone_state — the system set the
                                 // state on Initiated, so the system must clear it.
                                 // Also revert if no presentity exists yet (conference

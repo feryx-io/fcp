@@ -12,8 +12,8 @@ use fcp_b2bua_core::media_anchoring::{MediaAnchoringConfig, MediaAnchoringMode};
 use fcp_b2bua_core::session::{B2buaConfig, SessionTimerConfig};
 use fcp_b2bua_core::topology::{TopologyHidingConfig, TopologyHidingMode};
 use fcp_b2bua_core::transfer::TransferConfig;
-use fcp_core::TenantId;
 use fcp_core::transport::TransportType;
+use fcp_core::TenantId;
 use serde::{Deserialize, Serialize};
 
 use crate::admission::AdmissionConfig;
@@ -117,6 +117,14 @@ pub struct SbcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_key: Option<String>,
 
+    /// WS bind address (e.g. "0.0.0.0:5080"). None = WS disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_bind: Option<String>,
+
+    /// WSS bind address (e.g. "0.0.0.0:5081"). None = WSS disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wss_bind: Option<String>,
+
     /// Default tenant used when ingress SIP cannot be resolved to a named tenant.
     #[serde(default = "default_tenant_id")]
     pub default_tenant_id: TenantId,
@@ -177,6 +185,8 @@ impl Default for SbcConfig {
             tls_bind: None,
             tls_cert: None,
             tls_key: None,
+            ws_bind: None,
+            wss_bind: None,
             default_tenant_id: default_tenant_id(),
         }
     }
@@ -252,6 +262,22 @@ impl SbcConfig {
                     "tls_bind is not a valid socket address: {:?}",
                     bind
                 ));
+            }
+        }
+        if let Some(ref bind) = self.ws_bind {
+            if bind.parse::<SocketAddr>().is_err() {
+                return Err(format!("ws_bind is not a valid socket address: {:?}", bind));
+            }
+        }
+        if let Some(ref bind) = self.wss_bind {
+            if bind.parse::<SocketAddr>().is_err() {
+                return Err(format!(
+                    "wss_bind is not a valid socket address: {:?}",
+                    bind
+                ));
+            }
+            if self.tls_cert.is_none() || self.tls_key.is_none() {
+                return Err("WSS requires tls_cert and tls_key".into());
             }
         }
 

@@ -486,14 +486,16 @@ async fn main() -> Result<()> {
     //      updates admission counters (registration_added / registration_removed)
     let reg_store: Arc<dyn fcp_core::RegistrationStore> =
         Arc::new(InMemoryRegistrationStore::default());
-    let registrar = Arc::new(FcpRegistrar::with_events(
-        reg_store,
-        None, // no credential store — SBC does not authenticate registrations itself
-        Some(sbc_config.external_domain.clone()),
-        sbc_hooks,
-        false, // SBC does not authenticate registrations itself
-    )
-    .with_default_tenant_id(sbc_config.default_tenant_id));
+    let registrar = Arc::new(
+        FcpRegistrar::with_events(
+            reg_store,
+            None, // no credential store — SBC does not authenticate registrations itself
+            Some(sbc_config.external_domain.clone()),
+            sbc_hooks,
+            false, // SBC does not authenticate registrations itself
+        )
+        .with_default_tenant_id(sbc_config.default_tenant_id),
+    );
 
     // 13. Create TrunkRouter with LCR support (provides outbound routing when registrar lookup fails)
     let trunk_router = if sbc_config.lcr.enabled {
@@ -589,9 +591,19 @@ async fn main() -> Result<()> {
     let tls_bind_str = cli.tls_bind.as_deref().or(sbc_config.tls_bind.as_deref());
     let tls_cert = cli.tls_cert.as_deref().or(sbc_config.tls_cert.as_deref());
     let tls_key = cli.tls_key.as_deref().or(sbc_config.tls_key.as_deref());
+    let ws_bind_str = cli.ws_bind.as_deref().or(sbc_config.ws_bind.as_deref());
+    let wss_bind_str = cli.wss_bind.as_deref().or(sbc_config.wss_bind.as_deref());
 
     let tls_bind_addr: Option<std::net::SocketAddr> = match tls_bind_str {
         Some(s) => Some(s.parse().context("Invalid TLS bind address")?),
+        None => None,
+    };
+    let ws_bind_addr: Option<std::net::SocketAddr> = match ws_bind_str {
+        Some(s) => Some(s.parse().context("Invalid WS bind address")?),
+        None => None,
+    };
+    let wss_bind_addr: Option<std::net::SocketAddr> = match wss_bind_str {
+        Some(s) => Some(s.parse().context("Invalid WSS bind address")?),
         None => None,
     };
 
@@ -605,6 +617,8 @@ async fn main() -> Result<()> {
         tls_cert: tls_cert.map(|s| s.to_string()),
         #[cfg(feature = "tls")]
         tls_key: tls_key.map(|s| s.to_string()),
+        ws_bind: ws_bind_addr,
+        wss_bind: wss_bind_addr,
     };
     let enforcement_for_tcp = Arc::clone(&enforcement_handler);
     let handler_dyn: Arc<dyn InboundMessageHandler> =
@@ -805,6 +819,8 @@ async fn main() -> Result<()> {
         udp = %cli.bind,
         tcp = %cli.bind,
         tls = ?tls_bind_str,
+        ws = ?ws_bind_str,
+        wss = ?wss_bind_str,
         health = %cli.health_bind,
         trunks = sbc_config.trunks.len(),
         "fcp-sbc ready — listening for SIP messages"
