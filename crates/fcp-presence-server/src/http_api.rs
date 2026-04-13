@@ -8,6 +8,7 @@ use axum::{
     routing::{delete, get, put},
     Json, Router,
 };
+use fcp_core::storage::TenantStore;
 use fcp_core::TenantId;
 use fcp_presence::PresenceManager;
 use fcp_sip::presence::SipPresenceHandler;
@@ -24,6 +25,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub api_token: Option<String>,
     pub resource_list_store: Arc<dyn fcp_core::storage::ResourceListStore>,
+    pub tenant_store: Arc<dyn TenantStore>,
     pub default_tenant_id: fcp_core::TenantId,
     pub history_store: Option<Arc<dyn fcp_core::storage::PresenceHistoryStore>>,
     #[cfg(feature = "webhook")]
@@ -134,17 +136,24 @@ pub(crate) async fn resolve_request_tenant_id(
         return Ok(tenant_id);
     }
 
-    Err((
-        StatusCode::FORBIDDEN,
-        Json(serde_json::json!({
-            "error": format!(
-                "Presence server is scoped to tenant '{}'; tenant '{}' is not served by this instance",
-                state.default_tenant_id,
-                tenant_id
-            )
-        })),
-    )
-        .into_response())
+    // Validate the requested tenant exists in the store.
+    match state.tenant_store.get_tenant(&tenant_id).await {
+        Ok(Some(_)) => Ok(tenant_id),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Tenant '{}' not found", tenant_id)
+            })),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to resolve tenant: {}", e)
+            })),
+        )
+            .into_response()),
+    }
 }
 
 // ============================================================================

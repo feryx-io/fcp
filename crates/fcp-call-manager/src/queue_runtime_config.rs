@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use fcp_core::storage::QueueConfigStore;
+use fcp_core::storage::{QueueConfigStore, TenantStore};
 use fcp_core::{DynStorage, QueueConfigRecord, TenantId};
 use fcp_queue::queue_manager::TenantQueueDefinition;
 use fcp_queue::{DistributionStrategy, QueueConfig, QueueSystemConfig};
@@ -84,10 +84,12 @@ fn validate_extension_uniqueness(
 }
 
 /// Build the effective queue runtime configuration by merging file-backed queue
-/// config with database-backed queue-config records.
+/// config with database-backed queue-config records from every tenant.
 ///
-/// The call-manager runtime only materializes queues for its configured
-/// service tenant, so queue names only need to be unique within that tenant.
+/// Queue names are global runtime identifiers (the `QueueManager` keys them in
+/// a flat `DashMap<String, Queue>`). A duplicate queue name across different
+/// tenants is therefore rejected at build time rather than silently collapsing
+/// one tenant's queue into another's.
 pub async fn build_effective_queue_runtime(
     base_config: &QueueSystemConfig,
     storage: &Arc<DynStorage>,
@@ -95,6 +97,7 @@ pub async fn build_effective_queue_runtime(
 ) -> Result<(QueueSystemConfig, Vec<TenantQueueDefinition>)> {
     let mut definitions_by_name = HashMap::<String, TenantQueueDefinition>::new();
 
+    // Seed from the TOML file (always owned by the default tenant).
     for (name, config) in &base_config.queues {
         definitions_by_name.insert(
             name.clone(),
@@ -106,23 +109,48 @@ pub async fn build_effective_queue_runtime(
         );
     }
 
-    let records = storage
-        .list_queue_configs(&default_tenant_id)
+    // Collect tenant IDs: at minimum the default, plus every tenant in the
+    // store. Using a HashSet avoids loading the default tenant twice if it
+    // also appears in the store.
+    let mut tenant_ids = HashSet::from([default_tenant_id]);
+    for tenant in storage
+        .list_tenants()
         .await
-        .with_context(|| {
-            format!(
-                "failed to list queue configs for service tenant '{}'",
-                default_tenant_id
-            )
-        })?;
+        .context("failed to list tenants for queue runtime configuration")?
+    {
+        tenant_ids.insert(tenant.id);
+    }
 
-    for record in records {
-        let definition = TenantQueueDefinition {
-            name: record.name.clone(),
-            tenant_id: record.tenant_id,
-            config: queue_config_from_record(&record),
-        };
-        definitions_by_name.insert(definition.name.clone(), definition);
+    // Load DB-backed queue configs for every tenant.
+    for tenant_id in tenant_ids {
+        let records = storage
+            .list_queue_configs(&tenant_id)
+            .await
+            .with_context(|| {
+                format!("failed to list queue configs for tenant '{}'", tenant_id)
+            })?;
+
+        for record in records {
+            let definition = TenantQueueDefinition {
+                name: record.name.clone(),
+                tenant_id: record.tenant_id,
+                config: queue_config_from_record(&record),
+            };
+
+            if let Some(existing) = definitions_by_name.get(&definition.name) {
+                if existing.tenant_id != definition.tenant_id {
+                    bail!(
+                        "queue name '{}' is configured in multiple tenants ({} and {}); \
+                         runtime queue names must be globally unique",
+                        definition.name,
+                        existing.tenant_id,
+                        definition.tenant_id
+                    );
+                }
+            }
+
+            definitions_by_name.insert(definition.name.clone(), definition);
+        }
     }
 
     let definitions = validate_extension_uniqueness(definitions_by_name.into_values())?;

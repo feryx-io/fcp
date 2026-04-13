@@ -12,7 +12,7 @@ use axum::{
 };
 use fcp_api_core::auth::{validate_bearer_token, AuthConfig, PLATFORM_TENANT_HEADER};
 use fcp_b2bua_core::CallManager;
-use fcp_core::storage::ConferenceStore;
+use fcp_core::storage::{ConferenceStore, TenantStore};
 use fcp_core::{DynStorage, Meeting, MeetingId, TenantId};
 use fcp_events::{
     ConferenceEvent, EventFilter, EventPublisher, EventSubscriber, InMemoryEventBus, PlatformEvent,
@@ -1967,20 +1967,26 @@ async fn extract_tenant_id(
         }
     };
 
-    if tenant_id != state.default_tenant_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": format!(
-                    "Conference server is scoped to tenant '{}'; tenant '{}' is not served by this instance",
-                    state.default_tenant_id,
-                    tenant_id
-                )
-            })),
-        ));
+    if tenant_id == state.default_tenant_id {
+        return Ok(tenant_id);
     }
 
-    Ok(tenant_id)
+    // Validate the requested tenant exists in the store.
+    match state.storage.get_tenant(&tenant_id).await {
+        Ok(Some(_)) => Ok(tenant_id),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Tenant '{}' not found", tenant_id)
+            })),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to resolve tenant: {}", e)
+            })),
+        )),
+    }
 }
 
 async fn room_number_exists_in_tenant(

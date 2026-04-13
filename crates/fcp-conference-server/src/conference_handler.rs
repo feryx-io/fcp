@@ -757,14 +757,6 @@ impl ConferenceCallHandler {
                 .ok_or_else(|| anyhow::anyhow!("tenant context required"))?
         };
 
-        if resolved != self.default_tenant_id {
-            bail!(
-                "conference server is scoped to tenant '{}' and cannot serve tenant '{}'",
-                self.default_tenant_id,
-                resolved
-            );
-        }
-
         Ok(resolved)
     }
 
