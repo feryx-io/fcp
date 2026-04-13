@@ -141,32 +141,16 @@ async fn resolve_tenant_for_inputs(
         }
     }
 
-    // Tier 4: default tenant, but only when the edge is effectively single-tenant.
-    if let Some(default_tenant_id) =
-        resolve_safe_default_tenant(tenant_store, default_tenant_id).await?
-    {
+    // Tier 4: default tenant.  IP-literal domains, unknown usernames,
+    // and internal service-to-service requests all land here.  The
+    // default tenant is safe to use because:
+    //   - Real hostnames already failed closed in the domain tiers above.
+    //   - Trunk admission control (for INVITEs) still enforces per-IP
+    //     access for external sources.
+    if let Some(default_tenant_id) = default_tenant_id {
         Ok(default_tenant_id)
     } else {
         Err(anyhow!("tenant context required"))
-    }
-}
-
-async fn resolve_safe_default_tenant(
-    tenant_store: Option<&Arc<dyn TenantStore>>,
-    default_tenant_id: Option<TenantId>,
-) -> Result<Option<TenantId>> {
-    let Some(default_tenant_id) = default_tenant_id else {
-        return Ok(None);
-    };
-    let Some(store) = tenant_store else {
-        return Ok(Some(default_tenant_id));
-    };
-
-    let tenants = store.list_tenants().await?;
-    if tenants.is_empty() || (tenants.len() == 1 && tenants[0].id == default_tenant_id) {
-        Ok(Some(default_tenant_id))
-    } else {
-        Ok(None)
     }
 }
 
@@ -1260,6 +1244,28 @@ impl FcpRegistrar {
         )
         .await?;
 
+        self.get_registrations_impl(&tenant_id, aor).await
+    }
+
+    /// Get registrations using an already-known tenant ID.
+    ///
+    /// Use this when the caller already has the tenant context (e.g., from
+    /// an INVITE that already passed tenant resolution). This avoids a
+    /// second tenant resolution pass that can fail for IP-literal AOR
+    /// domains in multi-tenant deployments.
+    pub async fn get_registrations_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+    ) -> Result<Vec<Binding>> {
+        self.get_registrations_impl(tenant_id, aor).await
+    }
+
+    async fn get_registrations_impl(
+        &self,
+        tenant_id: &TenantId,
+        aor: &str,
+    ) -> Result<Vec<Binding>> {
         // Normalize AOR so lookups match stored keys even if clients send
         // params or percent-encoded users.
         let normalized = match sip_core::Uri::parse(aor) {
@@ -1271,7 +1277,7 @@ impl FcpRegistrar {
         // Look up the primary AOR
         let mut all_bindings = self
             .location_store
-            .lookup_in_tenant(&tenant_id, &normalized)
+            .lookup_in_tenant(tenant_id, &normalized)
             .await?;
 
         // If domain aliases are configured, check for registrations at aliased domains
@@ -1291,7 +1297,7 @@ impl FcpRegistrar {
                             let aliased_aor = format!("sip:{}@{}", user, alias);
                             if let Ok(mut bindings) = self
                                 .location_store
-                                .lookup_in_tenant(&tenant_id, &aliased_aor)
+                                .lookup_in_tenant(tenant_id, &aliased_aor)
                                 .await
                             {
                                 debug!(
@@ -1309,6 +1315,42 @@ impl FcpRegistrar {
         }
 
         Ok(all_bindings)
+    }
+
+    /// Look up device registrations with domain fallback.
+    ///
+    /// First tries the device's stored `sip_uri` (e.g. `sip:polycom@192.168.1.225`).
+    /// If no bindings are found, extracts the username and retries with
+    /// `fallback_domain` (e.g. `sip:polycom@acme.feryx.io`).  This handles the
+    /// common case where the device record uses the server IP but the phone
+    /// registered under the tenant's SIP domain.
+    pub async fn get_registrations_for_device(
+        &self,
+        tenant_id: &TenantId,
+        sip_uri: &str,
+        fallback_domain: &str,
+    ) -> Result<Vec<Binding>> {
+        let primary = self.get_registrations_impl(tenant_id, sip_uri).await?;
+        if !primary.is_empty() {
+            return Ok(primary);
+        }
+
+        // Extract username from the device sip_uri and retry with the
+        // fallback domain (typically the INVITE's domain).
+        if let Some((user, device_domain)) = Self::split_aor(sip_uri) {
+            let fb_lower = fallback_domain.trim().to_ascii_lowercase();
+            if !fb_lower.is_empty() && fb_lower != device_domain.to_ascii_lowercase() {
+                let fallback_aor = format!("sip:{}@{}", user, fallback_domain);
+                debug!(
+                    device_uri = %sip_uri,
+                    fallback_aor = %fallback_aor,
+                    "Device AOR returned no bindings, trying INVITE-domain fallback"
+                );
+                return self.get_registrations_impl(tenant_id, &fallback_aor).await;
+            }
+        }
+
+        Ok(Vec::new())
     }
 
     /// Split an AOR into user and domain parts.

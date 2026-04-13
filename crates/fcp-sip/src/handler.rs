@@ -1229,36 +1229,27 @@ impl SipMessageHandler {
         // A real hostname that matches nothing still fails closed with 403.
         let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
             if fcp_core::is_host_literal(&domain) {
-                match self.default_tenant_fallback().await {
-                    Ok(Some(default_tenant_id)) => {
-                        debug!(
-                            domain = %domain,
-                            tenant_id = %default_tenant_id,
-                            "Host literal in INVITE; using default tenant on a single-tenant edge"
-                        );
-                        default_tenant_id
-                    }
-                    Ok(None) => {
-                        warn!(
-                            domain = %domain,
-                            "Rejecting INVITE: host literal domain requires explicit tenant context"
-                        );
-                        let response =
-                            self.create_simple_response(request, 403, "Tenant context required");
-                        handle.send_final(response).await;
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!(
-                            domain = %domain,
-                            error = %e,
-                            "Rejecting INVITE: failed to determine whether default tenant fallback is safe"
-                        );
-                        let response =
-                            self.create_simple_response(request, 503, "Tenant lookup unavailable");
-                        handle.send_final(response).await;
-                        return Ok(());
-                    }
+                // IP literal or localhost — use the default tenant directly.
+                // Internal service-to-service INVITEs (e.g. call-manager →
+                // conference server) legitimately use IP addresses in the
+                // Request-URI.  Trunk admission control below still enforces
+                // per-IP access for external sources.
+                if let Some(default_tenant_id) = self.default_tenant_id {
+                    debug!(
+                        domain = %domain,
+                        tenant_id = %default_tenant_id,
+                        "Host literal in INVITE; using default tenant"
+                    );
+                    default_tenant_id
+                } else {
+                    warn!(
+                        domain = %domain,
+                        "Rejecting INVITE: host literal domain and no default tenant configured"
+                    );
+                    let response =
+                        self.create_simple_response(request, 403, "Tenant context required");
+                    handle.send_final(response).await;
+                    return Ok(());
                 }
             } else if let Some(storage) = &self.storage {
                 // Tier 1: sip_domains allowlist.
@@ -3620,6 +3611,15 @@ impl SipMessageHandler {
                     }
                 };
 
+                // Extract the INVITE domain for device-lookup fallback.
+                // When a device's sip_uri uses the server IP but the phone
+                // registered under the tenant's SIP domain, this lets
+                // get_registrations_for_device retry with the correct domain.
+                let invite_domain = destination_aor
+                    .split('@')
+                    .nth(1)
+                    .unwrap_or("");
+
                 debug!(
                     call_id = %call_id,
                     tenant_id = %tenant_id,
@@ -3699,7 +3699,7 @@ impl SipMessageHandler {
                                                                     &self.registrar
                                                                 {
                                                                     match registrar
-                                                                        .get_registrations(sip_uri)
+                                                                        .get_registrations_for_device(&tenant_id, sip_uri, invite_domain)
                                                                         .await
                                                                     {
                                                                         Ok(contacts)
@@ -3765,7 +3765,7 @@ impl SipMessageHandler {
                                                 }
 
                                                 if let Some(sip_uri) = &device.sip_uri {
-                                                    match registrar.get_registrations(sip_uri).await
+                                                    match registrar.get_registrations_for_device(&tenant_id, sip_uri, invite_domain).await
                                                     {
                                                         Ok(registrations)
                                                             if !registrations.is_empty() =>
@@ -3880,7 +3880,7 @@ impl SipMessageHandler {
                                         if let Some(sip_uri) = &device.sip_uri {
                                             // Look up device registrations
                                             if let Some(registrar) = &self.registrar {
-                                                match registrar.get_registrations(sip_uri).await {
+                                                match registrar.get_registrations_for_device(&tenant_id, sip_uri, invite_domain).await {
                                                     Ok(registrations)
                                                         if !registrations.is_empty() =>
                                                     {
