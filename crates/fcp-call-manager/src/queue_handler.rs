@@ -434,7 +434,10 @@ impl QueueCallHandler {
     async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
         if let Some(domain) = Self::extract_tenant_domain(request) {
             if fcp_core::is_host_literal(&domain) {
-                return Ok(self.default_tenant_id);
+                return self
+                    .default_tenant_fallback()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("tenant context required"));
             }
 
             return match self.storage.get_tenant_by_sip_domain(&domain).await {
@@ -455,7 +458,22 @@ impl QueueCallHandler {
             };
         }
 
-        Ok(self.default_tenant_id)
+        self.default_tenant_fallback()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("tenant context required"))
+    }
+
+    async fn default_tenant_fallback(&self) -> Result<Option<TenantId>> {
+        let tenants = self
+            .storage
+            .list_tenants()
+            .await
+            .context("failed to list tenants for default tenant fallback")?;
+        if tenants.is_empty() || (tenants.len() == 1 && tenants[0].id == self.default_tenant_id) {
+            Ok(Some(self.default_tenant_id))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Extract caller info (display_name, caller_uri) from From header.
@@ -1937,13 +1955,17 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             Ok(tenant_id) => tenant_id,
             Err(e) => {
                 warn!(call_id = %call_id, error = %e, "Rejecting queue INVITE: tenant resolution failed");
-                let status = if e.to_string().contains("Unknown tenant domain") {
+                let status = if e.to_string().contains("Unknown tenant domain")
+                    || e.to_string().contains("tenant context required")
+                {
                     403
                 } else {
                     503
                 };
-                let reason = if status == 403 {
+                let reason = if e.to_string().contains("Unknown tenant domain") {
                     "Unknown tenant domain"
+                } else if status == 403 {
+                    "Tenant context required"
                 } else {
                     "Tenant lookup unavailable"
                 };

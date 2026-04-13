@@ -2,12 +2,14 @@
 
 use axum::{
     extract::{Path, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{delete, get, put},
     Json, Router,
 };
+use fcp_core::storage::TenantStore;
+use fcp_core::TenantId;
 use fcp_presence::PresenceManager;
 use fcp_sip::presence::SipPresenceHandler;
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub api_token: Option<String>,
     pub resource_list_store: Arc<dyn fcp_core::storage::ResourceListStore>,
+    pub tenant_store: Arc<dyn TenantStore>,
     pub default_tenant_id: fcp_core::TenantId,
     pub history_store: Option<Arc<dyn fcp_core::storage::PresenceHistoryStore>>,
     #[cfg(feature = "webhook")]
@@ -102,6 +105,56 @@ async fn require_api_token(
     }
 }
 
+pub(crate) const PLATFORM_TENANT_HEADER: &str = "x-fcp-tenant-id";
+
+pub(crate) async fn resolve_request_tenant_id(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<TenantId, axum::response::Response> {
+    let tenant_id = match headers
+        .get(PLATFORM_TENANT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(raw_tenant_id) => match raw_tenant_id.parse::<TenantId>() {
+            Ok(tenant_id) => tenant_id,
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("Invalid {} header: {}", PLATFORM_TENANT_HEADER, e)
+                    })),
+                )
+                    .into_response())
+            }
+        },
+        None => state.default_tenant_id,
+    };
+
+    if tenant_id == state.default_tenant_id {
+        return Ok(tenant_id);
+    }
+
+    match state.tenant_store.get_tenant(&tenant_id).await {
+        Ok(Some(_)) => Ok(tenant_id),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Tenant '{}' not found", tenant_id)
+            })),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to resolve tenant override: {}", e)
+            })),
+        )
+            .into_response()),
+    }
+}
+
 // ============================================================================
 // Health & Metrics
 // ============================================================================
@@ -140,12 +193,14 @@ struct PresenceResponse {
 
 async fn get_presence(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
-    match state
-        .manager
-        .get_presence_for_tenant(&aor, &state.default_tenant_id)
-    {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
+    match state.manager.get_presence_for_tenant(&aor, &tenant_id) {
         Some(info) => (
             StatusCode::OK,
             Json(serde_json::json!(PresenceResponse {
@@ -167,6 +222,7 @@ struct UpdatePresenceRequest {
 
 async fn update_presence(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
     Json(body): Json<UpdatePresenceRequest>,
 ) -> impl IntoResponse {
@@ -185,8 +241,10 @@ async fn update_presence(
         }
     };
 
-    // SECURITY: Use server-configured tenant, not client-supplied
-    let tenant_id = state.default_tenant_id.clone();
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     let update = fcp_presence::PresenceUpdate {
         aor: aor.clone(),
         state: presence_state,
@@ -218,10 +276,13 @@ async fn update_presence(
 /// simple remove without NOTIFY.
 async fn remove_presence(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
-    // SECURITY: Use server-configured tenant, not hardcoded default
-    let tenant_id = state.default_tenant_id.clone();
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
 
     if let Some(ref sip) = state.sip_handler {
         if let Err(e) = sip.terminate_watchers_noresource(&aor, &tenant_id).await {
@@ -233,7 +294,7 @@ async fn remove_presence(
         state.manager.remove_presence(&aor, &tenant_id).await;
     }
 
-    StatusCode::NO_CONTENT
+    StatusCode::NO_CONTENT.into_response()
 }
 
 // ============================================================================
@@ -242,11 +303,14 @@ async fn remove_presence(
 
 async fn get_watchers(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(aor): Path<String>,
 ) -> impl IntoResponse {
-    let watchers = state
-        .manager
-        .get_watchers_for_tenant(&aor, &state.default_tenant_id);
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
+    let watchers = state.manager.get_watchers_for_tenant(&aor, &tenant_id);
     let watcher_list: Vec<serde_json::Value> = watchers
         .iter()
         .map(|w| {
@@ -262,6 +326,7 @@ async fn get_watchers(
         "aor": aor,
         "watchers": watcher_list,
     }))
+    .into_response()
 }
 
 /// DELETE /v1/presence/{aor}/watchers/{subscription_id}
@@ -271,6 +336,7 @@ async fn get_watchers(
 /// Returns 503 if no SIP handler is configured.
 async fn remove_watcher(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path((aor, subscription_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(ref sip) = state.sip_handler else {
@@ -281,7 +347,15 @@ async fn remove_watcher(
             .into_response();
     };
 
-    match sip.terminate_watcher_forced(&aor, &subscription_id).await {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
+
+    match sip
+        .terminate_watcher_forced(&aor, &subscription_id, &tenant_id)
+        .await
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

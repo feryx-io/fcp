@@ -457,6 +457,7 @@ async fn main() -> Result<()> {
         start_time: Instant::now(),
         api_token: config.http.api_token.clone(),
         resource_list_store: Arc::clone(dyn_storage.resource_list_store()),
+        tenant_store: Arc::clone(&dyn_storage) as Arc<dyn fcp_core::storage::TenantStore>,
         default_tenant_id: config.service.default_tenant_id,
         history_store: Some(Arc::clone(&history_store)),
         #[cfg(feature = "webhook")]
@@ -753,7 +754,11 @@ fn derive_local_addr(config: &PresenceServerConfig) -> Result<String> {
         .udp_bind
         .parse()
         .context("Invalid UDP bind address")?;
-    let port = if bind_addr.port() == 0 { 5060 } else { bind_addr.port() };
+    let port = if bind_addr.port() == 0 {
+        5060
+    } else {
+        bind_addr.port()
+    };
 
     let host = if let Some(ref local_ip) = config.sip.local_ip {
         local_ip.clone()
@@ -794,8 +799,12 @@ async fn run_presence_notifier(
     loop {
         match stream.next().await {
             Some(event) => match &event {
-                PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged { aor, .. })
-                | PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged { aor, .. }) => {
+                PlatformEvent::Presence(fcp_events::PresenceEvent::StatusChanged {
+                    aor, ..
+                })
+                | PlatformEvent::Presence(fcp_events::PresenceEvent::DialogChanged {
+                    aor, ..
+                }) => {
                     if let Err(e) = presence_handler.notify_watchers(aor).await {
                         warn!(aor = %aor, error = %e, "Failed to notify watchers");
                     }

@@ -805,7 +805,17 @@ impl SipMessageHandler {
         }
 
         if let Some(domain) = extract_tenant_from_invite(request) {
+            if fcp_core::is_host_literal(&domain) {
+                return self
+                    .default_tenant_fallback()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("tenant context required"));
+            }
+
             if let Some(storage) = &self.storage {
+                if let Some(tenant) = storage.get_tenant_by_sip_domain(&domain).await? {
+                    return Ok(tenant.id);
+                }
                 return match storage.get_tenant_by_name(&domain).await {
                     Ok(Some(tenant)) => Ok(tenant.id),
                     Ok(None) => Err(anyhow::anyhow!("unknown tenant domain '{}'", domain)),
@@ -813,18 +823,33 @@ impl SipMessageHandler {
                 };
             }
 
-            if let Some(default_tenant_id) = self.default_tenant_id {
-                return Ok(default_tenant_id);
-            }
-
-            return Err(anyhow::anyhow!(
-                "tenant store unavailable for domain '{}'",
-                domain
-            ));
+            return self.default_tenant_fallback().await?.ok_or_else(|| {
+                anyhow::anyhow!("tenant store unavailable for domain '{}'", domain)
+            });
         }
 
-        self.default_tenant_id
+        self.default_tenant_fallback()
+            .await?
             .ok_or_else(|| anyhow::anyhow!("tenant context required"))
+    }
+
+    async fn default_tenant_fallback(&self) -> Result<Option<fcp_core::TenantId>> {
+        let Some(default_tenant_id) = self.default_tenant_id else {
+            return Ok(None);
+        };
+        let Some(storage) = &self.storage else {
+            return Ok(Some(default_tenant_id));
+        };
+
+        let tenants = storage
+            .list_tenants()
+            .await
+            .context("failed to list tenants for default tenant fallback")?;
+        if tenants.is_empty() || (tenants.len() == 1 && tenants[0].id == default_tenant_id) {
+            Ok(Some(default_tenant_id))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Extract display name from a SIP From/To header value.
@@ -1199,31 +1224,41 @@ impl SipMessageHandler {
         // Resolve the tenant for this INVITE using the tiered strategy:
         //   1. Hostname domain → tenants.sip_domains allowlist
         //   2. Hostname domain → legacy tenant-name fallback (with warning)
-        //   3. IP / localhost → skip domain lookup, fall through to default
-        //   4. No domain → default tenant
+        //   3. IP / localhost → default tenant only when the edge is effectively single-tenant
+        //   4. No domain → default tenant only when the edge is effectively single-tenant
         // A real hostname that matches nothing still fails closed with 403.
         let tenant_id = if let Some(domain) = extract_tenant_from_invite(request) {
             if fcp_core::is_host_literal(&domain) {
-                // IP literal or localhost — phones that haven't been
-                // provisioned with their tenant's SIP domain. Fall through
-                // to the default tenant; trunk admission control below
-                // still enforces per-IP allowlisting for external sources.
-                if let Some(default_tenant_id) = self.default_tenant_id {
-                    debug!(
-                        domain = %domain,
-                        tenant_id = %default_tenant_id,
-                        "Host literal in INVITE; falling back to default tenant"
-                    );
-                    default_tenant_id
-                } else {
-                    warn!(
-                        domain = %domain,
-                        "Rejecting INVITE: host literal domain and no default tenant configured"
-                    );
-                    let response =
-                        self.create_simple_response(request, 403, "Tenant context required");
-                    handle.send_final(response).await;
-                    return Ok(());
+                match self.default_tenant_fallback().await {
+                    Ok(Some(default_tenant_id)) => {
+                        debug!(
+                            domain = %domain,
+                            tenant_id = %default_tenant_id,
+                            "Host literal in INVITE; using default tenant on a single-tenant edge"
+                        );
+                        default_tenant_id
+                    }
+                    Ok(None) => {
+                        warn!(
+                            domain = %domain,
+                            "Rejecting INVITE: host literal domain requires explicit tenant context"
+                        );
+                        let response =
+                            self.create_simple_response(request, 403, "Tenant context required");
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!(
+                            domain = %domain,
+                            error = %e,
+                            "Rejecting INVITE: failed to determine whether default tenant fallback is safe"
+                        );
+                        let response =
+                            self.create_simple_response(request, 503, "Tenant lookup unavailable");
+                        handle.send_final(response).await;
+                        return Ok(());
+                    }
                 }
             } else if let Some(storage) = &self.storage {
                 // Tier 1: sip_domains allowlist.
@@ -1290,7 +1325,7 @@ impl SipMessageHandler {
                         return Ok(());
                     }
                 }
-            } else if let Some(default_tenant_id) = self.default_tenant_id {
+            } else if let Some(default_tenant_id) = self.default_tenant_fallback().await? {
                 debug!(
                     domain = %domain,
                     tenant_id = %default_tenant_id,
@@ -1307,7 +1342,7 @@ impl SipMessageHandler {
                 handle.send_final(response).await;
                 return Ok(());
             }
-        } else if let Some(default_tenant_id) = self.default_tenant_id {
+        } else if let Some(default_tenant_id) = self.default_tenant_fallback().await? {
             default_tenant_id
         } else {
             warn!("Rejecting INVITE: no tenant context could be derived from SIP addressing");

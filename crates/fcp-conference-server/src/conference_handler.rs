@@ -736,7 +736,10 @@ impl ConferenceCallHandler {
     async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
         if let Some(domain) = Self::extract_tenant_domain(request) {
             if fcp_core::is_host_literal(&domain) {
-                return Ok(self.default_tenant_id);
+                return self
+                    .default_tenant_fallback()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("tenant context required"));
             }
 
             if let Some(tenant) = self.storage.get_tenant_by_sip_domain(&domain).await? {
@@ -755,7 +758,22 @@ impl ConferenceCallHandler {
             bail!("unknown tenant domain '{}'", domain);
         }
 
-        Ok(self.default_tenant_id)
+        self.default_tenant_fallback()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("tenant context required"))
+    }
+
+    async fn default_tenant_fallback(&self) -> Result<Option<TenantId>> {
+        let tenants = self
+            .storage
+            .list_tenants()
+            .await
+            .context("failed to list tenants for default tenant fallback")?;
+        if tenants.is_empty() || (tenants.len() == 1 && tenants[0].id == self.default_tenant_id) {
+            Ok(Some(self.default_tenant_id))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Check if a call ID belongs to an active conference session.

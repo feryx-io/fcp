@@ -7,9 +7,10 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use fcp_core::storage::QueueConfigStore;
+use fcp_core::storage::{QueueConfigStore, TenantStore};
 use fcp_core::{QueueConfigId, QueueConfigRecord};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::SystemTime;
 use tracing::info;
 
@@ -30,6 +31,49 @@ fn ensure_queue_config_tenant(
         return Err(ApiError::NotFound("Queue config not found".to_string()));
     }
     Ok(config)
+}
+
+async fn ensure_runtime_queue_name_available(
+    state: &ApiState,
+    owner_tenant_id: &fcp_core::TenantId,
+    queue_name: &str,
+    exclude_id: Option<&QueueConfigId>,
+) -> Result<(), ApiError> {
+    let storage = require_storage!(state);
+    let mut tenant_ids = HashSet::from([state.default_tenant_id]);
+
+    for tenant in storage
+        .list_tenants()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list tenants: {}", e)))?
+    {
+        tenant_ids.insert(tenant.id);
+    }
+
+    for tenant_id in tenant_ids {
+        if tenant_id == *owner_tenant_id {
+            continue;
+        }
+
+        let configs = storage
+            .list_queue_configs(&tenant_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to list queue configs: {}", e)))?;
+
+        if configs.into_iter().any(|config| {
+            config.name == queue_name
+                && exclude_id
+                    .map(|excluded| config.id != *excluded)
+                    .unwrap_or(true)
+        }) {
+            return Err(ApiError::BadRequest(format!(
+                "Queue name '{}' is already in use by another tenant; shared runtime queue names must be globally unique",
+                queue_name
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 /// Queue config response.
@@ -199,6 +243,8 @@ pub async fn create_queue_config(
         ));
     }
 
+    ensure_runtime_queue_name_available(&state, &tenant_id, &req.name, None).await?;
+
     let mut config = QueueConfigRecord::new(req.name, req.extension, tenant_id);
     if let Some(strategy) = req.strategy {
         config.strategy = strategy;
@@ -324,6 +370,8 @@ pub async fn update_queue_config(
     }
 
     config.updated_at = SystemTime::now();
+
+    ensure_runtime_queue_name_available(&state, &tenant.0, &config.name, Some(&config.id)).await?;
 
     info!(queue_name = %config.name, queue_id = %config.id, "Updating queue config");
 

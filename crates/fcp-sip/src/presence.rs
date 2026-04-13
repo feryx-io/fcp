@@ -207,7 +207,8 @@ impl SipPresenceHandler {
         credential_store: Arc<dyn CredentialStore>,
         realm: String,
     ) -> Self {
-        let adapter = crate::registrar::CredentialStoreAdapter::new(credential_store, realm.clone());
+        let adapter =
+            crate::registrar::CredentialStoreAdapter::new(credential_store, realm.clone());
         self.auth = Some(PresenceDigestAuth {
             authenticator: Arc::new(crate::auth::Ha1Authenticator::new(realm, adapter)),
         });
@@ -340,8 +341,7 @@ impl SipPresenceHandler {
         let expected_username = Self::extract_aor_username(expected_aor)
             .ok_or_else(|| anyhow::anyhow!("Invalid AOR '{}'", expected_aor))?;
         if username != expected_username {
-            let response =
-                sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
+            let response = sip_uas::UserAgentServer::create_response(request, 403, "Forbidden");
             handle.send_final(response).await;
             return Ok(false);
         }
@@ -478,16 +478,18 @@ impl SipPresenceHandler {
         &self,
         presentity_aor: &str,
         subscription_id: &str,
+        tenant_id: &TenantId,
     ) -> Result<()> {
-        if let Some(watcher) = self
-            .presence
-            .force_terminate_watcher(presentity_aor, subscription_id)
-        {
+        if let Some(watcher) = self.presence.force_terminate_watcher_for_tenant(
+            presentity_aor,
+            subscription_id,
+            tenant_id,
+        ) {
             let _ = self
                 .send_notify_to_watcher(&watcher, "terminated;reason=forced")
                 .await;
             self.presence
-                .remove_watcher(presentity_aor, subscription_id)
+                .remove_watcher_for_tenant(presentity_aor, subscription_id, tenant_id)
                 .await;
             info!(
                 presentity = %presentity_aor,
@@ -713,15 +715,12 @@ impl SipPresenceHandler {
             return Ok(false);
         }
 
-        if !self
-            .presence
-            .is_watcher_authorized_for_tenant(
-                &ctx.watcher_aor,
-                &ctx.presentity_aor,
-                &self.tenant_id,
-                &ctx.event,
-            )
-        {
+        if !self.presence.is_watcher_authorized_for_tenant(
+            &ctx.watcher_aor,
+            &ctx.presentity_aor,
+            &self.tenant_id,
+            &ctx.event,
+        ) {
             info!(
                 watcher = %ctx.watcher_aor,
                 presentity = %ctx.presentity_aor,
@@ -777,15 +776,12 @@ impl SipPresenceHandler {
         handle: &sip_transaction::ServerTransactionHandle,
     ) -> Result<()> {
         let new_expires = Instant::now() + Duration::from_secs(ctx.expires as u64);
-        if let Err(e) = self
-            .presence
-            .refresh_watcher_for_tenant(
-                &ctx.presentity_aor,
-                &self.tenant_id,
-                sub_id,
-                new_expires,
-            )
-        {
+        if let Err(e) = self.presence.refresh_watcher_for_tenant(
+            &ctx.presentity_aor,
+            &self.tenant_id,
+            sub_id,
+            new_expires,
+        ) {
             warn!(error = %e, "Failed to refresh existing watcher");
         }
 
@@ -838,12 +834,11 @@ impl SipPresenceHandler {
                 .get_winfo_watchers_for_tenant(&ctx.presentity_aor, &self.tenant_id);
             for w in &winfo_watchers {
                 if w.watcher_aor == ctx.watcher_aor {
-                    self.presence
-                        .remove_winfo_watcher_for_tenant(
-                            &ctx.presentity_aor,
-                            &self.tenant_id,
-                            &w.subscription_id,
-                        );
+                    self.presence.remove_winfo_watcher_for_tenant(
+                        &ctx.presentity_aor,
+                        &self.tenant_id,
+                        &w.subscription_id,
+                    );
                     break;
                 }
             }
@@ -1014,15 +1009,12 @@ impl PresenceHandler for SipPresenceHandler {
             return self.handle_unsubscribe(&ctx, request, handle).await;
         }
 
-        if let Some(existing_sub_id) =
-            self.presence
-                .find_existing_watcher_for_tenant(
-                    &ctx.watcher_aor,
-                    &ctx.presentity_aor,
-                    &self.tenant_id,
-                    &ctx.event,
-                )
-        {
+        if let Some(existing_sub_id) = self.presence.find_existing_watcher_for_tenant(
+            &ctx.watcher_aor,
+            &ctx.presentity_aor,
+            &self.tenant_id,
+            &ctx.event,
+        ) {
             return self
                 .handle_subscribe_refresh(&ctx, &existing_sub_id, request, handle)
                 .await;
@@ -1255,8 +1247,13 @@ impl PresenceHandler for SipPresenceHandler {
             .presence
             .generate_pidf_for_tenant(aor, &self.tenant_id)
             .unwrap_or_else(|| {
-            fcp_presence::pidf::generate_pidf(aor, &fcp_presence::PresenceState::Closed, None, None)
-        });
+                fcp_presence::pidf::generate_pidf(
+                    aor,
+                    &fcp_presence::PresenceState::Closed,
+                    None,
+                    None,
+                )
+            });
         let dialog_body = self
             .presence
             .generate_dialog_info_for_tenant(aor, &self.tenant_id);

@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tracing::warn;
 
-use crate::http_api::AppState;
+use crate::http_api::{resolve_request_tenant_id, AppState};
 
 // ============================================================================
 // ETag helpers
@@ -142,10 +142,14 @@ async fn get_resource_lists(
     Path(xui): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     let uri = resource_lists_uri(&xui);
     let store = &state.resource_list_store;
 
-    match store.get_resource_list(&state.default_tenant_id, &uri).await {
+    match store.get_resource_list(&tenant_id, &uri).await {
         Ok(Some(stored)) => {
             // Decode entries_json → Vec<ResourceListXml>
             let lists: Vec<ResourceListXml> = match decode_resource_lists(&stored) {
@@ -188,6 +192,10 @@ async fn put_resource_lists(
     headers: HeaderMap,
     body: String,
 ) -> Response {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     // Validate Content-Type
     if let Some(ct) = headers.get(header::CONTENT_TYPE) {
         let ct_str = ct.to_str().unwrap_or("");
@@ -218,7 +226,7 @@ async fn put_resource_lists(
 
     // Check If-Match against existing document
     let existing = store
-        .get_resource_list(&state.default_tenant_id, &uri)
+        .get_resource_list(&tenant_id, &uri)
         .await
         .ok()
         .flatten();
@@ -242,7 +250,7 @@ async fn put_resource_lists(
         uri,
         name: lists.first().and_then(|l| l.name.clone()),
         entries_json,
-        tenant_id: state.default_tenant_id,
+        tenant_id,
     };
 
     if let Err(e) = store.save_resource_list(&stored).await {
@@ -272,11 +280,15 @@ async fn delete_resource_lists(
     Path(xui): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     let uri = resource_lists_uri(&xui);
     let store = &state.resource_list_store;
 
     // Check document exists
-    let existing = match store.get_resource_list(&state.default_tenant_id, &uri).await {
+    let existing = match store.get_resource_list(&tenant_id, &uri).await {
         Ok(Some(stored)) => stored,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
@@ -293,7 +305,7 @@ async fn delete_resource_lists(
         return *resp;
     }
 
-    if let Err(e) = store.delete_resource_list(&state.default_tenant_id, &uri).await {
+    if let Err(e) = store.delete_resource_list(&tenant_id, &uri).await {
         warn!(error = %e, "Failed to delete resource list");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -310,9 +322,13 @@ async fn get_pres_rules(
     Path(xui): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     let policy = state
         .manager
-        .get_auth_policy_for_tenant(&xui, &state.default_tenant_id)
+        .get_auth_policy_for_tenant(&xui, &tenant_id)
         .unwrap_or_default();
     let xml = generate_pres_rules(&policy);
     let etag = compute_etag(&xml);
@@ -335,6 +351,10 @@ async fn put_pres_rules(
     headers: HeaderMap,
     body: String,
 ) -> Response {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     // Validate Content-Type
     if let Some(ct) = headers.get(header::CONTENT_TYPE) {
         let ct_str = ct.to_str().unwrap_or("");
@@ -360,9 +380,7 @@ async fn put_pres_rules(
     };
 
     // Check If-Match against existing policy
-    let existing = state
-        .manager
-        .get_auth_policy_for_tenant(&xui, &state.default_tenant_id);
+    let existing = state.manager.get_auth_policy_for_tenant(&xui, &tenant_id);
     if let Some(ref existing_policy) = existing {
         let existing_xml = generate_pres_rules(existing_policy);
         let current_etag = compute_etag(&existing_xml);
@@ -376,7 +394,7 @@ async fn put_pres_rules(
     let is_create = existing.is_none();
     state
         .manager
-        .set_auth_policy(&xui, policy.clone(), &state.default_tenant_id);
+        .set_auth_policy(&xui, policy.clone(), &tenant_id);
 
     let response_xml = generate_pres_rules(&policy);
     let etag = compute_etag(&response_xml);
@@ -400,10 +418,12 @@ async fn delete_pres_rules(
     Path(xui): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let tenant_id = match resolve_request_tenant_id(&headers, state.as_ref()).await {
+        Ok(tenant_id) => tenant_id,
+        Err(resp) => return resp,
+    };
     // Check If-Match against existing policy
-    let existing = state
-        .manager
-        .get_auth_policy_for_tenant(&xui, &state.default_tenant_id);
+    let existing = state.manager.get_auth_policy_for_tenant(&xui, &tenant_id);
     match existing {
         Some(ref existing_policy) => {
             let existing_xml = generate_pres_rules(existing_policy);
@@ -417,7 +437,7 @@ async fn delete_pres_rules(
 
     state
         .manager
-        .remove_auth_policy_for_tenant(&xui, &state.default_tenant_id);
+        .remove_auth_policy_for_tenant(&xui, &tenant_id);
     StatusCode::OK.into_response()
 }
 
