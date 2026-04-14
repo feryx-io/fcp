@@ -14,6 +14,7 @@ System:       espeak-ng (for phonemization)
 """
 
 import json
+import os
 import sys
 import time
 
@@ -77,8 +78,45 @@ def resample_24k_to_8k(audio: np.ndarray) -> np.ndarray:
     return filtered[::3]
 
 
+def resolve_device(requested: str = "auto") -> str:
+    """Resolve the compute device for the model.
+
+    Args:
+        requested: "auto", "cuda", "cuda:0", "cuda:1", "cpu"
+
+    Returns:
+        The actual device string to pass to PyTorch.
+    """
+    import torch
+
+    if requested == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = requested
+
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        print(f"kokoro_tts_worker: CUDA requested but not available, falling back to CPU", file=sys.stderr, flush=True)
+        device = "cpu"
+
+    if device.startswith("cuda"):
+        idx = 0
+        if ":" in device:
+            idx = int(device.split(":")[1])
+        gpu_name = torch.cuda.get_device_name(idx)
+        gpu_mem = torch.cuda.get_device_properties(idx).total_mem / (1024 ** 3)
+        print(f"kokoro_tts_worker: using GPU {idx}: {gpu_name} ({gpu_mem:.1f} GB)", file=sys.stderr, flush=True)
+    else:
+        print(f"kokoro_tts_worker: using CPU", file=sys.stderr, flush=True)
+
+    return device
+
+
 def main():
-    print("kokoro_tts_worker: loading model...", file=sys.stderr, flush=True)
+    # Read device preference from environment (set by fcp-tts service config)
+    device_pref = os.environ.get("KOKORO_DEVICE", "auto")
+    device = resolve_device(device_pref)
+
+    print(f"kokoro_tts_worker: loading model on {device}...", file=sys.stderr, flush=True)
     t0 = time.monotonic()
 
     from kokoro import KPipeline
@@ -86,9 +124,12 @@ def main():
     # Cache pipelines per language code (each has its own G2P)
     pipelines = {}
     default_pipeline = KPipeline(lang_code="a", repo_id="hexgrad/Kokoro-82M")
+    # Move model to the requested device
+    if device != "cpu":
+        default_pipeline.model = default_pipeline.model.to(device)
     pipelines["a"] = default_pipeline
     load_ms = int((time.monotonic() - t0) * 1000)
-    print(f"kokoro_tts_worker: model loaded in {load_ms}ms", file=sys.stderr, flush=True)
+    print(f"kokoro_tts_worker: model loaded in {load_ms}ms on {device}", file=sys.stderr, flush=True)
 
     def get_pipeline(lang_code):
         if lang_code not in pipelines:
@@ -97,8 +138,8 @@ def main():
             pipelines[lang_code] = KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M", model=default_pipeline.model)
         return pipelines[lang_code]
 
-    # Signal readiness
-    ready_msg = json.dumps({"ready": True, "load_ms": load_ms})
+    # Signal readiness with device info
+    ready_msg = json.dumps({"ready": True, "load_ms": load_ms, "device": device})
     sys.stdout.write(ready_msg + "\n")
     sys.stdout.flush()
 

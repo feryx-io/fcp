@@ -1,0 +1,49 @@
+[package]
+name = "fcp-tts-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Dedicated shared TTS (Text-to-Speech) service for the Ferrous Communications Platform"
+
+[features]
+default = ["storage-redis"]
+storage-redis = ["dep:fcp-storage-redis", "dep:fcp-cluster"]
+
+[[bin]]
+name = "fcp-tts"
+path = "src/main.rs"
+
+[dependencies]
+# FCP libraries
+fcp-core = { path = "../fcp-core" }
+fcp-media = { path = "../fcp-media" }
+fcp-events = { path = "../fcp-events" }
+fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
+fcp-cluster = { path = "../fcp-cluster", optional = true }
+
+# HTTP framework
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# CLI and configuration
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+
+# Async runtime
+tokio = { workspace = true, features = ["full", "signal"] }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }

@@ -1,0 +1,33 @@
+[service]
+service_type = "tts"
+node_id = "tts-local"
+
+[http]
+bind_address = "0.0.0.0:8093"
+
+[auth]
+tokens = ["tts-local-secret"]
+
+[tts]
+default_provider = "kokoro"
+cache_dir = "/tmp/fcp/tts_cache"
+cache_max_size_mb = 1000
+default_language = "en-US"
+
+[[tts.providers]]
+name = "kokoro"
+type = "local"
+engine = "kokoro"
+python_path = ".venv/bin/python3"
+# GPU device: "auto" (cuda if available, else cpu), "cuda", "cuda:0", "cpu"
+device = "auto"
+
+[logging]
+level = "info"
+format = "pretty"
+
+[cluster]
+enabled = true
+redis_url = "redis://localhost:6379"
+heartbeat_interval_secs = 5
+heartbeat_ttl_secs = 15

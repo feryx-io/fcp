@@ -21,6 +21,7 @@ SERVICES=(
   "ivr:fcp-ivr:--config fcp-ivr-local.toml"
   "voicemail:fcp-voicemail:--config fcp-voicemail-local.toml"
   "conference:fcp-conference:--config fcp-conference-local.toml"
+  "tts:fcp-tts:--config fcp-tts-local.toml"
   "sbc:fcp-sbc:--bind 0.0.0.0:5076 --health-bind 0.0.0.0:8094 --health-api-token sbc-health-local --log-level info"
   "presence:fcp-presence:--config fcp-presence-local.toml"
   "media:fcp-media:--config fcp-media-local.toml"
@@ -36,6 +37,7 @@ declare -A HEALTH_ENDPOINTS=(
   [ivr]="8086:/health"
   [voicemail]="8088:/health"
   [conference]="8090:/health"
+  [tts]="8093:/health"
   [sbc]="8094:/health"
   [presence]="8092:/health"
   [media]="8083:/health"
@@ -193,6 +195,7 @@ do_start() {
   # Group 2: Core services
   echo ""
   echo "--- Core Services ---"
+  start_service "tts"
   start_service "admin"
   start_service "call-manager"
   start_service "jobs"
