@@ -30,9 +30,16 @@ pub async fn initialize_storage(config: &StorageSection) -> Result<StorageResult
 
     let storage = Arc::new(storage);
 
-    info!("PostgreSQL storage initialized successfully");
+    let prompt_store = Arc::new(fcp_storage_postgres::prompt::PostgresPromptStore::new(
+        storage.pool().clone(),
+    ));
+
+    let dyn_st = DynStorage::from_all_in_one(storage.clone())
+        .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>);
+
+    info!("PostgreSQL storage initialized successfully (with prompt store)");
     Ok(StorageResult {
-        dyn_storage: Arc::new(DynStorage::from_all_in_one(storage.clone())),
+        dyn_storage: Arc::new(dyn_st),
         config_store: storage.clone(),
         flow_store: storage,
     })
