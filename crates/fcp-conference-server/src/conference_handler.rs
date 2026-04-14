@@ -736,9 +736,10 @@ impl ConferenceCallHandler {
     async fn resolve_tenant(&self, request: &sip_core::Request) -> Result<TenantId> {
         let resolved = if let Some(domain) = Self::extract_tenant_domain(request) {
             if fcp_core::is_host_literal(&domain) {
-                self.default_tenant_fallback()
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("tenant context required"))?
+                // IP literal — use default tenant directly.  Internal
+                // service-to-service INVITEs (call-manager → conference)
+                // use the server IP in the Request-URI.
+                self.default_tenant_id
             } else if let Some(tenant) = self.storage.get_tenant_by_sip_domain(&domain).await? {
                 tenant.id
             } else if let Some(tenant) = self.storage.get_tenant_by_name(&domain).await? {
@@ -752,9 +753,7 @@ impl ConferenceCallHandler {
                 bail!("unknown tenant domain '{}'", domain);
             }
         } else {
-            self.default_tenant_fallback()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("tenant context required"))?
+            self.default_tenant_id
         };
 
         Ok(resolved)
