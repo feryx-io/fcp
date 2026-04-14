@@ -415,6 +415,15 @@ pub struct MediaSection {
     #[serde(default)]
     pub tts_python: Option<String>,
 
+    /// URL of shared fcp-tts service.  When set, uses Remote provider
+    /// instead of spawning a local TTS subprocess.
+    #[serde(default)]
+    pub tts_remote_url: Option<String>,
+
+    /// Bearer token for the shared fcp-tts service.
+    #[serde(default)]
+    pub tts_remote_token: Option<String>,
+
     /// Directory for pre-generated prompt audio files
     #[serde(default = "default_prompts_dir")]
     pub prompts_dir: String,
@@ -451,6 +460,8 @@ impl Default for MediaSection {
             tts_voice: None,
             tts_cache_dir: default_tts_cache_dir(),
             tts_python: None,
+            tts_remote_url: None,
+            tts_remote_token: None,
             prompts_dir: default_prompts_dir(),
         }
     }

@@ -483,6 +483,20 @@ pub enum TtsProviderConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         executable_path: Option<PathBuf>,
     },
+
+    /// Remote TTS via shared fcp-tts HTTP service.
+    Remote {
+        /// URL of the fcp-tts service (e.g. "http://localhost:8093")
+        url: String,
+        /// Bearer token for authentication
+        auth_token: String,
+        /// Optional provider name to request on the remote server
+        #[serde(skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
+        /// Optional tenant ID for usage tracking
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tenant_id: Option<String>,
+    },
 }
 
 fn default_openai_model() -> String {

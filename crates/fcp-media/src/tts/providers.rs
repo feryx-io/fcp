@@ -10,6 +10,7 @@ pub mod elevenlabs;
 pub mod google_cloud;
 pub mod local;
 pub mod openai;
+pub mod remote;
 
 /// Create a TTS provider from configuration.
 pub async fn create_provider(config: TtsProviderConfig) -> Result<Arc<dyn TtsProvider>> {
@@ -53,6 +54,16 @@ pub async fn create_provider(config: TtsProviderConfig) -> Result<Arc<dyn TtsPro
             let provider = local::LocalTts::new(engine, executable_path)?;
             // Eagerly start the worker so the model is pre-loaded and ready
             provider.warm_up().await?;
+            Ok(Arc::new(provider))
+        }
+
+        TtsProviderConfig::Remote {
+            url,
+            auth_token,
+            provider,
+            tenant_id,
+        } => {
+            let provider = remote::RemoteTtsProvider::new(url, auth_token, provider, tenant_id)?;
             Ok(Arc::new(provider))
         }
     }

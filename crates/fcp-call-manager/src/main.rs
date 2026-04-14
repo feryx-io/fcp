@@ -1788,17 +1788,36 @@ fn create_local_uri(config: &CallManagerConfig) -> Result<SipUri> {
 
 /// Create a media manager from configuration.
 async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_media::MediaManager>> {
-    // Create a single shared TTS service for the entire system
-    let tts_service = if let Some(ref engine) = config.media.tts_engine {
+    // Create a single shared TTS service for the entire system.
+    // Prefer the shared fcp-tts service (Remote) when configured;
+    // fall back to a local subprocess (Local) otherwise.
+    let tts_provider_config = if let Some(ref url) = config.media.tts_remote_url {
+        Some(fcp_media::TtsProviderConfig::Remote {
+            url: url.clone(),
+            auth_token: config
+                .media
+                .tts_remote_token
+                .clone()
+                .unwrap_or_default(),
+            provider: None,
+            tenant_id: None,
+        })
+    } else if let Some(ref engine) = config.media.tts_engine {
+        Some(fcp_media::TtsProviderConfig::Local {
+            engine: engine.clone(),
+            executable_path: config
+                .media
+                .tts_python
+                .as_ref()
+                .map(std::path::PathBuf::from),
+        })
+    } else {
+        None
+    };
+
+    let tts_service = if let Some(provider_config) = tts_provider_config {
         let tts_config = fcp_media::TtsConfig {
-            provider: fcp_media::TtsProviderConfig::Local {
-                engine: engine.clone(),
-                executable_path: config
-                    .media
-                    .tts_python
-                    .as_ref()
-                    .map(std::path::PathBuf::from),
-            },
+            provider: provider_config,
             cache_dir: std::path::PathBuf::from(&config.media.tts_cache_dir),
             cache_max_size_mb: 500,
             default_language: "en-US".to_string(),

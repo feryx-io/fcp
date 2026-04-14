@@ -797,35 +797,57 @@ fn create_local_uri(config: &IvrConfig) -> Result<SipUri> {
 
 /// Create a media manager from configuration.
 async fn create_media_manager(config: &IvrConfig) -> Result<Arc<fcp_media::MediaManager>> {
-    // Create shared TTS service using the TOML flows.tts_provider setting.
-    // "local" / "kokoro" uses the Kokoro TTS subprocess that the start
-    // script already launches system-wide.
+    // Create shared TTS service.  Prefer "remote" provider (shared fcp-tts
+    // service) when configured; fall back to local Kokoro subprocess.
     info!(tts_provider = %config.flows.tts_provider, "IVR TTS provider from config");
-    let tts_service = match config.flows.tts_provider.as_str() {
-        "local" | "kokoro" => {
-            let tts_config = fcp_media::TtsConfig {
-                provider: fcp_media::TtsProviderConfig::Local {
-                    engine: config.flows.tts_provider.clone(),
-                    executable_path: Some(std::path::PathBuf::from(".venv/bin/python3")),
-                },
-                cache_dir: std::path::PathBuf::from("/tmp/fcp/tts_cache"),
-                cache_max_size_mb: 500,
-                default_language: config.flows.tts_language.clone(),
-                default_voice: config.flows.tts_voice.clone(),
-            };
-            match fcp_media::TtsService::new(tts_config).await {
-                Ok(svc) => {
-                    let svc = Arc::new(svc);
-                    info!(provider = %svc.provider_name(), "TTS service created for IVR");
-                    Some(svc)
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to create TTS service — Gather/Say prompts will be silent");
-                    None
-                }
+    let tts_provider_config = match config.flows.tts_provider.as_str() {
+        "remote" => {
+            // Read remote URL/token from the flows config or fall back to defaults
+            let url = config
+                .flows
+                .tts_remote_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:8093".to_string());
+            let token = config
+                .flows
+                .tts_remote_token
+                .clone()
+                .unwrap_or_default();
+            Some(fcp_media::TtsProviderConfig::Remote {
+                url,
+                auth_token: token,
+                provider: None,
+                tenant_id: None,
+            })
+        }
+        "local" | "kokoro" => Some(fcp_media::TtsProviderConfig::Local {
+            engine: config.flows.tts_provider.clone(),
+            executable_path: Some(std::path::PathBuf::from(".venv/bin/python3")),
+        }),
+        _ => None,
+    };
+
+    let tts_service = if let Some(provider_config) = tts_provider_config {
+        let tts_config = fcp_media::TtsConfig {
+            provider: provider_config,
+            cache_dir: std::path::PathBuf::from("/tmp/fcp/tts_cache"),
+            cache_max_size_mb: 500,
+            default_language: config.flows.tts_language.clone(),
+            default_voice: config.flows.tts_voice.clone(),
+        };
+        match fcp_media::TtsService::new(tts_config).await {
+            Ok(svc) => {
+                let svc = Arc::new(svc);
+                info!(provider = %svc.provider_name(), "TTS service created for IVR");
+                Some(svc)
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to create TTS service — Gather/Say prompts will be silent");
+                None
             }
         }
-        _ => None,
+    } else {
+        None
     };
 
     let media_config = MediaConfig {

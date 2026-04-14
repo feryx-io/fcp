@@ -319,6 +319,14 @@ pub struct FlowsSection {
     /// TTS voice name (provider-specific)
     pub tts_voice: Option<String>,
 
+    /// URL of shared fcp-tts service (used when tts_provider = "remote")
+    #[serde(default)]
+    pub tts_remote_url: Option<String>,
+
+    /// Bearer token for shared fcp-tts service
+    #[serde(default)]
+    pub tts_remote_token: Option<String>,
+
     /// Search path for Play node audio files
     pub audio_path: Option<String>,
 }
@@ -332,6 +340,8 @@ impl Default for FlowsSection {
             tts_api_key: None,
             tts_language: default_tts_language(),
             tts_voice: None,
+            tts_remote_url: None,
+            tts_remote_token: None,
             audio_path: None,
         }
     }

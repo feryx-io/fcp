@@ -216,7 +216,8 @@ impl MediaConfig {
             match &tts.provider {
                 crate::tts::TtsProviderConfig::GoogleCloud { .. }
                 | crate::tts::TtsProviderConfig::OpenAi { .. }
-                | crate::tts::TtsProviderConfig::Local { .. } => {}
+                | crate::tts::TtsProviderConfig::Local { .. }
+                | crate::tts::TtsProviderConfig::Remote { .. } => {}
                 crate::tts::TtsProviderConfig::AwsPolly { .. } => {
                     return Err(Error::Config(
                         "tts.provider.type = \"aws_polly\" is not implemented yet; use google_cloud, open_ai, or local".to_string(),
