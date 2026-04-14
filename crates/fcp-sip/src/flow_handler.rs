@@ -866,16 +866,13 @@ impl FlowCallHandler {
                 match resolved {
                     Some(uri) => uri,
                     None => {
-                        // Last resort: construct sip:ext@local_host so the request
-                        // routes through the local B2BUA (which has full routing
-                        // tables).  This is less efficient than direct-to-device
-                        // but keeps the call working when the storage lookup fails.
+                        // Last resort: construct sip:ext@host (no port) so the
+                        // request routes to the call-manager on port 5060 via
+                        // standard SIP DNS.  We intentionally omit the port to
+                        // avoid looping back to sidecar services (IVR, voicemail)
+                        // that listen on non-standard ports.
                         if let Some(ref local) = self.local_uri {
-                            let host = if let Some(port) = local.port() {
-                                format!("{}:{}", local.host(), port)
-                            } else {
-                                local.host().to_string()
-                            };
+                            let host = local.host().to_string();
                             let full_uri = format!("sip:{}@{}", destination, host);
                             warn!(
                                 a_leg_call_id = %a_leg_call_id,

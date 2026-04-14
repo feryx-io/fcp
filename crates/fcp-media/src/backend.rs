@@ -813,6 +813,19 @@ pub mod embedded {
             debug!(?call_id, "Terminating media session");
 
             if let Some((_, session_info)) = self.sessions.remove(call_id) {
+                // Stop all active playbacks for this session (closes file handles)
+                let forge_call_id = &session_info.forge_call_id;
+                if let Err(e) = self
+                    .playback_manager
+                    .stop_all_playbacks(forge_call_id)
+                    .await
+                {
+                    warn!(?call_id, error = %e, "Failed to stop playbacks during session termination");
+                }
+                // Remove any playback handles referencing this session
+                self.playback_handles
+                    .retain(|_id, _handle| true); // handles are dropped when session stops
+
                 // Stop recording if active (must do this before terminating session)
                 if session_info.forge_session.is_recording().await {
                     if let Err(e) = session_info.forge_session.disable_recording().await {
