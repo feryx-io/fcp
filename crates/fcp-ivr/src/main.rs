@@ -397,6 +397,21 @@ async fn main() -> Result<()> {
         config.media.rtp_port_start,
     );
 
+    // Wire PromptService so the flow engine can resolve /api/v1/prompts/... URLs
+    // to local audio files (same mechanism as the call-manager).
+    let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {
+        let prompt_service = Arc::new(fcp_core::PromptService::new(
+            Arc::clone(prompt_store),
+            config.service.default_tenant_id,
+            "en-US",
+        ));
+        info!("PromptService wired to IVR flow engine");
+        flow_handler.with_prompt_service(prompt_service)
+    } else {
+        warn!("No prompt store configured — IVR greeting audio may not resolve");
+        flow_handler
+    };
+
     let flow_handler = Arc::new(flow_handler);
 
     // 17. Load DID routes from config + DB
