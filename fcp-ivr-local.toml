@@ -25,6 +25,10 @@ public_ip = "192.168.1.225"
 server_url = "http://localhost:8081/ingest"
 auth_token = "events-local-secret"
 
+[flows]
+tts_provider = "kokoro"
+tts_language = "en-US"
+
 [logging]
 level = "info"
 format = "pretty"

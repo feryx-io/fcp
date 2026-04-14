@@ -397,6 +397,15 @@ async fn main() -> Result<()> {
         config.media.rtp_port_start,
     );
 
+    // Wire TTS service so Gather/Say nodes can synthesize prompts at runtime.
+    let flow_handler = if let Some(tts) = media_manager.tts_service() {
+        info!("TTS service wired to IVR flow engine for Gather/Say prompts");
+        flow_handler.with_tts_service(Arc::clone(tts))
+    } else {
+        warn!("No TTS service — Gather/Say TTS prompts will be silent");
+        flow_handler
+    };
+
     // Wire PromptService so the flow engine can resolve /api/v1/prompts/... URLs
     // to local audio files (same mechanism as the call-manager).
     let flow_handler = if let Some(prompt_store) = dyn_storage.prompt_store() {
@@ -788,11 +797,42 @@ fn create_local_uri(config: &IvrConfig) -> Result<SipUri> {
 
 /// Create a media manager from configuration.
 async fn create_media_manager(config: &IvrConfig) -> Result<Arc<fcp_media::MediaManager>> {
+    // Create shared TTS service using the TOML flows.tts_provider setting.
+    // "local" / "kokoro" uses the Kokoro TTS subprocess that the start
+    // script already launches system-wide.
+    let tts_service = match config.flows.tts_provider.as_str() {
+        "local" | "kokoro" => {
+            let tts_config = fcp_media::TtsConfig {
+                provider: fcp_media::TtsProviderConfig::Local {
+                    engine: config.flows.tts_provider.clone(),
+                    executable_path: None,
+                },
+                cache_dir: std::path::PathBuf::from("/tmp/fcp/tts_cache"),
+                cache_max_size_mb: 500,
+                default_language: config.flows.tts_language.clone(),
+                default_voice: config.flows.tts_voice.clone(),
+            };
+            match fcp_media::TtsService::new(tts_config).await {
+                Ok(svc) => {
+                    let svc = Arc::new(svc);
+                    info!(provider = %svc.provider_name(), "TTS service created for IVR");
+                    Some(svc)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create TTS service — Gather/Say prompts will be silent");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
     let media_config = MediaConfig {
         backend: BackendType::Embedded,
         rtp_port_start: config.media.rtp_port_start,
         rtp_port_end: config.media.rtp_port_end,
         public_ip: config.media.public_ip.clone(),
+        tts_service,
         ..Default::default()
     };
 
