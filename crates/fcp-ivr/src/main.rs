@@ -800,12 +800,13 @@ async fn create_media_manager(config: &IvrConfig) -> Result<Arc<fcp_media::Media
     // Create shared TTS service using the TOML flows.tts_provider setting.
     // "local" / "kokoro" uses the Kokoro TTS subprocess that the start
     // script already launches system-wide.
+    info!(tts_provider = %config.flows.tts_provider, "IVR TTS provider from config");
     let tts_service = match config.flows.tts_provider.as_str() {
         "local" | "kokoro" => {
             let tts_config = fcp_media::TtsConfig {
                 provider: fcp_media::TtsProviderConfig::Local {
                     engine: config.flows.tts_provider.clone(),
-                    executable_path: None,
+                    executable_path: Some(std::path::PathBuf::from(".venv/bin/python3")),
                 },
                 cache_dir: std::path::PathBuf::from("/tmp/fcp/tts_cache"),
                 cache_max_size_mb: 500,
