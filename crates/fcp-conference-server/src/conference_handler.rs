@@ -2380,16 +2380,32 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     async fn can_handle(&self, request: &sip_core::Request) -> bool {
         let room_number = match extract_room_number(request) {
             Some(rn) => rn,
-            None => return false,
+            None => {
+                debug!(uri = %request.uri(), "can_handle: extract_room_number returned None");
+                return false;
+            }
         };
 
         let tenant_id = match self.resolve_tenant(request).await {
             Ok(tenant_id) => tenant_id,
-            Err(_) => return false,
+            Err(e) => {
+                warn!(room = %room_number, error = %e, "can_handle: resolve_tenant failed");
+                return false;
+            }
         };
         match self.lookup_meeting(&tenant_id, &room_number).await {
-            Ok(Some(meeting)) => meeting.enabled,
-            _ => false,
+            Ok(Some(meeting)) => {
+                debug!(room = %room_number, tenant = %tenant_id, enabled = meeting.enabled, "can_handle: meeting found");
+                meeting.enabled
+            }
+            Ok(None) => {
+                debug!(room = %room_number, tenant = %tenant_id, "can_handle: no meeting found for tenant");
+                false
+            }
+            Err(e) => {
+                warn!(room = %room_number, tenant = %tenant_id, error = %e, "can_handle: lookup_meeting error");
+                false
+            }
         }
     }
 

@@ -21,7 +21,7 @@ SERVICES=(
   "ivr:fcp-ivr:--config fcp-ivr-local.toml"
   "voicemail:fcp-voicemail:--config fcp-voicemail-local.toml"
   "conference:fcp-conference:--config fcp-conference-local.toml"
-  "sbc:fcp-sbc:--bind 0.0.0.0:5076 --health-bind 0.0.0.0:8094 --log-level info"
+  "sbc:fcp-sbc:--bind 0.0.0.0:5076 --health-bind 0.0.0.0:8094 --health-api-token sbc-health-local --log-level info"
   "presence:fcp-presence:--config fcp-presence-local.toml"
   "media:fcp-media:--config fcp-media-local.toml"
   "api-gateway:fcp-api-gateway:--config fcp-api-gateway-local.toml"
