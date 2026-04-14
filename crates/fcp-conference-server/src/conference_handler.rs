@@ -705,8 +705,18 @@ impl ConferenceCallHandler {
             .or_else(|| request_uri.strip_prefix("sips:"))
             .unwrap_or(&request_uri);
 
-        if let Some(domain) = uri_str.split('@').nth(1) {
-            let domain = domain.split(';').next().unwrap_or(domain).trim();
+        if let Some(hostport) = uri_str.split('@').nth(1) {
+            // Strip URI parameters first, then strip port.
+            let no_params = hostport.split(';').next().unwrap_or(hostport).trim();
+            // IPv6 brackets: [::1]:5074 → [::1]; IPv4/hostname: 1.2.3.4:5074 → 1.2.3.4
+            let domain = if no_params.starts_with('[') {
+                no_params
+                    .find(']')
+                    .map(|end| &no_params[..=end])
+                    .unwrap_or(no_params)
+            } else {
+                no_params.split(':').next().unwrap_or(no_params)
+            };
             if !domain.is_empty() && domain != "localhost" && domain != "127.0.0.1" {
                 return Some(domain.to_string());
             }
