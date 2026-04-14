@@ -3894,25 +3894,30 @@ impl SipMessageHandler {
                                                         extension_contacts.extend(registrations);
                                                     }
                                                     Ok(_) => {
+                                                        // No registration found — use
+                                                        // the device's sip_uri directly
+                                                        // as a synthetic contact.  This
+                                                        // handles servers (IVR, conf)
+                                                        // that receive INVITEs but don't
+                                                        // REGISTER.
                                                         info!(
                                                             call_id = %call_id,
                                                             device_id = %device_id,
                                                             sip_uri = %sip_uri,
-                                                            "Device not registered"
+                                                            "Device not registered, using sip_uri as direct target"
                                                         );
-                                                        let response = self.create_simple_response(
-                                                            request,
-                                                            480,
-                                                            "Temporarily Unavailable",
-                                                        );
-                                                        a_leg_handle.send_final(response).await;
-                                                        let _ = self.call_manager.terminate_call(
-                                                            &call_id,
-                                                            Some(
-                                                                "Device not registered".to_string(),
-                                                            ),
-                                                        );
-                                                        return Ok(());
+                                                        match sip_registrar::Binding::new(
+                                                            SmolStr::new(destination_aor),
+                                                            SmolStr::new(sip_uri),
+                                                            std::time::Duration::from_secs(3600),
+                                                        ) {
+                                                            Ok(binding) => {
+                                                                extension_contacts.push(binding);
+                                                            }
+                                                            Err(e) => {
+                                                                warn!(call_id = %call_id, error = %e, "Failed to create synthetic binding from device sip_uri");
+                                                            }
+                                                        }
                                                     }
                                                     Err(e) => {
                                                         error!(

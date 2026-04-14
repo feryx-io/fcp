@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
     let storage_result = storage::initialize_storage(&config.storage).await?;
     let config_store = storage_result.config_store;
     let dyn_storage = storage_result.dyn_storage;
+    let pg_flow_store = storage_result.flow_store;
 
     // 4b. Seed operational config sections into database (DB primary, TOML seed)
     // Bootstrap sections (service, sip, storage, http, logging) stay TOML-only.
@@ -367,7 +368,9 @@ async fn main() -> Result<()> {
     ));
 
     // 16. Create flow store and FlowCallHandler — THE KEY STEP
-    let flow_store: Arc<dyn fcp_flow::FlowStore> = Arc::new(InMemoryFlowStore::new());
+    // Use the PostgreSQL-backed flow store so flows created via the API are
+    // available without restarting the IVR.
+    let flow_store: Arc<dyn fcp_flow::FlowStore> = pg_flow_store;
 
     let local_uri = create_local_uri(&config)?;
     let contact_uri = local_uri.clone();
@@ -396,7 +399,7 @@ async fn main() -> Result<()> {
 
     let flow_handler = Arc::new(flow_handler);
 
-    // 17. Load static DID routes from config
+    // 17. Load DID routes from config + DB
     for route in &config.flows.routes {
         flow_handler
             .add_route(route.did.clone(), route.flow_id.clone())
@@ -408,9 +411,34 @@ async fn main() -> Result<()> {
             .await;
     }
 
+    // Auto-discover default flow from DB if none is configured in TOML.
+    // This lets IVR servers pick up flows created via the API without
+    // manual TOML configuration per instance.
+    if config.flows.default_flow_id.is_none() {
+        let tenant_id_str = config.service.default_tenant_id.to_string();
+        match flow_store.list_flows(Some(&tenant_id_str)).await {
+            Ok(flows) => {
+                if let Some(flow) = flows.into_iter().find(|f| f.enabled) {
+                    info!(
+                        flow_id = %flow.id,
+                        flow_name = %flow.name,
+                        "Auto-discovered default flow from database"
+                    );
+                    flow_handler
+                        .add_route("_default".to_string(), flow.id)
+                        .await;
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to query flows from database for auto-discovery");
+            }
+        }
+    }
+
+    let effective_default = flow_handler.get_flow_for_did("_default").await;
     info!(
         did_routes = config.flows.routes.len(),
-        default_flow = config.flows.default_flow_id.as_deref().unwrap_or("none"),
+        default_flow = effective_default.as_deref().unwrap_or("none"),
         "IVR flow routes loaded"
     );
 
