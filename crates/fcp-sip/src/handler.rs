@@ -3913,6 +3913,42 @@ impl SipMessageHandler {
                                                         ) {
                                                             Ok(binding) => {
                                                                 extension_contacts.push(binding);
+
+                                                                // The target is an unregistered
+                                                                // server (IVR, voicemail, etc.)
+                                                                // that anchors its own media.
+                                                                // Disable media anchoring on this
+                                                                // leg so RTP flows directly from
+                                                                // the caller to the server —
+                                                                // otherwise DTMF and playback
+                                                                // won't work (the call-manager's
+                                                                // media engine would consume
+                                                                // RFC 2833 events before they
+                                                                // reach the server).
+                                                                if let Some(call_entry) = self.call_manager.get_call(&call_id) {
+                                                                    if call_entry.media_anchored {
+                                                                        if let Some(ref session_id) = call_entry.media_session_id {
+                                                                            if let Some(ref mm) = self.media_manager {
+                                                                                let sid = session_id.clone();
+                                                                                let mm2 = Arc::clone(mm);
+                                                                                tokio::spawn(async move {
+                                                                                    if let Err(e) = mm2.terminate_session(&sid).await {
+                                                                                        tracing::debug!(error = %e, "Failed to terminate pre-allocated media session for server target");
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        }
+                                                                        let _ = self.call_manager.update_call(&call_id, |call| {
+                                                                            call.media_anchored = false;
+                                                                            call.media_session_id = None;
+                                                                        });
+                                                                        info!(
+                                                                            call_id = %call_id,
+                                                                            sip_uri = %sip_uri,
+                                                                            "Media anchoring disabled for server device — RTP flows directly to target"
+                                                                        );
+                                                                    }
+                                                                }
                                                             }
                                                             Err(e) => {
                                                                 warn!(call_id = %call_id, error = %e, "Failed to create synthetic binding from device sip_uri");
