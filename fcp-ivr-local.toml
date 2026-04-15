@@ -26,7 +26,9 @@ server_url = "http://localhost:8081/ingest"
 auth_token = "events-local-secret"
 
 [flows]
-tts_provider = "kokoro"
+tts_provider = "remote"
+tts_remote_url = "http://localhost:8093"
+tts_remote_token = "tts-local-secret"
 tts_language = "en-US"
 
 [logging]

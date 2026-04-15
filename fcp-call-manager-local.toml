@@ -21,10 +21,10 @@ api_token = "svc-local-secret"
 [media]
 rtp_port_start = 20000
 rtp_port_end = 30000
-tts_engine = "kokoro"
+tts_remote_url = "http://localhost:8093"
+tts_remote_token = "tts-local-secret"
 tts_voice = "af_heart"
 tts_cache_dir = "/tmp/fcp/tts_cache"
-tts_python = ".venv/bin/python3"
 prompts_dir = "/tmp/fcp/audio/prompts"
 
 [b2bua]
