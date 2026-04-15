@@ -61,7 +61,7 @@ impl RemoteTtsProvider {
         tenant_id: Option<String>,
     ) -> Result<Self> {
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(180))
             .build()?;
 
         Ok(Self {
