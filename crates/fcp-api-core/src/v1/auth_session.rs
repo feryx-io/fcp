@@ -131,20 +131,20 @@ pub async fn login(
     // Get user first (we need to check lock status before password verification)
     let requested_tenant = parse_tenant_id(req.tenant_id.as_deref())?;
 
-    let mut user = match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await?
-    {
-        Some(u) => u,
-        None => {
-            // Constant-time: still do a bcrypt check to prevent timing attacks
-            let _ = password::verify_password(
-                &req.password,
-                "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
-            );
-            return Err(ApiError::Unauthorized(
-                "Invalid username or password".to_string(),
-            ));
-        }
-    };
+    let mut user =
+        match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await? {
+            Some(u) => u,
+            None => {
+                // Constant-time: still do a bcrypt check to prevent timing attacks
+                let _ = password::verify_password(
+                    &req.password,
+                    "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
+                );
+                return Err(ApiError::Unauthorized(
+                    "Invalid username or password".to_string(),
+                ));
+            }
+        };
 
     let now = SystemTime::now();
     let policy = &state.security_policy;
@@ -407,19 +407,19 @@ pub async fn change_expired_password(
     // Get user (with constant-time bcrypt on miss to prevent timing attacks)
     let requested_tenant = parse_tenant_id(req.tenant_id.as_deref())?;
 
-    let mut user = match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await?
-    {
-        Some(u) => u,
-        None => {
-            let _ = password::verify_password(
-                &req.current_password,
-                "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
-            );
-            return Err(ApiError::Unauthorized(
-                "Invalid username or password".to_string(),
-            ));
-        }
-    };
+    let mut user =
+        match load_user_for_login(storage, &req.username, requested_tenant.as_ref()).await? {
+            Some(u) => u,
+            None => {
+                let _ = password::verify_password(
+                    &req.current_password,
+                    "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5jtRKm5T6fHGC",
+                );
+                return Err(ApiError::Unauthorized(
+                    "Invalid username or password".to_string(),
+                ));
+            }
+        };
 
     let now = SystemTime::now();
     let policy = &state.security_policy;

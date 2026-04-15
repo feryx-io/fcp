@@ -16,7 +16,7 @@
 //! alloy, echo, fable, onyx, nova, shimmer
 
 use super::super::{TtsProvider, VoiceInfo};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -48,6 +48,10 @@ impl OpenAiTts {
     /// * `api_key` - OpenAI API key
     /// * `model` - Model to use (`tts-1` or `tts-1-hd`)
     pub fn new(api_key: String, model: String) -> Result<Self> {
+        if api_key.trim().is_empty() {
+            bail!("OpenAI TTS provider requires a non-empty API key");
+        }
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()

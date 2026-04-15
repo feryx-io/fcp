@@ -58,16 +58,12 @@ mod tests {
 
     #[test]
     fn invalid_udp_bind() {
-        assert!(
-            validate_sip_binds("not-an-addr", "0.0.0.0:5060", None, None, None, None).is_err()
-        );
+        assert!(validate_sip_binds("not-an-addr", "0.0.0.0:5060", None, None, None, None).is_err());
     }
 
     #[test]
     fn invalid_tcp_bind() {
-        assert!(
-            validate_sip_binds("0.0.0.0:5060", "not-an-addr", None, None, None, None).is_err()
-        );
+        assert!(validate_sip_binds("0.0.0.0:5060", "not-an-addr", None, None, None, None).is_err());
     }
 
     #[test]

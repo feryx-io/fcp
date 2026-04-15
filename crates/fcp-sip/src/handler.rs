@@ -3615,10 +3615,7 @@ impl SipMessageHandler {
                 // When a device's sip_uri uses the server IP but the phone
                 // registered under the tenant's SIP domain, this lets
                 // get_registrations_for_device retry with the correct domain.
-                let invite_domain = destination_aor
-                    .split('@')
-                    .nth(1)
-                    .unwrap_or("");
+                let invite_domain = destination_aor.split('@').nth(1).unwrap_or("");
 
                 debug!(
                     call_id = %call_id,
@@ -3765,7 +3762,13 @@ impl SipMessageHandler {
                                                 }
 
                                                 if let Some(sip_uri) = &device.sip_uri {
-                                                    match registrar.get_registrations_for_device(&tenant_id, sip_uri, invite_domain).await
+                                                    match registrar
+                                                        .get_registrations_for_device(
+                                                            &tenant_id,
+                                                            sip_uri,
+                                                            invite_domain,
+                                                        )
+                                                        .await
                                                     {
                                                         Ok(registrations)
                                                             if !registrations.is_empty() =>
@@ -3880,7 +3883,14 @@ impl SipMessageHandler {
                                         if let Some(sip_uri) = &device.sip_uri {
                                             // Look up device registrations
                                             if let Some(registrar) = &self.registrar {
-                                                match registrar.get_registrations_for_device(&tenant_id, sip_uri, invite_domain).await {
+                                                match registrar
+                                                    .get_registrations_for_device(
+                                                        &tenant_id,
+                                                        sip_uri,
+                                                        invite_domain,
+                                                    )
+                                                    .await
+                                                {
                                                     Ok(registrations)
                                                         if !registrations.is_empty() =>
                                                     {
@@ -3925,17 +3935,31 @@ impl SipMessageHandler {
                                                                 // media engine would consume
                                                                 // RFC 2833 events before they
                                                                 // reach the server).
-                                                                if let Some(call_entry) = self.call_manager.get_call(&call_id) {
+                                                                if let Some(call_entry) = self
+                                                                    .call_manager
+                                                                    .get_call(&call_id)
+                                                                {
                                                                     if call_entry.media_anchored {
-                                                                        if let Some(ref session_id) = call_entry.media_session_id {
-                                                                            if let Some(ref mm) = self.media_manager {
-                                                                                let sid = session_id.clone();
-                                                                                let mm2 = Arc::clone(mm);
-                                                                                tokio::spawn(async move {
-                                                                                    if let Err(e) = mm2.terminate_session(&sid).await {
+                                                                        if let Some(
+                                                                            ref session_id,
+                                                                        ) = call_entry
+                                                                            .media_session_id
+                                                                        {
+                                                                            if let Some(ref mm) =
+                                                                                self.media_manager
+                                                                            {
+                                                                                let sid =
+                                                                                    session_id
+                                                                                        .clone();
+                                                                                let mm2 =
+                                                                                    Arc::clone(mm);
+                                                                                tokio::spawn(
+                                                                                    async move {
+                                                                                        if let Err(e) = mm2.terminate_session(&sid).await {
                                                                                         tracing::debug!(error = %e, "Failed to terminate pre-allocated media session for server target");
                                                                                     }
-                                                                                });
+                                                                                    },
+                                                                                );
                                                                             }
                                                                         }
                                                                         let _ = self.call_manager.update_call(&call_id, |call| {

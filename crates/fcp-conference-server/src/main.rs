@@ -552,6 +552,7 @@ async fn main() -> Result<()> {
                     .python_path
                     .as_ref()
                     .map(std::path::PathBuf::from),
+                device: None,
             }),
             "openai" => config
                 .tts

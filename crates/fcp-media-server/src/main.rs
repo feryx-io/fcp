@@ -185,7 +185,10 @@ async fn main() -> Result<()> {
                         "auth" => {
                             // SECURITY: Auth config stays TOML-only.
                             // DB overrides could silently disable auth on public binds.
-                            info!(service = svc, section, "Skipping DB override for auth (TOML-only for security)");
+                            info!(
+                                service = svc,
+                                section, "Skipping DB override for auth (TOML-only for security)"
+                            );
                         }
                         "ai" => {
                             if let Ok(v) = serde_json::from_value(entry.value) {

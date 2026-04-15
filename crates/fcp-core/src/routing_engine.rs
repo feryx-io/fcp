@@ -367,9 +367,10 @@ impl RoutingEngine for DefaultRoutingEngine {
                             }
                         }
 
-                        Err(RoutingError::NoRoute(
-                            format!("No routable service target found for extension {}", ext),
-                        ))
+                        Err(RoutingError::NoRoute(format!(
+                            "No routable service target found for extension {}",
+                            ext
+                        )))
                     }
                 }
             }

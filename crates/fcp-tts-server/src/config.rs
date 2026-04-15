@@ -57,7 +57,7 @@ pub struct HttpSection {
 }
 
 fn default_http_bind() -> String {
-    "0.0.0.0:8093".to_string()
+    "127.0.0.1:8093".to_string()
 }
 
 impl Default for HttpSection {
@@ -76,6 +76,8 @@ impl Default for HttpSection {
 pub struct AuthSection {
     #[serde(default)]
     pub tokens: Vec<String>,
+    #[serde(default)]
+    pub allow_unauthenticated: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -251,5 +253,72 @@ pub fn load_config(path: Option<&str>) -> anyhow::Result<TtsServerConfig> {
             logging: LoggingSection::default(),
             cluster: ClusterSection::default(),
         }),
+    }
+}
+
+pub fn validate_runtime_config(config: &TtsServerConfig) -> anyhow::Result<()> {
+    if config.auth.tokens.is_empty() && !config.auth.allow_unauthenticated {
+        anyhow::bail!(
+            "Authentication is required by default. Configure [auth].tokens or set [auth].allow_unauthenticated = true explicitly"
+        );
+    }
+
+    if config.tts.providers.is_empty() {
+        anyhow::bail!("At least one TTS provider must be configured under [tts].providers");
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> TtsServerConfig {
+        TtsServerConfig {
+            service: ServiceSection::default(),
+            http: HttpSection::default(),
+            auth: AuthSection::default(),
+            tts: TtsSection {
+                default_provider: "primary".to_string(),
+                cache_dir: "/tmp/fcp/tts-test".into(),
+                cache_max_size_mb: 100,
+                default_language: "en-US".to_string(),
+                default_voice: None,
+                providers: vec![ProviderEntry {
+                    name: "primary".to_string(),
+                    provider_type: "openai".to_string(),
+                    engine: None,
+                    python_path: None,
+                    api_key: Some("test-key".to_string()),
+                    model: Some("tts-1".to_string()),
+                    device: "auto".to_string(),
+                }],
+            },
+            logging: LoggingSection::default(),
+            cluster: ClusterSection::default(),
+        }
+    }
+
+    #[test]
+    fn test_default_bind_is_loopback() {
+        assert_eq!(default_http_bind(), "127.0.0.1:8093");
+    }
+
+    #[test]
+    fn test_validate_runtime_config_requires_explicit_auth_opt_out() {
+        let config = test_config();
+        let error = validate_runtime_config(&config).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Authentication is required by default"));
+    }
+
+    #[test]
+    fn test_validate_runtime_config_allows_explicit_unauthenticated_mode() {
+        let mut config = test_config();
+        config.auth.allow_unauthenticated = true;
+
+        validate_runtime_config(&config).unwrap();
     }
 }

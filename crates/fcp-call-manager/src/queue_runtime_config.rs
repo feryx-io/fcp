@@ -126,9 +126,7 @@ pub async fn build_effective_queue_runtime(
         let records = storage
             .list_queue_configs(&tenant_id)
             .await
-            .with_context(|| {
-                format!("failed to list queue configs for tenant '{}'", tenant_id)
-            })?;
+            .with_context(|| format!("failed to list queue configs for tenant '{}'", tenant_id))?;
 
         for record in records {
             let definition = TenantQueueDefinition {

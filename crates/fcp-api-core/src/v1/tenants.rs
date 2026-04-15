@@ -180,7 +180,10 @@ fn normalize_sip_domains(input: &[String]) -> Result<Vec<String>, ApiError> {
         }
 
         // Very light syntactic check: no whitespace, no SIP separators.
-        if lower.chars().any(|c| c.is_whitespace() || matches!(c, '@' | ':' | '/' | '<' | '>' | ',' | ';')) {
+        if lower
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '@' | ':' | '/' | '<' | '>' | ',' | ';'))
+        {
             return Err(ApiError::BadRequest(format!(
                 "'{}' is not a valid SIP domain (whitespace or SIP separator characters are not allowed)",
                 raw

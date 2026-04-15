@@ -367,9 +367,7 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         .is_some_and(|token| !token.is_empty());
 
     if config.api.auth_enabled && !has_token {
-        anyhow::bail!(
-            "api.auth_token must be set when api.auth_enabled = true"
-        );
+        anyhow::bail!("api.auth_token must be set when api.auth_enabled = true");
     }
 
     if public_bind && !config.api.auth_enabled {
@@ -413,7 +411,11 @@ mod tests {
         assert_eq!(config.api.bind_address.port(), 8080);
         assert!(config.api.bind_address.ip().is_loopback());
         assert!(config.api.auth_enabled);
-        assert!(config.api.auth_token.as_deref().is_some_and(|token| !token.is_empty()));
+        assert!(config
+            .api
+            .auth_token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty()));
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.logging.level, "info");
     }

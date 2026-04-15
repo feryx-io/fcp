@@ -398,10 +398,10 @@ impl PresenceStore for RedisPresenceStore {
 
         let mut policies = Vec::with_capacity(aors.len());
         for aor in &aors {
-            let fields: std::collections::HashMap<String, String> =
-                conn.hgetall(Self::auth_key(tenant_id, aor))
-                    .await
-                    .unwrap_or_default();
+            let fields: std::collections::HashMap<String, String> = conn
+                .hgetall(Self::auth_key(tenant_id, aor))
+                .await
+                .unwrap_or_default();
 
             if fields.is_empty() {
                 continue;

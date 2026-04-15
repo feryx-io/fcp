@@ -808,11 +808,7 @@ async fn create_media_manager(config: &IvrConfig) -> Result<Arc<fcp_media::Media
                 .tts_remote_url
                 .clone()
                 .unwrap_or_else(|| "http://localhost:8093".to_string());
-            let token = config
-                .flows
-                .tts_remote_token
-                .clone()
-                .unwrap_or_default();
+            let token = config.flows.tts_remote_token.clone().unwrap_or_default();
             Some(fcp_media::TtsProviderConfig::Remote {
                 url,
                 auth_token: token,
@@ -823,6 +819,7 @@ async fn create_media_manager(config: &IvrConfig) -> Result<Arc<fcp_media::Media
         "local" | "kokoro" => Some(fcp_media::TtsProviderConfig::Local {
             engine: config.flows.tts_provider.clone(),
             executable_path: Some(std::path::PathBuf::from(".venv/bin/python3")),
+            device: None,
         }),
         _ => None,
     };

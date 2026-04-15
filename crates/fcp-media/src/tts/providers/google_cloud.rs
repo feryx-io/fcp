@@ -10,7 +10,7 @@
 //! Requires an API key from Google Cloud Console with Text-to-Speech API enabled.
 
 use super::super::{TtsProvider, VoiceInfo};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,10 @@ pub struct GoogleCloudTts {
 impl GoogleCloudTts {
     /// Create a new Google Cloud TTS provider.
     pub fn new(api_key: String) -> Result<Self> {
+        if api_key.trim().is_empty() {
+            bail!("Google Cloud TTS provider requires a non-empty API key");
+        }
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()

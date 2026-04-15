@@ -51,9 +51,15 @@ pub async fn synthesize(
         }
     };
 
-    let voice = req.voice.as_deref().or(state.config.tts.default_voice.as_deref());
+    let voice = req
+        .voice
+        .as_deref()
+        .or(state.config.tts.default_voice.as_deref());
 
-    match service.synthesize(&req.text, Some(&req.language), voice).await {
+    match service
+        .synthesize(&req.text, Some(&req.language), voice)
+        .await
+    {
         Ok(path) => {
             let chars = req.text.len();
             info!(
@@ -68,12 +74,9 @@ pub async fn synthesize(
 
             // Read the WAV file and return as bytes.
             match tokio::fs::read(&path).await {
-                Ok(bytes) => (
-                    StatusCode::OK,
-                    [(header::CONTENT_TYPE, "audio/wav")],
-                    bytes,
-                )
-                    .into_response(),
+                Ok(bytes) => {
+                    (StatusCode::OK, [(header::CONTENT_TYPE, "audio/wav")], bytes).into_response()
+                }
                 Err(e) => {
                     warn!(error = %e, path = %path.display(), "Failed to read synthesized audio");
                     (
@@ -111,29 +114,42 @@ pub async fn list_voices(
     State(state): State<Arc<AppState>>,
     Query(q): Query<VoicesQuery>,
 ) -> Response {
-    let provider_name = q
-        .provider
-        .as_deref()
-        .unwrap_or(&state.default_provider);
+    let provider_name = q.provider.as_deref();
+    let service = match state.service(provider_name) {
+        Some(service) => service,
+        None => {
+            let name = provider_name.unwrap_or(&state.default_provider);
+            warn!(provider = %name, "Provider not found for voice listing");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("unknown provider '{}'", name)})),
+            )
+                .into_response();
+        }
+    };
 
-    // Return the configured provider info — voice listing is provider-specific
-    // and not all providers expose a list_voices API on TtsService.
-    let voices = state
-        .config
-        .tts
-        .providers
-        .iter()
-        .filter(|p| p.name == provider_name)
-        .map(|p| {
-            serde_json::json!({
-                "provider": p.name,
-                "type": p.provider_type,
-                "language": q.language,
-            })
-        })
-        .collect::<Vec<_>>();
+    match service.list_voices(&q.language).await {
+        Ok(mut voices) => {
+            let logical_provider = provider_name.unwrap_or(&state.default_provider).to_string();
+            for voice in &mut voices {
+                voice
+                    .metadata
+                    .entry("logical_provider".to_string())
+                    .or_insert_with(|| logical_provider.clone());
+            }
 
-    (StatusCode::OK, Json(voices)).into_response()
+            (StatusCode::OK, Json(voices)).into_response()
+        }
+        Err(error) => {
+            let name = provider_name.unwrap_or(&state.default_provider);
+            warn!(provider = %name, error = %error, "Failed to list provider voices");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("failed to list voices for provider '{}'", name)})),
+            )
+                .into_response()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,4 +239,107 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
         providers,
         cache_entries,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    async fn test_state() -> Arc<AppState> {
+        let cache_dir =
+            std::env::temp_dir().join(format!("fcp-tts-routes-test-{}", uuid::Uuid::new_v4()));
+        let service = Arc::new(
+            fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
+                provider: fcp_media::tts::TtsProviderConfig::OpenAi {
+                    api_key: "test-key".to_string(),
+                    model: "tts-1".to_string(),
+                },
+                cache_dir,
+                cache_max_size_mb: 100,
+                default_language: "en-US".to_string(),
+                default_voice: None,
+            })
+            .await
+            .unwrap(),
+        );
+
+        let mut services = std::collections::HashMap::new();
+        services.insert("primary".to_string(), service);
+
+        Arc::new(AppState {
+            config: crate::config::TtsServerConfig {
+                service: crate::config::ServiceSection::default(),
+                http: crate::config::HttpSection::default(),
+                auth: crate::config::AuthSection {
+                    tokens: vec!["test-token".to_string()],
+                    allow_unauthenticated: false,
+                },
+                tts: crate::config::TtsSection {
+                    default_provider: "primary".to_string(),
+                    cache_dir: std::env::temp_dir()
+                        .join(format!("fcp-tts-routes-config-{}", uuid::Uuid::new_v4())),
+                    cache_max_size_mb: 100,
+                    default_language: "en-US".to_string(),
+                    default_voice: None,
+                    providers: vec![crate::config::ProviderEntry {
+                        name: "primary".to_string(),
+                        provider_type: "openai".to_string(),
+                        engine: None,
+                        python_path: None,
+                        api_key: Some("test-key".to_string()),
+                        model: Some("tts-1".to_string()),
+                        device: "auto".to_string(),
+                    }],
+                },
+                logging: crate::config::LoggingSection::default(),
+                cluster: crate::config::ClusterSection::default(),
+            },
+            services,
+            default_provider: "primary".to_string(),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_synthesize_rejects_unknown_provider() {
+        let response = synthesize(
+            State(test_state().await),
+            Json(SynthesizeRequest {
+                text: "hello".to_string(),
+                language: "en-US".to_string(),
+                voice: None,
+                provider: Some("missing".to_string()),
+                tenant_id: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "unknown provider 'missing'");
+    }
+
+    #[tokio::test]
+    async fn test_list_voices_returns_real_provider_voices() {
+        let response = list_voices(
+            State(test_state().await),
+            Query(VoicesQuery {
+                provider: None,
+                language: "en-US".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let voices: Vec<fcp_media::tts::VoiceInfo> = serde_json::from_slice(&body).unwrap();
+        assert!(!voices.is_empty());
+        assert!(voices.iter().any(|voice| voice.name == "alloy"));
+        assert!(voices
+            .iter()
+            .all(|voice| voice.metadata.get("logical_provider") == Some(&"primary".to_string())));
+    }
 }

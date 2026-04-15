@@ -423,11 +423,12 @@ fn parse_binding_type(s: &str) -> Result<BindingType, ApiError> {
         "ivr" => Ok(BindingType::Ivr),
         "conference_bridge" => Ok(BindingType::ConferenceBridge),
         "voicemail" => Ok(BindingType::Voicemail),
-        "queue" | "hunt_group" | "parking" | "paging" | "fax" | "emergency" => Err(
-            ApiError::BadRequest(format!(
-            "Binding type '{}' is not supported by the SIP runtime yet",
-            s
-        ))),
+        "queue" | "hunt_group" | "parking" | "paging" | "fax" | "emergency" => {
+            Err(ApiError::BadRequest(format!(
+                "Binding type '{}' is not supported by the SIP runtime yet",
+                s
+            )))
+        }
         _ => Err(ApiError::BadRequest(format!("Invalid binding type: {}", s))),
     }
 }

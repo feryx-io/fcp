@@ -823,8 +823,7 @@ pub mod embedded {
                     warn!(?call_id, error = %e, "Failed to stop playbacks during session termination");
                 }
                 // Remove any playback handles referencing this session
-                self.playback_handles
-                    .retain(|_id, _handle| true); // handles are dropped when session stops
+                self.playback_handles.retain(|_id, _handle| true); // handles are dropped when session stops
 
                 // Stop recording if active (must do this before terminating session)
                 if session_info.forge_session.is_recording().await {

@@ -342,6 +342,7 @@ async fn main() -> Result<()> {
                     .python_path
                     .as_ref()
                     .map(std::path::PathBuf::from),
+                device: None,
             },
             cache_dir: std::path::PathBuf::from(&tts_config.cache_dir),
             cache_max_size_mb: 500,
@@ -597,7 +598,11 @@ async fn run_events_subscriber(event_bus: Arc<dyn fcp_events::EventBus>, ws_url:
     }
 }
 
-fn build_events_ws_url(base_url: &str, tenant_id: impl AsRef<str>, auth_token: Option<&str>) -> String {
+fn build_events_ws_url(
+    base_url: &str,
+    tenant_id: impl AsRef<str>,
+    auth_token: Option<&str>,
+) -> String {
     let base = format!("{}/ws/{}", base_url, tenant_id.as_ref());
     match auth_token {
         Some(token) => format!("{}?token={}", base, token),
@@ -755,7 +760,10 @@ async fn run_presence_listener(
                     let affected_aors = presence.get_aors_with_active_call(&call_id_str);
                     presence.remove_active_call_by_id(&call_id_str);
                     for aor in &affected_aors {
-                        if presence.get_active_calls_for_tenant(aor, &tenant_id).is_empty() {
+                        if presence
+                            .get_active_calls_for_tenant(aor, &tenant_id)
+                            .is_empty()
+                        {
                             let is_call_state = presence
                                 .get_presence_for_tenant(aor, &tenant_id)
                                 .map(|p| {

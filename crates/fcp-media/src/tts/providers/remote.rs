@@ -6,7 +6,7 @@
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::{debug, warn};
 
 use super::super::{TtsProvider, VoiceInfo};
@@ -22,17 +22,6 @@ struct SynthesizeRequest<'a> {
     provider: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tenant_id: Option<&'a str>,
-}
-
-/// Voice info returned by `GET /v1/voices`.
-#[derive(Deserialize)]
-struct VoiceEntry {
-    #[serde(default)]
-    provider: String,
-    #[serde(default, rename = "type")]
-    provider_type: String,
-    #[serde(default)]
-    language: String,
 }
 
 /// TTS provider that calls a remote fcp-tts HTTP service.
@@ -80,12 +69,7 @@ impl TtsProvider for RemoteTtsProvider {
         "remote".to_string()
     }
 
-    async fn synthesize(
-        &self,
-        text: &str,
-        language: &str,
-        voice: Option<&str>,
-    ) -> Result<Vec<u8>> {
+    async fn synthesize(&self, text: &str, language: &str, voice: Option<&str>) -> Result<Vec<u8>> {
         let url = format!("{}/v1/synthesize", self.url);
 
         let body = SynthesizeRequest {
@@ -132,29 +116,28 @@ impl TtsProvider for RemoteTtsProvider {
     }
 
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>> {
-        let url = format!("{}/v1/voices?language={}", self.url, language);
+        let url = format!("{}/v1/voices", self.url);
+        let mut query_params = vec![("language", language.to_string())];
+        if let Some(provider) = self.provider_override.as_ref() {
+            query_params.push(("provider", provider.clone()));
+        }
 
         let response = self
             .http
             .get(&url)
             .bearer_auth(&self.auth_token)
+            .query(&query_params)
             .send()
             .await;
 
         match response {
-            Ok(resp) if resp.status().is_success() => {
-                let entries: Vec<VoiceEntry> = resp.json().await.unwrap_or_default();
-                Ok(entries
-                    .into_iter()
-                    .map(|e| VoiceInfo {
-                        name: e.provider.clone(),
-                        display_name: e.provider_type.clone(),
-                        language: e.language,
-                        gender: None,
-                        metadata: std::collections::HashMap::new(),
-                    })
-                    .collect())
-            }
+            Ok(resp) if resp.status().is_success() => match resp.json::<Vec<VoiceInfo>>().await {
+                Ok(voices) => Ok(voices),
+                Err(error) => {
+                    warn!(error = %error, "Failed to decode remote TTS voices response");
+                    Ok(Vec::new())
+                }
+            },
             Ok(resp) => {
                 warn!(status = %resp.status(), "Remote TTS voices endpoint returned error");
                 Ok(Vec::new())

@@ -82,6 +82,9 @@ pub struct TtsService {
     /// TTS provider implementation
     provider: Arc<dyn TtsProvider>,
 
+    /// Stable cache namespace derived from the provider configuration.
+    provider_cache_namespace: String,
+
     /// Cache directory for generated audio files
     cache_dir: PathBuf,
 
@@ -104,6 +107,8 @@ pub struct TtsService {
 impl TtsService {
     /// Create a new TTS service.
     pub async fn new(config: TtsConfig) -> Result<Self> {
+        let provider_cache_namespace = provider_cache_namespace(&config.provider)?;
+
         // Create cache directory if it doesn't exist
         tokio::fs::create_dir_all(&config.cache_dir)
             .await
@@ -124,6 +129,7 @@ impl TtsService {
 
         Ok(Self {
             provider,
+            provider_cache_namespace,
             cache_dir: config.cache_dir,
             cache_max_size_mb: config.cache_max_size_mb,
             cache_index: Arc::new(RwLock::new(cache_index)),
@@ -223,7 +229,7 @@ impl TtsService {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        hasher.update(self.provider.name().as_bytes());
+        hasher.update(self.provider_cache_namespace.as_bytes());
         hasher.update(text.as_bytes());
         hasher.update(language.as_bytes());
         if let Some(v) = voice {
@@ -355,6 +361,21 @@ impl TtsService {
     pub fn provider_name(&self) -> String {
         self.provider.name()
     }
+
+    /// List available voices for a language.
+    pub async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>> {
+        self.provider.list_voices(language).await
+    }
+}
+
+fn provider_cache_namespace(config: &TtsProviderConfig) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let serialized =
+        serde_json::to_vec(config).context("Failed to serialize TTS provider config")?;
+    let mut hasher = Sha256::new();
+    hasher.update(&serialized);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// TTS provider trait.
@@ -482,6 +503,9 @@ pub enum TtsProviderConfig {
         /// Path to TTS executable
         #[serde(skip_serializing_if = "Option::is_none")]
         executable_path: Option<PathBuf>,
+        /// Optional compute device override for local engines.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
 
     /// Remote TTS via shared fcp-tts HTTP service.
@@ -506,6 +530,33 @@ fn default_openai_model() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    struct StubProvider {
+        name: String,
+    }
+
+    #[async_trait]
+    impl TtsProvider for StubProvider {
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        async fn synthesize(
+            &self,
+            _text: &str,
+            _language: &str,
+            _voice: Option<&str>,
+        ) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        async fn list_voices(&self, _language: &str) -> Result<Vec<VoiceInfo>> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn test_cache_key_generation() {
@@ -521,5 +572,54 @@ mod tests {
 
         // Can't easily test without async, but structure is correct
         assert_eq!(config.cache_max_size_mb, 500);
+    }
+
+    #[test]
+    fn test_provider_cache_namespace_changes_with_provider_config() {
+        let openai_a = provider_cache_namespace(&TtsProviderConfig::OpenAi {
+            api_key: "test-key".to_string(),
+            model: "tts-1".to_string(),
+        })
+        .unwrap();
+        let openai_b = provider_cache_namespace(&TtsProviderConfig::OpenAi {
+            api_key: "test-key".to_string(),
+            model: "tts-1-hd".to_string(),
+        })
+        .unwrap();
+
+        assert_ne!(openai_a, openai_b);
+    }
+
+    #[test]
+    fn test_cache_keys_are_isolated_by_provider_namespace() {
+        let service_a = TtsService {
+            provider: Arc::new(StubProvider {
+                name: "openai".to_string(),
+            }),
+            provider_cache_namespace: "provider-a".to_string(),
+            cache_dir: "/tmp/tts-a".into(),
+            cache_max_size_mb: 500,
+            cache_index: Arc::new(RwLock::new(HashMap::new())),
+            cache_size_bytes: Arc::new(RwLock::new(0)),
+            default_language: "en-US".to_string(),
+            default_voice: None,
+        };
+        let service_b = TtsService {
+            provider: Arc::new(StubProvider {
+                name: "openai".to_string(),
+            }),
+            provider_cache_namespace: "provider-b".to_string(),
+            cache_dir: "/tmp/tts-b".into(),
+            cache_max_size_mb: 500,
+            cache_index: Arc::new(RwLock::new(HashMap::new())),
+            cache_size_bytes: Arc::new(RwLock::new(0)),
+            default_language: "en-US".to_string(),
+            default_voice: None,
+        };
+
+        assert_ne!(
+            service_a.generate_cache_key("hello", "en-US", Some("nova")),
+            service_b.generate_cache_key("hello", "en-US", Some("nova"))
+        );
     }
 }

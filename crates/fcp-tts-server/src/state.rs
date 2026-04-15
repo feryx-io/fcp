@@ -21,11 +21,71 @@ impl AppState {
         self.services.get(&self.default_provider)
     }
 
-    /// Get a TtsService by provider name, falling back to default.
+    /// Get a TtsService by provider name, or the default when no provider was specified.
     pub fn service(&self, name: Option<&str>) -> Option<&Arc<TtsService>> {
         match name {
-            Some(n) => self.services.get(n).or_else(|| self.default_service()),
+            Some(n) => self.services.get(n),
             None => self.default_service(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn build_config() -> TtsServerConfig {
+        TtsServerConfig {
+            service: crate::config::ServiceSection::default(),
+            http: crate::config::HttpSection::default(),
+            auth: crate::config::AuthSection {
+                tokens: vec!["test-token".to_string()],
+                allow_unauthenticated: false,
+            },
+            tts: crate::config::TtsSection {
+                default_provider: "primary".to_string(),
+                cache_dir: std::env::temp_dir()
+                    .join(format!("fcp-tts-state-test-{}", uuid::Uuid::new_v4())),
+                cache_max_size_mb: 100,
+                default_language: "en-US".to_string(),
+                default_voice: None,
+                providers: Vec::new(),
+            },
+            logging: crate::config::LoggingSection::default(),
+            cluster: crate::config::ClusterSection::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_lookup_requires_explicit_provider_match() {
+        let cache_dir =
+            std::env::temp_dir().join(format!("fcp-tts-state-provider-{}", uuid::Uuid::new_v4()));
+        let service = Arc::new(
+            TtsService::new(fcp_media::tts::TtsConfig {
+                provider: fcp_media::tts::TtsProviderConfig::OpenAi {
+                    api_key: "test-key".to_string(),
+                    model: "tts-1".to_string(),
+                },
+                cache_dir,
+                cache_max_size_mb: 100,
+                default_language: "en-US".to_string(),
+                default_voice: None,
+            })
+            .await
+            .unwrap(),
+        );
+
+        let mut services = HashMap::new();
+        services.insert("primary".to_string(), service);
+
+        let state = AppState {
+            config: build_config(),
+            services,
+            default_provider: "primary".to_string(),
+        };
+
+        assert!(state.service(None).is_some());
+        assert!(state.service(Some("primary")).is_some());
+        assert!(state.service(Some("missing")).is_none());
     }
 }

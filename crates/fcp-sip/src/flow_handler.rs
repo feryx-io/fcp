@@ -726,45 +726,50 @@ impl FlowCallHandler {
                                 );
 
                                 match &extension.target {
-                                fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
-                                    match storage.get_phone_number(phone_number_id).await {
-                                        Ok(Some(phone_number)) => {
-                                            info!(
-                                                a_leg_call_id = %a_leg_call_id,
-                                                phone_number_id = %phone_number.id,
-                                                number = %phone_number.e164,
-                                                "Resolved phone_number from extension target"
-                                            );
-                                            match storage
-                                                .get_line_binding_by_phone_number(&phone_number.id)
-                                                .await
-                                            {
-                                                Ok(Some(line_binding)) => {
-                                                    let devices = line_binding.enabled_devices();
-                                                    info!(
-                                                        a_leg_call_id = %a_leg_call_id,
-                                                        enabled_device_count = devices.len(),
-                                                        "Found line binding with enabled devices"
-                                                    );
-                                                    for device_binding in devices {
-                                                        if resolved.is_some() {
-                                                            break;
-                                                        }
-                                                        match storage
-                                                            .get_device(&device_binding.device_id)
-                                                            .await
-                                                        {
-                                                            Ok(Some(device)) => {
-                                                                info!(
-                                                                    a_leg_call_id = %a_leg_call_id,
-                                                                    device_name = %device.name,
-                                                                    device_sip_uri = ?device.sip_uri,
-                                                                    "Found device in chain"
-                                                                );
-                                                                if let Some(sip_uri) =
-                                                                    &device.sip_uri
-                                                                {
-                                                                    match registrar.get_registrations(sip_uri).await {
+                                    fcp_core::ExtensionTarget::PhoneNumber(phone_number_id) => {
+                                        match storage.get_phone_number(phone_number_id).await {
+                                            Ok(Some(phone_number)) => {
+                                                info!(
+                                                    a_leg_call_id = %a_leg_call_id,
+                                                    phone_number_id = %phone_number.id,
+                                                    number = %phone_number.e164,
+                                                    "Resolved phone_number from extension target"
+                                                );
+                                                match storage
+                                                    .get_line_binding_by_phone_number(
+                                                        &phone_number.id,
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(Some(line_binding)) => {
+                                                        let devices =
+                                                            line_binding.enabled_devices();
+                                                        info!(
+                                                            a_leg_call_id = %a_leg_call_id,
+                                                            enabled_device_count = devices.len(),
+                                                            "Found line binding with enabled devices"
+                                                        );
+                                                        for device_binding in devices {
+                                                            if resolved.is_some() {
+                                                                break;
+                                                            }
+                                                            match storage
+                                                                .get_device(
+                                                                    &device_binding.device_id,
+                                                                )
+                                                                .await
+                                                            {
+                                                                Ok(Some(device)) => {
+                                                                    info!(
+                                                                        a_leg_call_id = %a_leg_call_id,
+                                                                        device_name = %device.name,
+                                                                        device_sip_uri = ?device.sip_uri,
+                                                                        "Found device in chain"
+                                                                    );
+                                                                    if let Some(sip_uri) =
+                                                                        &device.sip_uri
+                                                                    {
+                                                                        match registrar.get_registrations(sip_uri).await {
                                                                         Ok(bindings) if !bindings.is_empty() => {
                                                                             if let Ok(uri) = sip_core::SipUri::parse(bindings[0].contact()) {
                                                                                 info!(
@@ -793,65 +798,67 @@ impl FlowCallHandler {
                                                                             );
                                                                         }
                                                                     }
+                                                                    }
                                                                 }
-                                                            }
-                                                            Ok(None) => {
-                                                                warn!(a_leg_call_id = %a_leg_call_id, device_id = %device_binding.device_id, "Device not found in storage");
-                                                            }
-                                                            Err(e) => {
-                                                                warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get device from storage");
+                                                                Ok(None) => {
+                                                                    warn!(a_leg_call_id = %a_leg_call_id, device_id = %device_binding.device_id, "Device not found in storage");
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get device from storage");
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                }
-                                                Ok(None) => {
-                                                    info!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number.id, "No line binding found for phone number");
-                                                }
-                                                Err(e) => {
-                                                    warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get line binding");
+                                                    Ok(None) => {
+                                                        info!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number.id, "No line binding found for phone number");
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get line binding");
+                                                    }
                                                 }
                                             }
-                                        }
-                                        Ok(None) => {
-                                            warn!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number_id, "Phone number not found in storage");
-                                        }
-                                        Err(e) => {
-                                            warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get phone number from storage");
+                                            Ok(None) => {
+                                                warn!(a_leg_call_id = %a_leg_call_id, phone_number_id = %phone_number_id, "Phone number not found in storage");
+                                            }
+                                            Err(e) => {
+                                                warn!(a_leg_call_id = %a_leg_call_id, error = %e, "Failed to get phone number from storage");
+                                            }
                                         }
                                     }
-                                }
-                                fcp_core::ExtensionTarget::Device(device_id) => {
-                                    if let Ok(Some(device)) = storage.get_device(device_id).await {
-                                        if let Some(sip_uri) = &device.sip_uri {
-                                            if let Ok(bindings) =
-                                                registrar.get_registrations(sip_uri).await
-                                            {
-                                                if let Some(binding) = bindings.first() {
-                                                    if let Ok(uri) =
-                                                        sip_core::SipUri::parse(binding.contact())
-                                                    {
-                                                        info!(
-                                                            a_leg_call_id = %a_leg_call_id,
-                                                            destination = %destination,
-                                                            device = %device.name,
-                                                            contact = %binding.contact(),
-                                                            "Resolved extension via direct device target"
-                                                        );
-                                                        resolved = Some(uri);
+                                    fcp_core::ExtensionTarget::Device(device_id) => {
+                                        if let Ok(Some(device)) =
+                                            storage.get_device(device_id).await
+                                        {
+                                            if let Some(sip_uri) = &device.sip_uri {
+                                                if let Ok(bindings) =
+                                                    registrar.get_registrations(sip_uri).await
+                                                {
+                                                    if let Some(binding) = bindings.first() {
+                                                        if let Ok(uri) = sip_core::SipUri::parse(
+                                                            binding.contact(),
+                                                        ) {
+                                                            info!(
+                                                                a_leg_call_id = %a_leg_call_id,
+                                                                destination = %destination,
+                                                                device = %device.name,
+                                                                contact = %binding.contact(),
+                                                                "Resolved extension via direct device target"
+                                                            );
+                                                            resolved = Some(uri);
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
+                                    other => {
+                                        debug!(
+                                            a_leg_call_id = %a_leg_call_id,
+                                            target = %other,
+                                            "Extension target type not supported for Dial resolution"
+                                        );
+                                    }
                                 }
-                                other => {
-                                    debug!(
-                                        a_leg_call_id = %a_leg_call_id,
-                                        target = %other,
-                                        "Extension target type not supported for Dial resolution"
-                                    );
-                                }
-                            }
                             }
                         } else {
                             warn!(

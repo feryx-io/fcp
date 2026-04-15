@@ -1794,11 +1794,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
     let tts_provider_config = if let Some(ref url) = config.media.tts_remote_url {
         Some(fcp_media::TtsProviderConfig::Remote {
             url: url.clone(),
-            auth_token: config
-                .media
-                .tts_remote_token
-                .clone()
-                .unwrap_or_default(),
+            auth_token: config.media.tts_remote_token.clone().unwrap_or_default(),
             provider: None,
             tenant_id: None,
         })
@@ -1810,6 +1806,7 @@ async fn create_media_manager(config: &CallManagerConfig) -> Result<Arc<fcp_medi
                 .tts_python
                 .as_ref()
                 .map(std::path::PathBuf::from),
+            device: None,
         })
     } else {
         None

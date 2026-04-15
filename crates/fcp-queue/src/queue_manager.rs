@@ -367,7 +367,10 @@ impl QueueManager {
 
         for definition in &definitions {
             if !desired_names.insert(definition.name.clone()) {
-                bail!("Duplicate queue name '{}' in runtime configuration", definition.name);
+                bail!(
+                    "Duplicate queue name '{}' in runtime configuration",
+                    definition.name
+                );
             }
 
             let extension_key = (definition.tenant_id, definition.config.extension.clone());
@@ -413,7 +416,8 @@ impl QueueManager {
                     definition.name.clone(),
                 );
                 self.calls_handled_today.insert(definition.name.clone(), 0);
-                self.calls_abandoned_today.insert(definition.name.clone(), 0);
+                self.calls_abandoned_today
+                    .insert(definition.name.clone(), 0);
                 self.calls_within_sl.insert(definition.name.clone(), 0);
                 self.calls_offered_today.insert(definition.name.clone(), 0);
                 self.round_robin_counters
@@ -1504,8 +1508,10 @@ impl QueueManager {
             );
         }
         let queue = Queue::new(key.clone(), tenant_id, queue_config.clone());
-        self.extension_map
-            .insert((queue.tenant_id, queue_config.extension.clone()), key.clone());
+        self.extension_map.insert(
+            (queue.tenant_id, queue_config.extension.clone()),
+            key.clone(),
+        );
         self.round_robin_counters
             .insert(key.clone(), AtomicUsize::new(0));
         self.calls_handled_today.insert(key.clone(), 0);

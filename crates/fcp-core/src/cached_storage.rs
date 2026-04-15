@@ -198,7 +198,8 @@ impl CredentialStore for CachedCredentialStore {
         debug!(username = %username, tenant_id = %tenant_id, "Credential cache MISS");
         let result = self.inner.get_user_in_tenant(username, tenant_id).await?;
 
-        self.cache.insert(cache_key, CacheEntry::new(result.clone()));
+        self.cache
+            .insert(cache_key, CacheEntry::new(result.clone()));
         self.enforce_capacity();
 
         Ok(result)
@@ -226,8 +227,11 @@ impl CredentialStore for CachedCredentialStore {
         username: &str,
         tenant_id: &crate::TenantId,
     ) -> Result<()> {
-        self.inner.delete_user_in_tenant(username, tenant_id).await?;
-        self.cache.remove(&Self::tenant_cache_key(username, tenant_id));
+        self.inner
+            .delete_user_in_tenant(username, tenant_id)
+            .await?;
+        self.cache
+            .remove(&Self::tenant_cache_key(username, tenant_id));
         self.cache.remove(&Self::global_cache_key(username));
         self.enforce_capacity();
         Ok(())

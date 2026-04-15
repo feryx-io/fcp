@@ -39,6 +39,7 @@ pub struct LocalTts {
     engine: String,
     python_path: PathBuf,
     worker_script: PathBuf,
+    device: Option<String>,
     worker: Mutex<Option<KokoroWorker>>,
     default_voice: String,
 }
@@ -64,7 +65,7 @@ struct WorkerRequest {
 struct WorkerResponse {
     #[serde(default)]
     ok: bool,
-    #[serde(default)]
+    #[serde(default, alias = "load_ms")]
     duration_ms: Option<u64>,
     #[serde(default)]
     error: Option<String>,
@@ -77,7 +78,11 @@ impl LocalTts {
     ///
     /// Only `engine = "kokoro"` is supported.  `executable_path` optionally
     /// overrides the Python interpreter (defaults to `python3`).
-    pub fn new(engine: String, executable_path: Option<PathBuf>) -> Result<Self> {
+    pub fn new(
+        engine: String,
+        executable_path: Option<PathBuf>,
+        device: Option<String>,
+    ) -> Result<Self> {
         if engine != "kokoro" {
             bail!(
                 "Unsupported local TTS engine '{}'. Only 'kokoro' is supported.",
@@ -124,6 +129,7 @@ impl LocalTts {
             engine,
             python_path,
             worker_script,
+            device,
             worker: Mutex::new(None),
             default_voice: "af_heart".to_string(),
         })
@@ -158,23 +164,33 @@ impl LocalTts {
         info!(
             script = %self.worker_script.display(),
             python = %self.python_path.display(),
+            device = ?self.device,
             "Starting Kokoro TTS worker subprocess"
         );
 
-        let mut child = Command::new(&self.python_path)
+        let mut command = Command::new(&self.python_path);
+        command
             .arg(&self.worker_script)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit()) // let stderr go to parent's stderr
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn Kokoro worker: {} {}",
-                    self.python_path.display(),
-                    self.worker_script.display()
-                )
-            })?;
+            .kill_on_drop(true);
+
+        if let Some(device) = self
+            .device
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            command.env("KOKORO_DEVICE", device);
+        }
+
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "Failed to spawn Kokoro worker: {} {}",
+                self.python_path.display(),
+                self.worker_script.display()
+            )
+        })?;
 
         let stdin = child
             .stdin

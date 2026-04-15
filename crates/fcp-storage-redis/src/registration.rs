@@ -160,10 +160,9 @@ impl RegistrationStore for RedisRegistrationStore {
         contact: &str,
     ) -> Result<()> {
         let registrations = self.get_registrations(aor).await?;
-        for registration in registrations
-            .into_iter()
-            .filter(|registration| registration.contact == contact && registration.tenant_id == *tenant_id)
-        {
+        for registration in registrations.into_iter().filter(|registration| {
+            registration.contact == contact && registration.tenant_id == *tenant_id
+        }) {
             self.delete_registration(&registration.aor, &registration.contact)
                 .await?;
         }
