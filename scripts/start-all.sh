@@ -150,6 +150,18 @@ do_stop() {
 
   # Clean up any orphans
   kill_orphans
+
+  # Stop infrastructure containers
+  echo ""
+  echo "--- Infrastructure ---"
+  for ctr in fcp-grafana fcp-prometheus; do
+    printf "  Stopping %-20s... " "$ctr"
+    if docker stop "$ctr" >/dev/null 2>&1; then
+      echo "stopped"
+    else
+      echo "not running"
+    fi
+  done
 }
 
 do_start() {
@@ -172,6 +184,36 @@ do_start() {
   else
     echo "FAILED (start Redis first)"
     exit 1
+  fi
+
+  # Prometheus — metrics collection
+  printf "  Prometheus... "
+  if docker inspect fcp-prometheus >/dev/null 2>&1; then
+    docker start fcp-prometheus >/dev/null 2>&1 && echo "started" || echo "FAILED"
+  else
+    docker run -d --name fcp-prometheus \
+      --network host \
+      -v "${FCP_DIR}/deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+      prom/prometheus:v2.53.0 \
+      --config.file=/etc/prometheus/prometheus.yml \
+      --web.listen-address=:9090 \
+      >/dev/null 2>&1 && echo "started (first run)" || echo "FAILED"
+  fi
+
+  # Grafana — dashboards
+  printf "  Grafana... "
+  if docker inspect fcp-grafana >/dev/null 2>&1; then
+    docker start fcp-grafana >/dev/null 2>&1 && echo "started" || echo "FAILED"
+  else
+    docker run -d --name fcp-grafana \
+      --network host \
+      -v "${FCP_DIR}/deploy/grafana/datasources:/etc/grafana/provisioning/datasources:ro" \
+      -v "${FCP_DIR}/deploy/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro" \
+      -e GF_SECURITY_ADMIN_PASSWORD=admin \
+      -e GF_AUTH_ANONYMOUS_ENABLED=true \
+      -e GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer \
+      grafana/grafana:11.1.0 \
+      >/dev/null 2>&1 && echo "started (first run)" || echo "FAILED"
   fi
 
   sleep 2
@@ -222,8 +264,11 @@ do_start() {
   echo ""
   do_status
   echo ""
-  echo "Admin UI: http://${PUBLIC_IP}:8080/admin/"
-  echo "Logs:     tail -f /tmp/fcp-*.log"
+  echo "Admin UI:    http://${PUBLIC_IP}:8080/admin/"
+  echo "Grafana:     http://localhost:3000  (admin/admin)"
+  echo "Prometheus:  http://localhost:9090"
+  echo "Metrics:     http://localhost:8080/api/v1/metrics"
+  echo "Logs:        tail -f /tmp/fcp-*.log"
 }
 
 start_service() {

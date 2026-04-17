@@ -19,30 +19,42 @@ scrape_configs:
     scrape_timeout: 5s
     honor_labels: true
     static_configs:
-      - targets: ['fcp-admin:8080']
+      # Docker Compose: use 'fcp-admin:8080'
+      # Native (start-all.sh with --network host): use 'localhost:8080'
+      - targets: ['localhost:8080']
         labels:
           service: 'admin'
 
-  # fcp-call-manager — SIP registrar + B2BUA (host networking)
+  # fcp-call-manager — SIP registrar + B2BUA
   # Exposes: prometheus registry metrics (redis, etc.)
   - job_name: 'fcp-call-manager'
     metrics_path: '/metrics'
     scrape_interval: 10s
     scrape_timeout: 5s
     static_configs:
-      - targets: ['host.docker.internal:8084']
+      - targets: ['localhost:8084']
         labels:
           service: 'call-manager'
 
-  # fcp-conference — Conference bridge (host networking)
+  # fcp-conference — Conference bridge
   - job_name: 'fcp-conference'
     metrics_path: '/metrics'
     scrape_interval: 10s
     scrape_timeout: 5s
     static_configs:
-      - targets: ['host.docker.internal:8090']
+      - targets: ['localhost:8090']
         labels:
           service: 'conference'
+
+  # fcp-sbc — Session Border Controller
+  - job_name: 'fcp-sbc'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['localhost:8094']
+        labels:
+          service: 'sbc'
 
   # Prometheus self-monitoring
   - job_name: 'prometheus'
