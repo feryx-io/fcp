@@ -149,24 +149,57 @@ pub struct UpdateAgentStateRequest {
 // ---- Handlers ----
 
 /// GET /queues — List all configured queues.
+///
+/// When the queue runtime is available (call-manager), returns live state.
+/// When it's not (admin server), falls back to queue configs from storage.
 pub async fn list_queues(
     State(state): State<ApiState>,
     tenant: TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
-    let qm = require_queue_manager!(state);
+    // If queue runtime is available, return live state
+    if let Some(ref qm) = state.queue_manager {
+        let queue_names = qm.list_queue_names_for_tenant(&tenant.0);
+        let mut responses = Vec::with_capacity(queue_names.len());
 
-    let queue_names = qm.list_queue_names_for_tenant(&tenant.0);
-    let mut responses = Vec::with_capacity(queue_names.len());
-
-    for name in &queue_names {
-        if let Some(config) = qm.get_queue_config_for_tenant(name, &tenant.0) {
-            responses.push(queue_response(
-                name.clone(),
-                config,
-                qm.get_queue_waiting_count_for_tenant(name, &tenant.0),
-            ));
+        for name in &queue_names {
+            if let Some(config) = qm.get_queue_config_for_tenant(name, &tenant.0) {
+                responses.push(queue_response(
+                    name.clone(),
+                    config,
+                    qm.get_queue_waiting_count_for_tenant(name, &tenant.0),
+                ));
+            }
         }
+
+        return Ok(Json(responses));
     }
+
+    // Fallback: return queue configs from storage (admin server without runtime)
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
+
+    use fcp_core::storage::QueueConfigStore;
+    let configs = storage
+        .list_queue_configs(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let responses: Vec<QueueResponse> = configs
+        .into_iter()
+        .map(|c| QueueResponse {
+            name: c.name.clone(),
+            display_name: c.name,
+            extension: c.extension,
+            strategy: c.strategy,
+            max_wait_time_secs: c.max_wait_time_secs as u32,
+            max_queue_depth: c.max_queue_depth as usize,
+            overflow_destination: c.overflow_destination,
+            agents_configured: 0,
+            calls_waiting: 0,
+        })
+        .collect();
 
     Ok(Json(responses))
 }
