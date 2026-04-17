@@ -117,21 +117,17 @@ impl RealTransportDispatcher {
     /// This creates a client config suitable for outbound SIPS connections.
     #[cfg(feature = "tls")]
     pub fn load_tls_client_config() -> Result<Arc<tokio_rustls::rustls::ClientConfig>> {
-        use tokio_rustls::rustls::{pki_types::CertificateDer, ClientConfig, RootCertStore};
+        use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
         // Use system root certificates
         let mut root_store = RootCertStore::empty();
 
-        match rustls_native_certs::load_native_certs() {
-            Ok(certs) => {
-                for cert in certs {
-                    // Convert from rustls_native_certs format to CertificateDer
-                    root_store.add(CertificateDer::from(cert)).ok();
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load some native certificates: {}", e);
-            }
+        let result = rustls_native_certs::load_native_certs();
+        for err in &result.errors {
+            tracing::warn!("Failed to load some native certificates: {}", err);
+        }
+        for cert in result.certs {
+            root_store.add(cert).ok();
         }
 
         let config = ClientConfig::builder()

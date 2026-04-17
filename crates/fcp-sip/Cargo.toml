@@ -60,7 +60,7 @@ rand = "0.8"
 
 # TLS support (optional) - must match sip-transport's rustls version
 tokio-rustls = { version = "0.26", optional = true }
-rustls-native-certs = { version = "0.7", optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 regex = "1"
 serde_json = "1"
 tempfile = "3.23.0"

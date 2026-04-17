@@ -36,7 +36,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 
 # File watching for hot-reload
-notify = "7.0"
+notify = "8.0"
 
 # IP network (CIDR matching)
 ipnetwork = "0.20"
