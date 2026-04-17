@@ -1,45 +1,60 @@
 # Prometheus configuration for FCP monitoring
 
 global:
-  scrape_interval: 15s  # Set the scrape interval to every 15 seconds
-  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  scrape_interval: 15s
+  evaluation_interval: 15s
   external_labels:
     monitor: 'fcp-monitor'
-    environment: 'production'
+    environment: 'development'
 
-# Alertmanager configuration (optional)
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets:
-#           - alertmanager:9093
-
-# Rule files (for alerts)
-# rule_files:
-#   - "alerts/*.yml"
-
-# Scrape configurations
 scrape_configs:
-  # FCP Server metrics
-  - job_name: 'fcp-server'
-    static_configs:
-      - targets: ['fcp-server:8080']
+  # fcp-admin — Management API metrics
+  # Exposes: fcp_calls_active, fcp_calls_total, fcp_dialogs_active,
+  #          fcp_subscriptions_active, fcp_active_registrations,
+  #          fcp_uptime_seconds, fcp_rate_limit_entries,
+  #          fcp_calls_established/terminated/failed
+  - job_name: 'fcp-admin'
     metrics_path: '/api/v1/metrics'
     scrape_interval: 10s
     scrape_timeout: 5s
     honor_labels: true
+    static_configs:
+      - targets: ['fcp-admin:8080']
+        labels:
+          service: 'admin'
+
+  # fcp-call-manager — SIP registrar + B2BUA (host networking)
+  # Exposes: prometheus registry metrics (redis, etc.)
+  - job_name: 'fcp-call-manager'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['host.docker.internal:8084']
+        labels:
+          service: 'call-manager'
+
+  # fcp-conference — Conference bridge (host networking)
+  - job_name: 'fcp-conference'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    static_configs:
+      - targets: ['host.docker.internal:8090']
+        labels:
+          service: 'conference'
 
   # Prometheus self-monitoring
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
 
-  # PostgreSQL exporter (if installed)
+  # PostgreSQL exporter (uncomment if installed)
   # - job_name: 'postgres'
   #   static_configs:
   #     - targets: ['postgres-exporter:9187']
 
-  # Node exporter (system metrics, if installed)
+  # Node exporter (uncomment if installed)
   # - job_name: 'node'
   #   static_configs:
   #     - targets: ['node-exporter:9100']

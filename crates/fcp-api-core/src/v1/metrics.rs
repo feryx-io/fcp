@@ -5,6 +5,7 @@ use crate::{
     error::ApiError,
     state::ApiState,
 };
+use fcp_core::storage::RegistrationStore;
 use axum::{
     extract::{Extension, State},
     http::header,
@@ -72,25 +73,35 @@ pub async fn prometheus_metrics(
     buffer.push_str("# TYPE fcp_rate_limit_entries gauge\n");
     buffer.push_str(&format!("fcp_rate_limit_entries {}\n", rate_limit_entries));
 
+    // Registration count
+    let active_registrations = if let Some(ref storage) = state.storage {
+        storage.registration_count().await.unwrap_or(0)
+    } else {
+        0
+    };
+    buffer.push_str("# HELP fcp_active_registrations Number of active SIP registrations\n");
+    buffer.push_str("# TYPE fcp_active_registrations gauge\n");
+    buffer.push_str(&format!(
+        "fcp_active_registrations {}\n",
+        active_registrations
+    ));
+
     // Call statistics
     let call_stats = state.call_manager.stats();
     buffer.push_str("# HELP fcp_calls_established Total established calls\n");
-    buffer.push_str("# TYPE fcp_calls_established gauge\n");
+    buffer.push_str("# TYPE fcp_calls_established counter\n");
     buffer.push_str(&format!(
         "fcp_calls_established {}\n",
         call_stats.established
     ));
 
     buffer.push_str("# HELP fcp_calls_terminated Total terminated calls\n");
-    buffer.push_str("# TYPE fcp_calls_terminated gauge\n");
+    buffer.push_str("# TYPE fcp_calls_terminated counter\n");
     buffer.push_str(&format!("fcp_calls_terminated {}\n", call_stats.terminated));
 
     buffer.push_str("# HELP fcp_calls_failed Total failed calls\n");
-    buffer.push_str("# TYPE fcp_calls_failed gauge\n");
+    buffer.push_str("# TYPE fcp_calls_failed counter\n");
     buffer.push_str(&format!("fcp_calls_failed {}\n", call_stats.failed));
-
-    // Remaining metrics (histograms, per-method SIP counters) require
-    // MetricsHandle -> Prometheus bridge, planned for Phase 2.
 
     Ok((
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],

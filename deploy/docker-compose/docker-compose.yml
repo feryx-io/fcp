@@ -169,6 +169,47 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # Prometheus - Metrics collection and storage
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: fcp-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # Grafana - Dashboards and visualization
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: fcp-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ../grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
   # fcp-jobs - Async job processing workers
   fcp-jobs:
     build:
@@ -200,6 +241,10 @@ volumes:
   fcp-media-recordings:
     driver: local
   fcp-media-prompts:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
     driver: local
   fcp_shared-data:
     external: true  # Created by main docker-compose.yml
