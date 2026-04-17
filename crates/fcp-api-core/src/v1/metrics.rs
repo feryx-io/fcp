@@ -5,12 +5,12 @@ use crate::{
     error::ApiError,
     state::ApiState,
 };
-use fcp_core::storage::RegistrationStore;
 use axum::{
     extract::{Extension, State},
     http::header,
     response::IntoResponse,
 };
+use fcp_core::storage::RegistrationStore;
 
 /// GET /metrics
 /// Prometheus metrics endpoint

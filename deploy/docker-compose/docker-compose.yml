@@ -176,7 +176,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/prometheus.compose.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -194,7 +194,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ../grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ../grafana/datasources-compose:/etc/grafana/provisioning/datasources:ro
       - ../grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana-data:/var/lib/grafana
     environment:

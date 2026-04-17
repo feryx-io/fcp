@@ -58,6 +58,7 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     if let Some(ref auth_token) = api_config.auth_token {
         state = state.with_jwt_secret_from_token(auth_token);
     }
+    state = state.with_provisioning_auth_token(api_config.auth_token.clone());
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {

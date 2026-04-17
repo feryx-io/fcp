@@ -28,9 +28,9 @@ macro_rules! require_storage {
 fn require_template_store(
     storage: &fcp_core::DynStorage,
 ) -> Result<&std::sync::Arc<dyn fcp_core::storage::ConfigTemplateStore>, ApiError> {
-    storage.config_template_store().ok_or_else(|| {
-        ApiError::Internal("Config template store not configured".to_string())
-    })
+    storage
+        .config_template_store()
+        .ok_or_else(|| ApiError::Internal("Config template store not configured".to_string()))
 }
 
 /// Config template response.
@@ -231,7 +231,10 @@ pub async fn update_config_template(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update config template: {}", e)))?;
 
-    info!("Updated config template {} ({})", template.id, template.name);
+    info!(
+        "Updated config template {} ({})",
+        template.id, template.name
+    );
 
     Ok(Json(template.into()))
 }

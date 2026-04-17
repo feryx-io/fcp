@@ -985,7 +985,7 @@ pub struct UsageAggregation {
 /// Per-number CDR usage breakdown.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NumberUsage {
-    /// The phone number or URI.
+    /// The canonical tenant-owned E.164 phone number.
     pub number: String,
     /// Total calls involving this number.
     pub total_calls: u64,

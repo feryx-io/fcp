@@ -19,9 +19,8 @@ use axum::{
     Extension, Json,
 };
 use fcp_core::{
-    permissions::Permission,
-    storage::password, AccountStatus, CredentialStore, EmergencyContact, SiteLocationStore, User,
-    UserRole,
+    permissions::Permission, storage::password, AccountStatus, CredentialStore, EmergencyContact,
+    SiteLocationStore, User, UserRole,
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -576,7 +575,11 @@ pub async fn update_password(
     Path(username): Path<String>,
     Json(req): Json<UpdatePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::check_permission(&identity, Permission::UserSetPassword, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::UserSetPassword,
+        state.deployment_mode,
+    )?;
     validation::validate_username(&username)?;
     validation::reject_crlf("password", &req.password)?;
 
@@ -647,7 +650,11 @@ pub async fn update_digest_password(
     Path(username): Path<String>,
     Json(req): Json<UpdateDigestPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::check_permission(&identity, Permission::UserSetPassword, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::UserSetPassword,
+        state.deployment_mode,
+    )?;
     validation::validate_username(&username)?;
     validation::reject_crlf("digest_password", &req.digest_password)?;
 

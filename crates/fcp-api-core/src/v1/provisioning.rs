@@ -2,12 +2,16 @@
 
 use crate::{error::ApiError, state::ApiState};
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use fcp_core::storage::DeviceStore;
+use fcp_core::{storage::DeviceStore, CredentialStore};
+use serde::Deserialize;
 use std::collections::HashMap;
+
+const PROVISIONING_NOT_FOUND: &str = "Provisioning config not found";
+const PROVISIONING_TOKEN_HEADER: &str = "x-fcp-provisioning-token";
 
 /// Simple template engine -- replaces ${variable} placeholders.
 fn render_template(template_body: &str, vars: &HashMap<String, String>) -> String {
@@ -18,14 +22,79 @@ fn render_template(template_body: &str, vars: &HashMap<String, String>) -> Strin
     result
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct ProvisioningQuery {
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+fn provisioning_not_found() -> ApiError {
+    ApiError::NotFound(PROVISIONING_NOT_FOUND.to_string())
+}
+
+fn provisioning_token_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(PROVISIONING_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+async fn authorize_provisioning_request(
+    state: &ApiState,
+    headers: &HeaderMap,
+    query: &ProvisioningQuery,
+) -> Result<(), ApiError> {
+    let expected_token = state
+        .provisioning_auth_token
+        .as_deref()
+        .ok_or_else(provisioning_not_found)?;
+    let presented_token = query
+        .token
+        .as_deref()
+        .filter(|token| !token.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| provisioning_token_from_headers(headers))
+        .ok_or_else(provisioning_not_found)?;
+
+    let auth_config = crate::auth::AuthConfig::new(expected_token.to_string());
+    if crate::auth::validate_token(&presented_token, &auth_config)
+        .await
+        .is_none()
+    {
+        return Err(provisioning_not_found());
+    }
+
+    Ok(())
+}
+
 /// GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
 ///
-/// No authentication required -- phones request their config at boot using
-/// their MAC address as the sole identifying factor.
+/// Phones must present the shared provisioning token via one of:
+/// - `Authorization: Bearer <token>`
+/// - `X-FCP-Provisioning-Token: <token>`
+/// - `?token=<token>`
+///
+/// Unknown or unauthorized devices all return the same 404 to avoid turning
+/// this endpoint into an enumeration surface.
 pub async fn auto_provision(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(mac_address): Path<String>,
+    Query(query): Query<ProvisioningQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    authorize_provisioning_request(&state, &headers, &query).await?;
+
     let storage = state
         .storage
         .as_ref()
@@ -39,21 +108,21 @@ pub async fn auto_provision(
         .get_device_by_mac_address(&normalized_mac)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("Device not found".into()))?;
+        .ok_or_else(provisioning_not_found)?;
 
     if !device.enabled {
-        return Err(ApiError::Forbidden("Device is disabled".into()));
+        return Err(provisioning_not_found());
     }
 
     // Find the config template
     let template_id = device
         .config_template_id
         .as_ref()
-        .ok_or_else(|| ApiError::NotFound("No config template assigned to device".into()))?;
+        .ok_or_else(provisioning_not_found)?;
 
     let template_id = template_id
         .parse::<fcp_core::ConfigTemplateId>()
-        .map_err(|e| ApiError::BadRequest(format!("Invalid template ID: {}", e)))?;
+        .map_err(|_| provisioning_not_found())?;
 
     let template_store = storage
         .config_template_store()
@@ -63,9 +132,9 @@ pub async fn auto_provision(
         .get_config_template(&template_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("Config template not found".into()))?;
+        .ok_or_else(provisioning_not_found)?;
     if template.tenant_id != device.tenant_id {
-        return Err(ApiError::NotFound("Config template not found".into()));
+        return Err(provisioning_not_found());
     }
 
     // Build variable map
@@ -75,15 +144,32 @@ pub async fn auto_provision(
 
     // Get owner's SIP credentials if device has an owner
     if let Some(ref owner_id) = device.owner_user_id {
-        if let Some(ref sip_uri) = device.sip_uri {
-            vars.insert("sip_uri".to_string(), sip_uri.clone());
-            // Extract username from sip:user@host
-            if let Some(user) = sip_uri
-                .strip_prefix("sip:")
-                .and_then(|s| s.split('@').next())
-            {
-                vars.insert("sip_username".to_string(), user.to_string());
-            }
+        let owner = storage
+            .get_user_by_id(owner_id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .filter(|owner| owner.tenant_id == device.tenant_id && owner.enabled)
+            .ok_or_else(provisioning_not_found)?;
+
+        let sip_ha1_hash = owner
+            .sip_ha1_hash
+            .clone()
+            .ok_or_else(provisioning_not_found)?;
+        let sip_uri = device
+            .sip_uri
+            .clone()
+            .unwrap_or_else(|| format!("sip:{}@{}", owner.username, state.realm));
+
+        vars.insert("sip_uri".to_string(), sip_uri);
+        vars.insert("sip_username".to_string(), owner.username.clone());
+        vars.insert("sip_auth_username".to_string(), owner.username.clone());
+        vars.insert("sip_auth_ha1_hash".to_string(), sip_ha1_hash);
+        vars.insert("owner_username".to_string(), owner.username.clone());
+        if let Some(ref display_name) = owner.display_name {
+            vars.insert("owner_display_name".to_string(), display_name.clone());
+        }
+        if let Some(ref email) = owner.email {
+            vars.insert("owner_email".to_string(), email.clone());
         }
         vars.insert("owner_user_id".to_string(), owner_id.to_string());
     }
@@ -134,5 +220,33 @@ mod tests {
 
         let result = render_template(template, &vars);
         assert_eq!(result, "server=pbx.example.com\npassword=${password}");
+    }
+
+    #[test]
+    fn test_provisioning_token_from_custom_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            PROVISIONING_TOKEN_HEADER,
+            "shared-token".parse().expect("valid header"),
+        );
+
+        assert_eq!(
+            provisioning_token_from_headers(&headers).as_deref(),
+            Some("shared-token")
+        );
+    }
+
+    #[test]
+    fn test_provisioning_token_from_bearer_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer shared-token".parse().expect("valid header"),
+        );
+
+        assert_eq!(
+            provisioning_token_from_headers(&headers).as_deref(),
+            Some("shared-token")
+        );
     }
 }

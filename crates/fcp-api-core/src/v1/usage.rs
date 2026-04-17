@@ -6,11 +6,7 @@
 //! - GET /usage/by-number — per-number CDR breakdown
 //! - GET /billing/summary — combined usage + resource counts
 
-use crate::{
-    auth::TenantContext,
-    error::ApiError,
-    state::ApiState,
-};
+use crate::{auth::TenantContext, error::ApiError, state::ApiState};
 use axum::{
     extract::{Query, State},
     response::IntoResponse,
@@ -153,9 +149,7 @@ fn parse_date(s: &str) -> Result<SystemTime, ApiError> {
     let dt = date
         .and_hms_opt(0, 0, 0)
         .ok_or_else(|| ApiError::BadRequest(format!("Invalid date '{}'", s)))?;
-    let secs = dt
-        .and_utc()
-        .timestamp() as u64;
+    let secs = dt.and_utc().timestamp() as u64;
     Ok(UNIX_EPOCH + Duration::from_secs(secs))
 }
 
@@ -299,10 +293,7 @@ pub async fn billing_summary(
         .map_err(|e| ApiError::Internal(format!("Failed to list devices: {}", e)))?;
 
     // Filter users to this tenant
-    let user_count = users
-        .iter()
-        .filter(|u| u.tenant_id == tenant.0)
-        .count();
+    let user_count = users.iter().filter(|u| u.tenant_id == tenant.0).count();
 
     Ok(Json(BillingSummaryResponse {
         period_start: to_epoch(from),

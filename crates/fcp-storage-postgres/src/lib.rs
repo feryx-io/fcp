@@ -1252,37 +1252,76 @@ impl CdrStore for PostgresStorage {
         let tenant_id_str = tenant_id.to_string();
         let from_dt = system_time_to_datetime(from);
         let to_dt = system_time_to_datetime(to);
+        let inbound_match = phone_number_uri_match_sql("c.to_uri");
+        let outbound_match = phone_number_uri_match_sql("c.from_uri");
+        let sql = format!(
+            "WITH matched_numbers AS (
+                SELECT DISTINCT
+                    c.call_id,
+                    pn.e164 AS number,
+                    'outbound' AS direction,
+                    c.call_duration_ms,
+                    c.answer_time
+                FROM cdrs c
+                JOIN phone_numbers pn
+                  ON pn.tenant_id = $1
+                 AND ({outbound_match})
+                WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3
 
-        // Aggregate by from_uri (outbound) and to_uri (inbound), then merge
-        let rows = sqlx::query(
-            "WITH numbers AS (
-                SELECT from_uri AS number, 'outbound' AS direction,
-                       call_duration_ms, answer_time
-                FROM cdrs
-                WHERE tenant_id = $1 AND start_time >= $2 AND start_time < $3
                 UNION ALL
-                SELECT to_uri AS number, 'inbound' AS direction,
-                       call_duration_ms, answer_time
-                FROM cdrs
-                WHERE tenant_id = $1 AND start_time >= $2 AND start_time < $3
+
+                SELECT DISTINCT
+                    c.call_id,
+                    pn.e164 AS number,
+                    'inbound' AS direction,
+                    c.call_duration_ms,
+                    c.answer_time
+                FROM cdrs c
+                JOIN phone_numbers pn
+                  ON pn.tenant_id = $1
+                 AND ({inbound_match})
+                WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3
+            ),
+            deduped_calls AS (
+                SELECT
+                    number,
+                    call_id,
+                    BOOL_OR(answer_time IS NOT NULL) AS answered,
+                    MAX(COALESCE(call_duration_ms, 0)) AS call_duration_ms
+                FROM matched_numbers
+                GROUP BY number, call_id
+            ),
+            direction_counts AS (
+                SELECT
+                    number,
+                    COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound_calls,
+                    COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound_calls
+                FROM matched_numbers
+                GROUP BY number
             )
             SELECT
-                number,
-                COUNT(*) as total_calls,
-                COUNT(*) FILTER (WHERE answer_time IS NOT NULL) as answered_calls,
-                COALESCE(SUM(call_duration_ms) FILTER (WHERE answer_time IS NOT NULL), 0) as total_duration_ms,
-                COUNT(*) FILTER (WHERE direction = 'inbound') as inbound_calls,
-                COUNT(*) FILTER (WHERE direction = 'outbound') as outbound_calls
-            FROM numbers
-            GROUP BY number
-            ORDER BY total_calls DESC
-            LIMIT 100",
-        )
-        .bind(&tenant_id_str)
-        .bind(from_dt)
-        .bind(to_dt)
-        .fetch_all(&self.pool)
-        .await?;
+                d.number,
+                COUNT(*) AS total_calls,
+                COUNT(*) FILTER (WHERE d.answered) AS answered_calls,
+                COALESCE(
+                    SUM(CASE WHEN d.answered THEN d.call_duration_ms ELSE 0 END),
+                    0
+                ) AS total_duration_ms,
+                COALESCE(dc.inbound_calls, 0) AS inbound_calls,
+                COALESCE(dc.outbound_calls, 0) AS outbound_calls
+            FROM deduped_calls d
+            LEFT JOIN direction_counts dc ON dc.number = d.number
+            GROUP BY d.number, dc.inbound_calls, dc.outbound_calls
+            ORDER BY total_calls DESC, d.number
+            LIMIT 100"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(&tenant_id_str)
+            .bind(from_dt)
+            .bind(to_dt)
+            .fetch_all(&self.pool)
+            .await?;
 
         let results = rows
             .into_iter()

@@ -13,8 +13,9 @@ use fcp_core::{
     TenantStatus, TenantStore, User, UserId, UserRole,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Deserialize)]
 pub struct SignupRequest {
@@ -30,6 +31,33 @@ pub struct SignupResponse {
     pub tenant_id: String,
     pub tenant_name: String,
     pub username: String,
+}
+
+async fn cleanup_failed_signup(
+    storage: &Arc<fcp_core::DynStorage>,
+    tenant_id: &TenantId,
+    username: &str,
+    user_created: bool,
+) {
+    if user_created {
+        if let Err(error) = storage.delete_user_in_tenant(username, tenant_id).await {
+            warn!(
+                tenant_id = %tenant_id,
+                username = %username,
+                %error,
+                "Failed to clean up signup user after partial failure"
+            );
+        }
+    }
+
+    if let Err(error) = storage.delete_tenant(tenant_id).await {
+        warn!(
+            tenant_id = %tenant_id,
+            username = %username,
+            %error,
+            "Failed to clean up signup tenant after partial failure"
+        );
+    }
 }
 
 /// POST /auth/signup — Create a new tenant and admin user when enabled.
@@ -147,10 +175,13 @@ pub async fn signup(
         account_locked_until: None,
     };
 
-    storage.put_user(user.clone()).await.map_err(|e| {
-        // If user creation fails, best-effort cleanup of the tenant
-        ApiError::Internal(format!("Failed to create admin user: {}", e))
-    })?;
+    if let Err(error) = storage.put_user(user.clone()).await {
+        cleanup_failed_signup(storage, &tenant_id, &user.username, false).await;
+        return Err(ApiError::Internal(format!(
+            "Failed to create admin user: {}",
+            error
+        )));
+    }
 
     // Generate JWT token (same pattern as auth_session login)
     let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
@@ -164,7 +195,13 @@ pub async fn signup(
         iat: epoch_secs,
     };
 
-    let token = auth_session::encode_jwt(&claims, &jwt_secret)?;
+    let token = match auth_session::encode_jwt(&claims, &jwt_secret) {
+        Ok(token) => token,
+        Err(error) => {
+            cleanup_failed_signup(storage, &tenant_id, &user.username, true).await;
+            return Err(error);
+        }
+    };
 
     info!(
         event = "tenant_signup",
