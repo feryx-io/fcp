@@ -187,6 +187,10 @@ pub struct ApiConfig {
     /// Bearer authentication token
     #[serde(default)]
     pub auth_token: Option<String>,
+
+    /// Deployment mode for permission evaluation
+    #[serde(default)]
+    pub deployment_mode: fcp_core::permissions::DeploymentMode,
 }
 
 fn default_bind_address() -> SocketAddr {
@@ -203,6 +207,7 @@ impl Default for ApiConfig {
             bind_address: default_bind_address(),
             auth_enabled: true,
             auth_token: Some(uuid::Uuid::new_v4().to_string()),
+            deployment_mode: fcp_core::permissions::DeploymentMode::default(),
         }
     }
 }

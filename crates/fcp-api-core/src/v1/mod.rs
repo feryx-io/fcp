@@ -5,6 +5,7 @@ pub mod auth_session;
 pub mod cdrs;
 pub mod conferences;
 pub mod config;
+pub mod config_templates;
 pub mod dashboard;
 pub mod debug;
 pub mod devices;
@@ -19,15 +20,18 @@ pub mod metrics;
 pub mod phone_numbers;
 pub mod presence;
 pub mod prompts;
+pub mod provisioning;
 pub mod queue_config;
 pub mod queues;
 pub mod registrations;
 pub mod routing;
 pub mod self_service;
+pub mod signup;
 pub mod sip_trace;
 pub mod system;
 pub mod tenants;
 pub mod trunks;
+pub mod usage;
 pub mod users;
 pub mod voicemail;
 
@@ -50,6 +54,11 @@ pub fn pre_auth_router() -> Router<ApiState> {
         .route(
             "/auth/change-expired-password",
             post(auth_session::change_expired_password),
+        )
+        .route("/auth/signup", post(signup::signup))
+        .route(
+            "/provisioning/:mac_address",
+            get(provisioning::auto_provision),
         )
 }
 
@@ -143,6 +152,10 @@ pub fn router() -> Router<ApiState> {
         // Dashboard
         .route("/dashboard/summary", get(dashboard::summary))
         .route("/status", get(system::status_scoped))
+        // Usage & Billing
+        .route("/usage", get(usage::get_usage))
+        .route("/usage/by-number", get(usage::get_usage_by_number))
+        .route("/billing/summary", get(usage::billing_summary))
         // NOTE: /events WebSocket is registered separately via ws_router()
         // Debug endpoints
         .route("/debug/summary", get(debug::debug_summary))
@@ -227,6 +240,12 @@ pub fn router() -> Router<ApiState> {
             "/phone-numbers",
             get(phone_numbers::list_phone_numbers).post(phone_numbers::create_phone_number),
         )
+        // IMPORTANT: /phone-numbers/available must come BEFORE /phone-numbers/:id
+        // to prevent "available" from being captured as an :id parameter.
+        .route(
+            "/phone-numbers/available",
+            get(phone_numbers::search_available_numbers),
+        )
         .route(
             "/phone-numbers/:id",
             get(phone_numbers::get_phone_number)
@@ -236,6 +255,14 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/phone-numbers/:id/activate",
             post(phone_numbers::activate_phone_number),
+        )
+        .route(
+            "/phone-numbers/:id/purchase",
+            post(phone_numbers::purchase_phone_number),
+        )
+        .route(
+            "/phone-numbers/:id/release",
+            post(phone_numbers::release_phone_number),
         )
         // Line bindings
         .route(
@@ -269,6 +296,18 @@ pub fn router() -> Router<ApiState> {
             get(devices::get_device)
                 .patch(devices::update_device)
                 .delete(devices::delete_device),
+        )
+        // Config Templates (device provisioning)
+        .route(
+            "/config-templates",
+            get(config_templates::list_config_templates)
+                .post(config_templates::create_config_template),
+        )
+        .route(
+            "/config-templates/:id",
+            get(config_templates::get_config_template)
+                .patch(config_templates::update_config_template)
+                .delete(config_templates::delete_config_template),
         )
         // Locations
         .route(

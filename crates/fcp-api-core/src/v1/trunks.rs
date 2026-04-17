@@ -1,13 +1,15 @@
 //! SIP Trunk management API endpoints.
 
+use crate::auth::AuthIdentity;
 use crate::error::ApiError;
 use crate::state::ApiState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use fcp_core::permissions::Permission;
 use fcp_core::storage::TrunkStore;
 use fcp_core::{Trunk, TrunkDirection, TrunkId};
 use serde::{Deserialize, Serialize};
@@ -233,8 +235,10 @@ pub struct UpdateTrunkRequest {
 /// List trunks.
 pub async fn list_trunks(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let tenant_id = tenant.0;
 
@@ -254,9 +258,11 @@ pub async fn list_trunks(
 /// Get a single trunk.
 pub async fn get_trunk(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let trunk_id = TrunkId::from_string(id);
 
@@ -277,9 +283,11 @@ pub async fn get_trunk(
 /// Create a new trunk.
 pub async fn create_trunk(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Json(req): Json<CreateTrunkRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkCreate, state.deployment_mode)?;
     let storage = require_storage!(state);
     let tenant_id = tenant.0;
 
@@ -383,10 +391,12 @@ pub async fn create_trunk(
 /// Update an existing trunk.
 pub async fn update_trunk(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateTrunkRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
     let storage = require_storage!(state);
     let trunk_id = TrunkId::from_string(id);
 
@@ -516,9 +526,11 @@ pub async fn update_trunk(
 /// Delete a trunk.
 pub async fn delete_trunk(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkDelete, state.deployment_mode)?;
     let storage = require_storage!(state);
     let trunk_id = TrunkId::from_string(id);
 
@@ -545,9 +557,11 @@ pub async fn delete_trunk(
 /// Test trunk connectivity by sending an OPTIONS probe.
 pub async fn test_trunk(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkUpdate, state.deployment_mode)?;
     let storage = require_storage!(state);
     let trunk_id = TrunkId::from_string(id);
 
@@ -580,9 +594,11 @@ pub async fn test_trunk(
 /// Clone a trunk (create a copy with a new name).
 pub async fn clone_trunk(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkCreate, state.deployment_mode)?;
     let storage = require_storage!(state);
     let trunk_id = TrunkId::from_string(id);
 
@@ -617,9 +633,11 @@ pub async fn clone_trunk(
 /// Get trunk stats (ASR, ACD, PDD, hourly volume) from CDRs.
 pub async fn get_trunk_stats(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::TrunkRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let trunk_id = TrunkId::from_string(id);
 

@@ -1,6 +1,6 @@
 //! User management API endpoints.
 
-use crate::{error::ApiError, state::ApiState, validation};
+use crate::{auth::AuthIdentity, error::ApiError, state::ApiState, validation};
 use fcp_events::{PlatformEvent, SystemEvent, UserEvent};
 use tracing::{info, warn};
 
@@ -16,9 +16,10 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use fcp_core::{
+    permissions::Permission,
     storage::password, AccountStatus, CredentialStore, EmergencyContact, SiteLocationStore, User,
     UserRole,
 };
@@ -216,8 +217,10 @@ pub struct UpdateDigestPasswordRequest {
 /// GET /api/v1/users
 pub async fn list_users(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
 ) -> Result<Json<Vec<UserResponse>>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserRead, state.deployment_mode)?;
     let storage = require_storage!(state);
     let users = storage
         .list_users()
@@ -234,9 +237,11 @@ pub async fn list_users(
 /// GET /api/v1/users/:username
 pub async fn get_user(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserRead, state.deployment_mode)?;
     validation::validate_username(&username)?;
 
     let storage = require_storage!(state);
@@ -258,9 +263,11 @@ pub async fn get_user(
 /// before returning an error to match the timing of successful creation.
 pub async fn create_user(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserCreate, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     validation::validate_username(&req.username)?;
@@ -406,10 +413,12 @@ pub async fn create_user(
 /// PUT /api/v1/users/:username
 pub async fn update_user(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
     Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserUpdate, state.deployment_mode)?;
     validation::validate_username(&username)?;
     validation::validate_display_name(&req.display_name)?;
 
@@ -562,10 +571,12 @@ pub async fn update_user(
 /// PUT /api/v1/users/:username/password
 pub async fn update_password(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
     Json(req): Json<UpdatePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserSetPassword, state.deployment_mode)?;
     validation::validate_username(&username)?;
     validation::reject_crlf("password", &req.password)?;
 
@@ -631,10 +642,12 @@ pub async fn update_password(
 /// **Note:** If digest_password is not set (NULL), the main password is used for SIP.
 pub async fn update_digest_password(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
     Json(req): Json<UpdateDigestPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserSetPassword, state.deployment_mode)?;
     validation::validate_username(&username)?;
     validation::reject_crlf("digest_password", &req.digest_password)?;
 
@@ -693,9 +706,11 @@ pub async fn update_digest_password(
 /// for SIP authentication. The HA1 hash will be recomputed from the main password.
 pub async fn delete_digest_password(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserDelete, state.deployment_mode)?;
     validation::validate_username(&username)?;
 
     // Get existing user
@@ -757,9 +772,11 @@ pub async fn delete_digest_password(
 /// Resets failed login attempts, clears lockout, and sets account status to Active.
 pub async fn unlock_user(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<Json<UserResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserUpdate, state.deployment_mode)?;
     validation::validate_username(&username)?;
 
     let storage = require_storage!(state);
@@ -790,9 +807,11 @@ pub async fn unlock_user(
 /// DELETE /api/v1/users/:username
 pub async fn delete_user(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::UserDelete, state.deployment_mode)?;
     validation::validate_username(&username)?;
 
     // Get user before deletion for event data

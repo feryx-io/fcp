@@ -1,6 +1,7 @@
 //! User roles and permissions system
 
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 /// Deployment mode determines feature availability and UI complexity
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,6 +77,23 @@ pub enum UserRole {
 impl Default for UserRole {
     fn default() -> Self {
         Self::EndUser
+    }
+}
+
+impl FromStr for UserRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "super_admin" => Ok(Self::SuperAdmin),
+            "tenant_admin" => Ok(Self::TenantAdmin),
+            "telecom_admin" => Ok(Self::TelecomAdmin),
+            "user_admin" => Ok(Self::UserAdmin),
+            "department_admin" => Ok(Self::DepartmentAdmin),
+            "read_only" => Ok(Self::ReadOnly),
+            "end_user" => Ok(Self::EndUser),
+            other => Err(format!("unknown role: {}", other)),
+        }
     }
 }
 
@@ -174,7 +192,83 @@ pub enum Permission {
     DebugView,
 }
 
+impl FromStr for Permission {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system_config" => Ok(Self::SystemConfig),
+            "system_view_logs" => Ok(Self::SystemViewLogs),
+            "user_create" => Ok(Self::UserCreate),
+            "user_read" => Ok(Self::UserRead),
+            "user_update" => Ok(Self::UserUpdate),
+            "user_delete" => Ok(Self::UserDelete),
+            "user_set_password" => Ok(Self::UserSetPassword),
+            "phone_number_create" => Ok(Self::PhoneNumberCreate),
+            "phone_number_read" => Ok(Self::PhoneNumberRead),
+            "phone_number_update" => Ok(Self::PhoneNumberUpdate),
+            "phone_number_delete" => Ok(Self::PhoneNumberDelete),
+            "phone_number_view_carrier_data" => Ok(Self::PhoneNumberViewCarrierData),
+            "device_create" => Ok(Self::DeviceCreate),
+            "device_read" => Ok(Self::DeviceRead),
+            "device_update" => Ok(Self::DeviceUpdate),
+            "device_delete" => Ok(Self::DeviceDelete),
+            "call_view" => Ok(Self::CallView),
+            "call_control" => Ok(Self::CallControl),
+            "call_recording_access" => Ok(Self::CallRecordingAccess),
+            "registration_view" => Ok(Self::RegistrationView),
+            "registration_manage" => Ok(Self::RegistrationManage),
+            "trunk_create" => Ok(Self::TrunkCreate),
+            "trunk_read" => Ok(Self::TrunkRead),
+            "trunk_update" => Ok(Self::TrunkUpdate),
+            "trunk_delete" => Ok(Self::TrunkDelete),
+            "tenant_create" => Ok(Self::TenantCreate),
+            "tenant_read" => Ok(Self::TenantRead),
+            "tenant_update" => Ok(Self::TenantUpdate),
+            "tenant_delete" => Ok(Self::TenantDelete),
+            "debug_view" => Ok(Self::DebugView),
+            other => Err(format!("unknown permission: {}", other)),
+        }
+    }
+}
+
 impl Permission {
+    /// Get the snake_case string representation used in API token permission arrays.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SystemConfig => "system_config",
+            Self::SystemViewLogs => "system_view_logs",
+            Self::UserCreate => "user_create",
+            Self::UserRead => "user_read",
+            Self::UserUpdate => "user_update",
+            Self::UserDelete => "user_delete",
+            Self::UserSetPassword => "user_set_password",
+            Self::PhoneNumberCreate => "phone_number_create",
+            Self::PhoneNumberRead => "phone_number_read",
+            Self::PhoneNumberUpdate => "phone_number_update",
+            Self::PhoneNumberDelete => "phone_number_delete",
+            Self::PhoneNumberViewCarrierData => "phone_number_view_carrier_data",
+            Self::DeviceCreate => "device_create",
+            Self::DeviceRead => "device_read",
+            Self::DeviceUpdate => "device_update",
+            Self::DeviceDelete => "device_delete",
+            Self::CallView => "call_view",
+            Self::CallControl => "call_control",
+            Self::CallRecordingAccess => "call_recording_access",
+            Self::RegistrationView => "registration_view",
+            Self::RegistrationManage => "registration_manage",
+            Self::TrunkCreate => "trunk_create",
+            Self::TrunkRead => "trunk_read",
+            Self::TrunkUpdate => "trunk_update",
+            Self::TrunkDelete => "trunk_delete",
+            Self::TenantCreate => "tenant_create",
+            Self::TenantRead => "tenant_read",
+            Self::TenantUpdate => "tenant_update",
+            Self::TenantDelete => "tenant_delete",
+            Self::DebugView => "debug_view",
+        }
+    }
+
     /// Get human-readable name
     pub fn name(&self) -> &'static str {
         match self {

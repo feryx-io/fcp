@@ -34,6 +34,10 @@ pub fn webhook_router(state: WebhookRouteState) -> Router {
         )
         .route("/v1/webhooks/{id}/test", post(test_endpoint))
         .route("/v1/webhooks/{id}/deliveries", get(list_deliveries))
+        .route(
+            "/v1/webhooks/deliveries/{delivery_id}/replay",
+            post(replay_delivery),
+        )
         .with_state(state)
 }
 
@@ -511,6 +515,110 @@ async fn list_deliveries(
                 Json(serde_json::json!({"error": e.to_string()})),
             )
                 .into_response()
+        }
+    }
+}
+
+/// Replay a failed webhook delivery.
+///
+/// POST /v1/webhooks/deliveries/:delivery_id/replay
+async fn replay_delivery(
+    State(state): State<WebhookRouteState>,
+    Extension(principal): Extension<AuthPrincipal>,
+    Path(delivery_id): Path<String>,
+) -> impl IntoResponse {
+    // Look up the delivery log
+    let log = match state.dispatcher.store().get_delivery_log(&delivery_id).await {
+        Ok(Some(log)) => log,
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "Delivery log not found"),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    // Look up the endpoint to verify it still exists and authorize access
+    let endpoint = match state.dispatcher.store().get_endpoint(&log.endpoint_id).await {
+        Ok(Some(ep)) => ep,
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "Webhook endpoint no longer exists"),
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    };
+
+    if let Err(response) = authorize_endpoint_access(&principal, &endpoint.tenant_id) {
+        return response;
+    }
+
+    // Re-deliver the stored payload with HMAC signature (matching normal delivery)
+    let signature = fcp_webhooks::compute_signature(&endpoint.secret, &log.payload);
+    let client = reqwest::Client::new();
+    let now = SystemTime::now();
+    let result = client
+        .post(&endpoint.url)
+        .header("Content-Type", "application/json")
+        .header("X-FCP-Event", &log.event_type)
+        .header("X-FCP-Signature", &signature)
+        .header("X-FCP-Replay", "true")
+        .body(log.payload.clone())
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    use fcp_core::storage::WebhookDeliveryLog;
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let delivered = resp.status().is_success();
+            let resp_body = resp.text().await.ok().map(|b| {
+                if b.len() > 65536 { b[..65536].to_string() } else { b }
+            });
+
+            let replay_log = WebhookDeliveryLog {
+                id: uuid::Uuid::new_v4().to_string(),
+                endpoint_id: log.endpoint_id,
+                event_type: log.event_type,
+                payload: log.payload,
+                status_code: Some(status),
+                attempts: 1,
+                last_attempt_at: Some(now),
+                next_retry_at: None,
+                delivered,
+                error: if delivered { None } else { Some(format!("HTTP {}", status)) },
+                response_body: resp_body,
+                response_headers: None,
+                created_at: now,
+            };
+
+            let _ = state.dispatcher.store().log_delivery(replay_log.clone()).await;
+
+            Json(serde_json::json!({
+                "replayed": true,
+                "delivery_id": replay_log.id,
+                "status_code": status,
+                "delivered": delivered,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            let replay_log = WebhookDeliveryLog {
+                id: uuid::Uuid::new_v4().to_string(),
+                endpoint_id: log.endpoint_id,
+                event_type: log.event_type,
+                payload: log.payload,
+                status_code: None,
+                attempts: 1,
+                last_attempt_at: Some(now),
+                next_retry_at: None,
+                delivered: false,
+                error: Some(e.to_string()),
+                response_body: None,
+                response_headers: None,
+                created_at: now,
+            };
+
+            let _ = state.dispatcher.store().log_delivery(replay_log).await;
+
+            json_error(
+                StatusCode::BAD_GATEWAY,
+                format!("Replay delivery failed: {}", e),
+            )
         }
     }
 }

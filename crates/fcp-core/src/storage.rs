@@ -967,6 +967,38 @@ pub struct CdrQuery {
     pub offset: Option<usize>,
 }
 
+/// Aggregated CDR usage statistics for a tenant within a time range.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UsageAggregation {
+    /// Total number of calls (all dispositions).
+    pub total_calls: u64,
+    /// Number of answered (connected) calls.
+    pub answered_calls: u64,
+    /// Sum of call_duration_ms across all answered calls.
+    pub total_duration_ms: u64,
+    /// Number of inbound calls (to_uri matches a tenant number).
+    pub inbound_calls: u64,
+    /// Number of outbound calls.
+    pub outbound_calls: u64,
+}
+
+/// Per-number CDR usage breakdown.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NumberUsage {
+    /// The phone number or URI.
+    pub number: String,
+    /// Total calls involving this number.
+    pub total_calls: u64,
+    /// Answered calls involving this number.
+    pub answered_calls: u64,
+    /// Total duration in milliseconds.
+    pub total_duration_ms: u64,
+    /// Inbound calls to this number.
+    pub inbound_calls: u64,
+    /// Outbound calls from this number.
+    pub outbound_calls: u64,
+}
+
 /// Storage backend for Call Detail Records
 #[async_trait]
 pub trait CdrStore: Send + Sync {
@@ -981,6 +1013,43 @@ pub trait CdrStore: Send + Sync {
 
     /// Get CDR count for a query
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize>;
+
+    /// Aggregate CDR usage statistics for a tenant within a time range.
+    async fn aggregate_usage(
+        &self,
+        tenant_id: &crate::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<UsageAggregation> {
+        let _ = (tenant_id, from, to);
+        Ok(UsageAggregation::default())
+    }
+
+    /// Aggregate CDR usage statistics per phone number for a tenant within a time range.
+    async fn aggregate_usage_by_number(
+        &self,
+        tenant_id: &crate::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<Vec<NumberUsage>> {
+        let _ = (tenant_id, from, to);
+        Ok(Vec::new())
+    }
+}
+
+/// Query parameters for searching available pool phone numbers.
+#[derive(Debug, Clone, Default)]
+pub struct AvailableNumberQuery {
+    /// Filter by area code (NPA)
+    pub area_code: Option<String>,
+    /// Glob-style pattern match on E.164 (e.g., "*7034")
+    pub pattern: Option<String>,
+    /// Filter by state/region
+    pub region: Option<String>,
+    /// Filter by rate center
+    pub rate_center: Option<String>,
+    /// Maximum results to return (default 50)
+    pub limit: usize,
 }
 
 /// Storage backend for phone numbers
@@ -1006,6 +1075,15 @@ pub trait PhoneNumberStore: Send + Sync {
 
     /// Delete a phone number by ID
     async fn delete_phone_number(&self, id: &crate::PhoneNumberId) -> Result<()>;
+
+    /// Search available (pool) phone numbers matching filters.
+    async fn search_available_numbers(
+        &self,
+        query: AvailableNumberQuery,
+    ) -> Result<Vec<crate::PhoneNumber>> {
+        let _ = query;
+        Ok(vec![])
+    }
 }
 
 /// Storage backend for line bindings
@@ -1086,6 +1164,12 @@ pub trait DeviceStore: Send + Sync {
     /// List devices for a user
     async fn list_devices_by_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::Device>>;
 
+    /// Get a device by MAC address (for auto-provisioning).
+    async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<crate::Device>> {
+        let _ = mac_address;
+        Ok(None)
+    }
+
     /// Create or update a device
     async fn put_device(&self, device: crate::Device) -> Result<()>;
 
@@ -1151,6 +1235,31 @@ pub trait QueueConfigStore: Send + Sync {
 
     /// Delete a queue config by ID
     async fn delete_queue_config(&self, id: &crate::QueueConfigId) -> Result<()>;
+}
+
+/// Storage for device provisioning configuration templates.
+#[async_trait]
+pub trait ConfigTemplateStore: Send + Sync {
+    /// Get a config template by ID.
+    async fn get_config_template(
+        &self,
+        id: &crate::ConfigTemplateId,
+    ) -> Result<Option<crate::config_template::ConfigTemplate>>;
+
+    /// List all config templates for a tenant.
+    async fn list_config_templates(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::config_template::ConfigTemplate>>;
+
+    /// Create or update a config template.
+    async fn put_config_template(
+        &self,
+        template: crate::config_template::ConfigTemplate,
+    ) -> Result<()>;
+
+    /// Delete a config template by ID.
+    async fn delete_config_template(&self, id: &crate::ConfigTemplateId) -> Result<()>;
 }
 
 /// Site location storage operations.
@@ -1707,6 +1816,12 @@ pub struct WebhookDeliveryLog {
     pub delivered: bool,
     /// Error message from the last failed attempt
     pub error: Option<String>,
+    /// HTTP response body from the endpoint (truncated to 64KB)
+    #[serde(default)]
+    pub response_body: Option<String>,
+    /// HTTP response headers (JSON-serialized map)
+    #[serde(default)]
+    pub response_headers: Option<String>,
     /// When this delivery log was created
     #[serde(with = "system_time_serde")]
     pub created_at: SystemTime,
@@ -1745,6 +1860,13 @@ pub trait WebhookStore: Send + Sync {
         endpoint_id: &crate::WebhookId,
         limit: usize,
     ) -> Result<Vec<WebhookDeliveryLog>>;
+
+    /// Get a single delivery log by ID.
+    async fn get_delivery_log(&self, id: &str) -> Result<Option<WebhookDeliveryLog>> {
+        // Default implementation returns None — override in Postgres backend.
+        let _ = id;
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2298,6 +2420,7 @@ pub struct DynStorage {
     api_token_store: Option<Arc<dyn ApiTokenStore>>,
     prompt_store: Option<Arc<dyn crate::prompt::PromptStore>>,
     flow_trace_store: Option<Arc<dyn crate::flow_trace::FlowTraceStore>>,
+    config_template_store: Option<Arc<dyn ConfigTemplateStore>>,
 }
 
 impl DynStorage {
@@ -2350,6 +2473,7 @@ impl DynStorage {
             api_token_store: None,
             prompt_store: None,
             flow_trace_store: None,
+            config_template_store: None,
         }
     }
 
@@ -2379,6 +2503,7 @@ impl DynStorage {
             + TrunkStore
             + RoutingRuleStore
             + QueueConfigStore
+            + ConfigTemplateStore
             + 'static,
     {
         Self {
@@ -2401,12 +2526,13 @@ impl DynStorage {
             site_location_store: storage.clone(),
             trunk_store: storage.clone(),
             routing_rule_store: storage.clone(),
-            queue_config_store: storage,
+            queue_config_store: storage.clone(),
             config_store: None,
             sip_trace_store: None,
             api_token_store: None,
             prompt_store: None,
             flow_trace_store: None,
+            config_template_store: Some(storage),
         }
     }
 
@@ -2518,6 +2644,17 @@ impl DynStorage {
     /// Get the site location store.
     pub fn site_location_store(&self) -> &Arc<dyn SiteLocationStore> {
         &self.site_location_store
+    }
+
+    /// Replace the config template store with a specific implementation.
+    pub fn with_config_template_store(mut self, store: Arc<dyn ConfigTemplateStore>) -> Self {
+        self.config_template_store = Some(store);
+        self
+    }
+
+    /// Get the config template store, if one has been set.
+    pub fn config_template_store(&self) -> Option<&Arc<dyn ConfigTemplateStore>> {
+        self.config_template_store.as_ref()
     }
 }
 
@@ -2658,6 +2795,26 @@ impl CdrStore for DynStorage {
     async fn count_cdrs(&self, query: CdrQuery) -> Result<usize> {
         self.cdr_store.count_cdrs(query).await
     }
+
+    async fn aggregate_usage(
+        &self,
+        tenant_id: &crate::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<UsageAggregation> {
+        self.cdr_store.aggregate_usage(tenant_id, from, to).await
+    }
+
+    async fn aggregate_usage_by_number(
+        &self,
+        tenant_id: &crate::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<Vec<NumberUsage>> {
+        self.cdr_store
+            .aggregate_usage_by_number(tenant_id, from, to)
+            .await
+    }
 }
 
 #[async_trait]
@@ -2686,6 +2843,13 @@ impl PhoneNumberStore for DynStorage {
 
     async fn delete_phone_number(&self, id: &crate::PhoneNumberId) -> Result<()> {
         self.phone_number_store.delete_phone_number(id).await
+    }
+
+    async fn search_available_numbers(
+        &self,
+        query: AvailableNumberQuery,
+    ) -> Result<Vec<crate::PhoneNumber>> {
+        self.phone_number_store.search_available_numbers(query).await
     }
 }
 
@@ -2786,6 +2950,10 @@ impl DeviceStore for DynStorage {
 
     async fn list_devices_by_user(&self, user_id: &crate::UserId) -> Result<Vec<crate::Device>> {
         self.device_store.list_devices_by_user(user_id).await
+    }
+
+    async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<crate::Device>> {
+        self.device_store.get_device_by_mac_address(mac_address).await
     }
 
     async fn put_device(&self, device: crate::Device) -> Result<()> {
@@ -3308,6 +3476,10 @@ impl WebhookStore for DynStorage {
         self.webhook_store
             .get_delivery_logs(endpoint_id, limit)
             .await
+    }
+
+    async fn get_delivery_log(&self, id: &str) -> Result<Option<WebhookDeliveryLog>> {
+        self.webhook_store.get_delivery_log(id).await
     }
 }
 

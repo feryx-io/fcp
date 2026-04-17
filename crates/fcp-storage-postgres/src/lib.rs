@@ -39,14 +39,16 @@ use chrono::{DateTime, Utc};
 use fcp_core::porting::PortingStore;
 use fcp_core::{
     storage::{
-        CdrStore, ConferenceStore, CredentialStore, DeviceStore, ExtensionStore, GeoRoutingStore,
-        LineBindingStore, PhoneNumberStore, PresenceHistoryStore, PresenceStore, PresenceSummary,
-        QueueConfigStore, QueueStore, RegistrationStore, ResourceListStore, RoutingRuleStore,
-        SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresenceChange, StoredPresentity,
-        StoredResourceList, StoredSubscription, TenantStore, TrunkStore, VoicemailStore,
-        WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
+        AvailableNumberQuery, CdrStore, ConferenceStore, CredentialStore, DeviceStore,
+        ExtensionStore, GeoRoutingStore, LineBindingStore, PhoneNumberStore,
+        PresenceHistoryStore, PresenceStore, PresenceSummary, QueueConfigStore, QueueStore,
+        RegistrationStore, ResourceListStore, RoutingRuleStore, SiteLocationStore, StoredAgent,
+        StoredAuthPolicy, StoredPresenceChange, StoredPresentity, StoredResourceList,
+        StoredSubscription, TenantStore, TrunkStore, VoicemailStore, WebhookDeliveryLog,
+        WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
+    NumberUsage, UsageAggregation,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
     HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences,
     NumberState, PhoneNumber, PhoneNumberId, QueueConfigId, QueueConfigRecord, Registration,
@@ -1164,6 +1166,97 @@ impl CdrStore for PostgresStorage {
 
         Ok(count as usize)
     }
+
+    async fn aggregate_usage(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<UsageAggregation> {
+        let tenant_id_str = tenant_id.to_string();
+        let from_dt = system_time_to_datetime(from);
+        let to_dt = system_time_to_datetime(to);
+
+        let row = sqlx::query(
+            "SELECT
+                COUNT(*) as total_calls,
+                COUNT(*) FILTER (WHERE answer_time IS NOT NULL) as answered_calls,
+                COALESCE(SUM(call_duration_ms) FILTER (WHERE answer_time IS NOT NULL), 0) as total_duration_ms,
+                COUNT(*) FILTER (WHERE disposition = 'answered' AND from_uri NOT LIKE '%@%') as outbound_calls,
+                COUNT(*) FILTER (WHERE disposition = 'answered' AND to_uri NOT LIKE '%@%') as inbound_calls
+            FROM cdrs
+            WHERE tenant_id = $1 AND start_time >= $2 AND start_time < $3",
+        )
+        .bind(&tenant_id_str)
+        .bind(from_dt)
+        .bind(to_dt)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(UsageAggregation {
+            total_calls: row.get::<i64, _>("total_calls") as u64,
+            answered_calls: row.get::<i64, _>("answered_calls") as u64,
+            total_duration_ms: row.get::<i64, _>("total_duration_ms") as u64,
+            inbound_calls: row.get::<i64, _>("inbound_calls") as u64,
+            outbound_calls: row.get::<i64, _>("outbound_calls") as u64,
+        })
+    }
+
+    async fn aggregate_usage_by_number(
+        &self,
+        tenant_id: &fcp_core::TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> Result<Vec<NumberUsage>> {
+        let tenant_id_str = tenant_id.to_string();
+        let from_dt = system_time_to_datetime(from);
+        let to_dt = system_time_to_datetime(to);
+
+        // Aggregate by from_uri (outbound) and to_uri (inbound), then merge
+        let rows = sqlx::query(
+            "WITH numbers AS (
+                SELECT from_uri AS number, 'outbound' AS direction,
+                       call_duration_ms, answer_time
+                FROM cdrs
+                WHERE tenant_id = $1 AND start_time >= $2 AND start_time < $3
+                UNION ALL
+                SELECT to_uri AS number, 'inbound' AS direction,
+                       call_duration_ms, answer_time
+                FROM cdrs
+                WHERE tenant_id = $1 AND start_time >= $2 AND start_time < $3
+            )
+            SELECT
+                number,
+                COUNT(*) as total_calls,
+                COUNT(*) FILTER (WHERE answer_time IS NOT NULL) as answered_calls,
+                COALESCE(SUM(call_duration_ms) FILTER (WHERE answer_time IS NOT NULL), 0) as total_duration_ms,
+                COUNT(*) FILTER (WHERE direction = 'inbound') as inbound_calls,
+                COUNT(*) FILTER (WHERE direction = 'outbound') as outbound_calls
+            FROM numbers
+            GROUP BY number
+            ORDER BY total_calls DESC
+            LIMIT 100",
+        )
+        .bind(&tenant_id_str)
+        .bind(from_dt)
+        .bind(to_dt)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let results = rows
+            .into_iter()
+            .map(|row| NumberUsage {
+                number: row.get("number"),
+                total_calls: row.get::<i64, _>("total_calls") as u64,
+                answered_calls: row.get::<i64, _>("answered_calls") as u64,
+                total_duration_ms: row.get::<i64, _>("total_duration_ms") as u64,
+                inbound_calls: row.get::<i64, _>("inbound_calls") as u64,
+                outbound_calls: row.get::<i64, _>("outbound_calls") as u64,
+            })
+            .collect();
+
+        Ok(results)
+    }
 }
 
 // ============================================================================
@@ -1463,7 +1556,9 @@ impl PhoneNumberStore for PostgresStorage {
              )
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
              ON CONFLICT(id) DO UPDATE SET
+                 tenant_id = EXCLUDED.tenant_id,
                  state = EXCLUDED.state,
+                 acquired_at = EXCLUDED.acquired_at,
                  e911_address_json = EXCLUDED.e911_address_json,
                  e911_callback = EXCLUDED.e911_callback,
                  cnam = EXCLUDED.cnam,
@@ -1530,6 +1625,65 @@ impl PhoneNumberStore for PostgresStorage {
 
         debug!(id = %id, "Phone number deleted");
         Ok(())
+    }
+
+    async fn search_available_numbers(
+        &self,
+        query: AvailableNumberQuery,
+    ) -> Result<Vec<PhoneNumber>> {
+        // Pool numbers have nil tenant_id AND state = 'available'
+        let nil_tenant = TenantId::nil().to_string();
+        let mut sql = String::from(
+            "SELECT id, e164, country_code, npa, nxx, line, state, tenant_id,
+                    e911_address_json, e911_callback, cnam, spam_score,
+                    carrier, lrn, ocn, rate_center, lata,
+                    acquired_at, activated_at, ported_at, loa_date, foc_date,
+                    recording_enabled, block_anonymous, allow_list, block_list, tags,
+                    location_id, created_at, updated_at
+             FROM phone_numbers
+             WHERE tenant_id = $1 AND state = 'available'",
+        );
+        let mut binds: Vec<String> = vec![nil_tenant];
+        let mut param_idx: usize = 2;
+
+        if let Some(ref area_code) = query.area_code {
+            sql.push_str(&format!(" AND npa = ${}", param_idx));
+            binds.push(area_code.clone());
+            param_idx += 1;
+        }
+
+        if let Some(ref pattern) = query.pattern {
+            // Convert glob pattern (* -> %) to SQL LIKE
+            let like_pattern = pattern.replace('*', "%");
+            sql.push_str(&format!(" AND e164 LIKE ${}", param_idx));
+            binds.push(like_pattern);
+            param_idx += 1;
+        }
+
+        if let Some(ref rate_center) = query.rate_center {
+            sql.push_str(&format!(" AND rate_center = ${}", param_idx));
+            binds.push(rate_center.clone());
+            param_idx += 1;
+        }
+
+        let limit = if query.limit == 0 { 50 } else { query.limit };
+        sql.push_str(&format!(" ORDER BY e164 LIMIT ${}", param_idx));
+        let _ = param_idx;
+
+        let mut q = sqlx::query(&sql);
+        for bind in &binds {
+            q = q.bind(bind);
+        }
+        q = q.bind(limit as i64);
+
+        let rows = q.fetch_all(&self.pool).await?;
+
+        let numbers = rows
+            .into_iter()
+            .filter_map(|row| row_to_phone_number(row).ok())
+            .collect();
+
+        Ok(numbers)
     }
 }
 
@@ -2030,6 +2184,26 @@ impl DeviceStore for PostgresStorage {
         Ok(())
     }
 
+    async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<Device>> {
+        let row = sqlx::query(
+            "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
+                    sip_uri, registration_state, last_registration, last_ip_address, user_agent,
+                    max_lines, supports_video, supports_blf, codec_support,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                    created_at, updated_at
+             FROM devices
+             WHERE LOWER(REPLACE(REPLACE(REPLACE(mac_address, ':', ''), '-', ''), '.', '')) = $1",
+        )
+        .bind(mac_address)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_device(row)?)),
+            None => Ok(None),
+        }
+    }
+
     async fn delete_device(&self, id: &DeviceId) -> Result<()> {
         sqlx::query("DELETE FROM devices WHERE id = $1")
             .bind(id.to_string())
@@ -2037,6 +2211,93 @@ impl DeviceStore for PostgresStorage {
             .await?;
 
         debug!(id = %id, "Device deleted");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl fcp_core::storage::ConfigTemplateStore for PostgresStorage {
+    async fn get_config_template(
+        &self,
+        id: &fcp_core::ConfigTemplateId,
+    ) -> Result<Option<fcp_core::config_template::ConfigTemplate>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, vendor, model_pattern, template_body, description,
+                    created_at, updated_at
+             FROM config_templates
+             WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_config_template(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_config_templates(
+        &self,
+        tenant_id: &TenantId,
+    ) -> Result<Vec<fcp_core::config_template::ConfigTemplate>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, vendor, model_pattern, template_body, description,
+                    created_at, updated_at
+             FROM config_templates
+             WHERE tenant_id = $1
+             ORDER BY name",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| row_to_config_template(row))
+            .collect()
+    }
+
+    async fn put_config_template(
+        &self,
+        template: fcp_core::config_template::ConfigTemplate,
+    ) -> Result<()> {
+        let id = template.id.to_string();
+        let tenant_id = template.tenant_id.to_string();
+        let vendor = template.vendor.to_string();
+        let created_at = system_time_to_datetime(template.created_at);
+        let updated_at = system_time_to_datetime(template.updated_at);
+
+        sqlx::query(
+            "INSERT INTO config_templates (id, tenant_id, name, vendor, model_pattern, template_body, description, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = EXCLUDED.name,
+                 vendor = EXCLUDED.vendor,
+                 model_pattern = EXCLUDED.model_pattern,
+                 template_body = EXCLUDED.template_body,
+                 description = EXCLUDED.description,
+                 updated_at = EXCLUDED.updated_at",
+        )
+        .bind(&id)
+        .bind(&tenant_id)
+        .bind(&template.name)
+        .bind(&vendor)
+        .bind(&template.model_pattern)
+        .bind(&template.template_body)
+        .bind(&template.description)
+        .bind(created_at)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_config_template(&self, id: &fcp_core::ConfigTemplateId) -> Result<()> {
+        sqlx::query("DELETE FROM config_templates WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }
@@ -2521,6 +2782,32 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         provisioning_url: row.get("provisioning_url"),
         config_template_id: row.get("config_template_id"),
         enabled: row.get::<bool, _>("enabled"),
+        created_at,
+        updated_at,
+    })
+}
+
+fn row_to_config_template(
+    row: sqlx::postgres::PgRow,
+) -> Result<fcp_core::config_template::ConfigTemplate> {
+    use sqlx::Row;
+    let id = fcp_core::ConfigTemplateId::from_str(&row.get::<String, _>("id"))?;
+    let tenant_id = TenantId::from_str(&row.get::<String, _>("tenant_id"))?;
+    let vendor_str: String = row.get("vendor");
+    let vendor: fcp_core::config_template::PhoneVendor = vendor_str
+        .parse()
+        .unwrap_or(fcp_core::config_template::PhoneVendor::Generic);
+    let created_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("created_at"));
+    let updated_at = datetime_to_system_time(row.get::<DateTime<Utc>, _>("updated_at"));
+
+    Ok(fcp_core::config_template::ConfigTemplate {
+        id,
+        tenant_id,
+        name: row.get("name"),
+        vendor,
+        model_pattern: row.get("model_pattern"),
+        template_body: row.get("template_body"),
+        description: row.get("description"),
         created_at,
         updated_at,
     })
@@ -3932,6 +4219,24 @@ impl WebhookStore for PostgresStorage {
         rows.into_iter()
             .map(|row| webhook_delivery_log_from_value(row.get("delivery_json")))
             .collect()
+    }
+
+    async fn get_delivery_log(&self, id: &str) -> Result<Option<WebhookDeliveryLog>> {
+        let row = sqlx::query(
+            "SELECT delivery_json
+             FROM webhook_delivery_logs
+             WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(webhook_delivery_log_from_value(
+                row.get("delivery_json"),
+            )?)),
+            None => Ok(None),
+        }
     }
 }
 

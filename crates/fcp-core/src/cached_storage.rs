@@ -518,6 +518,10 @@ impl DeviceStore for CachedDeviceStore {
         self.inner.list_devices_by_user(user_id).await
     }
 
+    async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<crate::Device>> {
+        self.inner.get_device_by_mac_address(mac_address).await
+    }
+
     async fn put_device(&self, device: crate::Device) -> Result<()> {
         self.inner.put_device(device).await?;
         self.cache.clear();

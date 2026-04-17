@@ -162,24 +162,33 @@ impl WebhookDispatcher {
 
         match result {
             Ok(resp) if resp.status().is_success() => {
+                let status_code = resp.status().as_u16();
+                let resp_headers = resp.headers().iter()
+                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect::<std::collections::HashMap<_, _>>();
+                let resp_headers_json = serde_json::to_string(&resp_headers).ok();
+                let resp_body = resp.text().await.ok().map(|b| {
+                    if b.len() > 65536 { b[..65536].to_string() } else { b }
+                });
                 debug!(
                     endpoint_id = %endpoint.id,
                     event = %event_type,
-                    status = %resp.status(),
+                    status = status_code,
                     "Webhook delivered successfully"
                 );
-                // Log successful delivery
                 let log = WebhookDeliveryLog {
                     id: uuid::Uuid::new_v4().to_string(),
                     endpoint_id: endpoint.id,
                     event_type: event_type.to_string(),
                     payload: payload_json.to_string(),
-                    status_code: Some(resp.status().as_u16()),
+                    status_code: Some(status_code),
                     attempts: 1,
                     last_attempt_at: Some(now),
                     next_retry_at: None,
                     delivered: true,
                     error: None,
+                    response_body: resp_body,
+                    response_headers: resp_headers_json,
                     created_at: now,
                 };
                 if let Err(e) = self.store.log_delivery(log).await {
@@ -188,6 +197,13 @@ impl WebhookDispatcher {
             }
             Ok(resp) => {
                 let status = resp.status().as_u16();
+                let resp_headers = resp.headers().iter()
+                    .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect::<std::collections::HashMap<_, _>>();
+                let resp_headers_json = serde_json::to_string(&resp_headers).ok();
+                let resp_body = resp.text().await.ok().map(|b| {
+                    if b.len() > 65536 { b[..65536].to_string() } else { b }
+                });
                 warn!(
                     endpoint_id = %endpoint.id,
                     status = status,
@@ -206,6 +222,8 @@ impl WebhookDispatcher {
                     next_retry_at: Some(next_retry),
                     delivered: false,
                     error: Some(format!("HTTP {}", status)),
+                    response_body: resp_body,
+                    response_headers: resp_headers_json,
                     created_at: now,
                 };
                 if let Err(e) = self.store.log_delivery(log).await {
@@ -231,6 +249,8 @@ impl WebhookDispatcher {
                     next_retry_at: Some(next_retry),
                     delivered: false,
                     error: Some(e.to_string()),
+                    response_body: None,
+                    response_headers: None,
                     created_at: now,
                 };
                 if let Err(e) = self.store.log_delivery(log).await {

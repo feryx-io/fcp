@@ -76,6 +76,7 @@ define_id!(WebhookId, "whk");
 define_id!(ApiTokenId, "token");
 define_id!(LocationId, "loc");
 define_id!(PromptId, "prompt");
+define_id!(ConfigTemplateId, "tmpl");
 
 /// SIP Call-ID header value (not our internal CallId).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

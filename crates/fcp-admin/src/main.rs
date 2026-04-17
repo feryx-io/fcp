@@ -188,6 +188,7 @@ async fn main() -> Result<()> {
         auth_token: config.api.auth_token.clone(),
         metrics_enabled: false,
         metrics_path: "/metrics".to_string(),
+        deployment_mode: config.api.deployment_mode,
     };
     let realm = "fcp.local".to_string();
     let default_tenant_id = config.service.default_tenant_id;
@@ -293,7 +294,8 @@ async fn main() -> Result<()> {
     .with_events_server_url(events_server_url.clone())
     .with_events_server_auth_token(config.events.auth_token.clone())
     .with_config_store(config_store)
-    .with_trunk_health(trunk_health_map);
+    .with_trunk_health(trunk_health_map)
+    .with_deployment_mode(config.api.deployment_mode);
 
     // Set security policy from config
     let api_state = api_state.with_security_policy(fcp_api_core::SecurityPolicy {

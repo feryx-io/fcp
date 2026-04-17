@@ -9,6 +9,7 @@ pub mod call_state;
 pub mod codec;
 pub mod config;
 pub mod config_store;
+pub mod config_template;
 pub mod device;
 pub mod error;
 pub mod extension;
@@ -93,12 +94,13 @@ pub use crate::sip_handler::{
 pub use crate::sip_trace::{SipTraceMessage, SipTraceStore};
 pub use crate::site_location::SiteLocation;
 pub use crate::storage::{
-    room_number_exists_globally, AccountStatus, ApiToken, ApiTokenStore, CallDetailRecord,
-    CallDisposition, CdrQuery, CdrStore, ClusterParkedCall, ClusterParkingStore, ConferenceStore,
-    CredentialStore, DynStorage, EmergencyContact, FileBackedStorage, HangupCause, HangupParty,
-    MediaPreferences, PresenceStore, QueueConfigStore, QueueStore, Registration, RegistrationStore,
-    RoutingRuleStore, SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity,
-    StoredSubscription, TenantStore, TrunkStore, User, UserFileEntry, WebhookDeliveryLog,
+    room_number_exists_globally, AccountStatus, ApiToken, ApiTokenStore, AvailableNumberQuery,
+    CallDetailRecord, CallDisposition, CdrQuery, CdrStore, ClusterParkedCall,
+    ClusterParkingStore, ConfigTemplateStore, ConferenceStore, CredentialStore, DynStorage,
+    EmergencyContact, FileBackedStorage, HangupCause, HangupParty, MediaPreferences, NumberUsage,
+    PresenceStore, QueueConfigStore, QueueStore, Registration, RegistrationStore, RoutingRuleStore,
+    SiteLocationStore, StoredAgent, StoredAuthPolicy, StoredPresentity, StoredSubscription,
+    TenantStore, TrunkStore, UsageAggregation, User, UserFileEntry, WebhookDeliveryLog,
     WebhookEndpoint, WebhookStore,
 };
 pub use crate::tenant::{is_host_literal, Tenant, TenantStatus};

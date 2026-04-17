@@ -589,7 +589,7 @@ fn get_jwt_secret(state: &ApiState) -> Result<&[u8], ApiError> {
         .ok_or_else(|| ApiError::Internal("JWT secret not configured".to_string()))
 }
 
-fn encode_jwt(claims: &Claims, secret: &[u8]) -> Result<String, ApiError> {
+pub(crate) fn encode_jwt(claims: &Claims, secret: &[u8]) -> Result<String, ApiError> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 

@@ -6,6 +6,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use fcp_core::permissions::{DeploymentMode, Permission, UserRole};
 use fcp_core::storage::{ApiTokenStore, TenantStore};
 use fcp_core::{AccountStatus, CredentialStore, TenantId};
 use std::sync::Arc;
@@ -93,6 +94,47 @@ impl AuthIdentity {
             Self::StaticToken => None,
             Self::ApiToken { tenant_id, .. } => Some(tenant_id),
             Self::Session { tenant_id, .. } => tenant_id.as_ref(),
+        }
+    }
+}
+
+/// Check that the authenticated caller has a specific permission.
+///
+/// - **StaticToken**: always allowed (unrestricted admin).
+/// - **ApiToken**: checks if the `permissions` array contains the permission's
+///   snake_case name, `"admin"`, or `"*"`.
+/// - **Session**: parses the role string and checks `role.has_permission(perm, mode)`.
+///
+/// Returns `Ok(())` on success, or `Err(ApiError::Forbidden)` if denied.
+pub fn check_permission(
+    identity: &AuthIdentity,
+    perm: Permission,
+    mode: DeploymentMode,
+) -> Result<(), crate::error::ApiError> {
+    match identity {
+        AuthIdentity::StaticToken => Ok(()),
+        AuthIdentity::ApiToken { permissions, .. } => {
+            let perm_str = perm.as_str();
+            if permissions
+                .iter()
+                .any(|p| p == perm_str || p == "admin" || p == "*")
+            {
+                Ok(())
+            } else {
+                Err(crate::error::ApiError::Forbidden(
+                    "Insufficient permissions".into(),
+                ))
+            }
+        }
+        AuthIdentity::Session { role, .. } => {
+            let user_role: UserRole = role.parse().unwrap_or(UserRole::EndUser);
+            if user_role.has_permission(perm, mode) {
+                Ok(())
+            } else {
+                Err(crate::error::ApiError::Forbidden(
+                    "Insufficient permissions".into(),
+                ))
+            }
         }
     }
 }

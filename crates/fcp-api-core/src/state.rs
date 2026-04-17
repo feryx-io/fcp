@@ -113,6 +113,9 @@ pub struct ApiState {
 
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
+
+    /// Deployment mode for permission evaluation (Enterprise, ServiceProvider, Carrier).
+    pub deployment_mode: fcp_core::permissions::DeploymentMode,
 }
 
 impl ApiState {
@@ -156,6 +159,7 @@ impl ApiState {
             auth_config: None,
             jwt_secret: None,
             trunk_health: None,
+            deployment_mode: fcp_core::permissions::DeploymentMode::default(),
         }
     }
 
@@ -223,6 +227,12 @@ impl ApiState {
     ///
     /// Uses HMAC-SHA256 as a KDF to derive a 32-byte key from the auth token,
     /// so the JWT secret is never the same as the bearer token itself.
+    /// Set the deployment mode for permission evaluation.
+    pub fn with_deployment_mode(mut self, mode: fcp_core::permissions::DeploymentMode) -> Self {
+        self.deployment_mode = mode;
+        self
+    }
+
     pub fn with_trunk_health(mut self, health: crate::trunk_health::TrunkHealthMap) -> Self {
         self.trunk_health = Some(health);
         self

@@ -390,6 +390,12 @@ pub struct ApiConfig {
 
     /// API authentication token (if auth enabled)
     pub auth_token: Option<String>,
+
+    /// Deployment mode for permission evaluation.
+    /// Controls which permissions are available (e.g., trunk management
+    /// is only enabled in Carrier/ServiceProvider modes).
+    #[serde(default)]
+    pub deployment_mode: crate::permissions::DeploymentMode,
 }
 
 impl Default for ApiConfig {
@@ -401,6 +407,7 @@ impl Default for ApiConfig {
             metrics_path: "/metrics".to_string(),
             auth_enabled: false,
             auth_token: None,
+            deployment_mode: crate::permissions::DeploymentMode::default(),
         }
     }
 }

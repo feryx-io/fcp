@@ -1,12 +1,13 @@
 //! Device management API endpoints.
 
-use crate::{error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse};
+use crate::{auth::AuthIdentity, error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use fcp_core::permissions::Permission;
 use fcp_core::storage::{CredentialStore, DeviceStore, RegistrationStore, SiteLocationStore};
 use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
@@ -148,8 +149,10 @@ pub struct UpdateDeviceRequest {
 /// List devices.
 pub async fn list_devices(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceRead, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     let tenant_id = tenant.0;
@@ -299,9 +302,11 @@ fn extract_ip_from_contact(contact: &str) -> String {
 /// Get device by ID.
 pub async fn get_device(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<DeviceResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceRead, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     let id = DeviceId::from_str(&id)
@@ -320,9 +325,11 @@ pub async fn get_device(
 /// Create device.
 pub async fn create_device(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Json(req): Json<CreateDeviceRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceCreate, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     let device_type = parse_device_type(&req.device_type)?;
@@ -408,10 +415,12 @@ pub async fn create_device(
 /// Update device.
 pub async fn update_device(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
     Json(req): Json<UpdateDeviceRequest>,
 ) -> Result<Json<DeviceResponse>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceUpdate, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     let id = DeviceId::from_str(&id)
@@ -546,9 +555,11 @@ pub async fn update_device(
 /// Delete device.
 pub async fn delete_device(
     State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceDelete, state.deployment_mode)?;
     let storage = require_storage!(state);
 
     let id = DeviceId::from_str(&id)

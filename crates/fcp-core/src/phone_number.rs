@@ -374,6 +374,11 @@ impl PhoneNumber {
         })
     }
 
+    /// Returns true if this is a system pool number (not assigned to any tenant).
+    pub fn is_pool_number(&self) -> bool {
+        self.tenant_id.is_nil()
+    }
+
     /// Check if the number can be activated.
     ///
     /// A number can only be activated if it has an E911 address configured.
@@ -394,13 +399,16 @@ impl PhoneNumber {
         self.can_activate()?;
 
         match self.state {
-            NumberState::Unassigned | NumberState::Reserved => {
+            NumberState::Unassigned | NumberState::Assigned | NumberState::Reserved => {
                 self.state = NumberState::Active;
                 self.activated_at = Some(SystemTime::now());
                 self.updated_at = SystemTime::now();
                 Ok(())
             }
             NumberState::Active => Err("Number is already active".to_string()),
+            NumberState::Available => {
+                Err("Cannot activate a pool number — purchase it first".to_string())
+            }
             NumberState::Quarantine => {
                 Err("Cannot activate number in quarantine state".to_string())
             }
@@ -425,8 +433,14 @@ impl PhoneNumber {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NumberState {
+    /// In the system pool, available for purchase/assignment to a tenant
+    Available,
+
     /// In inventory, not assigned to anyone
     Unassigned,
+
+    /// Assigned to a tenant (purchased from pool) but not yet activated
+    Assigned,
 
     /// Held for future use (e.g., port-in pending)
     Reserved,
@@ -444,7 +458,9 @@ pub enum NumberState {
 impl fmt::Display for NumberState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Available => write!(f, "available"),
             Self::Unassigned => write!(f, "unassigned"),
+            Self::Assigned => write!(f, "assigned"),
             Self::Reserved => write!(f, "reserved"),
             Self::Active => write!(f, "active"),
             Self::Quarantine => write!(f, "quarantine"),
@@ -458,7 +474,9 @@ impl FromStr for NumberState {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "available" => Ok(Self::Available),
             "unassigned" => Ok(Self::Unassigned),
+            "assigned" => Ok(Self::Assigned),
             "reserved" => Ok(Self::Reserved),
             "active" => Ok(Self::Active),
             "quarantine" => Ok(Self::Quarantine),
