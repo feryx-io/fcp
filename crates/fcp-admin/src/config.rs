@@ -188,6 +188,10 @@ pub struct ApiConfig {
     #[serde(default)]
     pub auth_token: Option<String>,
 
+    /// Allow unauthenticated tenant self-service signup.
+    #[serde(default)]
+    pub allow_public_signup: bool,
+
     /// Deployment mode for permission evaluation
     #[serde(default)]
     pub deployment_mode: fcp_core::permissions::DeploymentMode,
@@ -207,6 +211,7 @@ impl Default for ApiConfig {
             bind_address: default_bind_address(),
             auth_enabled: true,
             auth_token: Some(uuid::Uuid::new_v4().to_string()),
+            allow_public_signup: false,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
         }
     }
@@ -375,6 +380,10 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         anyhow::bail!("api.auth_token must be set when api.auth_enabled = true");
     }
 
+    if config.api.allow_public_signup && !has_token {
+        anyhow::bail!("api.auth_token must be set when api.allow_public_signup = true");
+    }
+
     if public_bind && !config.api.auth_enabled {
         anyhow::bail!(
             "api.auth_enabled must be true when binding the admin API to a non-loopback address ({})",
@@ -421,6 +430,7 @@ mod tests {
             .auth_token
             .as_deref()
             .is_some_and(|token| !token.is_empty()));
+        assert!(!config.api.allow_public_signup);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.logging.level, "info");
     }
@@ -440,6 +450,17 @@ mod tests {
         assert!(validate_config(&config).is_err());
 
         config.api.auth_enabled = true;
+        config.api.auth_token = None;
+        assert!(validate_config(&config).is_err());
+
+        config.api.auth_token = Some("secret".to_string());
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_public_signup_requires_token() {
+        let mut config = AdminConfig::default();
+        config.api.allow_public_signup = true;
         config.api.auth_token = None;
         assert!(validate_config(&config).is_err());
 

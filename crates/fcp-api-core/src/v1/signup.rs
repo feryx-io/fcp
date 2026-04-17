@@ -1,6 +1,7 @@
 //! Tenant self-service signup endpoint.
 //!
-//! POST /auth/signup — Create a new tenant and admin user (public, no auth required).
+//! POST /auth/signup — Create a new tenant and admin user when public signup
+//! is explicitly enabled by the deployment.
 
 use crate::error::ApiError;
 use crate::state::ApiState;
@@ -31,14 +32,15 @@ pub struct SignupResponse {
     pub username: String,
 }
 
-/// POST /auth/signup — Create a new tenant and admin user (public, no auth required).
+/// POST /auth/signup — Create a new tenant and admin user when enabled.
 pub async fn signup(
     State(state): State<ApiState>,
     Json(req): Json<SignupRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".into())
-    })?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
 
     // Validate inputs
     if req.company_name.trim().is_empty() {
@@ -151,10 +153,7 @@ pub async fn signup(
     })?;
 
     // Generate JWT token (same pattern as auth_session login)
-    let epoch_secs = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as usize;
+    let epoch_secs = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as usize;
 
     let claims = Claims {
         sub: user.username.clone(),

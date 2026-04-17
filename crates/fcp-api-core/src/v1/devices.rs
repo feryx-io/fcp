@@ -1,6 +1,8 @@
 //! Device management API endpoints.
 
-use crate::{auth::AuthIdentity, error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse};
+use crate::{
+    auth::AuthIdentity, error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse,
+};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -9,7 +11,7 @@ use axum::{
 };
 use fcp_core::permissions::Permission;
 use fcp_core::storage::{CredentialStore, DeviceStore, RegistrationStore, SiteLocationStore};
-use fcp_core::{Device, DeviceId, DeviceType, TenantId, UserId};
+use fcp_core::{ConfigTemplateId, Device, DeviceId, DeviceType, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -124,6 +126,32 @@ fn ensure_device_in_tenant(
     } else {
         Err(ApiError::NotFound(format!("Device {} not found", id)))
     }
+}
+
+async fn validate_config_template_for_tenant(
+    storage: &fcp_core::DynStorage,
+    tenant_id: &TenantId,
+    config_template_id: &str,
+) -> Result<String, ApiError> {
+    let template_id = ConfigTemplateId::from_str(config_template_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid config template ID: {}", e)))?;
+    let template_store = storage
+        .config_template_store()
+        .ok_or_else(|| ApiError::Internal("Config template store not configured".to_string()))?;
+    let template = template_store
+        .get_config_template(&template_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get config template: {}", e)))?
+        .ok_or_else(|| {
+            ApiError::BadRequest(format!("Config template {} not found", template_id))
+        })?;
+    if &template.tenant_id != tenant_id {
+        return Err(ApiError::BadRequest(format!(
+            "Config template {} is not in the authenticated tenant",
+            template_id
+        )));
+    }
+    Ok(template_id.to_string())
 }
 
 /// Update device request.
@@ -519,8 +547,15 @@ pub async fn update_device(
         device.provisioning_url = req.provisioning_url;
     }
 
-    if req.config_template_id.is_some() {
-        device.config_template_id = req.config_template_id;
+    if let Some(config_template_id_str) = req.config_template_id {
+        device.config_template_id = if config_template_id_str.is_empty() {
+            None
+        } else {
+            Some(
+                validate_config_template_for_tenant(storage, &tenant.0, &config_template_id_str)
+                    .await?,
+            )
+        };
     }
 
     if let Some(enabled) = req.enabled {

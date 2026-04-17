@@ -47,19 +47,25 @@ use axum::{
 ///
 /// Login, logout, and change-expired-password must be callable before the
 /// user has a token. They are registered outside the bearer middleware layer.
-pub fn pre_auth_router() -> Router<ApiState> {
-    Router::new()
+/// Tenant signup is only mounted when explicitly enabled by configuration.
+pub fn pre_auth_router(enable_signup: bool) -> Router<ApiState> {
+    let router = Router::new()
         .route("/auth/login", post(auth_session::login))
         .route("/auth/logout", post(auth_session::logout))
         .route(
             "/auth/change-expired-password",
             post(auth_session::change_expired_password),
         )
-        .route("/auth/signup", post(signup::signup))
         .route(
             "/provisioning/:mac_address",
             get(provisioning::auto_provision),
-        )
+        );
+
+    if enable_signup {
+        router.route("/auth/signup", post(signup::signup))
+    } else {
+        router
+    }
 }
 
 /// WebSocket routes that bypass the bearer middleware layer.

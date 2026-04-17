@@ -186,6 +186,7 @@ async fn main() -> Result<()> {
         bind: config.api.bind_address,
         auth_enabled: config.api.auth_enabled,
         auth_token: config.api.auth_token.clone(),
+        allow_public_signup: config.api.allow_public_signup,
         metrics_enabled: false,
         metrics_path: "/metrics".to_string(),
         deployment_mode: config.api.deployment_mode,
@@ -470,9 +471,15 @@ async fn main() -> Result<()> {
             }));
         }
 
-        // Pre-auth, WebSocket routes merged AFTER the auth layer so they bypass it
-        router =
-            router.merge(axum::Router::new().nest("/api/v1", fcp_api_core::v1::pre_auth_router()));
+        // Pre-auth and WebSocket routes merged AFTER the auth layer so they bypass it.
+        // Public signup is only exposed when explicitly enabled and JWT issuance works.
+        let enable_signup = api_config.allow_public_signup && api_state.jwt_secret.is_some();
+        if api_config.allow_public_signup && !enable_signup {
+            warn!("Public signup requested but auth_token/JWT secret is unavailable; signup route disabled");
+        }
+        router = router.merge(
+            axum::Router::new().nest("/api/v1", fcp_api_core::v1::pre_auth_router(enable_signup)),
+        );
         router = router.merge(axum::Router::new().nest("/api/v1", fcp_api_core::v1::ws_router()));
 
         let mut app = router

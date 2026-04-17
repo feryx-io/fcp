@@ -40,20 +40,19 @@ use fcp_core::porting::PortingStore;
 use fcp_core::{
     storage::{
         AvailableNumberQuery, CdrStore, ConferenceStore, CredentialStore, DeviceStore,
-        ExtensionStore, GeoRoutingStore, LineBindingStore, PhoneNumberStore,
-        PresenceHistoryStore, PresenceStore, PresenceSummary, QueueConfigStore, QueueStore,
-        RegistrationStore, ResourceListStore, RoutingRuleStore, SiteLocationStore, StoredAgent,
-        StoredAuthPolicy, StoredPresenceChange, StoredPresentity, StoredResourceList,
-        StoredSubscription, TenantStore, TrunkStore, VoicemailStore, WebhookDeliveryLog,
-        WebhookEndpoint, WebhookStore,
+        ExtensionStore, GeoRoutingStore, LineBindingStore, PhoneNumberStore, PresenceHistoryStore,
+        PresenceStore, PresenceSummary, QueueConfigStore, QueueStore, RegistrationStore,
+        ResourceListStore, RoutingRuleStore, SiteLocationStore, StoredAgent, StoredAuthPolicy,
+        StoredPresenceChange, StoredPresentity, StoredResourceList, StoredSubscription,
+        TenantStore, TrunkStore, VoicemailStore, WebhookDeliveryLog, WebhookEndpoint, WebhookStore,
     },
     AccountStatus, AudioCodec, BindingType, CallDetailRecord, CallDisposition, CdrQuery, Device,
-    NumberUsage, UsageAggregation,
     DeviceBinding, DeviceId, DeviceType, EmergencyContact, Extension, ExtensionId, ExtensionTarget,
     HangupCause, HangupParty, LineBinding, LineBindingId, LocationId, MediaPreferences,
-    NumberState, PhoneNumber, PhoneNumberId, QueueConfigId, QueueConfigRecord, Registration,
-    RegistrationState, RingStrategy, RoutingAction, RoutingRule, RoutingRuleId, SiteLocation,
-    Tenant, TenantId, Trunk, TrunkDirection, TrunkId, User, UserId, WebhookId,
+    NumberState, NumberUsage, PhoneNumber, PhoneNumberId, QueueConfigId, QueueConfigRecord,
+    Registration, RegistrationState, RingStrategy, RoutingAction, RoutingRule, RoutingRuleId,
+    SiteLocation, Tenant, TenantId, Trunk, TrunkDirection, TrunkId, UsageAggregation, User, UserId,
+    WebhookId,
 };
 use fcp_flow::schema::{FlowDefinition, FlowNode};
 use fcp_flow::storage::{FlowQuery, FlowQueryResult, FlowStore, SortField, SortOrder};
@@ -73,6 +72,31 @@ fn system_time_to_datetime(st: SystemTime) -> DateTime<Utc> {
 
 fn datetime_to_system_time(dt: DateTime<Utc>) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(dt.timestamp() as u64)
+}
+
+// Match a CDR URI column against a tenant-owned E.164 number across the URI
+// shapes we persist today (bare E.164, tel:, sip:, sips:, and bracketed forms).
+fn phone_number_uri_match_sql(column: &str) -> String {
+    format!(
+        "{col} = pn.e164
+         OR {col} = 'tel:' || pn.e164
+         OR {col} LIKE 'tel:' || pn.e164 || ';%'
+         OR {col} LIKE '%<tel:' || pn.e164 || '>%'
+         OR {col} LIKE '%<tel:' || pn.e164 || ';%'
+         OR {col} = 'sip:' || pn.e164
+         OR {col} = 'sips:' || pn.e164
+         OR {col} LIKE 'sip:' || pn.e164 || '@%'
+         OR {col} LIKE 'sips:' || pn.e164 || '@%'
+         OR {col} LIKE 'sip:' || pn.e164 || ';%'
+         OR {col} LIKE 'sips:' || pn.e164 || ';%'
+         OR {col} LIKE '%<sip:' || pn.e164 || '>%'
+         OR {col} LIKE '%<sips:' || pn.e164 || '>%'
+         OR {col} LIKE '%<sip:' || pn.e164 || '@%'
+         OR {col} LIKE '%<sips:' || pn.e164 || '@%'
+         OR {col} LIKE '%<sip:' || pn.e164 || ';%'
+         OR {col} LIKE '%<sips:' || pn.e164 || ';%'",
+        col = column
+    )
 }
 
 fn webhook_endpoint_from_value(value: serde_json::Value) -> Result<WebhookEndpoint> {
@@ -1176,22 +1200,39 @@ impl CdrStore for PostgresStorage {
         let tenant_id_str = tenant_id.to_string();
         let from_dt = system_time_to_datetime(from);
         let to_dt = system_time_to_datetime(to);
-
-        let row = sqlx::query(
+        let inbound_match = phone_number_uri_match_sql("c.to_uri");
+        let outbound_match = phone_number_uri_match_sql("c.from_uri");
+        let sql = format!(
             "SELECT
                 COUNT(*) as total_calls,
-                COUNT(*) FILTER (WHERE answer_time IS NOT NULL) as answered_calls,
-                COALESCE(SUM(call_duration_ms) FILTER (WHERE answer_time IS NOT NULL), 0) as total_duration_ms,
-                COUNT(*) FILTER (WHERE disposition = 'answered' AND from_uri NOT LIKE '%@%') as outbound_calls,
-                COUNT(*) FILTER (WHERE disposition = 'answered' AND to_uri NOT LIKE '%@%') as inbound_calls
-            FROM cdrs
-            WHERE tenant_id = $1 AND start_time >= $2 AND start_time < $3",
-        )
-        .bind(&tenant_id_str)
-        .bind(from_dt)
-        .bind(to_dt)
-        .fetch_one(&self.pool)
-        .await?;
+                COUNT(*) FILTER (WHERE c.answer_time IS NOT NULL) as answered_calls,
+                COALESCE(SUM(c.call_duration_ms) FILTER (WHERE c.answer_time IS NOT NULL), 0) as total_duration_ms,
+                COUNT(*) FILTER (
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM phone_numbers pn
+                        WHERE pn.tenant_id = $1
+                          AND ({inbound_match})
+                    )
+                ) as inbound_calls,
+                COUNT(*) FILTER (
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM phone_numbers pn
+                        WHERE pn.tenant_id = $1
+                          AND ({outbound_match})
+                    )
+                ) as outbound_calls
+            FROM cdrs c
+            WHERE c.tenant_id = $1 AND c.start_time >= $2 AND c.start_time < $3"
+        );
+
+        let row = sqlx::query(&sql)
+            .bind(&tenant_id_str)
+            .bind(from_dt)
+            .bind(to_dt)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(UsageAggregation {
             total_calls: row.get::<i64, _>("total_calls") as u64,
@@ -1615,6 +1656,36 @@ impl PhoneNumberStore for PostgresStorage {
 
         debug!(id = %phone_number.id, e164 = %phone_number.e164, "Phone number stored");
         Ok(())
+    }
+
+    async fn purchase_available_phone_number(
+        &self,
+        id: &PhoneNumberId,
+        tenant_id: &TenantId,
+        acquired_at: SystemTime,
+    ) -> Result<Option<PhoneNumber>> {
+        let row = sqlx::query(
+            "UPDATE phone_numbers
+             SET tenant_id = $2,
+                 state = 'assigned',
+                 acquired_at = $3,
+                 updated_at = $3
+             WHERE id = $1
+               AND tenant_id = $4
+               AND state = 'available'
+             RETURNING *",
+        )
+        .bind(id.to_string())
+        .bind(tenant_id.to_string())
+        .bind(system_time_to_datetime(acquired_at))
+        .bind(TenantId::nil().to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_phone_number(row)?)),
+            None => Ok(None),
+        }
     }
 
     async fn delete_phone_number(&self, id: &PhoneNumberId) -> Result<()> {

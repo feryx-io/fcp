@@ -24,6 +24,10 @@ auth_enabled = true
 # You can also set this via environment variable: FCP_ADMIN_AUTH_TOKEN
 auth_token = "change-this-to-a-secure-random-token"
 
+# Keep anonymous tenant signup disabled unless this deployment explicitly offers
+# public self-service onboarding.
+# allow_public_signup = false
+
 [storage]
 # Storage backend type: "sqlite", "postgres", "mysql", "mongodb"
 storage_type = "sqlite"

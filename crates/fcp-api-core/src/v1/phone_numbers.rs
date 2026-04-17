@@ -187,7 +187,11 @@ pub async fn list_phone_numbers(
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberRead, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberRead,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     let tenant_id = tenant.0;
@@ -210,7 +214,11 @@ pub async fn get_phone_number(
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<PhoneNumberResponse>, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberRead, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberRead,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     let id = PhoneNumberId::from_str(&id)
@@ -233,7 +241,11 @@ pub async fn create_phone_number(
     tenant: crate::auth::TenantContext,
     Json(req): Json<CreatePhoneNumberRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberCreate, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberCreate,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     // Parse and validate E.164
@@ -296,7 +308,11 @@ pub async fn update_phone_number(
     Path(id): Path<String>,
     Json(req): Json<UpdatePhoneNumberRequest>,
 ) -> Result<Json<PhoneNumberResponse>, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberUpdate, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberUpdate,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     let id = PhoneNumberId::from_str(&id)
@@ -391,7 +407,11 @@ pub async fn delete_phone_number(
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberDelete, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberDelete,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     let id = PhoneNumberId::from_str(&id)
@@ -420,7 +440,11 @@ pub async fn activate_phone_number(
     tenant: crate::auth::TenantContext,
     Path(id): Path<String>,
 ) -> Result<Json<PhoneNumberResponse>, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberUpdate, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberUpdate,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     let id = PhoneNumberId::from_str(&id)
@@ -473,7 +497,11 @@ pub async fn search_available_numbers(
     Extension(identity): Extension<AuthIdentity>,
     Query(params): Query<SearchAvailableQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    crate::auth::check_permission(&identity, Permission::PhoneNumberRead, state.deployment_mode)?;
+    crate::auth::check_permission(
+        &identity,
+        Permission::PhoneNumberRead,
+        state.deployment_mode,
+    )?;
     let storage = require_storage!(state);
 
     let query = fcp_core::storage::AvailableNumberQuery {
@@ -511,26 +539,26 @@ pub async fn purchase_phone_number(
     let id = PhoneNumberId::from_str(&id)
         .map_err(|e| ApiError::BadRequest(format!("Invalid phone number ID: {}", e)))?;
 
-    let mut number = storage
-        .get_phone_number(&id)
+    let acquired_at = SystemTime::now();
+    let number = match storage
+        .purchase_available_phone_number(&id, &tenant.0, acquired_at)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound("Phone number not found".into()))?;
-
-    if !number.is_pool_number() || number.state != fcp_core::NumberState::Available {
-        return Err(ApiError::Conflict(
-            "Phone number is not available for purchase".into(),
-        ));
-    }
-
-    number.tenant_id = tenant.0;
-    number.state = fcp_core::NumberState::Assigned;
-    number.acquired_at = SystemTime::now();
-
-    storage
-        .put_phone_number(number.clone())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    {
+        Some(number) => number,
+        None => {
+            let existing = storage
+                .get_phone_number(&id)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+            if existing.is_none() {
+                return Err(ApiError::NotFound("Phone number not found".into()));
+            }
+            return Err(ApiError::Conflict(
+                "Phone number is not available for purchase".into(),
+            ));
+        }
+    };
 
     info!(
         number = %number.e164,

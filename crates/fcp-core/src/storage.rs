@@ -1073,6 +1073,20 @@ pub trait PhoneNumberStore: Send + Sync {
     /// Create or update a phone number
     async fn put_phone_number(&self, phone_number: crate::PhoneNumber) -> Result<()>;
 
+    /// Atomically purchase an available pool number for a tenant.
+    ///
+    /// Returns `Ok(Some(number))` when the number was claimed, `Ok(None)` when
+    /// it was missing or no longer available, and `Err(...)` on storage errors.
+    async fn purchase_available_phone_number(
+        &self,
+        id: &crate::PhoneNumberId,
+        tenant_id: &crate::TenantId,
+        acquired_at: SystemTime,
+    ) -> Result<Option<crate::PhoneNumber>> {
+        let _ = (id, tenant_id, acquired_at);
+        Ok(None)
+    }
+
     /// Delete a phone number by ID
     async fn delete_phone_number(&self, id: &crate::PhoneNumberId) -> Result<()>;
 
@@ -2841,6 +2855,17 @@ impl PhoneNumberStore for DynStorage {
         self.phone_number_store.put_phone_number(phone_number).await
     }
 
+    async fn purchase_available_phone_number(
+        &self,
+        id: &crate::PhoneNumberId,
+        tenant_id: &crate::TenantId,
+        acquired_at: SystemTime,
+    ) -> Result<Option<crate::PhoneNumber>> {
+        self.phone_number_store
+            .purchase_available_phone_number(id, tenant_id, acquired_at)
+            .await
+    }
+
     async fn delete_phone_number(&self, id: &crate::PhoneNumberId) -> Result<()> {
         self.phone_number_store.delete_phone_number(id).await
     }
@@ -2849,7 +2874,9 @@ impl PhoneNumberStore for DynStorage {
         &self,
         query: AvailableNumberQuery,
     ) -> Result<Vec<crate::PhoneNumber>> {
-        self.phone_number_store.search_available_numbers(query).await
+        self.phone_number_store
+            .search_available_numbers(query)
+            .await
     }
 }
 
@@ -2953,7 +2980,9 @@ impl DeviceStore for DynStorage {
     }
 
     async fn get_device_by_mac_address(&self, mac_address: &str) -> Result<Option<crate::Device>> {
-        self.device_store.get_device_by_mac_address(mac_address).await
+        self.device_store
+            .get_device_by_mac_address(mac_address)
+            .await
     }
 
     async fn put_device(&self, device: crate::Device) -> Result<()> {

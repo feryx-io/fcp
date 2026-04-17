@@ -391,6 +391,13 @@ pub struct ApiConfig {
     /// API authentication token (if auth enabled)
     pub auth_token: Option<String>,
 
+    /// Allow unauthenticated tenant self-service signup.
+    ///
+    /// Disabled by default so `/api/v1/auth/signup` is not exposed unless a
+    /// deployment explicitly opts into public onboarding.
+    #[serde(default)]
+    pub allow_public_signup: bool,
+
     /// Deployment mode for permission evaluation.
     /// Controls which permissions are available (e.g., trunk management
     /// is only enabled in Carrier/ServiceProvider modes).
@@ -407,6 +414,7 @@ impl Default for ApiConfig {
             metrics_path: "/metrics".to_string(),
             auth_enabled: false,
             auth_token: None,
+            allow_public_signup: false,
             deployment_mode: crate::permissions::DeploymentMode::default(),
         }
     }
@@ -418,8 +426,18 @@ impl ApiConfig {
         if !self.metrics_path.starts_with('/') {
             return Err("api.metrics_path must start with '/'".to_string());
         }
+        let has_token = self
+            .auth_token
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|token| !token.is_empty());
         if let Some(token) = &self.auth_token {
             reject_crlf("api.auth_token", token)?;
+        }
+        if self.allow_public_signup && !has_token {
+            return Err(
+                "api.auth_token must be set when api.allow_public_signup = true".to_string(),
+            );
         }
         Ok(())
     }

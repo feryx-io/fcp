@@ -26,14 +26,13 @@ pub async fn auto_provision(
     State(state): State<ApiState>,
     Path(mac_address): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let storage = state.storage.as_ref().ok_or_else(|| {
-        ApiError::Internal("Storage not configured".into())
-    })?;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".into()))?;
 
     // Normalize MAC: strip colons/dashes/dots, lowercase
-    let normalized_mac = mac_address
-        .replace([':', '-', '.'], "")
-        .to_lowercase();
+    let normalized_mac = mac_address.replace([':', '-', '.'], "").to_lowercase();
 
     // Look up device by MAC
     let device = storage
@@ -56,15 +55,18 @@ pub async fn auto_provision(
         .parse::<fcp_core::ConfigTemplateId>()
         .map_err(|e| ApiError::BadRequest(format!("Invalid template ID: {}", e)))?;
 
-    let template_store = storage.config_template_store().ok_or_else(|| {
-        ApiError::Internal("Config template store not configured".into())
-    })?;
+    let template_store = storage
+        .config_template_store()
+        .ok_or_else(|| ApiError::Internal("Config template store not configured".into()))?;
 
     let template = template_store
         .get_config_template(&template_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound("Config template not found".into()))?;
+    if template.tenant_id != device.tenant_id {
+        return Err(ApiError::NotFound("Config template not found".into()));
+    }
 
     // Build variable map
     let mut vars = HashMap::new();

@@ -89,8 +89,15 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     // Pre-auth, WebSocket, and metrics routes merged AFTER the auth layer
     // so they bypass bearer middleware:
     // - pre_auth: login/logout/change-expired-password (user has no token yet)
+    // - optional signup: only exposed when explicitly enabled and JWT issuance works
     // - ws: browsers can't set Authorization headers on WebSocket connections
-    router = router.merge(Router::new().nest("/api/v1", v1::pre_auth_router()));
+    let enable_signup = api_config.allow_public_signup && state.jwt_secret.is_some();
+    if api_config.allow_public_signup && !enable_signup {
+        tracing::warn!(
+            "Public signup requested but auth_token/JWT secret is unavailable; signup route disabled"
+        );
+    }
+    router = router.merge(Router::new().nest("/api/v1", v1::pre_auth_router(enable_signup)));
     router = router.merge(Router::new().nest("/api/v1", v1::ws_router()));
 
     router

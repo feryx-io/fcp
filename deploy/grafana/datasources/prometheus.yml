@@ -5,9 +5,7 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    # Native mode (--network host): use localhost
-    # Docker Compose mode: use http://prometheus:9090
-    url: http://localhost:9090
+    url: http://prometheus:9090
     isDefault: true
     editable: true
     jsonData:
