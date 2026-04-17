@@ -111,6 +111,10 @@ pub struct ApiState {
     /// JWT-based auth endpoints (login, me, refresh) will fail.
     pub jwt_secret: Option<Vec<u8>>,
 
+    /// Shared token required for device auto-provisioning requests.
+    /// When unset, the provisioning endpoint fails closed.
+    pub provisioning_auth_token: Option<String>,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
 
@@ -158,6 +162,7 @@ impl ApiState {
             tts_service: None,
             auth_config: None,
             jwt_secret: None,
+            provisioning_auth_token: None,
             trunk_health: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
         }
@@ -223,10 +228,12 @@ impl ApiState {
         self
     }
 
-    /// Derive and set the JWT signing secret from an auth token.
-    ///
-    /// Uses HMAC-SHA256 as a KDF to derive a 32-byte key from the auth token,
-    /// so the JWT secret is never the same as the bearer token itself.
+    /// Set the shared token required for device auto-provisioning requests.
+    pub fn with_provisioning_auth_token(mut self, token: Option<String>) -> Self {
+        self.provisioning_auth_token = token;
+        self
+    }
+
     /// Set the deployment mode for permission evaluation.
     pub fn with_deployment_mode(mut self, mode: fcp_core::permissions::DeploymentMode) -> Self {
         self.deployment_mode = mode;
