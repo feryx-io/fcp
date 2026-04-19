@@ -11,7 +11,11 @@ use std::fmt;
 use std::time::SystemTime;
 
 /// A device endpoint (physical phone, softphone, WebRTC client, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is implemented manually so `provisioning_token_hash` is redacted —
+/// the hash is low-value on its own, but there is no reason to emit it into
+/// trace logs or error reports.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Device {
     /// Unique identifier for this device
     pub id: DeviceId,
@@ -185,6 +189,45 @@ impl Device {
     }
 }
 
+impl fmt::Debug for Device {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Device")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("device_type", &self.device_type)
+            .field("mac_address", &self.mac_address)
+            .field("model", &self.model)
+            .field("firmware_version", &self.firmware_version)
+            .field("tenant_id", &self.tenant_id)
+            .field("owner_user_id", &self.owner_user_id)
+            .field("sip_uri", &self.sip_uri)
+            .field("registration_state", &self.registration_state)
+            .field("last_registration", &self.last_registration)
+            .field("last_ip_address", &self.last_ip_address)
+            .field("user_agent", &self.user_agent)
+            .field("max_lines", &self.max_lines)
+            .field("supports_video", &self.supports_video)
+            .field("supports_blf", &self.supports_blf)
+            .field("codec_support", &self.codec_support)
+            .field("location", &self.location)
+            .field("location_id", &self.location_id)
+            .field("e911_override", &self.e911_override)
+            .field("provisioning_url", &self.provisioning_url)
+            .field("config_template_id", &self.config_template_id)
+            .field(
+                "provisioning_token_hash",
+                &self
+                    .provisioning_token_hash
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("enabled", &self.enabled)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
 /// Type of device endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -353,6 +396,28 @@ mod tests {
         assert_eq!(RegistrationState::Registered.to_string(), "registered");
         assert_eq!(RegistrationState::Failed.to_string(), "failed");
         assert_eq!(RegistrationState::Expired.to_string(), "expired");
+    }
+
+    #[test]
+    fn test_debug_redacts_provisioning_token_hash() {
+        let tenant_id = TenantId::new();
+        let mut device = Device::new("Test Device".to_string(), DeviceType::DeskPhone, tenant_id);
+        let secret_hash =
+            "cafebabe1111222233334444555566667777888899990000aaaabbbbccccdddd".to_string();
+        device.provisioning_token_hash = Some(secret_hash.clone());
+
+        let rendered = format!("{:?}", device);
+        assert!(rendered.contains("<redacted>"));
+        assert!(
+            !rendered.contains(&secret_hash),
+            "Debug output leaked the hash: {}",
+            rendered
+        );
+
+        device.provisioning_token_hash = None;
+        let rendered_none = format!("{:?}", device);
+        assert!(rendered_none.contains("provisioning_token_hash: None"));
+        assert!(!rendered_none.contains("<redacted>"));
     }
 
     #[test]

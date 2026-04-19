@@ -152,6 +152,9 @@ export interface Device {
   location_id: string | null
   provisioning_url: string | null
   config_template_id: string | null
+  has_provisioning_token: boolean
+  /// Returned once on create when a token is auto-generated; never populated on list/get.
+  provisioning_token?: string
   enabled: boolean
   created_at: string
   updated_at: string
@@ -170,6 +173,9 @@ export interface CreateDeviceRequest {
   supports_blf?: boolean
   location?: string
   location_id?: string
+  /// Explicit provisioning token. Empty string on PATCH clears the token;
+  /// omitting the field on create auto-generates one when mac_address is set.
+  provisioning_token?: string
 }
 
 export interface PhoneNumber {

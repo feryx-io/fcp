@@ -84,13 +84,10 @@ fn constant_time_compare(left: &str, right: &str) -> bool {
 }
 
 async fn authorize_shared_provisioning_token(
-    state: &ApiState,
+    expected_token: Option<&str>,
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
-    let expected_token = state
-        .provisioning_auth_token
-        .as_deref()
-        .ok_or_else(provisioning_not_found)?;
+    let expected_token = expected_token.ok_or_else(provisioning_not_found)?;
     let presented_token =
         provisioning_token_from_headers(headers).ok_or_else(provisioning_not_found)?;
 
@@ -144,7 +141,7 @@ pub async fn auto_provision(
 
     // Gate the storage lookup on the shared token so unauthenticated callers
     // can't probe MAC existence by timing or spin the DB.
-    authorize_shared_provisioning_token(&state, &headers).await?;
+    authorize_shared_provisioning_token(state.provisioning_auth_token.as_deref(), &headers).await?;
 
     let storage = state
         .storage
@@ -346,5 +343,126 @@ mod tests {
             device_provisioning_token_from_headers(&headers).as_deref(),
             Some("device-token")
         );
+    }
+
+    fn test_device_with_token_hash(hash: Option<&str>) -> Device {
+        let mut device = Device::new(
+            "Test Phone".to_string(),
+            fcp_core::DeviceType::DeskPhone,
+            fcp_core::TenantId::new(),
+        );
+        device.provisioning_token_hash = hash.map(str::to_string);
+        device
+    }
+
+    #[test]
+    fn test_authorize_device_provisioning_rejects_when_hash_unset() {
+        let device = test_device_with_token_hash(None);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            DEVICE_PROVISIONING_TOKEN_HEADER,
+            "anything".parse().unwrap(),
+        );
+
+        let err = authorize_device_provisioning_token(&device, &headers)
+            .expect_err("device without a hash must fail closed");
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_authorize_device_provisioning_rejects_when_header_missing() {
+        let hash = hash_token("correct-horse-battery-staple-correct-horse");
+        let device = test_device_with_token_hash(Some(&hash));
+        let headers = HeaderMap::new();
+
+        let err = authorize_device_provisioning_token(&device, &headers)
+            .expect_err("missing header must 404");
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_authorize_device_provisioning_rejects_wrong_token() {
+        let hash = hash_token("correct-horse-battery-staple-correct-horse");
+        let device = test_device_with_token_hash(Some(&hash));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            DEVICE_PROVISIONING_TOKEN_HEADER,
+            "wrong-token-but-also-32-chars-long-xx".parse().unwrap(),
+        );
+
+        let err = authorize_device_provisioning_token(&device, &headers)
+            .expect_err("wrong token must 404");
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_authorize_device_provisioning_accepts_correct_token() {
+        let token = "correct-horse-battery-staple-correct-horse";
+        let hash = hash_token(token);
+        let device = test_device_with_token_hash(Some(&hash));
+        let mut headers = HeaderMap::new();
+        headers.insert(DEVICE_PROVISIONING_TOKEN_HEADER, token.parse().unwrap());
+
+        authorize_device_provisioning_token(&device, &headers)
+            .expect("correct token must authorize");
+    }
+
+    #[tokio::test]
+    async fn test_authorize_shared_provisioning_rejects_when_unconfigured() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            PROVISIONING_TOKEN_HEADER,
+            "any-token".parse().unwrap(),
+        );
+
+        let err = authorize_shared_provisioning_token(None, &headers)
+            .await
+            .expect_err("unset deployment token must fail closed");
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_shared_provisioning_rejects_when_header_missing() {
+        let headers = HeaderMap::new();
+        let err = authorize_shared_provisioning_token(Some("shared-token"), &headers)
+            .await
+            .expect_err("missing header must 404");
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_shared_provisioning_rejects_wrong_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            PROVISIONING_TOKEN_HEADER,
+            "wrong-token".parse().unwrap(),
+        );
+        let err = authorize_shared_provisioning_token(Some("shared-token"), &headers)
+            .await
+            .expect_err("wrong token must 404");
+        assert!(matches!(err, ApiError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_authorize_shared_provisioning_accepts_correct_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            PROVISIONING_TOKEN_HEADER,
+            "shared-token".parse().unwrap(),
+        );
+        authorize_shared_provisioning_token(Some("shared-token"), &headers)
+            .await
+            .expect("correct token must authorize");
+    }
+
+    #[test]
+    fn test_constant_time_compare_basics() {
+        assert!(constant_time_compare("abc", "abc"));
+        assert!(!constant_time_compare("abc", "abd"));
+        assert!(
+            !constant_time_compare("abc", "abcd"),
+            "length mismatch must fail"
+        );
+        assert!(constant_time_compare("", ""));
     }
 }

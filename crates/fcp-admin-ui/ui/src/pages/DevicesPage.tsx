@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
-import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw } from 'lucide-react'
+import { MoreHorizontal, Plus, ArrowUpDown, Pencil, Trash2, Upload, Download, CheckCircle2, XCircle, Loader2, FileUp, AlertCircle, RefreshCw, Copy, KeyRound, EyeOff, Eye } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -56,10 +56,26 @@ const regBadge = (state: string) => {
   }
 }
 
+/// Generate a 192-bit provisioning token rendered as 48 hex chars.
+/// Well above the 32-char minimum enforced by the backend.
+function generateProvisioningToken(): string {
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+interface RevealedToken {
+  token: string
+  deviceName: string
+  context: 'created' | 'rotated'
+}
+
 export function DevicesPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [editItem, setEditItem] = useState<Device | null>(null)
+  const [revealedToken, setRevealedToken] = useState<RevealedToken | null>(null)
+  const [showToken, setShowToken] = useState(false)
   const queryClient = useQueryClient()
 
   const { data: rawItems = [], isLoading, refetch, isFetching } = useQuery({
@@ -92,9 +108,17 @@ export function DevicesPage() {
 
   const createMutation = useMutation({
     mutationFn: devices.create,
-    onSuccess: () => {
+    onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['devices'] })
       setCreateOpen(false)
+      if (created.provisioning_token) {
+        setShowToken(false)
+        setRevealedToken({
+          token: created.provisioning_token,
+          deviceName: created.name,
+          context: 'created',
+        })
+      }
     },
   })
 
@@ -104,6 +128,20 @@ export function DevicesPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] })
       setEditItem(null)
+    },
+  })
+
+  const rotateTokenMutation = useMutation({
+    mutationFn: ({ device, token }: { device: Device; token: string }) =>
+      devices.update(device.id, { provisioning_token: token }),
+    onSuccess: (_updated, { device, token }) => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] })
+      setShowToken(false)
+      setRevealedToken({
+        token,
+        deviceName: device.name,
+        context: 'rotated',
+      })
     },
   })
 
@@ -169,6 +207,15 @@ export function DevicesPage() {
       cell: ({ row }) => locationName(row.original.location_id),
     },
     {
+      id: 'has_provisioning_token',
+      header: 'Prov. Token',
+      cell: ({ row }) => (
+        <Badge variant={row.original.has_provisioning_token ? 'success' : 'secondary'}>
+          {row.original.has_provisioning_token ? 'Set' : 'Not set'}
+        </Badge>
+      ),
+    },
+    {
       accessorKey: 'enabled',
       header: 'Status',
       cell: ({ row }) => (
@@ -199,6 +246,22 @@ export function DevicesPage() {
             <DropdownMenuItem onClick={() => setEditItem(row.original)}>
               <Pencil className="mr-2 h-4 w-4" />
               Edit
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!row.original.mac_address || rotateTokenMutation.isPending}
+              onClick={() => {
+                const verb = row.original.has_provisioning_token ? 'Rotate' : 'Generate'
+                if (!confirm(
+                  `${verb} provisioning token for "${row.original.name}"? Any phone configured with the previous token will stop auto-provisioning until re-deployed.`,
+                )) return
+                rotateTokenMutation.mutate({
+                  device: row.original,
+                  token: generateProvisioningToken(),
+                })
+              }}
+            >
+              <KeyRound className="mr-2 h-4 w-4" />
+              {row.original.has_provisioning_token ? 'Rotate Provisioning Token' : 'Generate Provisioning Token'}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -448,6 +511,72 @@ export function DevicesPage() {
         onComplete={() => queryClient.invalidateQueries({ queryKey: ['devices'] })}
         existingItems={items}
       />
+
+      {/* Provisioning Token Reveal Dialog — the token is only shown once. */}
+      <Dialog
+        open={!!revealedToken}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRevealedToken(null)
+            setShowToken(false)
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Provisioning token {revealedToken?.context === 'created' ? 'created' : 'rotated'}
+            </DialogTitle>
+            <DialogDescription>
+              Copy this token now for <span className="font-medium">{revealedToken?.deviceName}</span>. It cannot be retrieved later. Configure the phone to send it in the <code className="text-xs">X-FCP-Device-Provisioning-Token</code> header.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-stretch gap-2">
+              <Input
+                readOnly
+                type={showToken ? 'text' : 'password'}
+                value={revealedToken?.token ?? ''}
+                className="font-mono text-xs"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setShowToken((v) => !v)}
+                title={showToken ? 'Hide' : 'Show'}
+              >
+                {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => {
+                  if (revealedToken) navigator.clipboard.writeText(revealedToken.token)
+                }}
+                title="Copy to clipboard"
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Store this with your phone deployment secrets. Rotating here will lock out any phone still using the previous token.
+            </p>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              onClick={() => {
+                setRevealedToken(null)
+                setShowToken(false)
+              }}
+            >
+              Done
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
