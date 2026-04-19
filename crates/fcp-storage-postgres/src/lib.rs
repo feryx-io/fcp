@@ -2123,7 +2123,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE id = $1",
@@ -2143,7 +2143,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE sip_uri = $1",
@@ -2163,7 +2163,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE tenant_id = $1
@@ -2231,10 +2231,10 @@ impl DeviceStore for PostgresStorage {
                 id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                 sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                 max_lines, supports_video, supports_blf, codec_support,
-                location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                 created_at, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
              ON CONFLICT(id) DO UPDATE SET
                  name = EXCLUDED.name,
                  mac_address = EXCLUDED.mac_address,
@@ -2255,6 +2255,7 @@ impl DeviceStore for PostgresStorage {
                  e911_override_json = EXCLUDED.e911_override_json,
                  provisioning_url = EXCLUDED.provisioning_url,
                  config_template_id = EXCLUDED.config_template_id,
+                 provisioning_token_hash = EXCLUDED.provisioning_token_hash,
                  enabled = EXCLUDED.enabled,
                  updated_at = EXCLUDED.updated_at",
         )
@@ -2280,6 +2281,7 @@ impl DeviceStore for PostgresStorage {
         .bind(&e911_override_json)
         .bind(&device.provisioning_url)
         .bind(&device.config_template_id)
+        .bind(&device.provisioning_token_hash)
         .bind(device.enabled)
         .bind(created_at)
         .bind(updated_at)
@@ -2295,7 +2297,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE LOWER(REPLACE(REPLACE(REPLACE(mac_address, ':', ''), '-', ''), '.', '')) = $1",
@@ -2887,6 +2889,7 @@ fn row_to_device(row: sqlx::postgres::PgRow) -> Result<Device> {
         e911_override,
         provisioning_url: row.get("provisioning_url"),
         config_template_id: row.get("config_template_id"),
+        provisioning_token_hash: row.get("provisioning_token_hash"),
         enabled: row.get::<bool, _>("enabled"),
         created_at,
         updated_at,

@@ -2,16 +2,17 @@
 
 use crate::{error::ApiError, state::ApiState};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use fcp_core::{storage::DeviceStore, CredentialStore};
-use serde::Deserialize;
+use fcp_core::{storage::DeviceStore, CredentialStore, Device};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 const PROVISIONING_NOT_FOUND: &str = "Provisioning config not found";
 const PROVISIONING_TOKEN_HEADER: &str = "x-fcp-provisioning-token";
+const DEVICE_PROVISIONING_TOKEN_HEADER: &str = "x-fcp-device-provisioning-token";
 
 /// Simple template engine -- replaces ${variable} placeholders.
 fn render_template(template_body: &str, vars: &HashMap<String, String>) -> String {
@@ -20,12 +21,6 @@ fn render_template(template_body: &str, vars: &HashMap<String, String>) -> Strin
         result = result.replace(&format!("${{{}}}", key), value);
     }
     result
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ProvisioningQuery {
-    #[serde(default)]
-    pub token: Option<String>,
 }
 
 fn provisioning_not_found() -> ApiError {
@@ -61,22 +56,43 @@ fn provisioning_token_from_headers(headers: &HeaderMap) -> Option<String> {
         })
 }
 
-async fn authorize_provisioning_request(
+fn device_provisioning_token_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(DEVICE_PROVISIONING_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn hash_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn constant_time_compare(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut diff = 0u8;
+    for (left, right) in left.as_bytes().iter().zip(right.as_bytes()) {
+        diff |= left ^ right;
+    }
+    diff == 0
+}
+
+async fn authorize_shared_provisioning_token(
     state: &ApiState,
     headers: &HeaderMap,
-    query: &ProvisioningQuery,
 ) -> Result<(), ApiError> {
     let expected_token = state
         .provisioning_auth_token
         .as_deref()
         .ok_or_else(provisioning_not_found)?;
-    let presented_token = query
-        .token
-        .as_deref()
-        .filter(|token| !token.trim().is_empty())
-        .map(str::to_string)
-        .or_else(|| provisioning_token_from_headers(headers))
-        .ok_or_else(provisioning_not_found)?;
+    let presented_token =
+        provisioning_token_from_headers(headers).ok_or_else(provisioning_not_found)?;
 
     let auth_config = crate::auth::AuthConfig::new(expected_token.to_string());
     if crate::auth::validate_token(&presented_token, &auth_config)
@@ -89,12 +105,31 @@ async fn authorize_provisioning_request(
     Ok(())
 }
 
+fn authorize_device_provisioning_token(
+    device: &Device,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    let expected_device_token_hash = device
+        .provisioning_token_hash
+        .as_deref()
+        .filter(|hash| !hash.trim().is_empty())
+        .ok_or_else(provisioning_not_found)?;
+    let presented_device_token =
+        device_provisioning_token_from_headers(headers).ok_or_else(provisioning_not_found)?;
+    let presented_device_token_hash = hash_token(&presented_device_token);
+    if !constant_time_compare(&presented_device_token_hash, expected_device_token_hash) {
+        return Err(provisioning_not_found());
+    }
+
+    Ok(())
+}
+
 /// GET /provisioning/:mac_address -- Auto-provision a phone by MAC address.
 ///
-/// Phones must present the shared provisioning token via one of:
+/// Phones must present both:
 /// - `Authorization: Bearer <token>`
-/// - `X-FCP-Provisioning-Token: <token>`
-/// - `?token=<token>`
+/// - or `X-FCP-Provisioning-Token: <token>`
+/// - and `X-FCP-Device-Provisioning-Token: <per-device-token>`
 ///
 /// Unknown or unauthorized devices all return the same 404 to avoid turning
 /// this endpoint into an enumeration surface.
@@ -102,13 +137,14 @@ pub async fn auto_provision(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(mac_address): Path<String>,
-    Query(query): Query<ProvisioningQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     if state.provisioning_require_https && !request_is_https(&headers) {
         return Err(provisioning_not_found());
     }
 
-    authorize_provisioning_request(&state, &headers, &query).await?;
+    // Gate the storage lookup on the shared token so unauthenticated callers
+    // can't probe MAC existence by timing or spin the DB.
+    authorize_shared_provisioning_token(&state, &headers).await?;
 
     let storage = state
         .storage
@@ -128,6 +164,8 @@ pub async fn auto_provision(
     if !device.enabled {
         return Err(provisioning_not_found());
     }
+
+    authorize_device_provisioning_token(&device, &headers)?;
 
     // Find the config template
     let template_id = device
@@ -210,7 +248,13 @@ pub async fn auto_provision(
     // Return as text (could be XML, INI, etc. depending on vendor)
     Ok((
         StatusCode::OK,
-        [("content-type", "text/plain; charset=utf-8")],
+        [
+            ("content-type", "text/plain; charset=utf-8"),
+            ("cache-control", "no-store, no-cache, max-age=0"),
+            ("pragma", "no-cache"),
+            ("expires", "0"),
+            ("x-content-type-options", "nosniff"),
+        ],
         config,
     ))
 }
@@ -284,6 +328,20 @@ mod tests {
         assert_eq!(
             provisioning_token_from_headers(&headers).as_deref(),
             Some("shared-token")
+        );
+    }
+
+    #[test]
+    fn test_device_provisioning_token_from_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            DEVICE_PROVISIONING_TOKEN_HEADER,
+            " device-token ".parse().expect("valid header"),
+        );
+
+        assert_eq!(
+            device_provisioning_token_from_headers(&headers).as_deref(),
+            Some("device-token")
         );
     }
 }

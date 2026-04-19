@@ -83,6 +83,14 @@ pub struct Device {
     /// Configuration template ID
     pub config_template_id: Option<String>,
 
+    /// SHA-256 hash of the per-device provisioning token.
+    ///
+    /// The plaintext token is only shown at device creation or supplied during
+    /// rotation; provisioning requests must present it alongside the deployment
+    /// provisioning token.
+    #[serde(default)]
+    pub provisioning_token_hash: Option<String>,
+
     // ===== Status =====
     /// Whether this device is enabled
     pub enabled: bool,
@@ -122,6 +130,7 @@ impl Device {
             e911_override: None,
             provisioning_url: None,
             config_template_id: None,
+            provisioning_token_hash: None,
             enabled: true,
             created_at: now,
             updated_at: now,

@@ -371,12 +371,10 @@ pub fn load_config(config_path: Option<&Path>) -> Result<AdminConfig> {
         }
     };
 
-    validate_config(&config)?;
-
     info!(
         bind_address = %config.api.bind_address,
         auth_enabled = config.api.auth_enabled,
-        "Configuration loaded successfully"
+        "Configuration loaded successfully; validation deferred until after overrides"
     );
 
     Ok(config)

@@ -2,6 +2,7 @@
 
 use crate::{
     auth::AuthIdentity, error::ApiError, state::ApiState, v1::phone_numbers::E911AddressResponse,
+    validation,
 };
 use axum::{
     extract::{Path, State},
@@ -14,9 +15,11 @@ use fcp_core::storage::{CredentialStore, DeviceStore, RegistrationStore, SiteLoc
 use fcp_core::{ConfigTemplateId, Device, DeviceId, DeviceType, TenantId, UserId};
 use fcp_events::{PlatformEvent, SystemEvent};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::time::SystemTime;
 use tracing::info;
+use uuid::Uuid;
 
 /// Helper macro to get storage or return error.
 macro_rules! require_storage {
@@ -52,6 +55,9 @@ pub struct DeviceResponse {
     pub e911_override: Option<E911AddressResponse>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
+    pub has_provisioning_token: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provisioning_token: Option<String>,
     pub enabled: bool,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
@@ -59,6 +65,10 @@ pub struct DeviceResponse {
 
 impl From<Device> for DeviceResponse {
     fn from(device: Device) -> Self {
+        let has_provisioning_token = device
+            .provisioning_token_hash
+            .as_deref()
+            .is_some_and(|hash| !hash.trim().is_empty());
         Self {
             id: device.id.to_string(),
             name: device.name,
@@ -86,6 +96,8 @@ impl From<Device> for DeviceResponse {
             e911_override: device.e911_override.map(|a| a.into()),
             provisioning_url: device.provisioning_url,
             config_template_id: device.config_template_id,
+            has_provisioning_token,
+            provisioning_token: None,
             enabled: device.enabled,
             created_at: device.created_at,
             updated_at: device.updated_at,
@@ -110,10 +122,89 @@ pub struct CreateDeviceRequest {
     pub location: Option<String>,
     pub location_id: Option<String>,
     pub e911_override: Option<E911AddressResponse>,
+    /// Optional per-device provisioning token. If omitted for a device with a
+    /// MAC address, a token is generated and returned once in the create response.
+    pub provisioning_token: Option<String>,
 }
 
 fn default_tenant_id() -> TenantId {
     TenantId::nil()
+}
+
+fn normalize_optional_string(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_mac_address(mac_address: &str) -> String {
+    mac_address.replace([':', '-', '.'], "").to_lowercase()
+}
+
+fn hash_provisioning_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn generate_provisioning_token() -> String {
+    format!(
+        "fcp_prov_{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    )
+}
+
+fn validate_device_provisioning_token(
+    state: &ApiState,
+    token: &str,
+) -> Result<String, ApiError> {
+    validation::reject_crlf("provisioning_token", token)?;
+    let token = token.trim();
+    if token.len() < 32 {
+        return Err(ApiError::BadRequest(
+            "provisioning_token must be at least 32 characters".to_string(),
+        ));
+    }
+    if state
+        .provisioning_auth_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|shared_token| shared_token == token)
+    {
+        return Err(ApiError::BadRequest(
+            "provisioning_token must be distinct from api.provisioning_auth_token".to_string(),
+        ));
+    }
+    Ok(token.to_string())
+}
+
+async fn ensure_mac_available(
+    storage: &fcp_core::DynStorage,
+    normalized_mac: &str,
+    current_device_id: Option<&DeviceId>,
+) -> Result<(), ApiError> {
+    if normalized_mac.is_empty() {
+        return Ok(());
+    }
+
+    let existing = storage
+        .get_device_by_mac_address(normalized_mac)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to check MAC address: {}", e)))?;
+
+    if let Some(existing) = existing {
+        if current_device_id.is_none_or(|id| existing.id != *id) {
+            return Err(ApiError::Conflict(
+                "MAC address is already assigned to another device".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn ensure_device_in_tenant(
@@ -171,6 +262,8 @@ pub struct UpdateDeviceRequest {
     pub e911_override: Option<E911AddressResponse>,
     pub provisioning_url: Option<String>,
     pub config_template_id: Option<String>,
+    /// Set or rotate the per-device provisioning token. An empty string clears it.
+    pub provisioning_token: Option<String>,
     pub enabled: Option<bool>,
 }
 
@@ -382,9 +475,28 @@ pub async fn create_device(
         device.owner_user_id = Some(owner_user_id);
     }
 
-    device.mac_address = req.mac_address;
+    device.mac_address = req.mac_address.and_then(normalize_optional_string);
     device.model = req.model;
     device.sip_uri = req.sip_uri;
+
+    if let Some(ref mac_address) = device.mac_address {
+        let normalized_mac = normalize_mac_address(mac_address);
+        ensure_mac_available(storage, &normalized_mac, None).await?;
+    }
+
+    let generated_provisioning_token = match req.provisioning_token.and_then(normalize_optional_string) {
+        Some(token) => {
+            let token = validate_device_provisioning_token(&state, &token)?;
+            device.provisioning_token_hash = Some(hash_provisioning_token(&token));
+            None
+        }
+        None if device.mac_address.is_some() => {
+            let token = generate_provisioning_token();
+            device.provisioning_token_hash = Some(hash_provisioning_token(&token));
+            Some(token)
+        }
+        None => None,
+    };
 
     if let Some(max_lines) = req.max_lines {
         device.max_lines = max_lines;
@@ -437,7 +549,9 @@ pub async fn create_device(
 
     info!("Created device {} ({})", device.id, device.name);
 
-    Ok((StatusCode::CREATED, Json(DeviceResponse::from(device))))
+    let mut response = DeviceResponse::from(device);
+    response.provisioning_token = generated_provisioning_token;
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// Update device.
@@ -484,8 +598,13 @@ pub async fn update_device(
         device.owner_user_id = Some(owner_user_id);
     }
 
-    if req.mac_address.is_some() {
-        device.mac_address = req.mac_address;
+    if let Some(mac_address) = req.mac_address {
+        let mac_address = normalize_optional_string(mac_address);
+        if let Some(ref mac_address) = mac_address {
+            let normalized_mac = normalize_mac_address(mac_address);
+            ensure_mac_available(storage, &normalized_mac, Some(&id)).await?;
+        }
+        device.mac_address = mac_address;
     }
 
     if req.model.is_some() {
@@ -555,6 +674,17 @@ pub async fn update_device(
                 validate_config_template_for_tenant(storage, &tenant.0, &config_template_id_str)
                     .await?,
             )
+        };
+    }
+
+    if let Some(provisioning_token) = req.provisioning_token {
+        device.provisioning_token_hash = if let Some(token) =
+            normalize_optional_string(provisioning_token)
+        {
+            let token = validate_device_provisioning_token(&state, &token)?;
+            Some(hash_provisioning_token(&token))
+        } else {
+            None
         };
     }
 
