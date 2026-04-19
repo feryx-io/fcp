@@ -2173,12 +2173,7 @@ impl DeviceStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await?;
 
-        let devices = rows
-            .into_iter()
-            .filter_map(|row| row_to_device(row).ok())
-            .collect();
-
-        Ok(devices)
+        rows.into_iter().map(row_to_device).collect()
     }
 
     async fn list_devices_by_user(&self, user_id: &UserId) -> Result<Vec<Device>> {
@@ -2186,7 +2181,7 @@ impl DeviceStore for PostgresStorage {
             "SELECT id, name, device_type, mac_address, model, firmware_version, tenant_id, owner_user_id,
                     sip_uri, registration_state, last_registration, last_ip_address, user_agent,
                     max_lines, supports_video, supports_blf, codec_support,
-                    location, location_id, e911_override_json, provisioning_url, config_template_id, enabled,
+                    location, location_id, e911_override_json, provisioning_url, config_template_id, provisioning_token_hash, enabled,
                     created_at, updated_at
              FROM devices
              WHERE owner_user_id = $1
@@ -2196,12 +2191,7 @@ impl DeviceStore for PostgresStorage {
         .fetch_all(&self.pool)
         .await?;
 
-        let devices = rows
-            .into_iter()
-            .filter_map(|row| row_to_device(row).ok())
-            .collect();
-
-        Ok(devices)
+        rows.into_iter().map(row_to_device).collect()
     }
 
     async fn put_device(&self, device: Device) -> Result<()> {

@@ -161,11 +161,14 @@ pub async fn auto_provision(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(provisioning_not_found)?;
 
+    // Verify the per-device token before inspecting device state so a caller
+    // with only the shared token cannot distinguish "disabled" from "enabled
+    // but wrong per-device token" by response timing.
+    authorize_device_provisioning_token(&device, &headers)?;
+
     if !device.enabled {
         return Err(provisioning_not_found());
     }
-
-    authorize_device_provisioning_token(&device, &headers)?;
 
     // Find the config template
     let template_id = device
