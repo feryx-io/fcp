@@ -338,6 +338,7 @@ mod tests {
             lcr_routes: vec![],
             stir_metrics: None,
             stir_verifier: None,
+            api_token: None,
         });
 
         let resp = metrics_snapshot(State(state)).await.into_response();

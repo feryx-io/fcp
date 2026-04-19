@@ -509,17 +509,18 @@ mod tests {
 
     #[test]
     fn test_key_patterns() {
+        let tenant_id = TenantId::nil();
         assert_eq!(
             RedisPresenceStore::sub_key("sub-123"),
             "presence:sub:sub-123"
         );
         assert_eq!(
-            RedisPresenceStore::subs_by_aor_key("alice@example.com"),
-            "presence:subs_by_aor:alice@example.com"
+            RedisPresenceStore::subs_by_aor_key(&tenant_id, "alice@example.com"),
+            format!("presence:subs_by_aor:{tenant_id}:alice@example.com")
         );
         assert_eq!(
-            RedisPresenceStore::presentity_key("alice@example.com"),
-            "presence:presentity:alice@example.com"
+            RedisPresenceStore::presentity_key(&tenant_id, "alice@example.com"),
+            format!("presence:presentity:{tenant_id}:alice@example.com")
         );
     }
 }

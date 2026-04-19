@@ -246,8 +246,12 @@ policies: []
     let bob_tenant = service.get_user_tenant("bob@company.com").await.unwrap();
     assert_eq!(bob_tenant, default_tenant);
 
-    // Test: get_user_tenant returns default tenant for non-existent user
-    // This supports all_users policies where users are managed via API
-    let unknown_tenant = service.get_user_tenant("nobody@nowhere.com").await.unwrap();
-    assert_eq!(unknown_tenant, default_tenant);
+    // Unknown users must fail closed rather than leak into the default tenant.
+    // `all_users` policies are applied inside the routing evaluator by caller
+    // identity; tenant resolution still requires a real user record.
+    let err = service
+        .get_user_tenant("nobody@nowhere.com")
+        .await
+        .expect_err("unknown user must not silently map to default tenant");
+    assert!(err.to_string().contains("not found"));
 }

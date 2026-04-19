@@ -895,6 +895,7 @@ mod tests {
             call_manager,
             trunk_configs: trunks,
             trunk_registrar: None,
+            api_token: None,
             uac: None,
             dialog_manager: Arc::new(sip_dialog::DialogManager::new()),
             recording_store: None,
