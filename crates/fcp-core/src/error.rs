@@ -90,6 +90,11 @@ pub enum StorageError {
     Migration(String),
     #[error("Record not found: {0}")]
     NotFound(String),
+    /// Raised when a write would violate a uniqueness constraint (e.g. two
+    /// devices attempting to claim the same normalized MAC address). The API
+    /// layer maps this to HTTP 409 Conflict.
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 #[derive(Debug, Error)]

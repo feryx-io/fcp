@@ -2276,7 +2276,8 @@ impl DeviceStore for PostgresStorage {
         .bind(created_at)
         .bind(updated_at)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(map_device_write_error)?;
 
         debug!(id = %device.id, name = %device.name, "Device stored");
         Ok(())
@@ -2797,6 +2798,28 @@ fn row_to_extension(row: sqlx::postgres::PgRow) -> Result<Extension> {
         created_at,
         updated_at,
     })
+}
+
+/// Translate Postgres errors raised by device INSERT/UPDATE into typed
+/// conflicts the API layer can map to HTTP 409.
+///
+/// The `ensure_mac_available` check in the API layer narrows the race window
+/// but can't eliminate it; the unique index on the normalized MAC is the real
+/// gate. Without this mapping the second writer would see HTTP 500 instead of
+/// the meaningful 409.
+fn map_device_write_error(err: sqlx::Error) -> anyhow::Error {
+    if let Some(db_err) = err.as_database_error() {
+        if db_err.code().as_deref() == Some("23505")
+            && db_err.constraint() == Some("idx_devices_normalized_mac_unique")
+        {
+            return anyhow::Error::new(fcp_core::Error::Storage(
+                fcp_core::StorageError::Conflict(
+                    "MAC address is already assigned to another device".to_string(),
+                ),
+            ));
+        }
+    }
+    anyhow::Error::from(err)
 }
 
 /// Convert SQLite row to Device

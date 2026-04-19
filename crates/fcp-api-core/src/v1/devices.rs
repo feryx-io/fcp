@@ -182,6 +182,21 @@ fn validate_device_provisioning_token(
     Ok(token.to_string())
 }
 
+/// Map a storage-layer error from `put_device` into an `ApiError`.
+///
+/// Recognises the typed [`fcp_core::StorageError::Conflict`] surfaced by the
+/// Postgres backend on unique-index violations (e.g. two concurrent creates
+/// claiming the same normalized MAC) and returns HTTP 409 instead of the
+/// default 500 that a generic anyhow error would produce.
+fn map_put_device_error(context: &'static str, err: anyhow::Error) -> ApiError {
+    if let Some(fcp_core::Error::Storage(fcp_core::StorageError::Conflict(msg))) =
+        err.downcast_ref::<fcp_core::Error>()
+    {
+        return ApiError::Conflict(msg.clone());
+    }
+    ApiError::Internal(format!("{}: {}", context, err))
+}
+
 async fn ensure_mac_available(
     storage: &fcp_core::DynStorage,
     normalized_mac: &str,
@@ -534,7 +549,7 @@ pub async fn create_device(
     storage
         .put_device(device.clone())
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create device: {}", e)))?;
+        .map_err(|e| map_put_device_error("Failed to create device", e))?;
 
     // Publish ConfigChanged event for cache invalidation
     let _ = state
@@ -699,7 +714,7 @@ pub async fn update_device(
     storage
         .put_device(device.clone())
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update device: {}", e)))?;
+        .map_err(|e| map_put_device_error("Failed to update device", e))?;
 
     // Publish ConfigChanged event for cache invalidation
     let _ = state

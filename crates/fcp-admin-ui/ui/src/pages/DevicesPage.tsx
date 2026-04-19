@@ -708,6 +708,12 @@ interface ImportRowState {
   apiError?: string
 }
 
+interface ImportedToken {
+  deviceName: string
+  mac: string
+  token: string
+}
+
 function BulkImportDialog({
   open,
   onOpenChange,
@@ -728,6 +734,8 @@ function BulkImportDialog({
   const [fileError, setFileError] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
   const [overrideExisting, setOverrideExisting] = useState(false)
+  const [generatedTokens, setGeneratedTokens] = useState<ImportedToken[]>([])
+  const [tokensAcknowledged, setTokensAcknowledged] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef(false)
 
@@ -741,6 +749,8 @@ function BulkImportDialog({
     setFileError(null)
     setIsDragOver(false)
     setOverrideExisting(false)
+    setGeneratedTokens([])
+    setTokensAcknowledged(false)
     abortRef.current = false
   }, [])
 
@@ -748,6 +758,12 @@ function BulkImportDialog({
     if (!v) {
       if (isImporting) {
         abortRef.current = true
+        return
+      }
+      // Don't discard freshly-minted provisioning tokens on an accidental close.
+      // The user must explicitly acknowledge them first — they cannot be
+      // recovered from the backend once this dialog is gone.
+      if (step === 'import' && generatedTokens.length > 0 && !tokensAcknowledged) {
         return
       }
       if (step === 'import' && importedCount > 0) {
@@ -836,9 +852,19 @@ function BulkImportDialog({
       if (row.data.location_id?.trim()) createData.location_id = row.data.location_id.trim()
 
       try {
-        await devices.create(createData)
+        const createdDevice = await devices.create(createData)
         created++
         setImportedCount(created)
+        if (createdDevice.provisioning_token) {
+          setGeneratedTokens((prev) => [
+            ...prev,
+            {
+              deviceName: createdDevice.name,
+              mac: createdDevice.mac_address ?? '',
+              token: createdDevice.provisioning_token as string,
+            },
+          ])
+        }
         setRows((prev) => prev.map((r, idx) => idx === i ? { ...r, status: 'success' } : r))
       } catch (createErr: unknown) {
         const createMsg = createErr instanceof Error ? createErr.message : 'Unknown error'
@@ -1076,13 +1102,94 @@ function BulkImportDialog({
               </Table>
             </div>
 
+            {!isImporting && generatedTokens.length > 0 && (
+              <div className="border rounded-md p-3 space-y-3 bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">
+                      {generatedTokens.length} provisioning token{generatedTokens.length !== 1 ? 's' : ''} generated
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Tokens are shown once. Copy or download now — they cannot be retrieved from the backend.
+                    </p>
+                  </div>
+                </div>
+                <div className="border rounded-md overflow-auto max-h-[160px] bg-background">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Device</TableHead>
+                        <TableHead>MAC</TableHead>
+                        <TableHead>Token</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {generatedTokens.map((t, idx) => (
+                        <TableRow key={idx}>
+                          <TableCell className="text-xs font-medium">{t.deviceName}</TableCell>
+                          <TableCell className="text-xs font-mono text-muted-foreground">{t.mac || '-'}</TableCell>
+                          <TableCell className="text-xs font-mono break-all">{t.token}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const text = generatedTokens
+                        .map((t) => `${t.deviceName}\t${t.mac}\t${t.token}`)
+                        .join('\n')
+                      navigator.clipboard.writeText(text)
+                    }}
+                  >
+                    <Copy className="mr-1 h-3 w-3" />
+                    Copy All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => downloadProvisioningTokensCSV(generatedTokens)}
+                  >
+                    <Download className="mr-1 h-3 w-3" />
+                    Download CSV
+                  </Button>
+                  <div className="flex-1" />
+                  <label className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={tokensAcknowledged}
+                      onChange={(e) => setTokensAcknowledged(e.target.checked)}
+                      className="rounded border-input"
+                    />
+                    <span>I&apos;ve saved the tokens</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-end">
               {isImporting ? (
                 <Button variant="outline" onClick={() => { abortRef.current = true }}>
                   Cancel
                 </Button>
               ) : (
-                <Button onClick={handleDone}>Done</Button>
+                <Button
+                  onClick={handleDone}
+                  disabled={generatedTokens.length > 0 && !tokensAcknowledged}
+                  title={
+                    generatedTokens.length > 0 && !tokensAcknowledged
+                      ? 'Confirm you saved the provisioning tokens before closing'
+                      : undefined
+                  }
+                >
+                  Done
+                </Button>
               )}
             </div>
           </div>
@@ -1090,4 +1197,19 @@ function BulkImportDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+function downloadProvisioningTokensCSV(tokens: ImportedToken[]) {
+  const header = 'device_name,mac_address,provisioning_token'
+  const rows = tokens.map((t) =>
+    [t.deviceName, t.mac, t.token].map(escapeCSVField).join(','),
+  )
+  const csv = [header, ...rows].join('\n') + '\n'
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `provisioning_tokens_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
