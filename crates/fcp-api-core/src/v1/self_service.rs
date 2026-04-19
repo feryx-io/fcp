@@ -182,11 +182,15 @@ pub async fn change_password(
     let password_hash = password::hash_password(&body.new_password)
         .map_err(|e| ApiError::BadRequest(format!("Password validation failed: {}", e)))?;
 
-    // Compute SIP HA1 hash
-    let sip_ha1_hash = password::compute_ha1(&claims.sub, &state.realm, &body.new_password);
-
     user.password = password_hash;
-    user.sip_ha1_hash = Some(sip_ha1_hash);
+    if user.digest_password.is_none() {
+        user.sip_ha1_hash = Some(password::compute_ha1(
+            &claims.sub,
+            &state.realm,
+            &body.new_password,
+        ));
+        user.sip_provisioning_password = None;
+    }
     user.password_last_reset = Some(SystemTime::now());
     user.updated_at = SystemTime::now();
 

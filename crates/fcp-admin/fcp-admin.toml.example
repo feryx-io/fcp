@@ -24,6 +24,18 @@ auth_enabled = true
 # You can also set this via environment variable: FCP_ADMIN_AUTH_TOKEN
 auth_token = "change-this-to-a-secure-random-token"
 
+# Device auto-provisioning token.
+# IMPORTANT: This must be a different strong token from auth_token because it
+# may be embedded in phone bootstrap URLs or vendor provisioning profiles.
+# You can also set this via environment variable:
+# FCP_ADMIN_PROVISIONING_AUTH_TOKEN
+# provisioning_auth_token = "change-this-to-a-different-secure-random-token"
+
+# Require HTTPS for the provisioning endpoint.  Provisioning responses may
+# contain SIP digest credentials (HA1 hashes).  Defaults to true; set to false
+# only for local development without a TLS-terminating reverse proxy.
+# provisioning_require_https = true
+
 # Keep anonymous tenant signup disabled unless this deployment explicitly offers
 # public self-service onboarding.
 # allow_public_signup = false

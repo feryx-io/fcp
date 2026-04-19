@@ -267,7 +267,7 @@ do_start() {
   echo "Admin UI:    http://${PUBLIC_IP}:8080/admin/"
   echo "Grafana:     http://localhost:3000  (admin/admin)"
   echo "Prometheus:  http://localhost:9090"
-  echo "Metrics:     http://localhost:8080/api/v1/metrics"
+  echo "Metrics:     http://localhost:8080/metrics"
   echo "Logs:        tail -f /tmp/fcp-*.log"
 }
 

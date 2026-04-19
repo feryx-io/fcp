@@ -42,7 +42,11 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::HeaderName::from_static("x-fcp-provisioning-token"),
+        ]);
 
     // Build the auth-protected API router
     let mut router = Router::new()
@@ -58,7 +62,9 @@ pub fn create_router(mut state: ApiState, api_config: &ApiConfig) -> Router {
     if let Some(ref auth_token) = api_config.auth_token {
         state = state.with_jwt_secret_from_token(auth_token);
     }
-    state = state.with_provisioning_auth_token(api_config.auth_token.clone());
+    state = state
+        .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
+        .with_provisioning_require_https(api_config.provisioning_require_https);
 
     // Conditionally apply bearer token authentication middleware
     if api_config.auth_enabled {

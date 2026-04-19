@@ -142,6 +142,7 @@ pub async fn signup(
         password: password_hash,
         digest_password: None,
         sip_ha1_hash: Some(sip_ha1_hash),
+        sip_provisioning_password: None,
         display_name: Some(req.company_name.trim().to_string()),
         tenant_id,
         enabled: true,

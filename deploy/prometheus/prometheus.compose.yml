@@ -10,7 +10,7 @@ global:
 scrape_configs:
   # fcp-admin runs on the Compose bridge network.
   - job_name: 'fcp-admin'
-    metrics_path: '/api/v1/metrics'
+    metrics_path: '/metrics'
     scrape_interval: 10s
     scrape_timeout: 5s
     honor_labels: true

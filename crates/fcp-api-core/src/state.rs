@@ -115,6 +115,10 @@ pub struct ApiState {
     /// When unset, the provisioning endpoint fails closed.
     pub provisioning_auth_token: Option<String>,
 
+    /// Reject provisioning requests that did not arrive over HTTPS
+    /// (detected via the `X-Forwarded-Proto` header set by a reverse proxy).
+    pub provisioning_require_https: bool,
+
     /// Trunk health monitoring map (populated by background health probe task).
     pub trunk_health: Option<crate::trunk_health::TrunkHealthMap>,
 
@@ -163,6 +167,7 @@ impl ApiState {
             auth_config: None,
             jwt_secret: None,
             provisioning_auth_token: None,
+            provisioning_require_https: true,
             trunk_health: None,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
         }
@@ -231,6 +236,12 @@ impl ApiState {
     /// Set the shared token required for device auto-provisioning requests.
     pub fn with_provisioning_auth_token(mut self, token: Option<String>) -> Self {
         self.provisioning_auth_token = token;
+        self
+    }
+
+    /// Set whether the provisioning endpoint requires HTTPS.
+    pub fn with_provisioning_require_https(mut self, require: bool) -> Self {
+        self.provisioning_require_https = require;
         self
     }
 

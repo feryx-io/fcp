@@ -32,6 +32,17 @@ fn provisioning_not_found() -> ApiError {
     ApiError::NotFound(PROVISIONING_NOT_FOUND.to_string())
 }
 
+/// Returns `true` when the request arrived over HTTPS, as indicated by the
+/// `X-Forwarded-Proto` header set by a reverse proxy.  When no header is
+/// present we assume plain HTTP (fail-closed).
+fn request_is_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+}
+
 fn provisioning_token_from_headers(headers: &HeaderMap) -> Option<String> {
     headers
         .get(PROVISIONING_TOKEN_HEADER)
@@ -93,6 +104,10 @@ pub async fn auto_provision(
     Path(mac_address): Path<String>,
     Query(query): Query<ProvisioningQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    if state.provisioning_require_https && !request_is_https(&headers) {
+        return Err(provisioning_not_found());
+    }
+
     authorize_provisioning_request(&state, &headers, &query).await?;
 
     let storage = state
@@ -164,6 +179,13 @@ pub async fn auto_provision(
         vars.insert("sip_username".to_string(), owner.username.clone());
         vars.insert("sip_auth_username".to_string(), owner.username.clone());
         vars.insert("sip_auth_ha1_hash".to_string(), sip_ha1_hash);
+        if let Some(ref sip_password) = owner.sip_provisioning_password {
+            vars.insert("sip_password".to_string(), sip_password.clone());
+            vars.insert(
+                "sip_provisioning_password".to_string(),
+                sip_password.clone(),
+            );
+        }
         vars.insert("owner_username".to_string(), owner.username.clone());
         if let Some(ref display_name) = owner.display_name {
             vars.insert("owner_display_name".to_string(), display_name.clone());
@@ -220,6 +242,21 @@ mod tests {
 
         let result = render_template(template, &vars);
         assert_eq!(result, "server=pbx.example.com\npassword=${password}");
+    }
+
+    #[test]
+    fn test_request_is_https() {
+        let mut headers = HeaderMap::new();
+        assert!(!request_is_https(&headers), "no header → plain HTTP");
+
+        headers.insert("x-forwarded-proto", "http".parse().unwrap());
+        assert!(!request_is_https(&headers));
+
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(request_is_https(&headers));
+
+        headers.insert("x-forwarded-proto", "HTTPS".parse().unwrap());
+        assert!(request_is_https(&headers), "case-insensitive");
     }
 
     #[test]

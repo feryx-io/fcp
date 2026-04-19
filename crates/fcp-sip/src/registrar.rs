@@ -1610,6 +1610,7 @@ mod tests {
             password: "secret123".to_string(),
             digest_password: None,
             sip_ha1_hash: None,
+            sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
             tenant_id: fcp_core::TenantId::nil(), // Default tenant for test
             role: fcp_core::UserRole::default(),

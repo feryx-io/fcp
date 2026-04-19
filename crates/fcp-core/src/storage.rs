@@ -256,6 +256,14 @@ pub struct User {
     /// Use `storage::password::compute_ha1()` to generate this hash.
     pub sip_ha1_hash: Option<String>,
 
+    /// Plaintext SIP password reserved for auto-provisioning templates.
+    ///
+    /// This is optional and only set when an administrator explicitly creates
+    /// or rotates SIP credentials for provisioning. It is not used for API/web
+    /// authentication and should be protected as sensitive credential material.
+    #[serde(default)]
+    pub sip_provisioning_password: Option<String>,
+
     /// Display name (optional)
     pub display_name: Option<String>,
 
@@ -502,6 +510,10 @@ pub struct UserFileEntry {
     /// If None, the main password will be used for SIP authentication.
     /// This provides Cisco-style security isolation.
     pub digest_password: Option<String>,
+
+    /// Plaintext SIP password reserved for auto-provisioning templates.
+    #[serde(default)]
+    pub sip_provisioning_password: Option<String>,
 
     /// Display name (optional)
     pub display_name: Option<String>,
@@ -3530,6 +3542,7 @@ mod tests {
             password: password_hash,
             digest_password: None,
             sip_ha1_hash: None,
+            sip_provisioning_password: None,
             display_name: Some("Alice".to_string()),
             tenant_id: crate::TenantId::nil(), // Default tenant for test
             enabled: true,

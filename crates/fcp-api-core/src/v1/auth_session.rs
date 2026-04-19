@@ -526,12 +526,16 @@ pub async fn change_expired_password(
     let password_hash = password::hash_password(&req.new_password)
         .map_err(|e| ApiError::Internal(format!("Failed to hash password: {}", e)))?;
 
-    // Compute SIP HA1 hash for digest authentication
-    let sip_ha1_hash = password::compute_ha1(&req.username, &state.realm, &req.new_password);
-
     // Update user
     user.password = password_hash;
-    user.sip_ha1_hash = Some(sip_ha1_hash);
+    if user.digest_password.is_none() {
+        user.sip_ha1_hash = Some(password::compute_ha1(
+            &req.username,
+            &state.realm,
+            &req.new_password,
+        ));
+        user.sip_provisioning_password = None;
+    }
     user.password_last_reset = Some(now);
     user.last_login = Some(now);
     user.updated_at = now;

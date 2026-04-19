@@ -68,4 +68,21 @@ pub struct Cli {
         env = "FCP_ADMIN_AUTH_TOKEN"
     )]
     pub auth_token: Option<String>,
+
+    /// Device auto-provisioning token
+    #[arg(
+        long = "provisioning-auth-token",
+        value_name = "TOKEN",
+        help = "Shared token accepted only by the device provisioning endpoint",
+        env = "FCP_ADMIN_PROVISIONING_AUTH_TOKEN"
+    )]
+    pub provisioning_auth_token: Option<String>,
+
+    /// Disable the HTTPS requirement for the provisioning endpoint
+    #[arg(
+        long = "provisioning-no-https",
+        help = "Allow provisioning over plain HTTP (not recommended; credentials may be exposed)",
+        env = "FCP_ADMIN_PROVISIONING_NO_HTTPS"
+    )]
+    pub provisioning_no_https: bool,
 }

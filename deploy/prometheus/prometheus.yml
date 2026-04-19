@@ -14,7 +14,10 @@ scrape_configs:
   #          fcp_uptime_seconds, fcp_rate_limit_entries,
   #          fcp_calls_established/terminated/failed
   - job_name: 'fcp-admin'
-    metrics_path: '/api/v1/metrics'
+    metrics_path: '/metrics'
+    authorization:
+      type: Bearer
+      credentials: fcp-local-dev-token-2026
     scrape_interval: 10s
     scrape_timeout: 5s
     honor_labels: true
@@ -47,6 +50,9 @@ scrape_configs:
   # fcp-sbc — Session Border Controller health/metrics
   - job_name: 'fcp-sbc'
     metrics_path: '/metrics'
+    authorization:
+      type: Bearer
+      credentials: sbc-health-local
     scrape_interval: 10s
     scrape_timeout: 5s
     static_configs:

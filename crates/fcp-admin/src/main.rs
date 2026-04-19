@@ -114,6 +114,12 @@ async fn main() -> Result<()> {
     if let Some(auth_token) = cli.auth_token {
         config.api.auth_token = Some(auth_token);
     }
+    if let Some(provisioning_auth_token) = cli.provisioning_auth_token {
+        config.api.provisioning_auth_token = Some(provisioning_auth_token);
+    }
+    if cli.provisioning_no_https {
+        config.api.provisioning_require_https = false;
+    }
 
     config::validate_config(&config)?;
 
@@ -186,6 +192,8 @@ async fn main() -> Result<()> {
         bind: config.api.bind_address,
         auth_enabled: config.api.auth_enabled,
         auth_token: config.api.auth_token.clone(),
+        provisioning_auth_token: config.api.provisioning_auth_token.clone(),
+        provisioning_require_https: config.api.provisioning_require_https,
         allow_public_signup: config.api.allow_public_signup,
         metrics_enabled: false,
         metrics_path: "/metrics".to_string(),
@@ -423,6 +431,7 @@ async fn main() -> Result<()> {
             .allow_headers([
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::AUTHORIZATION,
+                axum::http::header::HeaderName::from_static("x-fcp-provisioning-token"),
             ]);
 
         let mut router = axum::Router::new()
@@ -437,6 +446,9 @@ async fn main() -> Result<()> {
         if let Some(ref auth_token) = api_config.auth_token {
             api_state = api_state.with_jwt_secret_from_token(auth_token);
         }
+        api_state = api_state
+            .with_provisioning_auth_token(api_config.provisioning_auth_token.clone())
+            .with_provisioning_require_https(api_config.provisioning_require_https);
 
         if api_config.auth_enabled {
             let auth_token = api_config.auth_token.as_ref().unwrap_or_else(|| {

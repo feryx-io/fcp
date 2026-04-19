@@ -188,6 +188,19 @@ pub struct ApiConfig {
     #[serde(default)]
     pub auth_token: Option<String>,
 
+    /// Shared token accepted only by the device auto-provisioning endpoint.
+    ///
+    /// Keep this distinct from `auth_token`; provisioning tokens may be placed
+    /// in device bootstrap URLs and must not grant admin API access.
+    #[serde(default)]
+    pub provisioning_auth_token: Option<String>,
+
+    /// Require HTTPS for the provisioning endpoint (checked via
+    /// `X-Forwarded-Proto`).  Defaults to `true` because provisioning
+    /// responses may contain SIP digest credentials.
+    #[serde(default = "default_true")]
+    pub provisioning_require_https: bool,
+
     /// Allow unauthenticated tenant self-service signup.
     #[serde(default)]
     pub allow_public_signup: bool,
@@ -211,6 +224,8 @@ impl Default for ApiConfig {
             bind_address: default_bind_address(),
             auth_enabled: true,
             auth_token: Some(uuid::Uuid::new_v4().to_string()),
+            provisioning_auth_token: None,
+            provisioning_require_https: true,
             allow_public_signup: false,
             deployment_mode: fcp_core::permissions::DeploymentMode::default(),
         }
@@ -380,6 +395,32 @@ pub fn validate_config(config: &AdminConfig) -> Result<()> {
         anyhow::bail!("api.auth_token must be set when api.auth_enabled = true");
     }
 
+    let has_provisioning_token = config
+        .api
+        .provisioning_auth_token
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|token| !token.is_empty());
+
+    if let Some(token) = config.api.provisioning_auth_token.as_deref() {
+        if token.contains('\r') || token.contains('\n') {
+            anyhow::bail!("api.provisioning_auth_token must not contain CR/LF characters");
+        }
+    }
+
+    if has_token && has_provisioning_token {
+        let auth_token = config.api.auth_token.as_deref().unwrap_or_default().trim();
+        let provisioning_token = config
+            .api
+            .provisioning_auth_token
+            .as_deref()
+            .unwrap_or_default()
+            .trim();
+        if auth_token == provisioning_token {
+            anyhow::bail!("api.provisioning_auth_token must be distinct from api.auth_token");
+        }
+    }
+
     if config.api.allow_public_signup && !has_token {
         anyhow::bail!("api.auth_token must be set when api.allow_public_signup = true");
     }
@@ -430,6 +471,7 @@ mod tests {
             .auth_token
             .as_deref()
             .is_some_and(|token| !token.is_empty()));
+        assert!(config.api.provisioning_auth_token.is_none());
         assert!(!config.api.allow_public_signup);
         assert_eq!(config.storage.database_url, "postgresql://localhost/fcp");
         assert_eq!(config.logging.level, "info");
@@ -465,6 +507,17 @@ mod tests {
         assert!(validate_config(&config).is_err());
 
         config.api.auth_token = Some("secret".to_string());
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_provisioning_token_must_be_distinct() {
+        let mut config = AdminConfig::default();
+        config.api.auth_token = Some("secret".to_string());
+        config.api.provisioning_auth_token = Some("secret".to_string());
+        assert!(validate_config(&config).is_err());
+
+        config.api.provisioning_auth_token = Some("provisioning-secret".to_string());
         assert!(validate_config(&config).is_ok());
     }
 }

@@ -304,7 +304,7 @@ impl PostgresStorage {
 impl CredentialStore for PostgresStorage {
     async fn get_user(&self, username: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, location_id, language, timezone,
@@ -331,7 +331,7 @@ impl CredentialStore for PostgresStorage {
         tenant_id: &TenantId,
     ) -> Result<Option<User>> {
         let row = sqlx::query(
-            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, location_id, language, timezone,
@@ -354,7 +354,7 @@ impl CredentialStore for PostgresStorage {
 
     async fn list_users_by_username(&self, username: &str) -> Result<Vec<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, location_id, language, timezone,
@@ -379,7 +379,7 @@ impl CredentialStore for PostgresStorage {
 
     async fn get_user_by_id(&self, user_id: &fcp_core::UserId) -> Result<Option<User>> {
         let row = sqlx::query(
-            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, location_id, language, timezone,
@@ -419,7 +419,7 @@ impl CredentialStore for PostgresStorage {
 
         sqlx::query(
             "INSERT INTO users (
-                id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+                id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
                 role, department_id, enabled, created_at, updated_at, media_preferences,
                 email, password_last_reset, phone_number, mobile_number, pin,
                 extension, department, job_title, location, location_id, language, timezone,
@@ -427,12 +427,13 @@ impl CredentialStore for PostgresStorage {
                 primary_phone_number_id, voicemail_box_id, profile_picture,
                 failed_login_attempts, account_locked_until
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
-             ON CONFLICT(username, tenant_id) DO UPDATE SET
-                 password_hash = EXCLUDED.password_hash,
-                 digest_password = EXCLUDED.digest_password,
-                 sip_ha1_hash = EXCLUDED.sip_ha1_hash,
-                 display_name = EXCLUDED.display_name,
+	             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+	             ON CONFLICT(username, tenant_id) DO UPDATE SET
+	                 password_hash = EXCLUDED.password_hash,
+	                 digest_password = EXCLUDED.digest_password,
+	                 sip_ha1_hash = EXCLUDED.sip_ha1_hash,
+	                 sip_provisioning_password = EXCLUDED.sip_provisioning_password,
+	                 display_name = EXCLUDED.display_name,
                  role = EXCLUDED.role,
                  department_id = EXCLUDED.department_id,
                  enabled = EXCLUDED.enabled,
@@ -464,6 +465,7 @@ impl CredentialStore for PostgresStorage {
         .bind(&user.password)
         .bind(&user.digest_password)
         .bind(&user.sip_ha1_hash)
+        .bind(&user.sip_provisioning_password)
         .bind(&user.display_name)
         .bind(&tenant_id)
         .bind(&role)
@@ -531,7 +533,7 @@ impl CredentialStore for PostgresStorage {
 
     async fn list_users(&self) -> Result<Vec<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, display_name, tenant_id,
+            "SELECT id, username, password_hash, digest_password, sip_ha1_hash, sip_provisioning_password, display_name, tenant_id,
                     role, department_id, enabled, created_at, updated_at, media_preferences,
                     email, password_last_reset, phone_number, mobile_number, pin,
                     extension, department, job_title, location, location_id, language, timezone,
@@ -1287,32 +1289,25 @@ impl CdrStore for PostgresStorage {
                     number,
                     call_id,
                     BOOL_OR(answer_time IS NOT NULL) AS answered,
-                    MAX(COALESCE(call_duration_ms, 0)) AS call_duration_ms
+                    MAX(COALESCE(call_duration_ms, 0)) AS call_duration_ms,
+                    BOOL_OR(direction = 'inbound') AS has_inbound,
+                    BOOL_OR(direction = 'outbound') AS has_outbound
                 FROM matched_numbers
                 GROUP BY number, call_id
-            ),
-            direction_counts AS (
-                SELECT
-                    number,
-                    COUNT(*) FILTER (WHERE direction = 'inbound') AS inbound_calls,
-                    COUNT(*) FILTER (WHERE direction = 'outbound') AS outbound_calls
-                FROM matched_numbers
-                GROUP BY number
             )
             SELECT
-                d.number,
+                number,
                 COUNT(*) AS total_calls,
-                COUNT(*) FILTER (WHERE d.answered) AS answered_calls,
+                COUNT(*) FILTER (WHERE answered) AS answered_calls,
                 COALESCE(
-                    SUM(CASE WHEN d.answered THEN d.call_duration_ms ELSE 0 END),
+                    SUM(CASE WHEN answered THEN call_duration_ms ELSE 0 END),
                     0
                 ) AS total_duration_ms,
-                COALESCE(dc.inbound_calls, 0) AS inbound_calls,
-                COALESCE(dc.outbound_calls, 0) AS outbound_calls
-            FROM deduped_calls d
-            LEFT JOIN direction_counts dc ON dc.number = d.number
-            GROUP BY d.number, dc.inbound_calls, dc.outbound_calls
-            ORDER BY total_calls DESC, d.number
+                COUNT(*) FILTER (WHERE has_inbound) AS inbound_calls,
+                COUNT(*) FILTER (WHERE has_outbound) AS outbound_calls
+            FROM deduped_calls
+            GROUP BY number
+            ORDER BY total_calls DESC, number
             LIMIT 100"
         );
 
@@ -1392,6 +1387,7 @@ fn row_to_user(row: sqlx::postgres::PgRow) -> Result<User> {
         password: row.get("password_hash"),
         digest_password: row.get("digest_password"),
         sip_ha1_hash: row.get("sip_ha1_hash"),
+        sip_provisioning_password: row.get("sip_provisioning_password"),
         display_name: row.get("display_name"),
         tenant_id,
         role,

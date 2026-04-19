@@ -4,6 +4,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Serde default helper that returns `true`.
+pub(crate) fn default_true() -> bool {
+    true
+}
+
 const MAX_SIP_MESSAGE_SIZE: usize = 65_535;
 const MAX_CONNECTION_POOL_SIZE: usize = 10_000;
 const MAX_RTP_PORT_SPAN: u16 = 10_000;
@@ -391,6 +396,24 @@ pub struct ApiConfig {
     /// API authentication token (if auth enabled)
     pub auth_token: Option<String>,
 
+    /// Shared token accepted only by the device auto-provisioning endpoint.
+    ///
+    /// This must be distinct from `auth_token`; provisioning tokens are often
+    /// embedded in device URLs or vendor bootstrap profiles and must not grant
+    /// platform-admin API access if leaked.
+    #[serde(default)]
+    pub provisioning_auth_token: Option<String>,
+
+    /// Require HTTPS (via `X-Forwarded-Proto`) for the provisioning endpoint.
+    ///
+    /// Provisioning responses may contain SIP digest credentials (HA1 hashes)
+    /// that are reusable authentication material.  Serving them over plain HTTP
+    /// exposes credentials to network observers.  Defaults to `true`; set to
+    /// `false` only for local development or when TLS is terminated at the
+    /// application layer rather than a reverse proxy.
+    #[serde(default = "default_true")]
+    pub provisioning_require_https: bool,
+
     /// Allow unauthenticated tenant self-service signup.
     ///
     /// Disabled by default so `/api/v1/auth/signup` is not exposed unless a
@@ -414,6 +437,8 @@ impl Default for ApiConfig {
             metrics_path: "/metrics".to_string(),
             auth_enabled: false,
             auth_token: None,
+            provisioning_auth_token: None,
+            provisioning_require_https: true,
             allow_public_signup: false,
             deployment_mode: crate::permissions::DeploymentMode::default(),
         }
@@ -433,6 +458,27 @@ impl ApiConfig {
             .is_some_and(|token| !token.is_empty());
         if let Some(token) = &self.auth_token {
             reject_crlf("api.auth_token", token)?;
+        }
+        let has_provisioning_token = self
+            .provisioning_auth_token
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|token| !token.is_empty());
+        if let Some(token) = &self.provisioning_auth_token {
+            reject_crlf("api.provisioning_auth_token", token)?;
+        }
+        if has_token && has_provisioning_token {
+            let auth_token = self.auth_token.as_deref().unwrap_or_default().trim();
+            let provisioning_token = self
+                .provisioning_auth_token
+                .as_deref()
+                .unwrap_or_default()
+                .trim();
+            if auth_token == provisioning_token {
+                return Err(
+                    "api.provisioning_auth_token must be distinct from api.auth_token".to_string(),
+                );
+            }
         }
         if self.allow_public_signup && !has_token {
             return Err(

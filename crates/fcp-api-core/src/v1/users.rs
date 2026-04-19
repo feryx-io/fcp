@@ -101,6 +101,11 @@ impl From<User> for UserResponse {
 pub struct CreateUserRequest {
     pub username: String,
     pub password: String,
+    /// Optional SIP password retained for device auto-provisioning templates.
+    ///
+    /// When set, this becomes the user's SIP digest password and is exposed by
+    /// provisioning as `${sip_password}` for vendors that cannot use HA1.
+    pub sip_provisioning_password: Option<String>,
     pub display_name: Option<String>,
     #[serde(default = "default_tenant_id")]
     pub tenant_id: fcp_core::TenantId,
@@ -209,6 +214,12 @@ pub struct UpdatePasswordRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateDigestPasswordRequest {
     pub digest_password: String,
+    /// Retain the plaintext SIP password for auto-provisioning templates.
+    ///
+    /// Defaults to true because most desk-phone provisioning templates require
+    /// a raw SIP password rather than HA1/precomputed digest material.
+    #[serde(default = "default_true")]
+    pub store_for_provisioning: bool,
 }
 
 /// List all users.
@@ -272,14 +283,32 @@ pub async fn create_user(
     validation::validate_username(&req.username)?;
     validation::validate_display_name(&req.display_name)?;
     validation::reject_crlf("password", &req.password)?;
+    if let Some(ref sip_password) = req.sip_provisioning_password {
+        validation::reject_crlf("sip_provisioning_password", sip_password)?;
+    }
 
     // Always hash the password first (constant-time operation regardless of user existence)
     // This prevents timing attacks that could reveal which usernames exist
     let password_hash = password::hash_password(&req.password)
         .map_err(|e| ApiError::BadRequest(format!("Invalid password: {}", e)))?;
 
-    // Compute SIP HA1 hash for digest authentication
-    let sip_ha1_hash = password::compute_ha1(&req.username, &state.realm, &req.password);
+    let (digest_password_hash, sip_ha1_hash, sip_provisioning_password) =
+        if let Some(ref sip_password) = req.sip_provisioning_password {
+            let digest_hash = password::hash_password(sip_password).map_err(|e| {
+                ApiError::BadRequest(format!("Invalid SIP provisioning password: {}", e))
+            })?;
+            (
+                Some(digest_hash),
+                password::compute_ha1(&req.username, &state.realm, sip_password),
+                Some(sip_password.clone()),
+            )
+        } else {
+            (
+                None,
+                password::compute_ha1(&req.username, &state.realm, &req.password),
+                None,
+            )
+        };
 
     // Check if user already exists
     if let Some(_) = storage.get_user_in_tenant(&req.username, &tenant.0).await? {
@@ -320,8 +349,9 @@ pub async fn create_user(
         id: fcp_core::UserId::new(),
         username: req.username.clone(),
         password: password_hash,
-        digest_password: None, // Can be set separately via API for Cisco-style security
+        digest_password: digest_password_hash, // Can be set separately via API for Cisco-style security
         sip_ha1_hash: Some(sip_ha1_hash),
+        sip_provisioning_password,
         display_name: req.display_name,
         tenant_id: tenant.0.clone(),
         enabled: req.enabled,
@@ -595,12 +625,17 @@ pub async fn update_password(
     let password_hash = password::hash_password(&req.password)
         .map_err(|e| ApiError::Internal(format!("Failed to hash password: {}", e)))?;
 
-    // Compute SIP HA1 hash for digest authentication
-    let sip_ha1_hash = password::compute_ha1(&username, &state.realm, &req.password);
-
-    // Update password and HA1 hash
+    // Update web/API password. Only update SIP credentials when this user does
+    // not have a separate digest password configured.
     user.password = password_hash;
-    user.sip_ha1_hash = Some(sip_ha1_hash);
+    if user.digest_password.is_none() {
+        user.sip_ha1_hash = Some(password::compute_ha1(
+            &username,
+            &state.realm,
+            &req.password,
+        ));
+        user.sip_provisioning_password = None;
+    }
     user.updated_at = std::time::SystemTime::now();
 
     let tenant_id = user.tenant_id;
@@ -673,9 +708,15 @@ pub async fn update_digest_password(
     // Compute SIP HA1 hash from digest password (NOT main password) - legacy compatibility
     let sip_ha1_hash = password::compute_ha1(&username, &state.realm, &req.digest_password);
 
-    // Update digest password and HA1 hash (no plaintext storage for security)
+    // Update digest password and HA1 hash. Optionally retain the plaintext SIP
+    // password only for device auto-provisioning templates.
     user.digest_password = Some(digest_password_hash);
     user.sip_ha1_hash = Some(sip_ha1_hash);
+    user.sip_provisioning_password = if req.store_for_provisioning {
+        Some(req.digest_password)
+    } else {
+        None
+    };
     user.updated_at = std::time::SystemTime::now();
 
     let tenant_id = user.tenant_id;
@@ -737,6 +778,7 @@ pub async fn delete_digest_password(
 
     // Remove digest password
     user.digest_password = None;
+    user.sip_provisioning_password = None;
 
     // Note: We cannot recompute HA1 hash from main password because we only have the bcrypt hash
     // The HA1 hash will need to be recomputed when the user next updates their main password
