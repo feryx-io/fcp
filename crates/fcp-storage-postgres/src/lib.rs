@@ -2807,15 +2807,29 @@ fn row_to_extension(row: sqlx::postgres::PgRow) -> Result<Extension> {
 /// but can't eliminate it; the unique index on the normalized MAC is the real
 /// gate. Without this mapping the second writer would see HTTP 500 instead of
 /// the meaningful 409.
+///
+/// Any SQLSTATE 23505 unique_violation on the devices table is mapped to a
+/// Conflict — not just the normalized-MAC index — so future unique constraints
+/// (e.g. a tenant-scoped name index) surface as 409 automatically instead of
+/// silently regressing to 500 until this helper is updated.
 fn map_device_write_error(err: sqlx::Error) -> anyhow::Error {
     if let Some(db_err) = err.as_database_error() {
-        if db_err.code().as_deref() == Some("23505")
-            && db_err.constraint() == Some("idx_devices_normalized_mac_unique")
-        {
+        if db_err.code().as_deref() == Some("23505") {
+            let constraint = db_err.constraint().unwrap_or("<unknown>");
+            let client_msg = if constraint == "idx_devices_normalized_mac_unique" {
+                "MAC address is already assigned to another device".to_string()
+            } else {
+                "Device violates a uniqueness constraint".to_string()
+            };
+            // Preserve the specific constraint name in the server log for ops
+            // triage — the client response is intentionally generic.
+            tracing::warn!(
+                constraint = %constraint,
+                message = %db_err.message(),
+                "Device write rejected by unique constraint"
+            );
             return anyhow::Error::new(fcp_core::Error::Storage(
-                fcp_core::StorageError::Conflict(
-                    "MAC address is already assigned to another device".to_string(),
-                ),
+                fcp_core::StorageError::Conflict(client_msg),
             ));
         }
     }
