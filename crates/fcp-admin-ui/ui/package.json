@@ -32,7 +32,7 @@
     "react-dom": "^18.3.1",
     "react-easy-crop": "^5.5.6",
     "react-hook-form": "^7.53.0",
-    "react-router-dom": "^7.0.0",
+    "react-router-dom": "^7.16.0",
     "recharts": "^2.13.0",
     "tailwind-merge": "^2.6.0",
     "zod": "^3.23.0",
