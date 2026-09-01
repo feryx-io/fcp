@@ -189,11 +189,12 @@ mod tests {
 
     #[test]
     fn build_fcp_core_media_config_enabled_flag() {
-        let mut nat = NatConfig::default();
-
         // Both enabled + rewrite_sdp → enabled
-        nat.enabled = true;
-        nat.rewrite_sdp = true;
+        let mut nat = NatConfig {
+            enabled: true,
+            rewrite_sdp: true,
+            ..Default::default()
+        };
         let cfg = build_fcp_core_media_config(&nat, "10.0.0.1");
         assert!(cfg.enabled);
 

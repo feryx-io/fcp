@@ -468,7 +468,7 @@ impl Default for MediaSection {
 }
 
 /// Routing configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RoutingSection {
     /// Path to routing rules YAML file (optional)
     pub rules_file: Option<String>,
@@ -478,17 +478,8 @@ pub struct RoutingSection {
     pub hot_reload: bool,
 }
 
-impl Default for RoutingSection {
-    fn default() -> Self {
-        Self {
-            rules_file: None,
-            hot_reload: false,
-        }
-    }
-}
-
 /// Events configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional).
     /// Used for HTTP-based event forwarding (fallback when Redis is not configured).
@@ -515,19 +506,6 @@ pub struct EventsSection {
     /// External webhook endpoints to receive event notifications.
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
-}
-
-impl Default for EventsSection {
-    fn default() -> Self {
-        Self {
-            server_url: None,
-            auth_token: None,
-            use_redis: false,
-            redis_channel: None,
-            redis_stream_key: None,
-            webhooks: Vec::new(),
-        }
-    }
 }
 
 /// Cluster configuration.

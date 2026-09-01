@@ -104,7 +104,7 @@ pub fn parse(dialed: &str, config: &FeatureCodeConfig) -> Option<FeatureCodeActi
     }
 
     // Sort by prefix length descending so longer prefixes match first
-    prefixes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    prefixes.sort_by_key(|p| std::cmp::Reverse(p.0.len()));
 
     for (prefix, action_fn) in &prefixes {
         if let Some(suffix) = user.strip_prefix(*prefix) {

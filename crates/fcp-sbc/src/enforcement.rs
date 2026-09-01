@@ -58,6 +58,7 @@ pub struct SbcEnforcementHandler {
 }
 
 impl SbcEnforcementHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         inner: Arc<dyn InboundMessageHandler>,
         security: SecurityConfig,
@@ -749,14 +750,15 @@ mod tests {
 
     /// Mock inner handler that records all calls for inspection.
     struct MockInnerHandler {
-        calls: Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>,
+        calls: SentMessages,
     }
 
+    /// Messages captured by the mock handler, shared with the assertions.
+    type SentMessages =
+        Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>;
+
     impl MockInnerHandler {
-        fn new() -> (
-            Self,
-            Arc<tokio::sync::Mutex<Vec<(sip_transaction::TransportKind, SocketAddr, Bytes)>>>,
-        ) {
+        fn new() -> (Self, SentMessages) {
             let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
             (
                 Self {

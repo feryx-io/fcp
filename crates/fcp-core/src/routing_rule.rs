@@ -14,6 +14,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RoutingRuleId(String);
 
+impl Default for RoutingRuleId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoutingRuleId {
     pub fn new() -> Self {
         Self(format!("rule-{}", Uuid::new_v4()))

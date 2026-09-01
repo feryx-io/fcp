@@ -387,10 +387,10 @@ transcript_capture_bodies = true
 "#;
         std::fs::write(tmp.path(), toml_str).unwrap();
         let settings = ServerSettings::load(Some(tmp.path())).unwrap();
-        assert_eq!(settings.allow_refer, false);
+        assert!(!settings.allow_refer);
         assert_eq!(settings.rate_window, Duration::from_secs(2));
         assert_eq!(settings.info_rate_limit, 5);
-        assert_eq!(settings.transcript_capture_bodies, true);
+        assert!(settings.transcript_capture_bodies);
     }
 
     #[test]

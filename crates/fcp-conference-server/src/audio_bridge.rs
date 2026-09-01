@@ -87,6 +87,7 @@ impl AudioStats {
 ///
 /// This bypasses ForwardingEngine (designed for 1:1 B2BUA bridging) and
 /// works directly with the forge-conference mixer.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_audio_bridge(
     room: Arc<ConferenceRoom>,
     participant_id: String,
@@ -107,7 +108,7 @@ pub async fn run_audio_bridge(
     dtmf_unmuted_samples: Option<Arc<Vec<i16>>>,
     dtmf_locked_samples: Option<Arc<Vec<i16>>>,
     dtmf_unlocked_samples: Option<Arc<Vec<i16>>>,
-    dtmf_ending_samples: Option<Arc<Vec<i16>>>,
+    _dtmf_ending_samples: Option<Arc<Vec<i16>>>,
 ) {
     let span = info_span!(
         "audio_bridge",
@@ -165,11 +166,10 @@ pub async fn run_audio_bridge(
     // hundreds of buffered packets arrive at once and flood the mixer.
     {
         let mut drained = 0u32;
-        loop {
-            match tokio::time::timeout(Duration::from_millis(1), rtp_socket.recv_rtp_raw()).await {
-                Ok(Ok(_)) => { drained += 1; }
-                _ => break,
-            }
+        while let Ok(Ok(_)) =
+            tokio::time::timeout(Duration::from_millis(1), rtp_socket.recv_rtp_raw()).await
+        {
+            drained += 1;
         }
         if drained > 0 {
             debug!(drained, "Drained stale RTP packets before bridge start");
@@ -275,15 +275,13 @@ pub async fn run_audio_bridge(
                                                                             mixer_sample_rate,
                                                                         ).await;
                                                                         // Drain RTP that accumulated during playback
-                                                                        loop {
-                                                                            match tokio::time::timeout(
+                                                                        while let Ok(Ok(_)) =
+                                                                            tokio::time::timeout(
                                                                                 Duration::from_millis(1),
                                                                                 rtp_socket.recv_rtp_raw(),
-                                                                            ).await {
-                                                                                Ok(Ok(_)) => {}
-                                                                                _ => break,
-                                                                            }
-                                                                        }
+                                                                            )
+                                                                            .await
+                                                                        {}
                                                                     }
                                                                     Err(e) => {
                                                                         warn!(error = %e, "Failed to create DTMF feedback encoder");
@@ -539,7 +537,7 @@ fn execute_dtmf_command(
                         ParticipantState::Muted => ParticipantState::Active,
                         _ => ParticipantState::Muted,
                     };
-                    if let Err(e) = room.set_participant_state(participant_id, new_state.clone()) {
+                    if let Err(e) = room.set_participant_state(participant_id, new_state) {
                         warn!(error = %e, "Failed to toggle mute");
                     } else {
                         info!(participant = %participant_id, state = ?new_state, "DTMF mute toggle");

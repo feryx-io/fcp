@@ -25,6 +25,12 @@ impl TrunkId {
     }
 }
 
+impl Default for TrunkId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Display for TrunkId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -42,8 +48,10 @@ impl std::str::FromStr for TrunkId {
 /// Direction of a SIP trunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TrunkDirection {
     /// Outbound-only (send calls to carrier)
+    #[default]
     Upstream,
     /// Inbound-only (receive calls from carrier)
     Downstream,
@@ -71,12 +79,6 @@ impl std::str::FromStr for TrunkDirection {
             "bidirectional" => Ok(Self::Bidirectional),
             _ => Err(format!("Invalid trunk direction: {}", s)),
         }
-    }
-}
-
-impl Default for TrunkDirection {
-    fn default() -> Self {
-        Self::Upstream
     }
 }
 

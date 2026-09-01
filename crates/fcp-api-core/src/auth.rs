@@ -395,7 +395,7 @@ async fn validate_api_token(token: &str, store: &Arc<dyn ApiTokenStore>) -> Opti
 
     // Update last_used_at in the background (non-blocking)
     let store = Arc::clone(store);
-    let token_id = api_token.id.clone();
+    let token_id = api_token.id;
     tokio::spawn(async move {
         if let Err(e) = store.update_last_used(&token_id).await {
             tracing::debug!(error = %e, "Failed to update API token last_used_at");
@@ -576,7 +576,7 @@ mod tests {
             Ok(())
         }
         async fn update_last_used(&self, id: &ApiTokenId) -> anyhow::Result<()> {
-            self.last_used_calls.lock().unwrap().push(id.clone());
+            self.last_used_calls.lock().unwrap().push(*id);
             Ok(())
         }
     }

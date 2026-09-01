@@ -1371,7 +1371,7 @@ fn resolve_tenant_from_claims(
             return tid;
         }
     }
-    state.default_tenant_id.clone()
+    state.default_tenant_id
 }
 
 /// Get the greetings directory or return an error.

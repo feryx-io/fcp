@@ -12,7 +12,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fcp_events::{EventFilter, EventSubscriber, InMemoryEventBus};
-use fcp_flow::InMemoryFlowStore;
 use fcp_media::{BackendType, MediaConfig};
 use fcp_sbc_core::{
     CpsChecker, NoCpsLimit, TrunkCredentialProvider, TrunkHealthMonitor, TrunkRegistrar,
@@ -96,7 +95,7 @@ async fn main() -> Result<()> {
     if let Some(ref ip) = config.sip.local_ip {
         info!(
             local_ip = %ip,
-            source = if cli.public_ip.as_ref().map_or(false, |p| !p.is_empty()) { "PUBLIC_IP env" } else { "auto-detected" },
+            source = if cli.public_ip.as_ref().is_some_and(|p| !p.is_empty()) { "PUBLIC_IP env" } else { "auto-detected" },
             "Using local IP for SIP signaling and media"
         );
     }
@@ -739,7 +738,7 @@ async fn create_uac(
 
     let mut builder = IntegratedUAC::builder();
     builder = builder
-        .local_uri(local_uri.as_str())
+        .local_uri(local_uri.as_str())?
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(transaction_manager)

@@ -5,9 +5,6 @@ edition = "2021"
 authors = ["FCP Contributors"]
 description = "Declarative policy-based call routing for FCP"
 
-[features]
-metrics = []
-
 [dependencies]
 # Internal dependencies
 fcp-core = { path = "../fcp-core" }

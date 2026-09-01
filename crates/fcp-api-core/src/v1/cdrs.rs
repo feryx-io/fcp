@@ -176,7 +176,7 @@ pub async fn list_cdrs(
 
     // Build CdrQuery from request parameters
     let mut query = CdrQuery {
-        tenant_id: Some(tenant.0.clone()),
+        tenant_id: Some(tenant.0),
         call_id: None,
         from_uri: params.from_uri.clone(),
         to_uri: params.to_uri.clone(),
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(response.hangup_party, Some("caller".to_string()));
         assert_eq!(response.sip_status_code, Some(200));
         assert_eq!(response.sip_reason, Some("OK".to_string()));
-        assert_eq!(response.media_anchored, true);
+        assert!(response.media_anchored);
         assert_eq!(response.codec_a_leg, Some("PCMU".to_string()));
         assert_eq!(response.codec_b_leg, Some("PCMU".to_string()));
     }

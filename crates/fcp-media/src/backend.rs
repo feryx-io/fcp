@@ -319,11 +319,7 @@ pub mod embedded {
             // Parse c= line: c=IN IP4 192.168.1.80
             if line.starts_with("c=") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 3 && parts[1] == "IP4" {
-                    if let Ok(parsed_ip) = parts[2].parse::<IpAddr>() {
-                        ip = Some(parsed_ip);
-                    }
-                } else if parts.len() >= 3 && parts[1] == "IP6" {
+                if parts.len() >= 3 && (parts[1] == "IP4" || parts[1] == "IP6") {
                     if let Ok(parsed_ip) = parts[2].parse::<IpAddr>() {
                         ip = Some(parsed_ip);
                     }
@@ -370,6 +366,9 @@ pub mod embedded {
                     enable_transcoding: config.enable_transcoding,
                     ..Default::default()
                 },
+                // vad_config, media_stats_interval and min_free_port_pairs were added in
+                // forge-engine 0.5; their defaults preserve the previous behaviour.
+                ..Default::default()
             };
 
             let manager_config = SessionManagerConfig {
@@ -538,8 +537,8 @@ pub mod embedded {
 
             // Create FCP MediaSession wrapper
             let fcp_session = Arc::new(MediaSession::new(
-                call_id.clone(),
-                dialog_id.clone(),
+                call_id,
+                dialog_id,
                 forge_call_id.0.clone(), // Use forge CallId string as session ID
                 config,
                 ports.rtp_port,
@@ -561,7 +560,7 @@ pub mod embedded {
                 fcp_session: fcp_session.clone(),
             };
 
-            self.sessions.insert(call_id.clone(), session_info);
+            self.sessions.insert(call_id, session_info);
 
             info!(
                 ?call_id,
@@ -1434,274 +1433,6 @@ pub mod embedded {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn test_parse_remote_endpoint_ipv4() {
-            let sdp = "v=0\r\n\
-                        o=- 123 1 IN IP4 192.168.1.100\r\n\
-                        s=Test\r\n\
-                        c=IN IP4 192.168.1.100\r\n\
-                        t=0 0\r\n\
-                        m=audio 51163 RTP/AVP 0 8\r\n";
-            let result = parse_remote_endpoint_from_sdp(sdp);
-            assert!(result.is_ok());
-            let addr = result.unwrap();
-            assert_eq!(addr.ip().to_string(), "192.168.1.100");
-            assert_eq!(addr.port(), 51163);
-        }
-
-        #[test]
-        fn test_parse_remote_endpoint_missing_ip() {
-            let sdp = "v=0\r\n\
-                        m=audio 51163 RTP/AVP 0 8\r\n";
-            let result = parse_remote_endpoint_from_sdp(sdp);
-            assert!(result.is_err());
-        }
-
-        #[test]
-        fn test_parse_remote_endpoint_missing_port() {
-            let sdp = "v=0\r\n\
-                        c=IN IP4 192.168.1.100\r\n";
-            let result = parse_remote_endpoint_from_sdp(sdp);
-            assert!(result.is_err());
-        }
-
-        #[tokio::test]
-        async fn test_update_session_b_leg_sets_participant_b() {
-            let config = crate::config::MediaConfig {
-                rtp_port_start: 40000,
-                rtp_port_end: 41000,
-                ..Default::default()
-            };
-            let backend = EmbeddedBackend::new(&config).await.unwrap();
-
-            let call_id = fcp_core::CallId::new();
-            let dialog_id = fcp_core::DialogId::new();
-            let session_config = crate::MediaSessionConfig::default();
-
-            backend
-                .create_session(call_id.clone(), dialog_id, session_config)
-                .await
-                .unwrap();
-
-            let b_leg_sdp = "v=0\r\n\
-                              o=- 456 1 IN IP4 10.0.0.50\r\n\
-                              s=Test\r\n\
-                              c=IN IP4 10.0.0.50\r\n\
-                              t=0 0\r\n\
-                              m=audio 6000 RTP/AVP 0\r\n"
-                .to_string();
-
-            backend
-                .update_session_b_leg(&call_id, b_leg_sdp)
-                .await
-                .unwrap();
-
-            // Verify participant_b remote_addr is set
-            let b_addr = {
-                let session_info = backend.sessions.get(&call_id).unwrap();
-                let participant_b = session_info.forge_session.participant_b();
-                let addr = participant_b.read().await.remote_addr;
-                addr
-            };
-            assert!(b_addr.is_some());
-            let addr = b_addr.unwrap();
-            assert_eq!(addr.ip().to_string(), "10.0.0.50");
-            assert_eq!(addr.port(), 6000);
-
-            backend.terminate_session(&call_id).await.unwrap();
-        }
-
-        #[tokio::test]
-        async fn test_bridge_calls_single_session() {
-            let config = crate::config::MediaConfig {
-                rtp_port_start: 41000,
-                rtp_port_end: 42000,
-                ..Default::default()
-            };
-            let backend = EmbeddedBackend::new(&config).await.unwrap();
-
-            let call_id = fcp_core::CallId::new();
-            let dialog_id = fcp_core::DialogId::new();
-
-            backend
-                .create_session(
-                    call_id.clone(),
-                    dialog_id,
-                    crate::MediaSessionConfig::default(),
-                )
-                .await
-                .unwrap();
-
-            // Single-session bridge: same call_id for both legs
-            let result = backend.bridge_calls(&call_id, &call_id).await;
-            assert!(result.is_ok());
-
-            backend.terminate_session(&call_id).await.unwrap();
-        }
-
-        #[tokio::test]
-        async fn test_bridge_calls_two_sessions() {
-            let config = crate::config::MediaConfig {
-                rtp_port_start: 42000,
-                rtp_port_end: 43000,
-                ..Default::default()
-            };
-            let backend = EmbeddedBackend::new(&config).await.unwrap();
-
-            let call_id_a = fcp_core::CallId::new();
-            let call_id_b = fcp_core::CallId::new();
-
-            // Create A-leg session with known remote endpoint
-            backend
-                .create_session(
-                    call_id_a.clone(),
-                    fcp_core::DialogId::new(),
-                    crate::MediaSessionConfig::default(),
-                )
-                .await
-                .unwrap();
-
-            // Set A-leg participant_a remote addr
-            let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
-            backend
-                .update_session(&call_id_a, a_sdp.to_string())
-                .await
-                .unwrap();
-
-            // Create B-leg session
-            backend
-                .create_session(
-                    call_id_b.clone(),
-                    fcp_core::DialogId::new(),
-                    crate::MediaSessionConfig::default(),
-                )
-                .await
-                .unwrap();
-
-            // Set B-leg participant_a remote addr
-            let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
-            backend
-                .update_session(&call_id_b, b_sdp.to_string())
-                .await
-                .unwrap();
-
-            // Bridge calls
-            backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
-
-            // Verify cross-wiring: A-leg's participant_b should point to B-leg phone (10.0.0.2:6000)
-            {
-                let a_session = backend.sessions.get(&call_id_a).unwrap();
-                let b_remote = a_session
-                    .forge_session
-                    .participant_b()
-                    .read()
-                    .await
-                    .remote_addr;
-                assert!(b_remote.is_some());
-                let addr = b_remote.unwrap();
-                assert_eq!(addr.ip().to_string(), "10.0.0.2");
-                assert_eq!(addr.port(), 6000);
-            }
-
-            // Verify cross-wiring: B-leg's participant_b should point to A-leg phone (10.0.0.1:5000)
-            {
-                let b_session = backend.sessions.get(&call_id_b).unwrap();
-                let a_remote = b_session
-                    .forge_session
-                    .participant_b()
-                    .read()
-                    .await
-                    .remote_addr;
-                assert!(a_remote.is_some());
-                let addr = a_remote.unwrap();
-                assert_eq!(addr.ip().to_string(), "10.0.0.1");
-                assert_eq!(addr.port(), 5000);
-            }
-
-            backend.terminate_session(&call_id_a).await.unwrap();
-            backend.terminate_session(&call_id_b).await.unwrap();
-        }
-
-        #[tokio::test]
-        async fn test_unbridge_calls_clears_participant_b() {
-            let config = crate::config::MediaConfig {
-                rtp_port_start: 43000,
-                rtp_port_end: 44000,
-                ..Default::default()
-            };
-            let backend = EmbeddedBackend::new(&config).await.unwrap();
-
-            let call_id_a = fcp_core::CallId::new();
-            let call_id_b = fcp_core::CallId::new();
-
-            backend
-                .create_session(
-                    call_id_a.clone(),
-                    fcp_core::DialogId::new(),
-                    crate::MediaSessionConfig::default(),
-                )
-                .await
-                .unwrap();
-
-            backend
-                .create_session(
-                    call_id_b.clone(),
-                    fcp_core::DialogId::new(),
-                    crate::MediaSessionConfig::default(),
-                )
-                .await
-                .unwrap();
-
-            // Set up endpoints and bridge
-            let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
-            let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
-            backend
-                .update_session(&call_id_a, a_sdp.to_string())
-                .await
-                .unwrap();
-            backend
-                .update_session(&call_id_b, b_sdp.to_string())
-                .await
-                .unwrap();
-            backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
-
-            // Unbridge
-            backend
-                .unbridge_calls(&call_id_a, &call_id_b)
-                .await
-                .unwrap();
-
-            // Verify participant_b remote_addr cleared on both
-            {
-                let a_session = backend.sessions.get(&call_id_a).unwrap();
-                let b_remote = a_session
-                    .forge_session
-                    .participant_b()
-                    .read()
-                    .await
-                    .remote_addr;
-                assert!(b_remote.is_none());
-            }
-            {
-                let b_session = backend.sessions.get(&call_id_b).unwrap();
-                let a_remote = b_session
-                    .forge_session
-                    .participant_b()
-                    .read()
-                    .await
-                    .remote_addr;
-                assert!(a_remote.is_none());
-            }
-
-            backend.terminate_session(&call_id_a).await.unwrap();
-            backend.terminate_session(&call_id_b).await.unwrap();
-        }
-    }
-
     /// Result of SDP negotiation: the generated SDP string and the primary codec selected.
     struct SdpNegotiationResult {
         sdp: String,
@@ -1847,6 +1578,270 @@ pub mod embedded {
             clock_rate: info.clock_rate,
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_parse_remote_endpoint_ipv4() {
+            let sdp = "v=0\r\n\
+                        o=- 123 1 IN IP4 192.168.1.100\r\n\
+                        s=Test\r\n\
+                        c=IN IP4 192.168.1.100\r\n\
+                        t=0 0\r\n\
+                        m=audio 51163 RTP/AVP 0 8\r\n";
+            let result = parse_remote_endpoint_from_sdp(sdp);
+            assert!(result.is_ok());
+            let addr = result.unwrap();
+            assert_eq!(addr.ip().to_string(), "192.168.1.100");
+            assert_eq!(addr.port(), 51163);
+        }
+
+        #[test]
+        fn test_parse_remote_endpoint_missing_ip() {
+            let sdp = "v=0\r\n\
+                        m=audio 51163 RTP/AVP 0 8\r\n";
+            let result = parse_remote_endpoint_from_sdp(sdp);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_parse_remote_endpoint_missing_port() {
+            let sdp = "v=0\r\n\
+                        c=IN IP4 192.168.1.100\r\n";
+            let result = parse_remote_endpoint_from_sdp(sdp);
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_update_session_b_leg_sets_participant_b() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 40000,
+                rtp_port_end: 41000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id = fcp_core::CallId::new();
+            let dialog_id = fcp_core::DialogId::new();
+            let session_config = crate::MediaSessionConfig::default();
+
+            backend
+                .create_session(call_id, dialog_id, session_config)
+                .await
+                .unwrap();
+
+            let b_leg_sdp = "v=0\r\n\
+                              o=- 456 1 IN IP4 10.0.0.50\r\n\
+                              s=Test\r\n\
+                              c=IN IP4 10.0.0.50\r\n\
+                              t=0 0\r\n\
+                              m=audio 6000 RTP/AVP 0\r\n"
+                .to_string();
+
+            backend
+                .update_session_b_leg(&call_id, b_leg_sdp)
+                .await
+                .unwrap();
+
+            // Verify participant_b remote_addr is set
+            let b_addr = {
+                let session_info = backend.sessions.get(&call_id).unwrap();
+                let participant_b = session_info.forge_session.participant_b();
+                let addr = participant_b.read().await.remote_addr;
+                addr
+            };
+            assert!(b_addr.is_some());
+            let addr = b_addr.unwrap();
+            assert_eq!(addr.ip().to_string(), "10.0.0.50");
+            assert_eq!(addr.port(), 6000);
+
+            backend.terminate_session(&call_id).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_bridge_calls_single_session() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 41000,
+                rtp_port_end: 42000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id = fcp_core::CallId::new();
+            let dialog_id = fcp_core::DialogId::new();
+
+            backend
+                .create_session(call_id, dialog_id, crate::MediaSessionConfig::default())
+                .await
+                .unwrap();
+
+            // Single-session bridge: same call_id for both legs
+            let result = backend.bridge_calls(&call_id, &call_id).await;
+            assert!(result.is_ok());
+
+            backend.terminate_session(&call_id).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_bridge_calls_two_sessions() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 42000,
+                rtp_port_end: 43000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id_a = fcp_core::CallId::new();
+            let call_id_b = fcp_core::CallId::new();
+
+            // Create A-leg session with known remote endpoint
+            backend
+                .create_session(
+                    call_id_a,
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            // Set A-leg participant_a remote addr
+            let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
+            backend
+                .update_session(&call_id_a, a_sdp.to_string())
+                .await
+                .unwrap();
+
+            // Create B-leg session
+            backend
+                .create_session(
+                    call_id_b,
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            // Set B-leg participant_a remote addr
+            let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
+            backend
+                .update_session(&call_id_b, b_sdp.to_string())
+                .await
+                .unwrap();
+
+            // Bridge calls
+            backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
+
+            // Verify cross-wiring: A-leg's participant_b should point to B-leg phone (10.0.0.2:6000)
+            {
+                let a_session = backend.sessions.get(&call_id_a).unwrap();
+                let b_remote = a_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
+                assert!(b_remote.is_some());
+                let addr = b_remote.unwrap();
+                assert_eq!(addr.ip().to_string(), "10.0.0.2");
+                assert_eq!(addr.port(), 6000);
+            }
+
+            // Verify cross-wiring: B-leg's participant_b should point to A-leg phone (10.0.0.1:5000)
+            {
+                let b_session = backend.sessions.get(&call_id_b).unwrap();
+                let a_remote = b_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
+                assert!(a_remote.is_some());
+                let addr = a_remote.unwrap();
+                assert_eq!(addr.ip().to_string(), "10.0.0.1");
+                assert_eq!(addr.port(), 5000);
+            }
+
+            backend.terminate_session(&call_id_a).await.unwrap();
+            backend.terminate_session(&call_id_b).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_unbridge_calls_clears_participant_b() {
+            let config = crate::config::MediaConfig {
+                rtp_port_start: 43000,
+                rtp_port_end: 44000,
+                ..Default::default()
+            };
+            let backend = EmbeddedBackend::new(&config).await.unwrap();
+
+            let call_id_a = fcp_core::CallId::new();
+            let call_id_b = fcp_core::CallId::new();
+
+            backend
+                .create_session(
+                    call_id_a,
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            backend
+                .create_session(
+                    call_id_b,
+                    fcp_core::DialogId::new(),
+                    crate::MediaSessionConfig::default(),
+                )
+                .await
+                .unwrap();
+
+            // Set up endpoints and bridge
+            let a_sdp = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 5000 RTP/AVP 0\r\n";
+            let b_sdp = "v=0\r\nc=IN IP4 10.0.0.2\r\nm=audio 6000 RTP/AVP 0\r\n";
+            backend
+                .update_session(&call_id_a, a_sdp.to_string())
+                .await
+                .unwrap();
+            backend
+                .update_session(&call_id_b, b_sdp.to_string())
+                .await
+                .unwrap();
+            backend.bridge_calls(&call_id_a, &call_id_b).await.unwrap();
+
+            // Unbridge
+            backend
+                .unbridge_calls(&call_id_a, &call_id_b)
+                .await
+                .unwrap();
+
+            // Verify participant_b remote_addr cleared on both
+            {
+                let a_session = backend.sessions.get(&call_id_a).unwrap();
+                let b_remote = a_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
+                assert!(b_remote.is_none());
+            }
+            {
+                let b_session = backend.sessions.get(&call_id_b).unwrap();
+                let a_remote = b_session
+                    .forge_session
+                    .participant_b()
+                    .read()
+                    .await
+                    .remote_addr;
+                assert!(a_remote.is_none());
+            }
+
+            backend.terminate_session(&call_id_a).await.unwrap();
+            backend.terminate_session(&call_id_b).await.unwrap();
+        }
+    }
 }
 
 #[cfg(feature = "embedded")]
@@ -1963,7 +1958,7 @@ pub mod remote {
             let rtcp_port = 0;
 
             let session = Arc::new(MediaSession::new(
-                call_id.clone(),
+                call_id,
                 dialog_id,
                 resp.session_id,
                 config,
@@ -1971,7 +1966,7 @@ pub mod remote {
                 rtcp_port,
             ));
 
-            self.sessions.insert(call_id.clone(), session.clone());
+            self.sessions.insert(call_id, session.clone());
 
             info!(
                 ?call_id,

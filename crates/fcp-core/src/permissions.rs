@@ -6,19 +6,15 @@ use std::str::FromStr;
 /// Deployment mode determines feature availability and UI complexity
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DeploymentMode {
     /// Carrier/ITSP - Full technical access, routing, trunking
     Carrier,
     /// Multi-tenant SaaS platform (CPaaS/UCaaS)
     ServiceProvider,
     /// Single organization PBX (default)
+    #[default]
     Enterprise,
-}
-
-impl Default for DeploymentMode {
-    fn default() -> Self {
-        Self::Enterprise
-    }
 }
 
 impl DeploymentMode {
@@ -55,6 +51,7 @@ impl DeploymentMode {
 /// User role defines the level of access
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum UserRole {
     /// Platform super admin - full system access across every tenant.
     SuperAdmin,
@@ -71,13 +68,8 @@ pub enum UserRole {
     /// Read-only access for monitoring/reporting
     ReadOnly,
     /// Regular end user - personal settings only
+    #[default]
     EndUser,
-}
-
-impl Default for UserRole {
-    fn default() -> Self {
-        Self::EndUser
-    }
 }
 
 impl FromStr for UserRole {

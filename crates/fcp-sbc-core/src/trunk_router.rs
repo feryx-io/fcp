@@ -233,7 +233,7 @@ impl TrunkRouter {
     }
 
     /// Rotate among candidates that share the same tier (prefix_len + cost + priority).
-    fn apply_round_robin(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
+    fn apply_round_robin(&self, candidates: &mut [(&TrunkConfig, usize, f64, u32)]) {
         if candidates.len() <= 1 {
             return;
         }
@@ -272,7 +272,7 @@ impl TrunkRouter {
     }
 
     /// Weighted random selection among equal-tier candidates.
-    fn apply_weighted_random(&self, candidates: &mut Vec<(&TrunkConfig, usize, f64, u32)>) {
+    fn apply_weighted_random(&self, candidates: &mut [(&TrunkConfig, usize, f64, u32)]) {
         if candidates.len() <= 1 {
             return;
         }

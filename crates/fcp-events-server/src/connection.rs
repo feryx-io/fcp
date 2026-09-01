@@ -138,7 +138,7 @@ impl ConnectionManager {
             ));
         }
 
-        let conn = Connection::new(tenant_id.clone(), allow_all_tenants, sender);
+        let conn = Connection::new(tenant_id, allow_all_tenants, sender);
         let conn_id = conn.id;
 
         info!(
@@ -226,7 +226,7 @@ impl ConnectionManager {
             .connections
             .iter()
             .filter(|entry| entry.value().is_timed_out(self.client_timeout))
-            .map(|entry| entry.key().clone())
+            .map(|entry| *entry.key())
             .collect();
 
         let count = timed_out.len();
@@ -254,51 +254,6 @@ impl ConnectionManager {
 
     pub fn heartbeat_interval(&self) -> Duration {
         self.heartbeat_interval
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use fcp_events::{CallDirection, CallEvent};
-    use std::time::SystemTime;
-
-    fn initiated_event(tenant_id: TenantId) -> PlatformEvent {
-        PlatformEvent::Call(CallEvent::Initiated {
-            call_id: fcp_core::CallId::new(),
-            tenant_id,
-            from: "alice@example.com".to_string(),
-            to: "bob@example.com".to_string(),
-            direction: CallDirection::Inbound,
-            timestamp: SystemTime::now(),
-            trunk_name: None,
-            node_id: None,
-        })
-    }
-
-    #[test]
-    fn test_tenant_scoped_connection_only_matches_own_tenant() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let tenant_id = TenantId::new();
-        let other_tenant = TenantId::new();
-        let conn = Connection::new(tenant_id.clone(), false, tx);
-
-        let own_event = initiated_event(tenant_id.clone());
-        let other_event = initiated_event(other_tenant.clone());
-
-        assert!(conn.matches_event(&own_event, Some(&tenant_id)));
-        assert!(!conn.matches_event(&other_event, Some(&other_tenant)));
-    }
-
-    #[test]
-    fn test_admin_connection_can_match_any_tenant() {
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let tenant_id = TenantId::new();
-        let other_tenant = TenantId::new();
-        let conn = Connection::new(tenant_id, true, tx);
-        let other_event = initiated_event(other_tenant.clone());
-
-        assert!(conn.matches_event(&other_event, Some(&other_tenant)));
     }
 }
 
@@ -487,5 +442,50 @@ pub async fn cleanup_task(manager: Arc<ConnectionManager>) {
             total_connections = manager.connection_count(),
             "Connection cleanup completed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fcp_events::{CallDirection, CallEvent};
+    use std::time::SystemTime;
+
+    fn initiated_event(tenant_id: TenantId) -> PlatformEvent {
+        PlatformEvent::Call(CallEvent::Initiated {
+            call_id: fcp_core::CallId::new(),
+            tenant_id,
+            from: "alice@example.com".to_string(),
+            to: "bob@example.com".to_string(),
+            direction: CallDirection::Inbound,
+            timestamp: SystemTime::now(),
+            trunk_name: None,
+            node_id: None,
+        })
+    }
+
+    #[test]
+    fn test_tenant_scoped_connection_only_matches_own_tenant() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tenant_id = TenantId::new();
+        let other_tenant = TenantId::new();
+        let conn = Connection::new(tenant_id, false, tx);
+
+        let own_event = initiated_event(tenant_id);
+        let other_event = initiated_event(other_tenant);
+
+        assert!(conn.matches_event(&own_event, Some(&tenant_id)));
+        assert!(!conn.matches_event(&other_event, Some(&other_tenant)));
+    }
+
+    #[test]
+    fn test_admin_connection_can_match_any_tenant() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let tenant_id = TenantId::new();
+        let other_tenant = TenantId::new();
+        let conn = Connection::new(tenant_id, true, tx);
+        let other_event = initiated_event(other_tenant);
+
+        assert!(conn.matches_event(&other_event, Some(&other_tenant)));
     }
 }

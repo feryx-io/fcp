@@ -286,7 +286,7 @@ pub async fn create_mailbox(
     }
 
     let mut mailbox = VoicemailMailbox::new(
-        tenant.0.clone(),
+        tenant.0,
         user_id,
         line_binding_id,
         user.username.clone(),

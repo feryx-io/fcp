@@ -75,7 +75,7 @@ impl WebhookDispatcher {
     pub async fn dispatch(&self, event: &fcp_events::PlatformEvent) {
         let event_type = event.event_type_name();
         let tenant_id = match event.tenant_id() {
-            Some(tid) => tid.clone(),
+            Some(tid) => *tid,
             None => return, // Events without tenant context are not dispatched
         };
 
@@ -163,12 +163,18 @@ impl WebhookDispatcher {
         match result {
             Ok(resp) if resp.status().is_success() => {
                 let status_code = resp.status().as_u16();
-                let resp_headers = resp.headers().iter()
+                let resp_headers = resp
+                    .headers()
+                    .iter()
                     .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect::<std::collections::HashMap<_, _>>();
                 let resp_headers_json = serde_json::to_string(&resp_headers).ok();
                 let resp_body = resp.text().await.ok().map(|b| {
-                    if b.len() > 65536 { b[..65536].to_string() } else { b }
+                    if b.len() > 65536 {
+                        b[..65536].to_string()
+                    } else {
+                        b
+                    }
                 });
                 debug!(
                     endpoint_id = %endpoint.id,
@@ -197,12 +203,18 @@ impl WebhookDispatcher {
             }
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                let resp_headers = resp.headers().iter()
+                let resp_headers = resp
+                    .headers()
+                    .iter()
                     .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
                     .collect::<std::collections::HashMap<_, _>>();
                 let resp_headers_json = serde_json::to_string(&resp_headers).ok();
                 let resp_body = resp.text().await.ok().map(|b| {
-                    if b.len() > 65536 { b[..65536].to_string() } else { b }
+                    if b.len() > 65536 {
+                        b[..65536].to_string()
+                    } else {
+                        b
+                    }
                 });
                 warn!(
                     endpoint_id = %endpoint.id,

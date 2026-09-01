@@ -171,6 +171,7 @@ impl QueueCallHandler {
     /// shared with the REST API for agent management and stats queries.
     /// Spawns per-queue distribution loops that periodically try to match
     /// waiting callers with available agents.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         queue_manager: Arc<QueueManager>,
         config: QueueSystemConfig,
@@ -183,81 +184,68 @@ impl QueueCallHandler {
         storage: Arc<fcp_core::DynStorage>,
     ) -> Self {
         // Load announcement audio if configured
-        let announcement_cache = config
-            .queue_audio_dir
-            .as_ref()
-            .map(|dir| {
-                let cache = AnnouncementCache::load(std::path::Path::new(dir));
-                if cache.is_empty() {
-                    info!("Queue announcement cache is empty (no audio files found)");
-                    None
-                } else {
-                    info!(dir = %dir, "Queue announcement audio loaded");
-                    Some(Arc::new(cache))
-                }
-            })
-            .flatten();
+        let announcement_cache = config.queue_audio_dir.as_ref().and_then(|dir| {
+            let cache = AnnouncementCache::load(std::path::Path::new(dir));
+            if cache.is_empty() {
+                info!("Queue announcement cache is empty (no audio files found)");
+                None
+            } else {
+                info!(dir = %dir, "Queue announcement audio loaded");
+                Some(Arc::new(cache))
+            }
+        });
 
         // Load MOH audio if configured
-        let moh_cache = config
-            .queue_audio_dir
-            .as_ref()
-            .map(|dir| {
-                let cache = MohCache::load(std::path::Path::new(dir));
-                if cache.is_empty() {
-                    info!("MOH cache is empty (no audio files found)");
-                    None
-                } else {
-                    info!(dir = %dir, "MOH audio loaded");
-                    Some(Arc::new(cache))
-                }
-            })
-            .flatten();
+        let moh_cache = config.queue_audio_dir.as_ref().and_then(|dir| {
+            let cache = MohCache::load(std::path::Path::new(dir));
+            if cache.is_empty() {
+                info!("MOH cache is empty (no audio files found)");
+                None
+            } else {
+                info!(dir = %dir, "MOH audio loaded");
+                Some(Arc::new(cache))
+            }
+        });
 
         // Load prompt audio (entry/connect prompts) if configured
-        let prompt_cache = config
-            .queue_audio_dir
-            .as_ref()
-            .map(|dir| {
-                // Collect unique prompt filenames from all queue configs
-                let mut prompt_files: Vec<String> = Vec::new();
-                for qc in config.queues.values() {
-                    if let Some(ref p) = qc.entry_prompt {
-                        if !prompt_files.contains(p) {
-                            prompt_files.push(p.clone());
-                        }
+        let prompt_cache = config.queue_audio_dir.as_ref().and_then(|dir| {
+            // Collect unique prompt filenames from all queue configs
+            let mut prompt_files: Vec<String> = Vec::new();
+            for qc in config.queues.values() {
+                if let Some(ref p) = qc.entry_prompt {
+                    if !prompt_files.contains(p) {
+                        prompt_files.push(p.clone());
                     }
-                    if let Some(ref p) = qc.connect_prompt {
-                        if !prompt_files.contains(p) {
-                            prompt_files.push(p.clone());
+                }
+                if let Some(ref p) = qc.connect_prompt {
+                    if !prompt_files.contains(p) {
+                        prompt_files.push(p.clone());
+                    }
+                }
+            }
+            if prompt_files.is_empty() {
+                None
+            } else {
+                // Collect unique languages from all queue configs
+                let mut languages: Vec<String> = Vec::new();
+                for qc in config.queues.values() {
+                    if let Some(ref lang) = qc.announcement_language {
+                        if !languages.contains(lang) {
+                            languages.push(lang.clone());
                         }
                     }
                 }
-                if prompt_files.is_empty() {
+                if !languages.contains(&"en".to_string()) {
+                    languages.push("en".to_string());
+                }
+                let cache = PromptCache::load(std::path::Path::new(dir), &prompt_files, &languages);
+                if cache.is_empty() {
                     None
                 } else {
-                    // Collect unique languages from all queue configs
-                    let mut languages: Vec<String> = Vec::new();
-                    for qc in config.queues.values() {
-                        if let Some(ref lang) = qc.announcement_language {
-                            if !languages.contains(lang) {
-                                languages.push(lang.clone());
-                            }
-                        }
-                    }
-                    if !languages.contains(&"en".to_string()) {
-                        languages.push("en".to_string());
-                    }
-                    let cache =
-                        PromptCache::load(std::path::Path::new(dir), &prompt_files, &languages);
-                    if cache.is_empty() {
-                        None
-                    } else {
-                        Some(Arc::new(cache))
-                    }
+                    Some(Arc::new(cache))
                 }
-            })
-            .flatten();
+            }
+        });
 
         let handler = Self {
             queue_manager,
@@ -277,7 +265,7 @@ impl QueueCallHandler {
         };
 
         // Spawn distribution loops for each configured queue
-        for (queue_name, _queue_config) in &config.queues {
+        for queue_name in config.queues.keys() {
             handler.spawn_distribution_loop(queue_name.clone(), config.max_ring_time_secs);
         }
 
@@ -288,6 +276,8 @@ impl QueueCallHandler {
     }
 
     /// Expose the QueueManager for agent login/logout via REST API.
+    // Kept as part of the module's intended API; not currently called from this binary.
+    #[allow(dead_code)]
     pub fn queue_manager(&self) -> &Arc<QueueManager> {
         &self.queue_manager
     }
@@ -499,9 +489,11 @@ impl QueueCallHandler {
 
         for line in sdp.lines() {
             let line = line.trim();
-            if line.starts_with("c=IN IP4 ") || line.starts_with("c=IN ip4 ") {
-                ip = line.split_whitespace().nth(2);
-            } else if line.starts_with("c=IN IP6 ") || line.starts_with("c=IN ip6 ") {
+            if line.starts_with("c=IN IP4 ")
+                || line.starts_with("c=IN ip4 ")
+                || line.starts_with("c=IN IP6 ")
+                || line.starts_with("c=IN ip6 ")
+            {
                 ip = line.split_whitespace().nth(2);
             } else if line.starts_with("m=audio ") {
                 if let Some(port_str) = line.split_whitespace().nth(1) {
@@ -983,6 +975,7 @@ impl QueueCallHandler {
     }
 
     /// Spawn a task that INVITEs an agent and, on answer, bridges RTP.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_agent_ring(
         call_id: String,
         plan: fcp_queue::DistributionPlan,
@@ -1355,7 +1348,7 @@ impl QueueCallHandler {
             // Spawn CDR creation (non-blocking)
             let storage = Arc::clone(&self.storage);
             let cdr_call_id = call_id.to_string();
-            let cdr_tenant_id = session.tenant_id.clone();
+            let cdr_tenant_id = session.tenant_id;
             let cdr_queue_name = session.queue_name.clone();
             let cdr_caller_uri = session.caller_uri.clone();
             let cdr_caller_display = session.caller_display.clone();
@@ -1592,7 +1585,7 @@ impl QueueCallHandler {
                 session.supervisor_id = Some(supervisor_ext.to_string());
                 session.supervisor_tasks = tasks;
 
-                let tenant_id = session.tenant_id.clone();
+                let tenant_id = session.tenant_id;
                 drop(session);
 
                 // Publish event
@@ -1652,7 +1645,7 @@ impl QueueCallHandler {
         }
 
         let supervisor_id = session.supervisor_id.take().unwrap_or_default();
-        let tenant_id = session.tenant_id.clone();
+        let tenant_id = session.tenant_id;
 
         session.supervisor_rtp_socket = None;
         session.supervisor_dialog = None;
@@ -1772,7 +1765,7 @@ impl QueueCallHandler {
                 session.codec_name.clone(),
                 Arc::clone(&session.rtp_socket),
                 session.queue_name.clone(),
-                session.tenant_id.clone(),
+                session.tenant_id,
             )
         };
 
@@ -2154,7 +2147,7 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
             id: uuid::Uuid::new_v4().to_string(),
             call_id: call_id.clone(),
             queue_name: queue_name.clone(),
-            tenant_id: tenant_id.clone(),
+            tenant_id,
             caller_uri: caller_uri.clone(),
             caller_display: caller_display.clone(),
             priority: 0,
@@ -2394,18 +2387,12 @@ impl fcp_sip::queue::QueueHandler for QueueCallHandler {
         let skills = config
             .queues
             .values()
-            .find_map(|qc| qc.agent_skills.get(&extension.to_string()))
+            .find_map(|qc| qc.agent_skills.get(extension))
             .cloned()
             .unwrap_or_default();
 
         self.queue_manager
-            .agent_login(
-                extension,
-                extension,
-                &queue_names,
-                tenant_id.clone(),
-                skills,
-            )
+            .agent_login(extension, extension, &queue_names, *tenant_id, skills)
             .await
     }
 
@@ -2454,7 +2441,7 @@ fn spawn_rtp_bridge_inner(
                         break;
                     }
                     if let Some(ref tx) = a_record_tx {
-                        let _ = tx.send(data.clone().into());
+                        let _ = tx.send(data.clone());
                     }
                     if let Err(e) = a_to_b_b.send_rtp_raw(&data).await {
                         debug!(error = %e, "A->B bridge send failed");
@@ -2477,7 +2464,7 @@ fn spawn_rtp_bridge_inner(
                         break;
                     }
                     if let Some(ref tx) = b_record_tx {
-                        let _ = tx.send(data.clone().into());
+                        let _ = tx.send(data.clone());
                     }
                     if let Err(e) = b_to_a_a.send_rtp_raw(&data).await {
                         debug!(error = %e, "B->A bridge send failed");
@@ -2535,7 +2522,7 @@ fn spawn_transcoding_rtp_bridge(
                     }
                     // Send raw copy for recording if configured
                     if let Some(ref tx) = a_record_tx {
-                        let _ = tx.send(data.clone().into());
+                        let _ = tx.send(data.clone());
                     }
                     // Extract RTP header and payload
                     let payload = &data[12..];
@@ -2600,7 +2587,7 @@ fn spawn_transcoding_rtp_bridge(
                         break;
                     }
                     if let Some(ref tx) = b_record_tx {
-                        let _ = tx.send(data.clone().into());
+                        let _ = tx.send(data.clone());
                     }
                     let payload = &data[12..];
                     let rtp_pt = data[1] & 0x7F;
@@ -2667,6 +2654,8 @@ fn decode_rtp_payload(data: &[u8], codec: &str) -> Vec<i16> {
 }
 
 /// Mix two PCM sample streams, clamping to i16 range.
+// Kept as part of the module's intended API; not currently called from this binary.
+#[allow(dead_code)]
 fn mix_pcm(a: &[i16], b: &[i16]) -> Vec<i16> {
     let len = a.len().max(b.len());
     (0..len)
@@ -2760,7 +2749,7 @@ fn spawn_supervisor_bridge(
             loop {
                 match a_sock.recv_rtp_raw().await {
                     Ok((data, _)) if !data.is_empty() => {
-                        let _ = tx.send(data.into());
+                        let _ = tx.send(data);
                     }
                     _ => break,
                 }
@@ -2775,7 +2764,7 @@ fn spawn_supervisor_bridge(
             loop {
                 match b_sock.recv_rtp_raw().await {
                     Ok((data, _)) if !data.is_empty() => {
-                        let _ = tx.send(data.into());
+                        let _ = tx.send(data);
                     }
                     _ => break,
                 }
@@ -2790,7 +2779,7 @@ fn spawn_supervisor_bridge(
             loop {
                 match c_sock.recv_rtp_raw().await {
                     Ok((data, _)) if !data.is_empty() => {
-                        let _ = tx.send(data.into());
+                        let _ = tx.send(data);
                     }
                     _ => break,
                 }
@@ -3096,7 +3085,9 @@ fn parse_overflow_destination(dest: &str, local_domain: &str) -> String {
 /// 1. INVITE the agent
 /// 2. Agent answers → INVITE the callback URI (original caller)
 /// 3. Callback answers → bridge agent ↔ callback RTP
+///
 /// If either fails, return the call to the queue and make the agent available.
+#[allow(clippy::too_many_arguments)]
 fn spawn_callback_ring(
     call_id: String,
     callback_uri: String,
@@ -3366,7 +3357,7 @@ fn spawn_callback_ring(
             QueueSession {
                 call_id: call_id.clone(),
                 queue_name: String::new(), // No longer in a queue
-                tenant_id: tenant_id.clone(),
+                tenant_id,
                 caller_uri: callback_uri,
                 caller_display: None,
                 port_pair: callback_port_pair,
@@ -3409,6 +3400,7 @@ fn spawn_callback_ring(
 /// is detected, the call is routed to the configured destination.
 /// When callback is enabled and the callback digit is pressed, the call
 /// is converted to a callback request.
+#[allow(clippy::too_many_arguments)]
 fn spawn_dtmf_listener(
     call_id: String,
     rtp_socket: Arc<RtpSocketPair>,
@@ -3551,6 +3543,7 @@ fn spawn_dtmf_listener(
 
 /// Try a list of overflow destinations in order for an expired call.
 /// On first success, stops. If all fail, sends BYE and cleans up.
+#[allow(clippy::too_many_arguments)]
 async fn overflow_expired_call_multi(
     call_id: &str,
     destinations: &[String],
@@ -3604,6 +3597,7 @@ async fn overflow_expired_call_multi(
 
 /// Route an expired call to a single overflow destination.
 /// Returns `true` on success, `false` if this destination failed (caller still alive for retry).
+#[allow(clippy::too_many_arguments)]
 async fn overflow_expired_call_single(
     call_id: &str,
     overflow_dest: &str,
@@ -3655,7 +3649,7 @@ async fn overflow_expired_call_single(
         (
             session.codec_name.clone(),
             Arc::clone(&session.rtp_socket),
-            session.tenant_id.clone(),
+            session.tenant_id,
         )
     };
 
@@ -3799,7 +3793,8 @@ async fn play_prompt_frames(socket: &RtpSocketPair, frames: &[Vec<u8>], payload_
     let seq = AtomicU16::new(0);
     let ts = AtomicU32::new(0);
     let ssrc: u32 = std::process::id().wrapping_mul(0x9e3779b9);
-    let ts_increment: u32 = if payload_type == 9 { 160 } else { 160 }; // 20ms at 8kHz
+    // 20ms at 8kHz; G.722 (PT 9) also uses an 8 kHz RTP clock despite 16 kHz sampling.
+    let ts_increment: u32 = 160;
 
     for frame in frames {
         let s = seq.fetch_add(1, Ordering::Relaxed);
@@ -3835,6 +3830,7 @@ fn extract_domain(uri: &str) -> String {
 }
 
 /// Create and insert a CDR for a completed queue call.
+#[allow(clippy::too_many_arguments)]
 async fn create_queue_cdr(
     storage: &fcp_core::DynStorage,
     call_id: &str,
@@ -3939,6 +3935,7 @@ async fn create_queue_cdr(
 }
 
 /// Task that dials a campaign number, waits for answer, then bridges to an agent.
+#[allow(clippy::too_many_arguments)]
 async fn campaign_dial_task(
     destination: String,
     _number: fcp_queue::CampaignNumber,
@@ -4265,7 +4262,7 @@ async fn campaign_dial_task(
                                         QueueSession {
                                             call_id: callee_call_id.clone(),
                                             queue_name: queue_name.clone(),
-                                            tenant_id: tenant_id.clone(),
+                                            tenant_id,
                                             caller_uri: destination.clone(),
                                             caller_display: None,
                                             port_pair: outbound_pp,

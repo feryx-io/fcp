@@ -238,6 +238,7 @@ impl FlowCallHandler {
     }
 
     /// Persist a flow trace entry asynchronously (fire-and-forget).
+    #[allow(clippy::too_many_arguments)]
     fn persist_trace(
         &self,
         call_id: &CallId,
@@ -413,7 +414,7 @@ impl FlowCallHandler {
                 if let Some(ref cm) = self.call_manager {
                     if let Some(call_entry) = cm.get_call(&call.id) {
                         if let Some(ref msid) = call_entry.media_session_id {
-                            context.set_media_session_id(msid.clone());
+                            context.set_media_session_id(*msid);
                         }
                     }
                 }
@@ -501,7 +502,6 @@ impl FlowCallHandler {
     /// ## Current State:
     /// Play/Say nodes are executed by FlowEngine with placeholder logging.
     /// No actual media playback occurs. Calls continue through flow normally.
-
     /// Handle media playback for Say nodes that have synthesized TTS audio.
     ///
     /// This method is called when FlowEngine returns WaitingForMedia after
@@ -610,6 +610,7 @@ impl FlowCallHandler {
     /// Phase 3 (PENDING): Media bridging
     /// Phase 4 (PENDING): CDR tracking
     /// Phase 5 (PENDING): Advanced features
+    #[allow(clippy::too_many_arguments)]
     async fn handle_dial(
         &self,
         a_leg_call_id: CallId,
@@ -1115,7 +1116,7 @@ impl FlowCallHandler {
                         );
 
                         // Handle based on response class
-                        if code >= 200 && code < 300 {
+                        if (200..300).contains(&code) {
                             // 2xx Success - call answered
                             dial_status = String::from("answered");
                             next_node = next;
@@ -1449,9 +1450,7 @@ impl FlowCallHandler {
         let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
         // Use the media_session_id from context (not the SIP call_id) so the
         // voicemail service can find the forge-media session for playback/recording.
-        let media_call_id = context_guard
-            .media_session_id
-            .unwrap_or_else(|| core_call_id.clone());
+        let media_call_id = context_guard.media_session_id.unwrap_or(core_call_id);
         drop(context_guard);
 
         // Call VoicemailService::record_message
@@ -1581,9 +1580,7 @@ impl FlowCallHandler {
             .get_variable("caller")
             .unwrap_or_else(|_| String::new());
         let core_call_id = fcp_core::CallId::from_uuid(*call_id.as_uuid());
-        let media_call_id = context_guard
-            .media_session_id
-            .unwrap_or_else(|| core_call_id.clone());
+        let media_call_id = context_guard.media_session_id.unwrap_or(core_call_id);
         drop(context_guard);
 
         // 1. Resolve mailbox — if empty, derive from caller extension
@@ -1608,7 +1605,7 @@ impl FlowCallHandler {
                             prompt_name: &str,
                             fallback_text: String| {
             let mm = Arc::clone(mm);
-            let cid = cid.clone();
+            let cid = *cid;
             let ps = prompt_service.clone();
             let prompt_name = prompt_name.to_string();
             async move {
@@ -1675,7 +1672,7 @@ impl FlowCallHandler {
                                 finish_key: Option<char>,
                                 timeout_secs: u64| {
             let mm = Arc::clone(mm);
-            let cid = cid.clone();
+            let cid = *cid;
             let ps = prompt_service2.clone();
             let prompt_name = prompt_name.map(|s| s.to_string());
             async move {
@@ -2070,7 +2067,6 @@ impl FlowCallHandler {
                 let mut join_set = JoinSet::new();
 
                 for dest in destinations.clone() {
-                    let call_id = call_id;
                     let tx = tx.clone();
 
                     // Spawn each dial attempt as an independent task
@@ -2421,7 +2417,7 @@ impl FlowCallHandler {
                             if let Some(ref cm) = self.call_manager {
                                 if let Some(call_entry) = cm.get_call(&call_id) {
                                     if let Some(ref msid) = call_entry.media_session_id {
-                                        context_guard.set_media_session_id(msid.clone());
+                                        context_guard.set_media_session_id(*msid);
                                     }
                                 }
                             }
@@ -3441,7 +3437,7 @@ impl ClientTransactionUser for DialTransactionUser {
         // Dispatch ACK via transport
         if let Some(ref dispatcher) = self.dispatcher {
             let ack_bytes = sip_parse::serialize_request(&ack);
-            match dispatcher.dispatch(&self.ctx, ack_bytes.into()).await {
+            match dispatcher.dispatch(&self.ctx, ack_bytes).await {
                 Ok(()) => {
                     info!(
                         "ACK dispatched for B-leg {} response to {}",

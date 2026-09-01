@@ -149,19 +149,17 @@ impl PolicyEvaluator {
             }
 
             // Check time windows (if any specified)
-            if !rule.time_windows.is_empty() {
-                if !self.matches_time_window(&rule.time_windows) {
-                    debug!(rule = %rule.name, "Current time not in allowed windows");
-                    continue;
-                }
+            if !rule.time_windows.is_empty() && !self.matches_time_window(&rule.time_windows) {
+                debug!(rule = %rule.name, "Current time not in allowed windows");
+                continue;
             }
 
             // Check source IP ranges (if any specified)
-            if !rule.source_ip_ranges.is_empty() {
-                if !self.matches_ip_range(source_ip, &rule.source_ip_ranges) {
-                    debug!(rule = %rule.name, "Source IP not in allowed ranges");
-                    continue;
-                }
+            if !rule.source_ip_ranges.is_empty()
+                && !self.matches_ip_range(source_ip, &rule.source_ip_ranges)
+            {
+                debug!(rule = %rule.name, "Source IP not in allowed ranges");
+                continue;
             }
 
             // Rule matched!

@@ -41,7 +41,6 @@ struct RoutingData {
     /// List of policy rules
     #[serde(default)]
     policies: Vec<PolicyRule>,
-
     // Future: destination_classes, routes, transforms
 }
 
@@ -104,10 +103,7 @@ impl YamlRoutingStore {
     }
 
     /// Set up file watcher for hot-reload.
-    fn setup_watcher(
-        path: PathBuf,
-        data: Arc<RwLock<RoutingData>>,
-    ) -> Result<RecommendedWatcher> {
+    fn setup_watcher(path: PathBuf, data: Arc<RwLock<RoutingData>>) -> Result<RecommendedWatcher> {
         // Clone for the closure
         let watch_path = path.clone();
 
@@ -115,10 +111,7 @@ impl YamlRoutingStore {
             match res {
                 Ok(event) => {
                     // Only reload on modify events
-                    if matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    ) {
+                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                         info!(path = ?watch_path, "Routing config file changed, reloading");
 
                         // Attempt to reload the file

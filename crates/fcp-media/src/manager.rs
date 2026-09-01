@@ -410,34 +410,6 @@ pub struct MediaManagerStats {
     pub backend_type: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    #[cfg(feature = "embedded")]
-    async fn test_create_manager_embedded() {
-        let config = MediaConfig {
-            backend: BackendType::Embedded,
-            ..Default::default()
-        };
-
-        let manager = MediaManager::new(config).await;
-        assert!(manager.is_ok());
-
-        let manager = manager.unwrap();
-        assert_eq!(manager.backend_name(), "embedded");
-    }
-
-    #[test]
-    fn test_invalid_dtmf() {
-        let invalid_digits = vec!['a', 'z', '@', ' '];
-        for digit in invalid_digits {
-            assert!(!digit.is_ascii_digit() && digit != '*' && digit != '#');
-        }
-    }
-}
-
 fn contains_crlf(value: &str) -> bool {
     value.bytes().any(|b| matches!(b, b'\r' | b'\n'))
 }
@@ -518,4 +490,32 @@ fn validate_recording_path(path: &str, base_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[cfg(feature = "embedded")]
+    async fn test_create_manager_embedded() {
+        let config = MediaConfig {
+            backend: BackendType::Embedded,
+            ..Default::default()
+        };
+
+        let manager = MediaManager::new(config).await;
+        assert!(manager.is_ok());
+
+        let manager = manager.unwrap();
+        assert_eq!(manager.backend_name(), "embedded");
+    }
+
+    #[test]
+    fn test_invalid_dtmf() {
+        let invalid_digits = vec!['a', 'z', '@', ' '];
+        for digit in invalid_digits {
+            assert!(!digit.is_ascii_digit() && digit != '*' && digit != '#');
+        }
+    }
 }

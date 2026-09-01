@@ -674,11 +674,7 @@ async fn create_queue_handler(
     let Some(ref qm) = state.queue_manager else {
         return Json(serde_json::json!({"error": "Queue system not enabled"}));
     };
-    match qm.create_queue(
-        body.key.clone(),
-        body.config,
-        state.default_tenant_id.clone(),
-    ) {
+    match qm.create_queue(body.key.clone(), body.config, state.default_tenant_id) {
         Ok(()) => Json(serde_json::json!({
             "status": "created",
             "queue": body.key,
@@ -976,7 +972,7 @@ async fn login_agent_handler(
                 &id,
                 extension,
                 &auto_queues,
-                state.default_tenant_id.clone(),
+                state.default_tenant_id,
                 skills,
             )
             .await
@@ -996,13 +992,7 @@ async fn login_agent_handler(
             return queue_not_found(invalid_queue);
         }
         match qm
-            .agent_login(
-                &id,
-                extension,
-                &queues,
-                state.default_tenant_id.clone(),
-                skills,
-            )
+            .agent_login(&id, extension, &queues, state.default_tenant_id, skills)
             .await
         {
             Ok(()) => Json(serde_json::json!({
@@ -1418,7 +1408,7 @@ async fn wallboard_ws_handler(
 async fn wallboard_ws_session(mut socket: WebSocket, state: Arc<AppState>) {
     // Subscribe to Queue events only
     let filter = EventFilter::new()
-        .tenant(state.default_tenant_id.clone())
+        .tenant(state.default_tenant_id)
         .types(vec![EventType::Queue]);
     let mut stream = match state.event_bus.subscribe(filter).await {
         Ok(s) => s,
@@ -1733,6 +1723,9 @@ async fn internal_supervisor_handler(
 }
 
 /// Verify the cluster secret from the Authorization header.
+// The error type is an axum `Response`, which is large by nature; boxing it
+// here would only add indirection at every call site.
+#[allow(clippy::result_large_err)]
 fn verify_cluster_secret(
     state: &AppState,
     headers: &HeaderMap,

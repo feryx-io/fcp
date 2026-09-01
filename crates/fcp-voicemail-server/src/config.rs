@@ -275,7 +275,7 @@ impl Default for MediaSection {
 }
 
 /// Events configuration.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EventsSection {
     /// URL of fcp-events-server ingest endpoint (optional)
     pub server_url: Option<String>,
@@ -283,15 +283,6 @@ pub struct EventsSection {
     /// Optional bearer token for authenticating to fcp-events-server.
     #[serde(default)]
     pub auth_token: Option<String>,
-}
-
-impl Default for EventsSection {
-    fn default() -> Self {
-        Self {
-            server_url: None,
-            auth_token: None,
-        }
-    }
 }
 
 /// Voicemail-specific configuration.

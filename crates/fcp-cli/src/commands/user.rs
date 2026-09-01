@@ -479,7 +479,7 @@ pub async fn handle(
             println!("{}", "-".repeat(60));
 
             for perm in &permissions {
-                println!("  - {} ({})", format!("{:?}", perm), perm.name());
+                println!("  - {:?} ({})", perm, perm.name());
             }
         }
     }

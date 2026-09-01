@@ -90,7 +90,7 @@ impl QueueManager {
 
         // Initialize queues from config
         for (key, queue_config) in &config.queues {
-            let queue = Queue::new(key.clone(), tenant_id.clone(), queue_config.clone());
+            let queue = Queue::new(key.clone(), tenant_id, queue_config.clone());
             extension_map.insert((tenant_id, queue_config.extension.clone()), key.clone());
             round_robin_counters.insert(key.clone(), AtomicUsize::new(0));
             calls_handled_today.insert(key.clone(), 0);
@@ -160,7 +160,7 @@ impl QueueManager {
         extension: &str,
     ) -> Option<String> {
         self.extension_map
-            .get(&(tenant_id.clone(), extension.to_string()))
+            .get(&(*tenant_id, extension.to_string()))
             .map(|queue_name| queue_name.clone())
     }
 
@@ -242,7 +242,7 @@ impl QueueManager {
         call.attempts = 0;
         call.queue_name = to_queue.to_string();
 
-        let tenant_id = call.tenant_id.clone();
+        let tenant_id = call.tenant_id;
 
         // Insert into target queue
         let mut target = self
@@ -296,7 +296,7 @@ impl QueueManager {
                 .get_mut(queue_name)
                 .ok_or_else(|| anyhow::anyhow!("Queue '{}' not found", queue_name))?;
             queue.draining = true;
-            queue.tenant_id.clone()
+            queue.tenant_id
         };
         events::queue_draining(&self.events, queue_name, &tenant_id).await;
         info!(queue = %queue_name, "Queue draining started");
@@ -491,11 +491,7 @@ impl QueueManager {
             }
         }
 
-        let mut agent = Agent::new(
-            agent_id.to_string(),
-            extension.to_string(),
-            tenant_id.clone(),
-        );
+        let mut agent = Agent::new(agent_id.to_string(), extension.to_string(), tenant_id);
         agent.queues = queues.to_vec();
         agent.skills = skills;
         agent.state = AgentState::Available;
@@ -535,7 +531,7 @@ impl QueueManager {
         let old_state = agent.state.to_string();
         agent.state = AgentState::LoggedOut;
         agent.state_changed_at = Instant::now();
-        let tenant_id = agent.tenant_id.clone();
+        let tenant_id = agent.tenant_id;
         let agent_queues = agent.queues.clone();
         drop(agent);
 
@@ -575,7 +571,7 @@ impl QueueManager {
             agent.consecutive_no_answers = 0;
             agent.pause_reason = None;
         }
-        let tenant_id = agent.tenant_id.clone();
+        let tenant_id = agent.tenant_id;
         drop(agent);
 
         debug!(agent_id = %agent_id, old_state = %old_state, new_state = %new_state, "Agent state changed");
@@ -600,7 +596,7 @@ impl QueueManager {
     fn persist_agent_change(&self, tenant_id: &TenantId) {
         if let Some(ref store) = self.queue_store {
             let store = Arc::clone(store);
-            let tid = tenant_id.clone();
+            let tid = *tenant_id;
             let agents: Vec<StoredAgent> = self
                 .agents
                 .iter()
@@ -681,7 +677,7 @@ impl QueueManager {
                             agent.total_wrap_up_time_secs += agent.state_changed_at.elapsed().as_secs();
                             agent.state = AgentState::Available;
                             agent.state_changed_at = Instant::now();
-                            let tenant_id = agent.tenant_id.clone();
+                            let tenant_id = agent.tenant_id;
                             drop(agent);
                             debug!(agent_id = %agent_id, "Wrap-up complete, agent now available");
                             events::agent_state_changed(
@@ -750,7 +746,7 @@ impl QueueManager {
 
         agent.wrap_up_extensions_used += 1;
         let extensions_used = agent.wrap_up_extensions_used;
-        let tenant_id = agent.tenant_id.clone();
+        let tenant_id = agent.tenant_id;
         drop(agent);
 
         // Cancel the old wrap-up timer
@@ -899,7 +895,7 @@ impl QueueManager {
         let queue_name = call.queue_name.clone();
         let call_id = call.call_id.clone();
         let caller_uri = call.caller_uri.clone();
-        let tenant_id = call.tenant_id.clone();
+        let tenant_id = call.tenant_id;
 
         // Check if queue is open (schedule check)
         if !self.is_queue_open(&queue_name) {
@@ -1133,7 +1129,7 @@ impl QueueManager {
             agent.state = AgentState::OnCall;
             agent.state_changed_at = Instant::now();
             agent.consecutive_no_answers = 0;
-            let tenant_id = agent.tenant_id.clone();
+            let tenant_id = agent.tenant_id;
             drop(agent);
 
             // Find and remove the call from its queue
@@ -1201,7 +1197,7 @@ impl QueueManager {
                 agent.state = AgentState::Away;
                 agent.state_changed_at = Instant::now();
                 agent.pause_reason = Some("auto_away_no_answer".to_string());
-                let tenant_id = agent.tenant_id.clone();
+                let tenant_id = agent.tenant_id;
                 drop(agent);
                 warn!(
                     agent_id = %agent_id,
@@ -1311,7 +1307,7 @@ impl QueueManager {
             agent.pause_resume_at = None;
         }
 
-        let tenant_id = agent.tenant_id.clone();
+        let tenant_id = agent.tenant_id;
         drop(agent);
 
         info!(agent_id = %agent_id, duration_secs = ?effective_duration, "Agent paused");
@@ -1332,7 +1328,7 @@ impl QueueManager {
             let agents = Arc::clone(&self.agents);
             let events = self.events.clone();
             let agent_id_owned = agent_id.to_string();
-            let tid = tenant_id.clone();
+            let tid = tenant_id;
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(secs as u64)).await;
                 if let Some(mut agent) = agents.get_mut(&agent_id_owned) {
@@ -1380,7 +1376,7 @@ impl QueueManager {
         agent.pause_resume_at = None;
         agent.pause_reason = None;
         agent.consecutive_no_answers = 0;
-        let tenant_id = agent.tenant_id.clone();
+        let tenant_id = agent.tenant_id;
         drop(agent);
 
         info!(agent_id = %agent_id, "Agent unpaused");
@@ -1409,7 +1405,7 @@ impl QueueManager {
         let old_state = agent.state.to_string();
         agent.state = AgentState::LoggedOut;
         agent.state_changed_at = Instant::now();
-        let tenant_id = agent.tenant_id.clone();
+        let tenant_id = agent.tenant_id;
         let agent_queues = agent.queues.clone();
         drop(agent);
 
@@ -1976,7 +1972,7 @@ impl QueueManager {
             // Persist to storage if available
             if let Some(ref store) = self.queue_store {
                 let store = Arc::clone(store);
-                let tid = tenant_id.clone();
+                let tid = *tenant_id;
                 tokio::spawn(async move {
                     if let Err(e) = store.save_stats_snapshot(&tid, snapshot).await {
                         warn!(error = %e, "Failed to persist stats snapshot");
@@ -1998,8 +1994,8 @@ impl QueueManager {
         if let Some(buffer) = self.stats_history.get(queue_name) {
             buffer
                 .iter()
-                .filter(|s| from_epoch.map_or(true, |from| s.timestamp_epoch >= from))
-                .filter(|s| to_epoch.map_or(true, |to| s.timestamp_epoch <= to))
+                .filter(|s| from_epoch.is_none_or(|from| s.timestamp_epoch >= from))
+                .filter(|s| to_epoch.is_none_or(|to| s.timestamp_epoch <= to))
                 .take(limit)
                 .cloned()
                 .collect()
@@ -2279,7 +2275,7 @@ impl QueueManager {
                 }
             };
 
-            let mut agent = Agent::new(sa.id.clone(), sa.extension.clone(), tenant_id.clone());
+            let mut agent = Agent::new(sa.id.clone(), sa.extension.clone(), *tenant_id);
             agent.queues = valid_queues;
             agent.skills = sa.skills;
             agent.priority = sa.priority;
@@ -2407,13 +2403,7 @@ mod tests {
 
         // Login
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2485,23 +2475,11 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
         manager
-            .agent_login(
-                "101",
-                "101",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("101", "101", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2543,13 +2521,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2851,13 +2823,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2884,13 +2850,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2924,13 +2884,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2948,13 +2902,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -2973,13 +2921,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 
@@ -3034,13 +2976,7 @@ mod tests {
         let tenant = test_tenant();
 
         manager
-            .agent_login(
-                "100",
-                "100",
-                &["sales".to_string()],
-                tenant.clone(),
-                Vec::new(),
-            )
+            .agent_login("100", "100", &["sales".to_string()], tenant, Vec::new())
             .await
             .unwrap();
 

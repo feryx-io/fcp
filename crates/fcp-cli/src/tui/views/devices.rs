@@ -310,7 +310,7 @@ fn render_devices_table(
         .collect();
 
     let title = if state.loading {
-        format!(" Devices (Loading...) ")
+        " Devices (Loading...) ".to_string()
     } else {
         format!(" Devices ({}) (↑↓ to navigate) ", state.devices.len())
     };
@@ -1044,21 +1044,21 @@ pub async fn handle_device_action(
                     } else {
                         state.close_modal();
                     }
-                    return true;
+                    true
                 }
                 KeyCode::Tab if *modifiers == KeyModifiers::NONE => {
                     if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner
                     {
                         state.focused_field = (state.focused_field + 1) % 6;
                     }
-                    return true;
+                    true
                 }
                 KeyCode::BackTab => {
                     if state.modal != DeviceModal::Delete && state.modal != DeviceModal::SelectOwner
                     {
                         state.focused_field = (state.focused_field + 5) % 6;
                     }
-                    return true;
+                    true
                 }
                 KeyCode::Enter if *modifiers == KeyModifiers::NONE => {
                     match state.modal {
@@ -1085,21 +1085,21 @@ pub async fn handle_device_action(
                         }
                         DeviceModal::None => {}
                     }
-                    return true;
+                    true
                 }
                 KeyCode::Up if *modifiers == KeyModifiers::NONE => {
                     if state.modal == DeviceModal::SelectOwner {
                         state.select_user_previous();
                         return true;
                     }
-                    return false;
+                    false
                 }
                 KeyCode::Down if *modifiers == KeyModifiers::NONE => {
                     if state.modal == DeviceModal::SelectOwner {
                         state.select_user_next();
                         return true;
                     }
-                    return false;
+                    false
                 }
                 _ => {
                     // Special handling for 's' key on owner field (field 5)
@@ -1131,7 +1131,7 @@ pub async fn handle_device_action(
                             input.handle_event(&crossterm::event::Event::Key(*key_event));
                         }
                     }
-                    return true;
+                    true
                 }
             }
         }

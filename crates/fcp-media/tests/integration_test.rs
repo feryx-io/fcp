@@ -41,7 +41,7 @@ async fn test_session_lifecycle() {
     let dialog_id = DialogId::new();
 
     let session = manager
-        .create_session_default(call_id.clone(), dialog_id.clone())
+        .create_session_default(call_id, dialog_id)
         .await
         .expect("Failed to create session");
 
@@ -93,17 +93,17 @@ async fn test_multiple_sessions() {
     };
 
     manager
-        .create_session(call_id_1.clone(), DialogId::new(), session_config.clone())
+        .create_session(call_id_1, DialogId::new(), session_config.clone())
         .await
         .expect("Failed to create session 1");
 
     manager
-        .create_session(call_id_2.clone(), DialogId::new(), session_config.clone())
+        .create_session(call_id_2, DialogId::new(), session_config.clone())
         .await
         .expect("Failed to create session 2");
 
     manager
-        .create_session(call_id_3.clone(), DialogId::new(), session_config)
+        .create_session(call_id_3, DialogId::new(), session_config)
         .await
         .expect("Failed to create session 3");
 
@@ -134,6 +134,9 @@ async fn test_health_check() {
     assert!(health, "Backend should be healthy");
 }
 
+// Opus support is compiled only with the `opus` feature; without it forge-engine
+// rejects the session outright, so this case is not meaningful.
+#[cfg(feature = "opus")]
 #[tokio::test]
 async fn test_session_with_opus_codec() {
     let config = MediaConfig {
@@ -156,7 +159,7 @@ async fn test_session_with_opus_codec() {
 
     let call_id = CallId::new();
     let session = manager
-        .create_session(call_id.clone(), DialogId::new(), session_config)
+        .create_session(call_id, DialogId::new(), session_config)
         .await
         .expect("Failed to create opus session");
 
@@ -192,7 +195,7 @@ async fn test_recording_lifecycle() {
     // Create session
     let call_id = CallId::new();
     let session = manager
-        .create_session_default(call_id.clone(), DialogId::new())
+        .create_session_default(call_id, DialogId::new())
         .await
         .expect("Failed to create session");
 
@@ -261,7 +264,7 @@ async fn test_recording_with_opus_format() {
     // Create session
     let call_id = CallId::new();
     manager
-        .create_session_default(call_id.clone(), DialogId::new())
+        .create_session_default(call_id, DialogId::new())
         .await
         .expect("Failed to create session");
 

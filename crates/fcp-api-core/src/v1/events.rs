@@ -111,7 +111,7 @@ async fn handle_websocket(socket: WebSocket, params: EventStreamQuery, state: Ap
 
         // Events WebSocket is admin-only — end users must not subscribe
         // to platform-wide event streams.
-        let is_admin = identity.as_ref().map_or(false, |id| id.is_admin());
+        let is_admin = identity.as_ref().is_some_and(|id| id.is_admin());
         if !is_admin {
             let msg = if identity.is_none() {
                 "Invalid or missing authentication token"
@@ -283,7 +283,7 @@ fn build_event_filter(
             .split(',')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
-            .map(|s| parse_event_type(s))
+            .map(parse_event_type)
             .collect();
 
         filter = filter.types(types?);

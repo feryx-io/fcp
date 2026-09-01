@@ -206,7 +206,7 @@ async fn ensure_sip_domains_unique<S: fcp_core::TenantStore + ?Sized>(
 ) -> Result<(), ApiError> {
     for d in domains {
         if let Some(existing) = storage.get_tenant_by_sip_domain(d).await? {
-            if exclude.map_or(true, |id| &existing.id != id) {
+            if exclude != Some(&existing.id) {
                 return Err(ApiError::Conflict(format!(
                     "SIP domain '{}' is already claimed by tenant '{}'",
                     d, existing.name
@@ -229,7 +229,7 @@ pub async fn list_tenants(
     let storage = require_storage!(state);
     let identity_ref = identity.as_ref().map(|ext| &ext.0);
 
-    let tenants = if identity_ref.map_or(true, |id| id.is_platform_admin()) {
+    let tenants = if identity_ref.is_none_or(|id| id.is_platform_admin()) {
         storage.list_tenants().await?
     } else {
         // Tenant-scoped identities can only see themselves.
@@ -275,7 +275,7 @@ pub async fn create_tenant(
     let storage = require_storage!(state);
 
     // Check if tenant name already exists
-    if let Some(_) = storage.get_tenant_by_name(&req.name).await? {
+    if storage.get_tenant_by_name(&req.name).await?.is_some() {
         return Err(ApiError::Conflict(format!(
             "Tenant with name '{}' already exists",
             req.name

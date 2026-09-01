@@ -410,10 +410,7 @@ mod tests {
     #[tokio::test]
     async fn test_authorize_shared_provisioning_rejects_when_unconfigured() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            PROVISIONING_TOKEN_HEADER,
-            "any-token".parse().unwrap(),
-        );
+        headers.insert(PROVISIONING_TOKEN_HEADER, "any-token".parse().unwrap());
 
         let err = authorize_shared_provisioning_token(None, &headers)
             .await
@@ -433,10 +430,7 @@ mod tests {
     #[tokio::test]
     async fn test_authorize_shared_provisioning_rejects_wrong_token() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            PROVISIONING_TOKEN_HEADER,
-            "wrong-token".parse().unwrap(),
-        );
+        headers.insert(PROVISIONING_TOKEN_HEADER, "wrong-token".parse().unwrap());
         let err = authorize_shared_provisioning_token(Some("shared-token"), &headers)
             .await
             .expect_err("wrong token must 404");
@@ -446,10 +440,7 @@ mod tests {
     #[tokio::test]
     async fn test_authorize_shared_provisioning_accepts_correct_token() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            PROVISIONING_TOKEN_HEADER,
-            "shared-token".parse().unwrap(),
-        );
+        headers.insert(PROVISIONING_TOKEN_HEADER, "shared-token".parse().unwrap());
         authorize_shared_provisioning_token(Some("shared-token"), &headers)
             .await
             .expect("correct token must authorize");

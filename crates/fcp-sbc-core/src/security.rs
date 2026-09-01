@@ -268,65 +268,80 @@ mod tests {
 
     #[test]
     fn test_validate_zero_message_size() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_message_size = 0;
+        let cfg = SecurityConfig {
+            max_message_size: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_message_size"));
     }
 
     #[test]
     fn test_validate_excessive_message_size() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_message_size = 1_048_577;
+        let cfg = SecurityConfig {
+            max_message_size: 1_048_577,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_message_size"));
     }
 
     #[test]
     fn test_validate_zero_max_headers() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_headers = 0;
+        let cfg = SecurityConfig {
+            max_headers: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_headers"));
     }
 
     #[test]
     fn test_validate_excessive_max_headers() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_headers = 1001;
+        let cfg = SecurityConfig {
+            max_headers: 1001,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_headers"));
     }
 
     #[test]
     fn test_validate_zero_uri_length() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_uri_length = 0;
+        let cfg = SecurityConfig {
+            max_uri_length: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_uri_length"));
     }
 
     #[test]
     fn test_validate_excessive_uri_length() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_uri_length = 65537;
+        let cfg = SecurityConfig {
+            max_uri_length: 65537,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_uri_length"));
     }
 
     #[test]
     fn test_validate_excessive_tracked_sources() {
-        let mut cfg = SecurityConfig::default();
-        cfg.max_tracked_sources = 10_000_001;
+        let cfg = SecurityConfig {
+            max_tracked_sources: 10_000_001,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_tracked_sources"));
     }
 
     #[test]
     fn test_validate_boundary_values() {
-        let mut cfg = SecurityConfig::default();
-
-        cfg.max_message_size = 1;
+        let mut cfg = SecurityConfig {
+            max_message_size: 1,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
         cfg.max_message_size = 1_048_576;
         assert!(cfg.validate().is_ok());

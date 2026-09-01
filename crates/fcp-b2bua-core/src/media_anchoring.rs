@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Policy for media path anchoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum MediaAnchoringMode {
     /// Never anchor media — always allow direct media between endpoints.
     Never,
@@ -24,13 +24,8 @@ pub enum MediaAnchoringMode {
     Always,
 
     /// Anchor media only when specific conditions are met (NAT, recording, etc.).
+    #[default]
     Conditional,
-}
-
-impl Default for MediaAnchoringMode {
-    fn default() -> Self {
-        Self::Conditional
-    }
 }
 
 /// Policy-level configuration for media anchoring.

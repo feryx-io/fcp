@@ -9,7 +9,7 @@ use std::time::Duration;
 use tracing::info;
 
 /// API Gateway configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct GatewayConfig {
     /// Service configuration
     #[serde(default)]
@@ -42,21 +42,6 @@ pub struct GatewayConfig {
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-}
-
-impl Default for GatewayConfig {
-    fn default() -> Self {
-        Self {
-            service: ServiceConfig::default(),
-            gateway: GatewaySettings::default(),
-            backends: BackendsConfig::default(),
-            redis: RedisConfig::default(),
-            rate_limit: RateLimitConfig::default(),
-            cache: CacheConfig::default(),
-            cors: CorsConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
 }
 
 /// Service configuration
@@ -127,7 +112,7 @@ impl Default for GatewaySettings {
 }
 
 /// Backend services configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct BackendsConfig {
     /// Admin API backend
     #[serde(default)]
@@ -140,16 +125,6 @@ pub struct BackendsConfig {
     /// Jobs API backend
     #[serde(default)]
     pub jobs: Option<BackendService>,
-}
-
-impl Default for BackendsConfig {
-    fn default() -> Self {
-        Self {
-            admin: BackendService::default(),
-            events: None,
-            jobs: None,
-        }
-    }
 }
 
 /// Backend service configuration

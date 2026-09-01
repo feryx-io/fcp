@@ -127,6 +127,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         storage: Option<Arc<DynStorage>>,
         flow_store: Option<Arc<dyn FlowStore>>,

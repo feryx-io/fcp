@@ -211,7 +211,7 @@ async fn main() -> Result<()> {
         &sbc_config.trunks,
     ));
     let integrated_uac = IntegratedUAC::builder()
-        .local_uri(local_uri.as_str())
+        .local_uri(local_uri.as_str())?
         .local_addr(&local_addr)?
         .via_advertised_addr(&local_addr)?
         .transaction_manager(Arc::clone(&transaction_manager_ref))

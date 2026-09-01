@@ -8,7 +8,7 @@ use std::path::Path;
 use tracing::info;
 
 /// Admin API configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AdminConfig {
     /// Service configuration
     #[serde(default)]
@@ -112,25 +112,6 @@ impl Default for SecurityConfig {
             max_failed_attempts: default_max_failed_attempts(),
             lockout_duration_secs: default_lockout_duration_secs(),
             password_expiration_days: None,
-        }
-    }
-}
-
-impl Default for AdminConfig {
-    fn default() -> Self {
-        Self {
-            service: ServiceConfig::default(),
-            api: ApiConfig::default(),
-            storage: StorageConfig::default(),
-            logging: LoggingConfig::default(),
-            events: EventsConfig::default(),
-            cluster: ClusterConfig::default(),
-            voicemail_greetings_dir: None,
-            voicemail_recordings_dir: None,
-            profile_pictures_dir: None,
-            prompts_dir: None,
-            security: SecurityConfig::default(),
-            tts: None,
         }
     }
 }
@@ -300,7 +281,7 @@ impl Default for LoggingConfig {
 }
 
 /// Events configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct EventsConfig {
     /// URL of fcp-events-server ingest endpoint (optional)
     /// Example: "http://fcp-events-server:8081/ingest"
@@ -310,15 +291,6 @@ pub struct EventsConfig {
     /// Optional bearer token for authenticating to fcp-events-server.
     #[serde(default)]
     pub auth_token: Option<String>,
-}
-
-impl Default for EventsConfig {
-    fn default() -> Self {
-        Self {
-            server_url: None,
-            auth_token: None,
-        }
-    }
 }
 
 /// Cluster monitoring configuration.

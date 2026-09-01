@@ -72,7 +72,7 @@ impl LocalCaptureManager {
             .rules
             .iter()
             .filter(|r| r.enabled)
-            .filter_map(|r| {
+            .map(|r| {
                 let caller_regex = r.caller_pattern.as_ref().and_then(|p| {
                     Regex::new(p)
                         .map_err(|e| {
@@ -104,13 +104,13 @@ impl LocalCaptureManager {
                         None
                     }
                 });
-                Some(CompiledRecordingRule {
+                CompiledRecordingRule {
                     name: r.name.clone(),
                     caller_regex,
                     callee_regex,
                     trunk_names: r.trunk_names.clone(),
                     direction,
-                })
+                }
             })
             .collect();
 

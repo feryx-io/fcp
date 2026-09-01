@@ -185,7 +185,7 @@ pub async fn create_location(
 ) -> Result<impl IntoResponse, ApiError> {
     let storage = require_storage!(state);
 
-    let mut location = SiteLocation::new(req.name, tenant.0.clone());
+    let mut location = SiteLocation::new(req.name, tenant.0);
 
     location.description = req.description;
     location.address_line1 = req.address_line1;

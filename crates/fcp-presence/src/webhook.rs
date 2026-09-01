@@ -2,6 +2,10 @@
 //!
 //! Dispatches HTTP POST notifications to configured endpoints with
 //! optional HMAC-SHA256 signing and exponential backoff retries.
+//!
+//! The types here are deprecated in favour of `fcp-webhooks`; the module still
+//! implements them, so it allows referencing its own deprecated items.
+#![allow(deprecated)]
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

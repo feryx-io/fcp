@@ -159,7 +159,7 @@ impl Aor {
                 user: parts[0].to_string(),
                 host: parts[1].to_string(),
             };
-            if candidate.user.len() + candidate.host.len() + 1 <= MAX_AOR_LENGTH {
+            if candidate.user.len() + candidate.host.len() < MAX_AOR_LENGTH {
                 return Some(candidate);
             }
         }

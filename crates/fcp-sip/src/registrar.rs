@@ -1370,7 +1370,7 @@ impl FcpRegistrar {
         // not be included when matching against the tenant `sip_domains`
         // allowlist or when detecting IP literals.
         let hostport = hostport_and_params
-            .split(|c: char| c == ';' || c == '?')
+            .split([';', '?'])
             .next()
             .unwrap_or(hostport_and_params);
 

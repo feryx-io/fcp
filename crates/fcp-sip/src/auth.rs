@@ -55,6 +55,7 @@ impl<S: Ha1CredentialStore> Ha1Authenticator<S> {
     }
 
     /// Compute the expected response using pre-computed HA1
+    #[allow(clippy::too_many_arguments)]
     fn compute_response_from_ha1(
         &self,
         ha1: &str,

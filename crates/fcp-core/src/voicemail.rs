@@ -444,7 +444,7 @@ pub trait MwiNotifier: Send + Sync {
 }
 
 /// Voicemail statistics.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VoicemailStats {
     /// Total messages
     pub total_messages: u32,
@@ -463,19 +463,6 @@ pub struct VoicemailStats {
 
     /// Average message duration
     pub avg_duration: u32,
-}
-
-impl Default for VoicemailStats {
-    fn default() -> Self {
-        Self {
-            total_messages: 0,
-            new_messages: 0,
-            heard_messages: 0,
-            saved_messages: 0,
-            storage_used: 0,
-            avg_duration: 0,
-        }
-    }
 }
 
 #[cfg(test)]

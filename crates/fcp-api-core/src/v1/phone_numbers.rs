@@ -249,7 +249,7 @@ pub async fn create_phone_number(
     let storage = require_storage!(state);
 
     // Parse and validate E.164
-    let mut number = PhoneNumber::new(req.e164.clone(), tenant.0.clone())
+    let mut number = PhoneNumber::new(req.e164.clone(), tenant.0)
         .map_err(|e| ApiError::BadRequest(format!("Invalid phone number: {}", e)))?;
 
     // Set optional fields

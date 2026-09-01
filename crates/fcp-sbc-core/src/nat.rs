@@ -240,51 +240,63 @@ mod tests {
 
     #[test]
     fn test_validate_port_range_inverted() {
-        let mut cfg = NatConfig::default();
-        cfg.rtp_port_start = 20000;
-        cfg.rtp_port_end = 10000;
+        let cfg = NatConfig {
+            rtp_port_start: 20000,
+            rtp_port_end: 10000,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("rtp_port_end"));
     }
 
     #[test]
     fn test_validate_port_range_equal() {
-        let mut cfg = NatConfig::default();
-        cfg.rtp_port_start = 10000;
-        cfg.rtp_port_end = 10000;
+        let cfg = NatConfig {
+            rtp_port_start: 10000,
+            rtp_port_end: 10000,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("rtp_port_end"));
     }
 
     #[test]
     fn test_validate_port_below_1024() {
-        let mut cfg = NatConfig::default();
-        cfg.rtp_port_start = 1023;
+        let cfg = NatConfig {
+            rtp_port_start: 1023,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("1024"));
     }
 
     #[test]
     fn test_validate_port_range_too_small() {
-        let mut cfg = NatConfig::default();
-        cfg.rtp_port_start = 10000;
-        cfg.rtp_port_end = 10099; // only 99 ports
+        let cfg = NatConfig {
+            rtp_port_start: 10000,
+            rtp_port_end: 10099, // only 99 ports
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("100 ports"));
     }
 
     #[test]
     fn test_validate_empty_external_ip() {
-        let mut cfg = NatConfig::default();
-        cfg.external_ip = Some(String::new());
+        let cfg = NatConfig {
+            external_ip: Some(String::new()),
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("external_ip"));
     }
 
     #[test]
     fn test_validate_crlf_external_ip() {
-        let mut cfg = NatConfig::default();
-        cfg.external_ip = Some("bad\r\nip".into());
+        let cfg = NatConfig {
+            external_ip: Some("bad\r\nip".into()),
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("CR/LF"));
     }
@@ -330,11 +342,11 @@ mod tests {
 
     #[test]
     fn test_validate_boundary_values() {
-        let mut cfg = NatConfig::default();
-
-        // Exactly 100 ports is valid
-        cfg.rtp_port_start = 10000;
-        cfg.rtp_port_end = 10100;
+        let mut cfg = NatConfig {
+            rtp_port_start: 10000,
+            rtp_port_end: 10100,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
 
         // Port start at 1024 is valid

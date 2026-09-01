@@ -246,7 +246,7 @@ pub fn build_register_request(aor: &str, contact: &str) -> Request {
     let _ = headers.push(SmolStr::new("Content-Length"), SmolStr::new("0"));
 
     // The Request-URI for REGISTER is the registrar URI (domain)
-    let domain = aor.split('@').last().unwrap_or("example.com");
+    let domain = aor.split('@').next_back().unwrap_or("example.com");
     Request::new(
         RequestLine::new(
             Method::Register,
@@ -304,7 +304,7 @@ pub fn build_invite_with_sdp(from: &str, to: &str, sdp: Option<&str>) -> Request
 
     // Extract user part for Request-URI
     let to_user = to.split('@').next().unwrap_or(to);
-    let to_domain = to.split('@').last().unwrap_or("example.com");
+    let to_domain = to.split('@').next_back().unwrap_or("example.com");
 
     Request::new(
         RequestLine::new(

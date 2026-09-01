@@ -404,13 +404,13 @@ impl TransportDispatcher for StirTransportDispatcher {
                         .headers()
                         .get("From")
                         .or_else(|| req.headers().get("f"))
-                        .map(|v| stir_shaken::clean_tn(v))
+                        .map(stir_shaken::clean_tn)
                         .unwrap_or_default();
                     let to_tn = req
                         .headers()
                         .get("To")
                         .or_else(|| req.headers().get("t"))
-                        .map(|v| stir_shaken::clean_tn(v))
+                        .map(stir_shaken::clean_tn)
                         .unwrap_or_default();
 
                     if !from_tn.is_empty() && !to_tn.is_empty() {

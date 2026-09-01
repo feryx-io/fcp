@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_round_robin() {
-        let agents = vec![
+        let agents = [
             make_agent("100", 0, None),
             make_agent("101", 0, None),
             make_agent("102", 0, None),
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn test_fewest_calls() {
-        let agents = vec![
+        let agents = [
             make_agent("100", 10, None),
             make_agent("101", 3, None),
             make_agent("102", 7, None),
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_longest_idle() {
-        let agents = vec![
+        let agents = [
             make_agent("100", 0, Some(Duration::from_secs(10))),
             make_agent("101", 0, Some(Duration::from_secs(60))),
             make_agent("102", 0, Some(Duration::from_secs(30))),
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_longest_idle_never_taken_call() {
-        let agents = vec![
+        let agents = [
             make_agent("100", 0, Some(Duration::from_secs(60))),
             make_agent("101", 0, None), // Never taken a call = longest idle
         ];
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_linear() {
-        let agents = vec![
+        let agents = [
             make_agent("100", 5, None),
             make_agent("101", 0, None),
             make_agent("102", 0, None),
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_ring_timeout_propagated() {
-        let agents = vec![make_agent("100", 0, None)];
+        let agents = [make_agent("100", 0, None)];
         let refs: Vec<&Agent> = agents.iter().collect();
 
         let (plan, _) = select_agent(DistributionStrategy::Linear, &refs, 0, 30, &[]).unwrap();
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_skills_based_selects_matching_agent() {
-        let agents = vec![
+        let agents = [
             make_agent_with_skills(
                 "100",
                 0,
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_skills_filter_no_match_returns_none() {
-        let agents = vec![
+        let agents = [
             make_agent_with_skills("100", 0, None, vec!["english".to_string()]),
             make_agent_with_skills("101", 0, None, vec!["french".to_string()]),
         ];
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_skills_filter_empty_skills_allows_all() {
-        let agents = vec![
+        let agents = [
             make_agent_with_skills("100", 0, None, vec!["english".to_string()]),
             make_agent("101", 0, None), // No skills
         ];
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_weighted_distribution() {
-        let agents = vec![make_agent("100", 0, None), make_agent("101", 0, None)];
+        let agents = [make_agent("100", 0, None), make_agent("101", 0, None)];
         let refs: Vec<&Agent> = agents.iter().collect();
 
         // Agent 100 has weight 3, agent 101 has weight 1 → 4 slots total
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_weighted_default_weight() {
-        let agents = vec![make_agent("100", 0, None), make_agent("101", 0, None)];
+        let agents = [make_agent("100", 0, None), make_agent("101", 0, None)];
         let refs: Vec<&Agent> = agents.iter().collect();
 
         // No weights configured — all default to 1, so equal distribution like round-robin

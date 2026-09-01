@@ -15,6 +15,8 @@ remote = []
 full = ["embedded", "remote"]
 # Audio codec features
 g722 = ["forge-codecs/g722"]
+# Opus is off by default: it pulls in `audiopus`, which builds libopus from source.
+opus = ["forge-codecs/opus", "forge-engine/opus"]
 
 [dependencies]
 # Internal FCP dependencies

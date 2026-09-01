@@ -280,10 +280,7 @@ fn render_details_panel(
             Line::from(vec![
                 Span::styled("User Agent: ", theme.muted()),
                 Span::styled(
-                    reg.user_agent
-                        .as_ref()
-                        .map(|s| s.clone())
-                        .unwrap_or_else(|| "-".to_string()),
+                    reg.user_agent.clone().unwrap_or_else(|| "-".to_string()),
                     theme.normal(),
                 ),
             ]),

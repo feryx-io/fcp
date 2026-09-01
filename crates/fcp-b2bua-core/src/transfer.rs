@@ -25,9 +25,10 @@ pub enum TransferType {
 }
 
 /// Policy governing which transfer types are permitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TransferPolicy {
     /// Allow all transfer types.
+    #[default]
     Allow,
 
     /// Deny all transfers.
@@ -38,12 +39,6 @@ pub enum TransferPolicy {
 
     /// Allow only attended/consultative transfers.
     AttendedOnly,
-}
-
-impl Default for TransferPolicy {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// Outcome of a transfer attempt.
@@ -278,34 +273,41 @@ mod tests {
 
     #[test]
     fn test_validate_zero_rate_limit() {
-        let mut cfg = TransferConfig::default();
-        cfg.rate_limit_per_dialog = 0;
+        let cfg = TransferConfig {
+            rate_limit_per_dialog: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("rate_limit_per_dialog"));
     }
 
     #[test]
     fn test_validate_zero_max_depth() {
-        let mut cfg = TransferConfig::default();
-        cfg.max_transfer_depth = 0;
+        let cfg = TransferConfig {
+            max_transfer_depth: 0,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("max_transfer_depth"));
     }
 
     #[test]
     fn test_validate_excessive_max_depth() {
-        let mut cfg = TransferConfig::default();
-        cfg.max_transfer_depth = 21;
+        let cfg = TransferConfig {
+            max_transfer_depth: 21,
+            ..Default::default()
+        };
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("20"));
     }
 
     #[test]
     fn test_validate_boundary_values() {
-        let mut cfg = TransferConfig::default();
-
         // max_transfer_depth = 20 is valid
-        cfg.max_transfer_depth = 20;
+        let mut cfg = TransferConfig {
+            max_transfer_depth: 20,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_ok());
 
         // rate_limit = 1 is valid

@@ -286,7 +286,7 @@ impl PresenceManager {
             aor: update_aor.clone(),
             state: update_state,
             note: update_note.clone(),
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             updated_at: Instant::now(),
         };
 
@@ -407,7 +407,7 @@ impl PresenceManager {
 
         let presentity_aor = watcher.presentity_aor.clone();
         let watcher_aor = watcher.watcher_aor.clone();
-        let tenant_id = watcher.tenant_id.clone();
+        let tenant_id = watcher.tenant_id;
         let key = Self::scoped_aor_key(&tenant_id, &presentity_aor);
 
         // Verify cross-tenant isolation: watcher must belong to the same tenant as the presentity
@@ -878,7 +878,7 @@ impl PresenceManager {
             aor: aor.to_string(),
             state,
             note,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             expires_at: now + Duration::from_secs(expires_secs as u64),
             created_at: now,
         };
@@ -941,7 +941,7 @@ impl PresenceManager {
             .ok_or_else(|| anyhow::anyhow!("412 Conditional Request Failed"))?;
 
         let aor = old.aor.clone();
-        let tenant_id = old.tenant_id.clone();
+        let tenant_id = old.tenant_id;
 
         let new_etag = uuid::Uuid::new_v4().simple().to_string();
         let now = Instant::now();
@@ -1090,12 +1090,12 @@ impl PresenceManager {
 
         self.publish_etags.retain(|_, esc| {
             if esc.expires_at <= now {
-                expired_aors.push((esc.aor.clone(), esc.tenant_id.clone()));
+                expired_aors.push((esc.aor.clone(), esc.tenant_id));
                 expired_entries.push((
                     esc.aor.clone(),
                     esc.etag.clone(),
                     esc.state.to_string(),
-                    esc.tenant_id.clone(),
+                    esc.tenant_id,
                 ));
                 // Clean up warned_etags for this expired entry
                 self.warned_etags.remove(&esc.etag);
@@ -1463,7 +1463,7 @@ impl PresenceManager {
     pub fn set_auth_policy(&self, aor: &str, policy: PresenceAuthPolicy, tenant_id: &TenantId) {
         let key = Self::scoped_aor_key(tenant_id, aor);
         self.auth_policies.insert(key.clone(), policy);
-        self.auth_policy_tenants.insert(key, tenant_id.clone());
+        self.auth_policy_tenants.insert(key, *tenant_id);
     }
 
     /// Get authorization policy for a presentity.
@@ -1710,7 +1710,7 @@ impl PresenceManager {
                                             aor: change.aor.clone(),
                                             state,
                                             note: change.note.clone(),
-                                            tenant_id: change.tenant_id.clone(),
+                                            tenant_id: change.tenant_id,
                                             updated_at: std::time::Instant::now(),
                                         };
                                         manager.presentities.insert(key, info);
@@ -1828,7 +1828,7 @@ impl PresenceManager {
             watcher_aor: watcher_aor.to_string(),
             contact_uri: contact_uri.to_string(),
             expires_at,
-            tenant_id: tenant_id.clone(),
+            tenant_id: *tenant_id,
             virtual_subs,
             subscription_id: subscription_id.to_string(),
             version: 0,
@@ -2132,7 +2132,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-1".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2158,7 +2158,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-1".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2188,7 +2188,7 @@ mod tests {
                 presentity_aor: "alice@example.com".to_string(),
                 subscription_id: format!("sub-{i}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
-                tenant_id: tenant.clone(),
+                tenant_id: tenant,
                 contact_uri: format!("sip:user{i}@192.168.1.100:5060"),
                 event_package: "presence".to_string(),
                 sip_call_id: None,
@@ -2204,7 +2204,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-2".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:user2@192.168.1.100:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2226,7 +2226,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-expired".to_string(),
             expires_at: Instant::now() - Duration::from_secs(1),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2241,7 +2241,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-valid".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:charlie@192.168.1.101:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2271,7 +2271,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-1".to_string(),
             expires_at: original_expires,
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2345,7 +2345,7 @@ mod tests {
                 presentity_aor: "alice@example.com".to_string(),
                 subscription_id: format!("sub-{i}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
-                tenant_id: tenant.clone(),
+                tenant_id: tenant,
                 contact_uri: format!("sip:watcher{i}@192.168.1.100:5060"),
                 event_package: "presence".to_string(),
                 sip_call_id: None,
@@ -2373,7 +2373,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "sub-1".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -2821,7 +2821,7 @@ mod tests {
                 presentity_aor: presentity.to_string(),
                 subscription_id: format!("sub-{i}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
-                tenant_id: tenant.clone(),
+                tenant_id: tenant,
                 contact_uri: format!("sip:watcher{i}@192.168.1.100:5060"),
                 event_package: "presence".to_string(),
                 sip_call_id: None,
@@ -2845,7 +2845,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "winfo-sub-1".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:admin@192.168.1.100:5060".to_string(),
             event_package: "presence.winfo".to_string(),
             sip_call_id: None,
@@ -2867,7 +2867,7 @@ mod tests {
             presentity_aor: "alice@example.com".to_string(),
             subscription_id: "winfo-sub-2".to_string(),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: "sip:admin2@192.168.1.100:5060".to_string(),
             event_package: "presence.winfo".to_string(),
             sip_call_id: None,

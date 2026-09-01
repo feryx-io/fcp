@@ -20,6 +20,9 @@ use tracing::warn;
 
 use crate::config::RateLimitConfig;
 
+/// A single client's token bucket.
+type ClientRateLimiter = Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>;
+
 /// Per-client rate limiter state.
 ///
 /// Each unique client IP gets its own token bucket, preventing one noisy
@@ -27,7 +30,7 @@ use crate::config::RateLimitConfig;
 #[derive(Clone)]
 pub struct RateLimiterState {
     /// Per-IP rate limiters
-    per_ip: Arc<DashMap<IpAddr, Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>>,
+    per_ip: Arc<DashMap<IpAddr, ClientRateLimiter>>,
 
     /// Configuration
     pub config: RateLimitConfig,

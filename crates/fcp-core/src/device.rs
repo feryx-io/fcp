@@ -216,10 +216,7 @@ impl fmt::Debug for Device {
             .field("config_template_id", &self.config_template_id)
             .field(
                 "provisioning_token_hash",
-                &self
-                    .provisioning_token_hash
-                    .as_ref()
-                    .map(|_| "<redacted>"),
+                &self.provisioning_token_hash.as_ref().map(|_| "<redacted>"),
             )
             .field("enabled", &self.enabled)
             .field("created_at", &self.created_at)
@@ -231,11 +228,13 @@ impl fmt::Debug for Device {
 /// Type of device endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DeviceType {
     /// Physical desk phone
     DeskPhone,
 
     /// Software phone (PC/mobile app)
+    #[default]
     Softphone,
 
     /// WebRTC browser client
@@ -272,17 +271,13 @@ impl fmt::Display for DeviceType {
     }
 }
 
-impl Default for DeviceType {
-    fn default() -> Self {
-        Self::Softphone
-    }
-}
-
 /// SIP registration state for a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RegistrationState {
     /// Device has never registered
+    #[default]
     Unregistered,
 
     /// Device is currently registered
@@ -303,12 +298,6 @@ impl fmt::Display for RegistrationState {
             Self::Failed => write!(f, "failed"),
             Self::Expired => write!(f, "expired"),
         }
-    }
-}
-
-impl Default for RegistrationState {
-    fn default() -> Self {
-        Self::Unregistered
     }
 }
 

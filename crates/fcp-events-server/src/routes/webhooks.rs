@@ -125,6 +125,9 @@ fn json_error(status: StatusCode, message: impl Into<String>) -> axum::response:
     (status, Json(serde_json::json!({ "error": message.into() }))).into_response()
 }
 
+// The error type is an axum `Response`, which is large by nature; boxing it
+// here would only add indirection at every call site.
+#[allow(clippy::result_large_err)]
 fn scoped_tenant(
     principal: &AuthPrincipal,
     requested_tenant: &str,
@@ -145,6 +148,9 @@ fn scoped_tenant(
     Ok(tenant_id)
 }
 
+// The error type is an axum `Response`, which is large by nature; boxing it
+// here would only add indirection at every call site.
+#[allow(clippy::result_large_err)]
 fn authorize_endpoint_access(
     principal: &AuthPrincipal,
     endpoint_tenant_id: &TenantId,
@@ -528,14 +534,24 @@ async fn replay_delivery(
     Path(delivery_id): Path<String>,
 ) -> impl IntoResponse {
     // Look up the delivery log
-    let log = match state.dispatcher.store().get_delivery_log(&delivery_id).await {
+    let log = match state
+        .dispatcher
+        .store()
+        .get_delivery_log(&delivery_id)
+        .await
+    {
         Ok(Some(log)) => log,
         Ok(None) => return json_error(StatusCode::NOT_FOUND, "Delivery log not found"),
         Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
 
     // Look up the endpoint to verify it still exists and authorize access
-    let endpoint = match state.dispatcher.store().get_endpoint(&log.endpoint_id).await {
+    let endpoint = match state
+        .dispatcher
+        .store()
+        .get_endpoint(&log.endpoint_id)
+        .await
+    {
         Ok(Some(ep)) => ep,
         Ok(None) => return json_error(StatusCode::NOT_FOUND, "Webhook endpoint no longer exists"),
         Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -567,7 +583,11 @@ async fn replay_delivery(
             let status = resp.status().as_u16();
             let delivered = resp.status().is_success();
             let resp_body = resp.text().await.ok().map(|b| {
-                if b.len() > 65536 { b[..65536].to_string() } else { b }
+                if b.len() > 65536 {
+                    b[..65536].to_string()
+                } else {
+                    b
+                }
             });
 
             let replay_log = WebhookDeliveryLog {
@@ -580,13 +600,21 @@ async fn replay_delivery(
                 last_attempt_at: Some(now),
                 next_retry_at: None,
                 delivered,
-                error: if delivered { None } else { Some(format!("HTTP {}", status)) },
+                error: if delivered {
+                    None
+                } else {
+                    Some(format!("HTTP {}", status))
+                },
                 response_body: resp_body,
                 response_headers: None,
                 created_at: now,
             };
 
-            let _ = state.dispatcher.store().log_delivery(replay_log.clone()).await;
+            let _ = state
+                .dispatcher
+                .store()
+                .log_delivery(replay_log.clone())
+                .await;
 
             Json(serde_json::json!({
                 "replayed": true,

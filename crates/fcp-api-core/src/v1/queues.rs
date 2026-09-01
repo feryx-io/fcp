@@ -306,7 +306,7 @@ pub async fn agent_login(
     qm.agent_login(
         &req.agent_id,
         &req.extension,
-        &[name.clone()],
+        std::slice::from_ref(&name),
         tenant.0,
         req.skills.clone(),
     )

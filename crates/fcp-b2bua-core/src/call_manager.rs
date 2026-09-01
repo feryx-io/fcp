@@ -682,7 +682,7 @@ fn map_call_state_to_disposition(
                 // Check for 5xx errors
                 if reason.starts_with('5') {
                     if let Some(code) = extract_sip_status_code(reason) {
-                        if code >= 500 && code < 600 {
+                        if (500..600).contains(&code) {
                             return (CallDisposition::Failed, HangupCause::InternalError);
                         }
                     }
@@ -715,7 +715,7 @@ fn extract_sip_status_code(reason: &str) -> Option<u16> {
         .split_whitespace()
         .next()
         .and_then(|code_str| code_str.parse::<u16>().ok())
-        .filter(|&code| code >= 100 && code < 700)
+        .filter(|&code| (100..700).contains(&code))
 }
 
 /// Calculate call durations in milliseconds.

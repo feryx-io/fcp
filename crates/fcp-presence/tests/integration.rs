@@ -31,7 +31,7 @@ fn make_watcher(
         presentity_aor: presentity_aor.to_string(),
         subscription_id: uuid::Uuid::new_v4().to_string(),
         expires_at: Instant::now() + Duration::from_secs(3600),
-        tenant_id: tenant_id.clone(),
+        tenant_id: *tenant_id,
         contact_uri: format!(
             "sip:{}@192.168.1.100:5060",
             watcher_aor.split('@').next().unwrap_or("user")
@@ -82,7 +82,7 @@ async fn test_subscribe_notify_lifecycle() {
         presentity_aor: "alice@example.com".to_string(),
         subscription_id: "sub-expired".to_string(),
         expires_at: Instant::now() - Duration::from_secs(1),
-        tenant_id: tenant.clone(),
+        tenant_id: tenant,
         contact_uri: "sip:charlie@192.168.1.101:5060".to_string(),
         event_package: "presence".to_string(),
         sip_call_id: None,
@@ -444,7 +444,7 @@ async fn test_expired_watchers_filtered_at_read_time() {
         presentity_aor: "alice@example.com".to_string(),
         subscription_id: "sub-expired".to_string(),
         expires_at: Instant::now() - Duration::from_secs(1),
-        tenant_id: tenant.clone(),
+        tenant_id: tenant,
         contact_uri: "sip:charlie@192.168.1.101:5060".to_string(),
         event_package: "presence".to_string(),
         sip_call_id: None,
@@ -508,7 +508,7 @@ async fn test_expired_winfo_watchers_filtered() {
         presentity_aor: "alice@example.com".to_string(),
         subscription_id: "winfo-expired".to_string(),
         expires_at: Instant::now() - Duration::from_secs(1),
-        tenant_id: tenant.clone(),
+        tenant_id: tenant,
         contact_uri: "sip:old-admin@192.168.1.102:5060".to_string(),
         event_package: "presence.winfo".to_string(),
         sip_call_id: None,
@@ -609,7 +609,7 @@ async fn test_winfo_xml_excludes_expired_watchers() {
         presentity_aor: "alice@example.com".to_string(),
         subscription_id: "sub-expired-winfo".to_string(),
         expires_at: Instant::now() - Duration::from_secs(1),
-        tenant_id: tenant.clone(),
+        tenant_id: tenant,
         contact_uri: "sip:expired@192.168.1.100:5060".to_string(),
         event_package: "presence".to_string(),
         sip_call_id: None,
@@ -666,7 +666,7 @@ async fn test_winfo_watcher_expiration_display() {
         presentity_aor: "alice@example.com".to_string(),
         subscription_id: "sub-expiry-test".to_string(),
         expires_at: Instant::now() + Duration::from_secs(1800),
-        tenant_id: tenant.clone(),
+        tenant_id: tenant,
         contact_uri: "sip:bob@192.168.1.100:5060".to_string(),
         event_package: "presence".to_string(),
         sip_call_id: None,
@@ -729,7 +729,6 @@ async fn test_concurrent_publish_from_multiple_devices() {
     let mut handles = Vec::new();
     for i in 0..10 {
         let mgr = mgr.clone();
-        let tenant = tenant.clone();
         let state = states[i % states.len()];
         handles.push(tokio::spawn(async move {
             mgr.store_publish(
@@ -796,7 +795,6 @@ async fn test_concurrent_publish_and_remove() {
     // 5 tasks publishing
     for i in 0..5 {
         let mgr = mgr.clone();
-        let tenant = tenant.clone();
         handles.push(tokio::spawn(async move {
             for j in 0..20 {
                 let etag = mgr
@@ -817,7 +815,6 @@ async fn test_concurrent_publish_and_remove() {
     // 5 tasks removing random ETags (may fail, that's OK)
     for _ in 0..5 {
         let mgr = mgr.clone();
-        let tenant = tenant.clone();
         handles.push(tokio::spawn(async move {
             for _ in 0..20 {
                 let etag = mgr
@@ -921,7 +918,7 @@ async fn test_concurrent_cleanup_and_publish() {
     });
 
     let mgr_publisher = mgr.clone();
-    let tenant_pub = tenant.clone();
+    let tenant_pub = tenant;
     let publisher = tokio::spawn(async move {
         for _ in 0..50 {
             let etag = mgr_publisher
@@ -976,7 +973,7 @@ async fn test_scale_10k_watchers() {
                 presentity_aor: format!("pres{i}@example.com"),
                 subscription_id: format!("sub-{i}-{j}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
-                tenant_id: tenant.clone(),
+                tenant_id: tenant,
                 contact_uri: format!("sip:w{j}@192.168.1.{0}:5060", j % 256),
                 event_package: "presence".to_string(),
                 sip_call_id: None,
@@ -1073,7 +1070,6 @@ async fn test_concurrent_subscribe_unsubscribe() {
     let mut handles = Vec::new();
     for task_id in 0..100 {
         let mgr = mgr.clone();
-        let tenant = tenant.clone();
         handles.push(tokio::spawn(async move {
             for j in 0..100 {
                 let pres_idx = (task_id + j) % 10;
@@ -1082,7 +1078,7 @@ async fn test_concurrent_subscribe_unsubscribe() {
                     presentity_aor: format!("pres{pres_idx}@example.com"),
                     subscription_id: format!("sub-{task_id}-{j}"),
                     expires_at: Instant::now() + Duration::from_secs(3600),
-                    tenant_id: tenant.clone(),
+                    tenant_id: tenant,
                     contact_uri: format!("sip:t{task_id}w{j}@192.168.1.1:5060"),
                     event_package: "presence".to_string(),
                     sip_call_id: None,
@@ -1138,7 +1134,6 @@ async fn test_concurrent_presence_updates() {
     let mut handles = Vec::new();
     for task_id in 0..50 {
         let mgr = mgr.clone();
-        let tenant = tenant.clone();
         handles.push(tokio::spawn(async move {
             for j in 0..100 {
                 let aor_idx = (task_id * 7 + j * 3) % 100;
@@ -1192,7 +1187,7 @@ async fn test_notify_generation_under_load() {
                 presentity_aor: aor.clone(),
                 subscription_id: format!("sub-{i}-{j}"),
                 expires_at: Instant::now() + Duration::from_secs(3600),
-                tenant_id: tenant.clone(),
+                tenant_id: tenant,
                 contact_uri: format!("sip:w{j}@192.168.1.1:5060"),
                 event_package: event_pkg.to_string(),
                 sip_call_id: None,
@@ -1256,7 +1251,7 @@ async fn test_cleanup_under_load() {
             presentity_aor: "target@example.com".to_string(),
             subscription_id: format!("sub-exp-{i}"),
             expires_at: Instant::now() - Duration::from_secs(1),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: format!("sip:expired{i}@192.168.1.1:5060"),
             event_package: "presence".to_string(),
             sip_call_id: None,
@@ -1273,7 +1268,7 @@ async fn test_cleanup_under_load() {
             presentity_aor: "target@example.com".to_string(),
             subscription_id: format!("sub-val-{i}"),
             expires_at: Instant::now() + Duration::from_secs(3600),
-            tenant_id: tenant.clone(),
+            tenant_id: tenant,
             contact_uri: format!("sip:valid{i}@192.168.1.1:5060"),
             event_package: "presence".to_string(),
             sip_call_id: None,

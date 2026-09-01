@@ -219,10 +219,6 @@ pub enum JobResult {
 }
 
 impl JobResult {
-    pub fn success() -> Self {
-        Self::Success(serde_json::json!({"status": "success"}))
-    }
-
     pub fn success_with_data(data: serde_json::Value) -> Self {
         Self::Success(data)
     }

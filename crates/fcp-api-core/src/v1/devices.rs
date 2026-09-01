@@ -158,10 +158,7 @@ fn generate_provisioning_token() -> String {
     )
 }
 
-fn validate_device_provisioning_token(
-    state: &ApiState,
-    token: &str,
-) -> Result<String, ApiError> {
+fn validate_device_provisioning_token(state: &ApiState, token: &str) -> Result<String, ApiError> {
     validation::reject_crlf("provisioning_token", token)?;
     let token = token.trim();
     if token.len() < 32 {
@@ -361,7 +358,7 @@ pub async fn list_devices(
                         .map(|m| m.to_lowercase())
                         .unwrap_or_default();
                     let mac_clean = resp.mac_address.as_ref()
-                        .map(|m| m.replace(':', "").replace('-', "").to_lowercase())
+                        .map(|m| m.replace([':', '-'], "").to_lowercase())
                         .unwrap_or_default();
                     contacts.iter().find(|(_, ua)| {
                         if let Some(ref agent) = ua {
@@ -470,7 +467,7 @@ pub async fn create_device(
 
     let device_type = parse_device_type(&req.device_type)?;
 
-    let mut device = Device::new(req.name, device_type, tenant.0.clone());
+    let mut device = Device::new(req.name, device_type, tenant.0);
 
     // Set optional fields
     if let Some(owner_id_str) = req.owner_user_id {
@@ -499,19 +496,20 @@ pub async fn create_device(
         ensure_mac_available(storage, &normalized_mac, None).await?;
     }
 
-    let generated_provisioning_token = match req.provisioning_token.and_then(normalize_optional_string) {
-        Some(token) => {
-            let token = validate_device_provisioning_token(&state, &token)?;
-            device.provisioning_token_hash = Some(hash_provisioning_token(&token));
-            None
-        }
-        None if device.mac_address.is_some() => {
-            let token = generate_provisioning_token();
-            device.provisioning_token_hash = Some(hash_provisioning_token(&token));
-            Some(token)
-        }
-        None => None,
-    };
+    let generated_provisioning_token =
+        match req.provisioning_token.and_then(normalize_optional_string) {
+            Some(token) => {
+                let token = validate_device_provisioning_token(&state, &token)?;
+                device.provisioning_token_hash = Some(hash_provisioning_token(&token));
+                None
+            }
+            None if device.mac_address.is_some() => {
+                let token = generate_provisioning_token();
+                device.provisioning_token_hash = Some(hash_provisioning_token(&token));
+                Some(token)
+            }
+            None => None,
+        };
 
     if let Some(max_lines) = req.max_lines {
         device.max_lines = max_lines;
@@ -693,14 +691,13 @@ pub async fn update_device(
     }
 
     if let Some(provisioning_token) = req.provisioning_token {
-        device.provisioning_token_hash = if let Some(token) =
-            normalize_optional_string(provisioning_token)
-        {
-            let token = validate_device_provisioning_token(&state, &token)?;
-            Some(hash_provisioning_token(&token))
-        } else {
-            None
-        };
+        device.provisioning_token_hash =
+            if let Some(token) = normalize_optional_string(provisioning_token) {
+                let token = validate_device_provisioning_token(&state, &token)?;
+                Some(hash_provisioning_token(&token))
+            } else {
+                None
+            };
     }
 
     if let Some(enabled) = req.enabled {

@@ -5,7 +5,6 @@ use anyhow::Result;
 use reqwest::Method;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
-use serde_json;
 use std::time::Duration;
 
 /// API client for communicating with FCP server
