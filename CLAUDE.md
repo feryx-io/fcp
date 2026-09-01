@@ -6,13 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains 32 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus the siphon-rs SIP stack as a git submodule.
+The repository contains 32 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
 
 ## Build and Test Commands
 
 ### Initial Setup (First Time Only)
 
-If you're cloning this repository, you need to initialize the siphon-rs submodule:
+If you're cloning this repository, you need to initialize the git submodules (siphon-rs and forge-media):
 
 ```bash
 # Clone with submodules
@@ -158,29 +158,35 @@ fcp/
 │   ├── fcp-webrtc-gateway/       # WebRTC gateway
 │   ├── fcp-events-server/        # Event streaming + webhook delivery server
 │   ├── fcp-api-gateway/          # API gateway (auth, rate limiting, routing)
-│   ├── fcp-jobs/                 # Async job worker (CDR processing, webhooks, cleanup)
-│   │
-│   │ # ── SIP Stack (git submodule) ─────────────────────────
-│   └── siphon-rs/                # Repository: https://github.com/thevoiceguy/siphon-rs
-│       ├── CLAUDE.md             # siphon-rs specific documentation
-│       ├── Cargo.toml            # siphon-rs workspace root
-│       ├── bins/
-│       │   └── siphond/          # Multi-mode SIP testing daemon
-│       └── crates/
-│           ├── sip-core/         # SIP message types, headers, URIs
-│           ├── sip-parse/        # nom-based SIP parser
-│           ├── sip-transport/    # UDP/TCP/TLS transports
-│           ├── sip-transaction/  # RFC 3261 transaction state machines
-│           ├── sip-dns/          # RFC 3263 DNS resolution
-│           ├── sip-dialog/       # Dialog and subscription management
-│           ├── sip-auth/         # Digest authentication
-│           ├── sip-registrar/    # REGISTER handler
-│           ├── sip-uas/          # User Agent Server helpers
-│           ├── sip-uac/          # User Agent Client helpers
-│           ├── sip-proxy/        # Proxy primitives
-│           ├── sip-sdp/          # SDP support
-│           ├── sip-observe/      # Observability
-│           └── sip-testkit/      # Test utilities
+│   └── fcp-jobs/                 # Async job worker (CDR processing, webhooks, cleanup)
+│
+├── external/                     # ── Git submodules (both public repos) ──
+│   ├── siphon-rs/                # SIP stack — https://github.com/thevoiceguy/siphon-rs
+│   │   ├── CLAUDE.md             # siphon-rs specific documentation
+│   │   ├── bins/
+│   │   │   └── siphond/          # Multi-mode SIP testing daemon
+│   │   └── crates/
+│   │       ├── sip-core/         # SIP message types, headers, URIs
+│   │       ├── sip-parse/        # nom-based SIP parser
+│   │       ├── sip-transport/    # UDP/TCP/TLS transports
+│   │       ├── sip-transaction/  # RFC 3261 transaction state machines
+│   │       ├── sip-dns/          # RFC 3263 DNS resolution
+│   │       ├── sip-dialog/       # Dialog and subscription management
+│   │       ├── sip-auth/         # Digest authentication
+│   │       ├── sip-registrar/    # REGISTER handler
+│   │       ├── sip-uas/          # User Agent Server helpers
+│   │       ├── sip-uac/          # User Agent Client helpers
+│   │       ├── sip-proxy/        # Proxy primitives
+│   │       ├── sip-sdp/          # SDP support
+│   │       ├── sip-observe/      # Observability
+│   │       └── sip-testkit/      # Test utilities
+│   └── forge-media/              # Media stack — https://github.com/thevoiceguy/forge-media
+│       ├── CLAUDE.MD             # forge-media specific documentation
+│       ├── bins/                 # forge-sip-server, forge-test-daemon
+│       ├── crates/               # forge-core, forge-rtp, forge-sdp, forge-codecs,
+│       │                         # forge-conference, forge-mixer, forge-webrtc,
+│       │                         # forge-siprec, forge-api, forge-transcoder, …
+│       └── external/siphon-rs/   # forge-media's own siphon-rs submodule (recursive)
 │
 ├── tests/                        # Integration tests
 ├── migrations/                   # Database migrations
@@ -489,69 +495,82 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 - Video conferencing
 - Regulatory compliance features
 
-## Working with the siphon-rs Submodule
+## Working with the Submodules (siphon-rs and forge-media)
 
-The siphon-rs SIP stack is maintained as a separate repository and linked as a git submodule.
+FCP links two git submodules under `external/`, each maintained as its own repository:
 
-### Updating siphon-rs to Latest
+- **siphon-rs** (SIP stack) — https://github.com/thevoiceguy/siphon-rs
+- **forge-media** (media stack) — https://github.com/thevoiceguy/forge-media, which itself
+  contains siphon-rs as a nested submodule (hence `--recursive` everywhere)
 
-```bash
-# Update submodule to latest from remote
-cd external/siphon-rs
-git pull origin main
-cd ../..
+Both repositories are **public**, so no credentials are needed to clone them. CI checks
+them out with `actions/checkout@v5` + `submodules: recursive` using the default
+`GITHUB_TOKEN` — no extra secret is required.
 
-# Commit the submodule update in FCP
-git add external/siphon-rs
-git commit -m "Update siphon-rs submodule to latest"
+### The single sip-sdp rule
+
+forge-media's `forge-sdp` crate depends on `sip-sdp` via a **git dependency pinned to a
+siphon-rs release tag** (see `external/forge-media/crates/forge-sdp/Cargo.toml`). FCP's
+root `Cargo.toml` then patches that git source to the local submodule checkout:
+
+```toml
+[patch."https://github.com/thevoiceguy/siphon-rs"]
+sip-sdp = { path = "external/siphon-rs/crates/sip-sdp" }
 ```
 
-### Making Changes to siphon-rs
+This keeps the whole workspace resolving to a **single copy** of `sip-sdp` (mixing two
+copies breaks type compatibility between fcp-sip and forge-media). When bumping the
+siphon-rs submodule to a new tag, also update the tag in forge-sdp's git dependency so
+the patch and the pin stay consistent.
 
-If you need to modify siphon-rs code:
+### Release-tag workflow for submodule changes
+
+Submodules are pinned to **annotated release tags** (`vYYYY.MM.DD`, e.g. siphon-rs
+`v2026.08.25`, forge-media `v2026.09.01`), not arbitrary branch commits. To land a change:
 
 ```bash
-cd external/siphon-rs
+cd external/forge-media            # or external/siphon-rs
 
-# Create a branch for your changes
-git checkout -b feature/my-sip-feature
-
-# Make changes, test them
+# 1. Branch, change, test, push in the submodule repo
+git checkout -b feature/my-feature
 cargo test
+git add . && git commit -m "Add feature"
+git push -u origin feature/my-feature
 
-# Commit to siphon-rs
-git add .
-git commit -m "Add new SIP feature"
+# 2. Merge to main (fast-forward when main is an ancestor — no merge commit needed),
+#    then tag the release and delete the merged branch
+git push origin feature/my-feature:main   # fast-forward merge (or merge a PR)
+git tag -a vYYYY.MM.DD -m "Release notes" && git push origin vYYYY.MM.DD
+git push origin --delete feature/my-feature
 
-# Push to siphon-rs repository
-git push origin feature/my-sip-feature
-
-# Create PR in siphon-rs repo, get it merged
-
-# After merge, update FCP to use the new version
-git checkout main
-git pull origin main
+# 3. Repoint FCP at the release and commit
 cd ../..
-git add external/siphon-rs
-git commit -m "Update siphon-rs submodule with new feature"
+git -C external/forge-media checkout main
+git add external/forge-media Cargo.lock
+git commit -m "chore: vX.Y.Z — bump forge-media to vYYYY.MM.DD"
 ```
+
+Every FCP commit bumps the workspace `version` in the root `Cargo.toml` and names it in
+the commit message (`fix: v0.25.60 — ...`); refresh `Cargo.lock` after the bump.
 
 ### Checking Submodule Status
 
 ```bash
-# See which commit the submodule is at
+# See which commit/tag each submodule is at
 git submodule status
 
-# See if submodule has uncommitted changes
-cd external/siphon-rs
-git status
+# See if a submodule has uncommitted changes
+cd external/forge-media && git status
 ```
 
 ### Important Notes
 
-- Always commit and push changes to siphon-rs first, then update the FCP submodule reference
-- Never commit changes to siphon-rs code directly in FCP - use the siphon-rs repository workflow
+- Always commit and push changes in the submodule repo first, then update the FCP
+  submodule reference — CI can only fetch submodule commits that exist on GitHub
+- Never commit submodule code changes directly in FCP; use the submodule's own repo workflow
 - When pulling FCP changes, update submodules: `git pull && git submodule update --init --recursive`
+- CI scopes `cargo fmt --check` to FCP workspace members, so submodule style is the
+  submodule repo's concern, not FCP's
 
 ## Common Tasks
 
