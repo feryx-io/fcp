@@ -122,6 +122,20 @@ impl PolicyEvaluator {
                 .map_err(|e| anyhow::anyhow!("Invalid policy rule '{}': {}", rule.name, e))?;
         }
 
+        // Load the tenant's feature toggles once, but only when some enabled
+        // rule actually gates on a feature.
+        let tenant_features = if rules
+            .iter()
+            .any(|r| r.enabled && !r.require_features.is_empty())
+        {
+            self.store
+                .get_tenant_features(tenant_id)
+                .await
+                .context("Failed to load tenant features")?
+        } else {
+            None
+        };
+
         // Step 4: Evaluate rules in priority order
         for rule in rules {
             if !rule.enabled {
@@ -135,6 +149,22 @@ impl PolicyEvaluator {
             if !rule.applies_to.matches(&ctx) {
                 debug!(rule = %rule.name, "Rule does not apply to this user");
                 continue;
+            }
+
+            // Check required tenant features (absent features are disabled)
+            if !rule.require_features.is_empty() {
+                let all_enabled = tenant_features
+                    .as_ref()
+                    .map(|f| rule.require_features.iter().all(|name| f.is_enabled(name)))
+                    .unwrap_or(false);
+                if !all_enabled {
+                    debug!(
+                        rule = %rule.name,
+                        required = ?rule.require_features,
+                        "Tenant is missing a required feature"
+                    );
+                    continue;
+                }
             }
 
             // Check destination match
@@ -260,21 +290,48 @@ impl PolicyEvaluator {
         Ok(regex.is_match(destination))
     }
 
-    /// Check if current time is within any of the time windows.
+    /// Check if the current time falls in any of the time windows.
+    ///
+    /// Each window is evaluated in *its own* timezone (previously the server's
+    /// local timezone was used and `TimeWindow.timezone` was silently
+    /// ignored). Windows whose `end_time` precedes `start_time` span
+    /// midnight: they match from `start_time` on a listed day through
+    /// `end_time` on the following morning.
     fn matches_time_window(&self, windows: &[crate::models::policy::TimeWindow]) -> bool {
-        let now = chrono::Local::now();
-        let today = now.weekday();
-        let time = now.time();
+        let now_utc = chrono::Utc::now();
+        windows
+            .iter()
+            .any(|window| Self::window_matches_at(window, now_utc))
+    }
 
-        windows.iter().any(|window| {
-            // Check if today is in the allowed days
-            if !window.days.contains(&today) {
+    /// Whether `now_utc` falls inside one window, evaluated in the window's
+    /// own timezone. Split out (and given an explicit instant) so tests are
+    /// deterministic.
+    fn window_matches_at(
+        window: &crate::models::policy::TimeWindow,
+        now_utc: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let tz: chrono_tz::Tz = match window.timezone.parse() {
+            Ok(tz) => tz,
+            Err(_) => {
+                warn!(
+                    timezone = %window.timezone,
+                    "Invalid timezone in time window - treating window as not matching"
+                );
                 return false;
             }
+        };
+        let local = now_utc.with_timezone(&tz);
+        let today = local.weekday();
+        let time = local.time();
 
-            // Check if current time is within the window
-            time >= window.start_time && time <= window.end_time
-        })
+        if window.start_time <= window.end_time {
+            window.days.contains(&today) && time >= window.start_time && time <= window.end_time
+        } else {
+            // Overnight window spanning midnight
+            (window.days.contains(&today) && time >= window.start_time)
+                || (window.days.contains(&today.pred()) && time <= window.end_time)
+        }
     }
 
     /// Check if IP is in any of the allowed ranges.
@@ -304,9 +361,11 @@ mod tests {
     use std::collections::HashSet;
 
     // Mock storage for testing
+    #[derive(Default)]
     struct MockStore {
         users: Vec<User>,
         policies: Vec<PolicyRule>,
+        features: Option<crate::models::TenantFeatures>,
     }
 
     #[async_trait]
@@ -352,6 +411,13 @@ mod tests {
                 .find(|p| p.name == name && &p.tenant_id == tenant_id)
                 .cloned())
         }
+
+        async fn get_tenant_features(
+            &self,
+            tenant_id: &TenantId,
+        ) -> Result<Option<crate::models::TenantFeatures>> {
+            Ok(self.features.clone().filter(|f| &f.tenant_id == tenant_id))
+        }
     }
 
     #[tokio::test]
@@ -388,6 +454,7 @@ mod tests {
             }),
             time_windows: vec![],
             source_ip_ranges: vec![],
+            require_features: vec![],
             action: PolicyAction::Allow,
             reason: Some("Employees can call extensions".to_string()),
         };
@@ -395,6 +462,7 @@ mod tests {
         let store = Arc::new(MockStore {
             users: vec![user],
             policies: vec![rule],
+            features: None,
         });
 
         let evaluator = PolicyEvaluator::new(store);
@@ -430,6 +498,7 @@ mod tests {
         let store = Arc::new(MockStore {
             users: vec![user],
             policies: vec![], // No policies
+            features: None,
         });
 
         let evaluator = PolicyEvaluator::new(store);
@@ -447,5 +516,171 @@ mod tests {
         // Should deny by default
         assert!(decision.action.is_deny());
         assert_eq!(decision.matched_rule, None);
+    }
+
+    fn feature_gated_rule(tenant_id: TenantId, feature: &str) -> PolicyRule {
+        PolicyRule {
+            name: "feature-gated".to_string(),
+            tenant_id,
+            priority: 100,
+            enabled: true,
+            applies_to: AppliesTo {
+                all_users: true,
+                users: None,
+                roles: None,
+                groups: None,
+            },
+            destination_match: None,
+            time_windows: vec![],
+            source_ip_ranges: vec![],
+            require_features: vec![feature.to_string()],
+            action: PolicyAction::Allow,
+            reason: Some("Requires a tenant feature".to_string()),
+        }
+    }
+
+    fn test_user(tenant_id: TenantId) -> User {
+        User {
+            id: "alice@test.com".to_string(),
+            tenant_id,
+            display_name: None,
+            roles: HashSet::new(),
+            groups: HashSet::new(),
+            endpoints: vec![],
+            enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_require_features_gates_rule() {
+        let tenant_id = TenantId::nil();
+        let mut features = crate::models::TenantFeatures {
+            tenant_id,
+            ..Default::default()
+        };
+
+        // Feature disabled (absent): the rule must not match → default deny.
+        let store = Arc::new(MockStore {
+            users: vec![test_user(tenant_id)],
+            policies: vec![feature_gated_rule(tenant_id, "international_calls")],
+            features: Some(features.clone()),
+        });
+        let decision = PolicyEvaluator::new(store)
+            .evaluate_call(
+                "alice@test.com",
+                "0044123",
+                &tenant_id,
+                "10.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(decision.action.is_deny());
+
+        // Feature enabled: the rule matches.
+        features
+            .features
+            .insert("international_calls".to_string(), true);
+        let store = Arc::new(MockStore {
+            users: vec![test_user(tenant_id)],
+            policies: vec![feature_gated_rule(tenant_id, "international_calls")],
+            features: Some(features),
+        });
+        let decision = PolicyEvaluator::new(store)
+            .evaluate_call(
+                "alice@test.com",
+                "0044123",
+                &tenant_id,
+                "10.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(decision.action.is_allow());
+        assert_eq!(decision.matched_rule.as_deref(), Some("feature-gated"));
+
+        // No feature toggles configured at all for the tenant: disabled.
+        let store = Arc::new(MockStore {
+            users: vec![test_user(tenant_id)],
+            policies: vec![feature_gated_rule(tenant_id, "international_calls")],
+            features: None,
+        });
+        let decision = PolicyEvaluator::new(store)
+            .evaluate_call(
+                "alice@test.com",
+                "0044123",
+                &tenant_id,
+                "10.0.0.1".parse().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(decision.action.is_deny());
+    }
+
+    fn window(
+        days: Vec<chrono::Weekday>,
+        start: &str,
+        end: &str,
+        tz: &str,
+    ) -> crate::models::TimeWindow {
+        crate::models::TimeWindow {
+            days,
+            start_time: start.parse().unwrap(),
+            end_time: end.parse().unwrap(),
+            timezone: tz.to_string(),
+        }
+    }
+
+    fn at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        chrono::Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
+    }
+
+    #[test]
+    fn test_time_window_respects_timezone() {
+        use chrono::Weekday::*;
+        // 2026-01-05 is a Monday. 15:00 UTC.
+        let now = at(2026, 1, 5, 15, 0);
+
+        // Business hours in UTC: matches.
+        let w = window(vec![Mon], "09:00", "17:00", "UTC");
+        assert!(PolicyEvaluator::window_matches_at(&w, now));
+
+        // Same wall-clock window in Tokyo (UTC+9): it is Tue 00:00 there —
+        // wrong day and outside hours. The old Local-time code would have
+        // matched or not depending on the *server's* timezone.
+        let w = window(vec![Mon], "09:00", "17:00", "Asia/Tokyo");
+        assert!(!PolicyEvaluator::window_matches_at(&w, now));
+
+        // In New York (UTC-5) it is Mon 10:00: matches.
+        let w = window(vec![Mon], "09:00", "17:00", "America/New_York");
+        assert!(PolicyEvaluator::window_matches_at(&w, now));
+
+        // Invalid timezone: never matches.
+        let w = window(vec![Mon], "09:00", "17:00", "Not/AZone");
+        assert!(!PolicyEvaluator::window_matches_at(&w, now));
+    }
+
+    #[test]
+    fn test_overnight_time_window_spans_midnight() {
+        use chrono::Weekday::*;
+        // Night shift: Mon 22:00 → Tue 06:00 UTC.
+        let w = window(vec![Mon], "22:00", "06:00", "UTC");
+
+        // Mon 23:00 — inside, evening side.
+        assert!(PolicyEvaluator::window_matches_at(
+            &w,
+            at(2026, 1, 5, 23, 0)
+        ));
+        // Tue 02:00 — inside, morning side (day rolled over).
+        assert!(PolicyEvaluator::window_matches_at(&w, at(2026, 1, 6, 2, 0)));
+        // Mon 12:00 — outside.
+        assert!(!PolicyEvaluator::window_matches_at(
+            &w,
+            at(2026, 1, 5, 12, 0)
+        ));
+        // Wed 02:00 — outside (Tuesday night is not in the window).
+        assert!(!PolicyEvaluator::window_matches_at(
+            &w,
+            at(2026, 1, 7, 2, 0)
+        ));
     }
 }

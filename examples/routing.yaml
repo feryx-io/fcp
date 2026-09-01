@@ -144,3 +144,30 @@ policies:
     source_ip_ranges: []
     action: Allow
     reason: "Emergency services always allowed"
+
+  # Rule 7: International calls for tenants with the feature enabled.
+  # `require_features` gates the rule on per-tenant feature toggles (below):
+  # the rule only matches when every listed feature is enabled for the tenant.
+  - name: "international-with-feature"
+    tenant_id: "00000000-0000-0000-0000-000000000000"
+    priority: 40
+    enabled: true
+    applies_to:
+      roles:
+        - employee
+    destination_match:
+      pattern: "^\\+(?!1)\\d{7,15}$"
+    time_windows: []
+    source_ip_ranges: []
+    require_features:
+      - international_calls
+    action: Allow
+    reason: "International calling is enabled for this tenant"
+
+# Per-tenant feature toggles referenced by `require_features`.
+# A feature that is not listed counts as disabled.
+feature_toggles:
+  - tenant_id: "00000000-0000-0000-0000-000000000000"
+    features:
+      international_calls: true
+      call_recording: false

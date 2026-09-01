@@ -1,0 +1,43 @@
+[package]
+name = "fcp-policy"
+version = "0.1.0"
+edition = "2021"
+authors = ["FCP Contributors"]
+description = "Dedicated policy engine for FCP: rule model, evaluator, and YAML rule store (call admission, time-of-day, tenant feature toggles)"
+
+[dependencies]
+# Internal dependencies
+fcp-core = { path = "../fcp-core" }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Async
+async-trait = "0.1"
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_yaml = "0.9"
+
+# Logging
+tracing = { workspace = true }
+
+# Pattern matching
+regex = "1.10"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# File watching for hot-reload
+notify = "8.0"
+
+# IP network (CIDR matching)
+ipnetwork = "0.20"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+serde_json = { workspace = true }

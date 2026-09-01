@@ -2,11 +2,11 @@
 //!
 //! This module provides a simple service wrapper around the policy evaluator.
 
-use crate::evaluator::PolicyEvaluator;
-use crate::models::PolicyDecision;
-use crate::storage::RoutingStore;
 use anyhow::Result;
 use fcp_core::TenantId;
+use fcp_policy::evaluator::PolicyEvaluator;
+use fcp_policy::models::PolicyDecision;
+use fcp_policy::storage::RoutingStore;
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -114,9 +114,9 @@ impl RoutingService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{AppliesTo, PolicyAction, PolicyRule, User};
-    use crate::storage::RoutingStore;
     use async_trait::async_trait;
+    use fcp_policy::models::{AppliesTo, PolicyAction, PolicyRule, User};
+    use fcp_policy::storage::RoutingStore;
     use std::collections::HashSet;
 
     // Mock storage for testing
@@ -201,6 +201,7 @@ mod tests {
             destination_match: None,
             time_windows: vec![],
             source_ip_ranges: vec![],
+            require_features: vec![],
             action: PolicyAction::Allow,
             reason: Some("All employees allowed".to_string()),
         };

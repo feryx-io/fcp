@@ -7,10 +7,10 @@
 //! 4. **Routing Layer** - HOW to route (trunk selection, failover) [FUTURE]
 //! 5. **Transform Layer** - MODIFY (header/number manipulation) [FUTURE]
 //!
-//! ## MVP Scope
-//!
-//! The initial implementation focuses on **Identity** and **Policy** layers only.
-//! Future layers will be added as the system matures.
+//! The identity and policy layers live in the dedicated [`fcp_policy`] crate;
+//! this crate re-exports them unchanged for backward compatibility and adds
+//! the routing-facing [`RoutingService`] wrapper. New code should depend on
+//! `fcp-policy` directly for policy concerns.
 //!
 //! ## Example
 //!
@@ -44,17 +44,15 @@
 //! # }
 //! ```
 
-pub mod evaluator;
-pub mod models;
 pub mod service;
-pub mod storage;
 
-// Re-export key types for convenience
-pub use evaluator::PolicyEvaluator;
-pub use models::identity::{DeviceType, Endpoint, IdentityContext, User};
-pub use models::policy::{
-    AppliesTo, DestinationMatch, IpRange, PolicyAction, PolicyDecision, PolicyRule, TimeWindow,
+// The policy engine was extracted into fcp-policy; re-export it wholesale so
+// existing `fcp_routing::` paths keep working.
+pub use fcp_policy::{evaluator, models, storage};
+
+pub use fcp_policy::{
+    AppliesTo, DestinationMatch, DeviceType, Endpoint, IdentityContext, IpRange, PolicyAction,
+    PolicyDecision, PolicyEvaluator, PolicyRule, RoutingStore, TenantFeatures, TimeWindow, User,
+    YamlRoutingStore,
 };
 pub use service::RoutingService;
-pub use storage::yaml::YamlRoutingStore;
-pub use storage::RoutingStore;

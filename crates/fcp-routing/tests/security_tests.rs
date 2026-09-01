@@ -237,6 +237,7 @@ fn test_policy_crlf_injection_in_name() {
         destination_match: None,
         time_windows: vec![],
         source_ip_ranges: vec![],
+        require_features: vec![],
         action: PolicyAction::Allow,
         reason: None,
     };
@@ -262,6 +263,7 @@ fn test_policy_crlf_injection_in_reason() {
         destination_match: None,
         time_windows: vec![],
         source_ip_ranges: vec![],
+        require_features: vec![],
         action: PolicyAction::Deny,
         reason: Some("blocked\r\ninjection".to_string()),
     };
@@ -287,6 +289,7 @@ fn test_policy_empty_name() {
         destination_match: None,
         time_windows: vec![],
         source_ip_ranges: vec![],
+        require_features: vec![],
         action: PolicyAction::Allow,
         reason: None,
     };
@@ -309,6 +312,7 @@ fn test_policy_negative_priority() {
         destination_match: None,
         time_windows: vec![],
         source_ip_ranges: vec![],
+        require_features: vec![],
         action: PolicyAction::Allow,
         reason: None,
     };
@@ -631,6 +635,7 @@ fn test_policy_with_invalid_destination_match() {
         }),
         time_windows: vec![],
         source_ip_ranges: vec![],
+        require_features: vec![],
         action: PolicyAction::Allow,
         reason: None,
     };
@@ -661,6 +666,7 @@ fn test_policy_with_invalid_time_window() {
             timezone: "UTC".to_string(),
         }],
         source_ip_ranges: vec![],
+        require_features: vec![],
         action: PolicyAction::Allow,
         reason: None,
     };
@@ -685,6 +691,7 @@ fn test_policy_with_invalid_ip_range() {
         },
         destination_match: None,
         time_windows: vec![],
+        require_features: vec![],
         source_ip_ranges: vec![IpRange {
             cidr: "invalid".to_string(),
         }],
@@ -726,6 +733,7 @@ fn test_fully_valid_policy() {
             end_time: NaiveTime::from_hms_opt(17, 0, 0).unwrap(),
             timezone: "America/New_York".to_string(),
         }],
+        require_features: vec![],
         source_ip_ranges: vec![IpRange {
             cidr: "10.0.0.0/8".to_string(),
         }],
