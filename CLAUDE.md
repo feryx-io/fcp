@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Ferrous Communications Platform (FCP)** is a next-generation, carrier-grade unified communications platform written entirely in Rust. The project aims to be a multi-tenant, API-first alternative to FreeSWITCH/Kamailio/Asterisk with built-in memory safety, modern async I/O, and observability.
 
-The repository contains 32 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
+The repository contains 33 workspace crates spanning core libraries, application services, storage backends, and standalone binaries, plus two git submodules under `external/`: the siphon-rs SIP stack and the forge-media media stack. Both submodule repositories are public.
+
+> **Current status lives in [STATUS.md](STATUS.md)** — the phase notes below describe scope, but STATUS.md is the maintained source of truth for what is done, partial, or absent.
 
 ## Build and Test Commands
 
@@ -155,6 +157,7 @@ fcp/
 │   ├── fcp-presence-server/      # Standalone presence server
 │   ├── fcp-conference-server/    # Conference bridge server
 │   ├── fcp-media-server/         # Standalone media server
+│   ├── fcp-tts-server/           # Shared TTS service (provider registry, caching)
 │   ├── fcp-webrtc-gateway/       # WebRTC gateway
 │   ├── fcp-events-server/        # Event streaming + webhook delivery server
 │   ├── fcp-api-gateway/          # API gateway (auth, rate limiting, routing)
@@ -478,11 +481,14 @@ async fn handle_request(request: Request, tenant_id: TenantId) -> Result<()> {
 
 - ✅ `fcp-sbc-core` / `fcp-sbc`: SBC with enforcement pipeline, trunk management
 - ✅ `fcp-routing`: Policy-based routing with LCR
-- ⏳ STIR/SHAKEN caller ID verification
-- ⏳ Audio transcoding pipeline
+- ✅ STIR/SHAKEN caller ID verification (ES256 sign + verify, cert cache, wired into the SBC enforcement pipeline)
+- ✅ `fcp-tts-server`: Shared TTS service (provider registry, caching, health)
+- ✅ Device provisioning serving layer (token auth, HTTPS enforcement, template rendering in `fcp-api-core/src/v1/provisioning.rs`)
+- ⏳ Audio transcoding pipeline — real transcoding exists but only in `fcp-call-manager`'s queue path; `fcp-media` has the codec-decision logic and needs `forge-transcoder` wired into the B2BUA/SBC path (its `RemoteBackend` is an unimplemented stub)
+- ⏳ Vendor provisioning templates — no shipped Polycom/Yealink/Cisco/Grandstream templates yet; tenants author their own
 - `fcp-policy`: Dedicated policy engine — currently policies are inline in routing/SBC code; extract into a standalone crate with a rule DSL for call admission, number manipulation, time-of-day routing, and tenant-level feature toggles
-- `fcp-billing`: Billing gateway — CDR-driven usage metering, rate plans, balance enforcement, and integration hooks for external billing systems
-- `fcp-provisioning`: Device provisioning server (Polycom, Yealink, Cisco, Grandstream) — HTTP-based config file serving with per-vendor templates, auto-populated from device/user records
+- `fcp-billing`: Billing gateway — CDR-driven usage metering, rate plans, balance enforcement, and integration hooks for external billing systems (today only a read-only usage report exists; CDRs carry `cost: None`)
+- SBC pipeline stages 3–5: reachability, trunk routing/failover, header & number transform
 - Encryption at rest (KMS integration)
 
 ### Phase 5 (Planned - Carrier Grade)
