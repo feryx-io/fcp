@@ -169,7 +169,7 @@ pub fn parse_resource_lists_xml(xml: &str) -> Result<Vec<ResourceListXml>> {
             }
             Ok(Event::Text(ref e)) => {
                 if in_display_name {
-                    current_display_name = Some(e.unescape().unwrap_or_default().to_string());
+                    current_display_name = Some(e.decode().unwrap_or_default().to_string());
                 }
             }
             Ok(Event::End(ref e)) => {
@@ -688,7 +688,7 @@ pub fn parse_pres_rules(xml: &str) -> Result<PresenceAuthPolicy> {
                 }
             }
             Ok(Event::Text(ref e)) => {
-                let text = e.unescape().unwrap_or_default().to_string();
+                let text = e.decode().unwrap_or_default().to_string();
                 if in_sub_handling {
                     current_action = Some(text);
                 } else if in_event_package {
