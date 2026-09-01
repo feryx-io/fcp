@@ -24,7 +24,7 @@ http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # Redis for caching
-redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 # Rate limiting
 governor = "0.6"
