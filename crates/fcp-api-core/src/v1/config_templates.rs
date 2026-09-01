@@ -275,3 +275,94 @@ pub async fn delete_config_template(
     info!("Deleted config template {}", id);
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Built-in template library entry response.
+#[derive(Debug, Serialize)]
+pub struct LibraryTemplateResponse {
+    pub vendor: String,
+    pub name: String,
+    pub model_pattern: Option<String>,
+    pub description: String,
+    pub template_body: String,
+}
+
+/// GET /api/v1/config-templates/library — List the built-in vendor starter
+/// templates shipped with FCP.
+pub async fn list_template_library() -> impl IntoResponse {
+    let entries: Vec<LibraryTemplateResponse> = fcp_core::config_template::builtin_templates()
+        .iter()
+        .map(|t| LibraryTemplateResponse {
+            vendor: t.vendor.to_string(),
+            name: t.name.to_string(),
+            model_pattern: t.model_pattern.map(str::to_string),
+            description: t.description.to_string(),
+            template_body: t.body.to_string(),
+        })
+        .collect();
+    Json(entries)
+}
+
+/// POST /api/v1/config-templates/library/:vendor — Instantiate a built-in
+/// starter template as a tenant-owned config template the tenant can then
+/// customize and assign to devices.
+pub async fn instantiate_library_template(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Path(vendor): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::DeviceCreate, state.deployment_mode)?;
+    let storage = require_storage!(state);
+    let template_store = require_template_store(storage)?;
+
+    let vendor: PhoneVendor = vendor
+        .parse()
+        .map_err(|e: String| ApiError::BadRequest(e))?;
+    let builtin = fcp_core::config_template::builtin_templates()
+        .iter()
+        .find(|t| t.vendor == vendor)
+        .ok_or_else(|| {
+            ApiError::NotFound(format!("No built-in starter template for vendor {vendor}"))
+        })?;
+
+    // Never overwrite a tenant's (possibly customized) copy: the tenant copy
+    // owns the name once instantiated.
+    let existing = template_store
+        .list_config_templates(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list config templates: {}", e)))?;
+    if existing.iter().any(|t| t.name == builtin.name) {
+        return Err(ApiError::Conflict(format!(
+            "Template '{}' already exists for this tenant; edit or delete it instead",
+            builtin.name
+        )));
+    }
+
+    let now = SystemTime::now();
+    let template = ConfigTemplate {
+        id: ConfigTemplateId::new(),
+        tenant_id: tenant.0,
+        name: builtin.name.to_string(),
+        vendor,
+        model_pattern: builtin.model_pattern.map(str::to_string),
+        template_body: builtin.body.to_string(),
+        description: Some(builtin.description.to_string()),
+        created_at: now,
+        updated_at: now,
+    };
+
+    template_store
+        .put_config_template(template.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to create config template: {}", e)))?;
+
+    info!(
+        "Instantiated built-in {} starter template as {} for tenant {}",
+        vendor, template.id, template.tenant_id
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(ConfigTemplateResponse::from(template)),
+    ))
+}
