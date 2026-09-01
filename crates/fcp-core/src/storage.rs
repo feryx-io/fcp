@@ -988,6 +988,11 @@ pub struct UsageAggregation {
     pub inbound_calls: u64,
     /// Number of outbound calls.
     pub outbound_calls: u64,
+    /// Sum of rated CDR costs in the period (0.0 when billing is not
+    /// configured). All of a tenant's rated calls share the currency of the
+    /// tenant's default rate plan.
+    #[serde(default)]
+    pub total_cost: f64,
 }
 
 /// Per-number CDR usage breakdown.
@@ -1042,6 +1047,128 @@ pub trait CdrStore: Send + Sync {
     ) -> Result<Vec<NumberUsage>> {
         let _ = (tenant_id, from, to);
         Ok(Vec::new())
+    }
+
+    // ── Rate plans (billing MVP) ─────────────────────────────────────────
+    // Defaulted so existing backends and test doubles keep compiling; the
+    // defaults fail loudly rather than pretending to persist anything.
+
+    /// Create a rate plan. When `plan.is_default` is set, any previous
+    /// default plan for the tenant loses its default flag.
+    async fn create_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
+        let _ = plan;
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// Get a rate plan by id, scoped to a tenant.
+    async fn get_rate_plan(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<Option<crate::billing::RatePlan>> {
+        let _ = (tenant_id, plan_id);
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// List a tenant's rate plans.
+    async fn list_rate_plans(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::billing::RatePlan>> {
+        let _ = tenant_id;
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// Replace a rate plan's mutable fields (name, currency, rates config,
+    /// default/enabled flags). When `plan.is_default` is set, any previous
+    /// default plan for the tenant loses its default flag.
+    async fn update_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
+        let _ = plan;
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// Delete a rate plan and its rates.
+    async fn delete_rate_plan(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<()> {
+        let _ = (tenant_id, plan_id);
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// Add or replace a rate on a plan (upsert on `(rate_plan_id, prefix)`).
+    async fn upsert_rate(
+        &self,
+        tenant_id: &crate::TenantId,
+        rate: crate::billing::Rate,
+    ) -> Result<()> {
+        let _ = (tenant_id, rate);
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// List a plan's rates.
+    async fn list_rates(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<Vec<crate::billing::Rate>> {
+        let _ = (tenant_id, plan_id);
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// Delete one rate from a plan.
+    async fn delete_rate(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+        rate_id: uuid::Uuid,
+    ) -> Result<()> {
+        let _ = (tenant_id, plan_id, rate_id);
+        Err(anyhow::Error::new(crate::Error::Storage(
+            crate::error::StorageError::Database(
+                "rate plans are not supported by this storage backend".to_string(),
+            ),
+        )))
+    }
+
+    /// The tenant's enabled default rate plan with its rates, if any — the
+    /// single lookup the CDR rating path performs at call end.
+    async fn get_default_rate_plan_with_rates(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<(crate::billing::RatePlan, Vec<crate::billing::Rate>)>> {
+        // Default: billing not configured — rating is skipped silently.
+        let _ = tenant_id;
+        Ok(None)
     }
 }
 
@@ -2839,6 +2966,73 @@ impl CdrStore for DynStorage {
     ) -> Result<Vec<NumberUsage>> {
         self.cdr_store
             .aggregate_usage_by_number(tenant_id, from, to)
+            .await
+    }
+
+    async fn create_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
+        self.cdr_store.create_rate_plan(plan).await
+    }
+
+    async fn get_rate_plan(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<Option<crate::billing::RatePlan>> {
+        self.cdr_store.get_rate_plan(tenant_id, plan_id).await
+    }
+
+    async fn list_rate_plans(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Vec<crate::billing::RatePlan>> {
+        self.cdr_store.list_rate_plans(tenant_id).await
+    }
+
+    async fn update_rate_plan(&self, plan: crate::billing::RatePlan) -> Result<()> {
+        self.cdr_store.update_rate_plan(plan).await
+    }
+
+    async fn delete_rate_plan(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<()> {
+        self.cdr_store.delete_rate_plan(tenant_id, plan_id).await
+    }
+
+    async fn upsert_rate(
+        &self,
+        tenant_id: &crate::TenantId,
+        rate: crate::billing::Rate,
+    ) -> Result<()> {
+        self.cdr_store.upsert_rate(tenant_id, rate).await
+    }
+
+    async fn list_rates(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+    ) -> Result<Vec<crate::billing::Rate>> {
+        self.cdr_store.list_rates(tenant_id, plan_id).await
+    }
+
+    async fn delete_rate(
+        &self,
+        tenant_id: &crate::TenantId,
+        plan_id: uuid::Uuid,
+        rate_id: uuid::Uuid,
+    ) -> Result<()> {
+        self.cdr_store
+            .delete_rate(tenant_id, plan_id, rate_id)
+            .await
+    }
+
+    async fn get_default_rate_plan_with_rates(
+        &self,
+        tenant_id: &crate::TenantId,
+    ) -> Result<Option<(crate::billing::RatePlan, Vec<crate::billing::Rate>)>> {
+        self.cdr_store
+            .get_default_rate_plan_with_rates(tenant_id)
             .await
     }
 }

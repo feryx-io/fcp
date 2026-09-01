@@ -23,6 +23,7 @@ pub mod prompts;
 pub mod provisioning;
 pub mod queue_config;
 pub mod queues;
+pub mod rate_plans;
 pub mod registrations;
 pub mod routing;
 pub mod self_service;
@@ -162,6 +163,24 @@ pub fn router() -> Router<ApiState> {
         .route("/usage", get(usage::get_usage))
         .route("/usage/by-number", get(usage::get_usage_by_number))
         .route("/billing/summary", get(usage::billing_summary))
+        .route(
+            "/rate-plans",
+            get(rate_plans::list_rate_plans).post(rate_plans::create_rate_plan),
+        )
+        .route(
+            "/rate-plans/:id",
+            get(rate_plans::get_rate_plan)
+                .patch(rate_plans::update_rate_plan)
+                .delete(rate_plans::delete_rate_plan),
+        )
+        .route(
+            "/rate-plans/:id/rates",
+            get(rate_plans::list_rates).post(rate_plans::upsert_rate),
+        )
+        .route(
+            "/rate-plans/:id/rates/:rate_id",
+            axum::routing::delete(rate_plans::delete_rate),
+        )
         // NOTE: /events WebSocket is registered separately via ws_router()
         // Debug endpoints
         .route("/debug/summary", get(debug::debug_summary))
